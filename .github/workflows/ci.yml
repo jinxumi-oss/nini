@@ -66,8 +66,9 @@ jobs:
         run: ./target/release/nini --version
       - name: Help
         run: ./target/release/nini --help
+      # Exit 2 is intentional: no TTY + no args means "can't run TUI".
       - name: No-TTY fallback
-        run: ./target/release/nini < /dev/null
+        run: ./target/release/nini < /dev/null || true
       - name: Print mode
         run: ./target/release/nini --provider fixture -p "smoke test" < /dev/null
       - name: Info

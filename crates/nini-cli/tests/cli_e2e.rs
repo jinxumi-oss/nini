@@ -125,11 +125,20 @@ fn cli_info_shows_skills() {
     assert!(out.contains("nini info"));
     assert!(out.contains("Settings"));
     assert!(out.contains("Skills"));
-    // User's ~/.pi/agent/skills should have entries (we saw 18 earlier)
-    assert!(
-        out.lines().filter(|l| l.starts_with("  - ")).count() >= 1,
-        "expected at least 1 skill listed, got:\n{out}"
-    );
+    // Skills are environment-dependent: developers have ~/.pi/agent/skills/.
+    // CI runners typically have none. We assert the rendered count matches
+    // the header count rather than a minimum.
+    let skill_count = out.lines().filter(|l| l.starts_with("  - ")).count();
+    let header_count: usize = out
+        .lines()
+        .find(|l| l.starts_with("Skills ("))
+        .and_then(|l| {
+            // "Skills (18 loaded, ..." → take "Skills (" + digit run
+            l.split_whitespace()
+                .find_map(|tok| tok.trim_start_matches('(').parse().ok())
+        })
+        .unwrap_or(0);
+    assert_eq!(skill_count, header_count, "skill count mismatch in:\n{out}");
 }
 
 // =====================================================================
