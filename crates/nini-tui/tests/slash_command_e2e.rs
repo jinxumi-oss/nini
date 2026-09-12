@@ -4,11 +4,11 @@
 //! Enter, the command dispatcher runs, output lands in the transcript, and
 //! the rendered frame reflects the result.
 
-use nini_tui::commands::{ complete, dispatch, parse, CommandId, CommandOutcome, REGISTRY };
+use nini_tui::commands::{CommandId, CommandOutcome, REGISTRY, complete, dispatch, parse};
 use nini_tui::render::render_frame;
-use nini_tui::state::{ AppState, RunMode };
-use ratatui::backend::TestBackend;
+use nini_tui::state::{AppState, RunMode};
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 /// Snapshot the visible text of a frame, like in tui_e2e.rs.
 fn frame_text(state: &AppState, w: u16, h: u16) -> String {
@@ -55,7 +55,12 @@ fn parse_all_commands_in_registry() {
             def_name = def.name
         );
         let (cmd_id, _args) = parsed.unwrap();
-        assert_eq!(cmd_id, def.id, "/{name} parsed to wrong id", name = def.name);
+        assert_eq!(
+            cmd_id,
+            def.id,
+            "/{name} parsed to wrong id",
+            name = def.name
+        );
     }
 }
 
@@ -153,10 +158,12 @@ fn new_command_clears_transcript_keeps_model() {
     assert_eq!(state.model, "test-model"); // unchanged
 
     // Transcript has "(started new session)" + divider
-    assert!(state.transcript[0]
-        .as_assistant_text()
-        .map(|t| t.contains("started new session"))
-        .unwrap_or(false));
+    assert!(
+        state.transcript[0]
+            .as_assistant_text()
+            .map(|t| t.contains("started new session"))
+            .unwrap_or(false)
+    );
 }
 
 // =====================================================================

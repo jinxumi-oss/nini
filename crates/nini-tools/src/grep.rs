@@ -4,13 +4,13 @@
 //! `.gitignore`-aware file walking. Output is `file:line:content` per line.
 
 use async_trait::async_trait;
-use ignore::overrides::OverrideBuilder;
 use ignore::WalkBuilder;
+use ignore::overrides::OverrideBuilder;
+use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
 use regex::Regex;
 use serde::Deserialize;
-use serde_json::{ json, Value };
+use serde_json::{Value, json};
 use std::path::PathBuf;
-use nini_core::tool::{Tool, ToolContext, ToolOutput, ToolError, ToolSpec};
 
 #[derive(Debug, Deserialize)]
 struct GrepArgs {
@@ -68,8 +68,8 @@ impl Tool for GrepTool {
         let parsed: GrepArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
 
-        let regex =
-            Regex::new(&parsed.pattern).map_err(|e| ToolError::InvalidArgs(format!("invalid regex: {e}")))?;
+        let regex = Regex::new(&parsed.pattern)
+            .map_err(|e| ToolError::InvalidArgs(format!("invalid regex: {e}")))?;
 
         let path: PathBuf = parsed
             .path
@@ -157,7 +157,10 @@ mod tests {
 
         let tool = GrepTool::new();
         let out = tool
-            .execute(json!({"pattern": "alpha", "path": dir.path().to_str().unwrap()}), ToolContext::default())
+            .execute(
+                json!({"pattern": "alpha", "path": dir.path().to_str().unwrap()}),
+                ToolContext::default(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -180,7 +183,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let tool = GrepTool::new();
         let out = tool
-            .execute(json!({"pattern": "nonexistent", "path": dir.path().to_str().unwrap()}), ToolContext::default())
+            .execute(
+                json!({"pattern": "nonexistent", "path": dir.path().to_str().unwrap()}),
+                ToolContext::default(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);

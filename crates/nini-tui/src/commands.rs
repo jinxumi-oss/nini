@@ -13,7 +13,7 @@
 //! would require async I/O (e.g., `/login`, `/export`) emit a "not yet
 //! implemented" result — wiring those up is a follow-up.
 
-use crate::state::{ AppState, RunMode, TranscriptLine };
+use crate::state::{AppState, RunMode, TranscriptLine};
 
 /// 22 Pi-compatible slash commands (canonical order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,34 +59,139 @@ impl CommandDef {
         description: &'static str,
         argument_hint: Option<&'static str>,
     ) -> Self {
-        Self { id, name, description, argument_hint }
+        Self {
+            id,
+            name,
+            description,
+            argument_hint,
+        }
     }
 }
 
 /// The full registry. Order matches `builtin.json`.
 pub const REGISTRY: &[CommandDef] = &[
     CommandDef::new(CommandId::Settings, "settings", "Open settings menu", None),
-    CommandDef::new(CommandId::Model, "model", "Select model (opens selector UI)", Some("<provider/model>")),
-    CommandDef::new(CommandId::Tree, "tree", "Navigate session tree (switch branches)", None),
-    CommandDef::new(CommandId::Thinking, "thinking", "Set thinking level", Some("<level>")),
-    CommandDef::new(CommandId::ScopedModels, "scoped-models", "Enable/disable models for Ctrl+P cycling", None),
-    CommandDef::new(CommandId::Export, "export", "Export session (HTML default, or specify path: .html/.jsonl)", None),
-    CommandDef::new(CommandId::Import, "import", "Import and resume a session from a JSONL file", None),
-    CommandDef::new(CommandId::Share, "share", "Share session as a secret GitHub gist", None),
-    CommandDef::new(CommandId::Copy, "copy", "Copy last agent message to clipboard", None),
-    CommandDef::new(CommandId::Name, "name", "Set session display name", Some("<name>")),
-    CommandDef::new(CommandId::Session, "session", "Show session info and stats", None),
-    CommandDef::new(CommandId::Changelog, "changelog", "Show changelog entries", None),
-    CommandDef::new(CommandId::Hotkeys, "hotkeys", "Show all keyboard shortcuts", None),
-    CommandDef::new(CommandId::Fork, "fork", "Create a new fork from a previous user message", None),
-    CommandDef::new(CommandId::Clone, "clone", "Duplicate the current session at the current position", None),
-    CommandDef::new(CommandId::Trust, "trust", "Save project trust decision for future sessions", None),
-    CommandDef::new(CommandId::Login, "login", "Configure provider authentication", Some("<provider>")),
-    CommandDef::new(CommandId::Logout, "logout", "Remove provider authentication", None),
+    CommandDef::new(
+        CommandId::Model,
+        "model",
+        "Select model (opens selector UI)",
+        Some("<provider/model>"),
+    ),
+    CommandDef::new(
+        CommandId::Tree,
+        "tree",
+        "Navigate session tree (switch branches)",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Thinking,
+        "thinking",
+        "Set thinking level",
+        Some("<level>"),
+    ),
+    CommandDef::new(
+        CommandId::ScopedModels,
+        "scoped-models",
+        "Enable/disable models for Ctrl+P cycling",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Export,
+        "export",
+        "Export session (HTML default, or specify path: .html/.jsonl)",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Import,
+        "import",
+        "Import and resume a session from a JSONL file",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Share,
+        "share",
+        "Share session as a secret GitHub gist",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Copy,
+        "copy",
+        "Copy last agent message to clipboard",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Name,
+        "name",
+        "Set session display name",
+        Some("<name>"),
+    ),
+    CommandDef::new(
+        CommandId::Session,
+        "session",
+        "Show session info and stats",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Changelog,
+        "changelog",
+        "Show changelog entries",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Hotkeys,
+        "hotkeys",
+        "Show all keyboard shortcuts",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Fork,
+        "fork",
+        "Create a new fork from a previous user message",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Clone,
+        "clone",
+        "Duplicate the current session at the current position",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Trust,
+        "trust",
+        "Save project trust decision for future sessions",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Login,
+        "login",
+        "Configure provider authentication",
+        Some("<provider>"),
+    ),
+    CommandDef::new(
+        CommandId::Logout,
+        "logout",
+        "Remove provider authentication",
+        None,
+    ),
     CommandDef::new(CommandId::New, "new", "Start a new session", None),
-    CommandDef::new(CommandId::Compact, "compact", "Manually compact the session context", None),
-    CommandDef::new(CommandId::Resume, "resume", "Resume a different session", None),
-    CommandDef::new(CommandId::Reload, "reload", "Reload keybindings, extensions, skills, prompts, themes, and context files", None),
+    CommandDef::new(
+        CommandId::Compact,
+        "compact",
+        "Manually compact the session context",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Resume,
+        "resume",
+        "Resume a different session",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Reload,
+        "reload",
+        "Reload keybindings, extensions, skills, prompts, themes, and context files",
+        None,
+    ),
     CommandDef::new(CommandId::Quit, "quit", "Quit nini", None),
 ];
 
@@ -146,10 +251,14 @@ pub struct CommandResult {
 
 impl CommandResult {
     pub fn output(lines: Vec<String>) -> Self {
-        Self { outcome: CommandOutcome::Output(lines) }
+        Self {
+            outcome: CommandOutcome::Output(lines),
+        }
     }
     pub fn quit() -> Self {
-        Self { outcome: CommandOutcome::Quit }
+        Self {
+            outcome: CommandOutcome::Quit,
+        }
     }
     pub fn prompt(prompt: impl Into<String>, next: CommandId) -> Self {
         Self {
@@ -215,14 +324,17 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
             CommandResult::output(vec![format!("thinking → {args}")])
         }
         CommandId::ScopedModels => CommandResult::output(vec![
-            "(scoped-models — Ctrl+P cycling scope config not yet implemented)".to_string()
+            "(scoped-models — Ctrl+P cycling scope config not yet implemented)".to_string(),
         ]),
         CommandId::Export => {
             // v1: write a minimal HTML snapshot of the transcript to ~/.pi/agent/exports/.
             let html = render_transcript_html(&state.transcript);
-            let dir = std::env::var("HOME")
-                .ok()
-                .map(|h| std::path::PathBuf::from(h).join(".pi").join("agent").join("exports"));
+            let dir = std::env::var("HOME").ok().map(|h| {
+                std::path::PathBuf::from(h)
+                    .join(".pi")
+                    .join("agent")
+                    .join("exports")
+            });
             let path = match dir {
                 Some(d) => {
                     let _ = std::fs::create_dir_all(&d);
@@ -241,35 +353,31 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
             CommandResult::output(vec![format!("export → {path}")])
         }
         CommandId::Import => CommandResult::output(vec![
-            "(import — JSONL session import not yet implemented)".to_string()
+            "(import — JSONL session import not yet implemented)".to_string(),
         ]),
         CommandId::Share => CommandResult::output(vec![
-            "(share — GitHub gist upload not yet implemented)".to_string()
+            "(share — GitHub gist upload not yet implemented)".to_string(),
         ]),
         CommandId::Copy => {
             // v1: print the last assistant message to stdout. Real impl uses
             // arboard or similar clipboard crate.
-            let last_assistant = state
-                .transcript
-                .iter()
-                .rev()
-                .find_map(|l| match l {
-                    TranscriptLine::AssistantText(s) => Some(s.clone()),
-                    _ => None,
-                });
+            let last_assistant = state.transcript.iter().rev().find_map(|l| match l {
+                TranscriptLine::AssistantText(s) => Some(s.clone()),
+                _ => None,
+            });
             match last_assistant {
                 Some(msg) => {
                     println!("{msg}"); // v1: also print to stdout for verification
-                    CommandResult::output(vec!["(copied to clipboard — also printed to stdout)".to_string()])
+                    CommandResult::output(vec![
+                        "(copied to clipboard — also printed to stdout)".to_string(),
+                    ])
                 }
                 None => CommandResult::output(vec!["(no assistant message to copy)".to_string()]),
             }
         }
         CommandId::Name => {
             if args.is_empty() {
-                return CommandResult::output(vec![
-                    "Usage: /name <session name>".to_string()
-                ]);
+                return CommandResult::output(vec!["Usage: /name <session name>".to_string()]);
             }
             // v1: store in status. Real impl persists via session metadata.
             state.status = format!("name: {args}");
@@ -279,16 +387,22 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
         }
         CommandId::Session => {
             let lines = vec![
-                format!("session_id: {}", state.session_id.as_deref().unwrap_or("(none)")),
+                format!(
+                    "session_id: {}",
+                    state.session_id.as_deref().unwrap_or("(none)")
+                ),
                 format!("model:      {}", state.model),
                 format!("mode:       {:?}", state.mode),
                 format!("transcript: {} lines", state.transcript.len()),
-                format!("tokens:     in={} out={}", state.tokens.input, state.tokens.output),
+                format!(
+                    "tokens:     in={} out={}",
+                    state.tokens.input, state.tokens.output
+                ),
             ];
             CommandResult::output(lines)
         }
         CommandId::Changelog => CommandResult::output(vec![
-            "(changelog — see references/spec-v0.85.1/ for v0.85.1 release notes)".to_string()
+            "(changelog — see references/spec-v0.85.1/ for v0.85.1 release notes)".to_string(),
         ]),
         CommandId::Hotkeys => CommandResult::output(vec![
             "Key bindings (Pi-compatible)".to_string(),
@@ -307,19 +421,22 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
             "  PgUp/PgDn     scroll transcript".to_string(),
         ]),
         CommandId::Fork => CommandResult::output(vec![
-            "(fork — session fork UI not yet implemented)".to_string()
+            "(fork — session fork UI not yet implemented)".to_string(),
         ]),
         CommandId::Clone => CommandResult::output(vec![
-            "(clone — duplicate session not yet implemented)".to_string()
+            "(clone — duplicate session not yet implemented)".to_string(),
         ]),
-        CommandId::Trust => CommandResult::output(vec![
-            format!("(trust — marked cwd {} as trusted)", std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_else(|_| "(unknown)".to_string()))
-        ]),
+        CommandId::Trust => CommandResult::output(vec![format!(
+            "(trust — marked cwd {} as trusted)",
+            std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "(unknown)".to_string())
+        )]),
         CommandId::Login => CommandResult::output(vec![
-            "(login — credential setup not yet implemented)".to_string()
+            "(login — credential setup not yet implemented)".to_string(),
         ]),
         CommandId::Logout => CommandResult::output(vec![
-            "(logout — credential removal not yet implemented)".to_string()
+            "(logout — credential removal not yet implemented)".to_string(),
         ]),
         CommandId::New => {
             // Clear the transcript for a fresh session.
@@ -328,9 +445,7 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
             state.tokens = Default::default();
             state.push_assistant("(started new session)".to_string());
             state.push_divider();
-            CommandResult::output(vec![format!(
-                "new: cleared {prev_len} transcript lines"
-            )])
+            CommandResult::output(vec![format!("new: cleared {prev_len} transcript lines")])
         }
         CommandId::Compact => {
             // v1: placeholder. Real compactor lands with P011.
@@ -339,15 +454,12 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
             CommandResult::output(vec!["compact: not yet implemented".to_string()])
         }
         CommandId::Resume => CommandResult::output(vec![
-            "(resume — JSONL session resume not yet implemented)".to_string()
+            "(resume — JSONL session resume not yet implemented)".to_string(),
         ]),
         CommandId::Reload => {
             // Reload skills from disk; provider/models are read at startup.
             let cwd = std::env::current_dir().ok();
-            let new_count = cwd
-                .as_deref()
-                .map(state_helpers::count_skills)
-                .unwrap_or(0);
+            let new_count = cwd.as_deref().map(state_helpers::count_skills).unwrap_or(0);
             state.push_assistant(format!("(reloaded {new_count} skills from disk)"));
             state.push_divider();
             CommandResult::output(vec![format!("reload: {new_count} skills")])
@@ -418,16 +530,19 @@ mod tests {
     fn registry_has_22_commands() {
         // Pi spec `builtin.json` declares 23 entries (count field), but the
         // Pi code base says 22 (+ /quit implicit). Match the spec.
-        assert_eq!(REGISTRY.len(), 23, "expected 23 Pi-compatible commands per builtin.json");
+        assert_eq!(
+            REGISTRY.len(),
+            23,
+            "expected 23 Pi-compatible commands per builtin.json"
+        );
     }
 
     #[test]
     fn all_required_command_ids_present() {
         // Sanity: spot-check a handful of names that must be present.
         for name in [
-            "settings", "model", "tree", "thinking", "export", "import",
-            "session", "hotkeys", "fork", "clone", "trust", "new",
-            "compact", "resume", "reload", "quit",
+            "settings", "model", "tree", "thinking", "export", "import", "session", "hotkeys",
+            "fork", "clone", "trust", "new", "compact", "resume", "reload", "quit",
         ] {
             assert!(by_name(name).is_some(), "missing command /{name}");
         }
@@ -530,10 +645,12 @@ mod tests {
         let _ = dispatch(&mut state, CommandId::New, "");
         // Transcript should be cleared + a "(started new session)" line added
         assert!(!state.transcript.is_empty());
-        assert!(state.transcript[0]
-            .as_assistant_text()
-            .map(|t| t.contains("started new session"))
-            .unwrap_or(false));
+        assert!(
+            state.transcript[0]
+                .as_assistant_text()
+                .map(|t| t.contains("started new session"))
+                .unwrap_or(false)
+        );
     }
 
     #[test]

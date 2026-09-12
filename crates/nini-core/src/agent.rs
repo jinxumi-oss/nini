@@ -202,31 +202,29 @@ impl Agent {
             .messages
             .iter()
             .enumerate()
-            .map(|(i, m)| crate::Entry::message(
-                format!("msg_{i}"),
-                None,
-                (i as u64) + 1,
-                AgentMessage {
-                    role: m.role,
-                    content: m.content.clone(),
-                    timestamp: 0,
-                },
-            ))
+            .map(|(i, m)| {
+                crate::Entry::message(
+                    format!("msg_{i}"),
+                    None,
+                    (i as u64) + 1,
+                    AgentMessage {
+                        role: m.role,
+                        content: m.content.clone(),
+                        timestamp: 0,
+                    },
+                )
+            })
             .collect();
 
         // Capture a snapshot for the closure.
         let msgs_snapshot = self.messages.clone();
-        let out = crate::compaction::compact(
-            &entries,
-            &self.config.compaction,
-            None,
-            |es, prev| {
+        let out =
+            crate::compaction::compact(&entries, &self.config.compaction, None, |es, prev| {
                 // Compute prefix length from the (in-progress) entries.
                 let keep_from = crate::compaction::find_cut_point(es).keep_from;
                 let prefix_len = keep_from.min(msgs_snapshot.len());
                 summary_fn(&msgs_snapshot[..prefix_len], prev)
-            },
-        );
+            });
 
         // Splice: prepend summary message, retain suffix.
         let prefix_len = out.keep_from;
@@ -468,5 +466,8 @@ fn build_request(
 fn to_nini_message(m: &AgentMessage) -> crate::provider::Message {
     // Reuse the agent-core role directly — it's already in the provider's
     // canonical shape (User/Assistant/Tool/System).
-    crate::provider::Message { role: m.role, content: m.content.clone() }
+    crate::provider::Message {
+        role: m.role,
+        content: m.content.clone(),
+    }
 }

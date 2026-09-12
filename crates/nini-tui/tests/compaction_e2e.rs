@@ -6,14 +6,14 @@
 //! - Slash command /compact runs manually
 
 use futures_util::StreamExt;
-use nini_ai::fixture::{ FixtureTurn, ProgrammedProvider };
-use nini_core::provider::{ Provider, Usage };
-use nini_core::{ Agent, AgentEvent, RunConfig, ToolRegistry };
-use nini_tui::commands::{ dispatch, CommandId, CommandOutcome };
+use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
+use nini_core::provider::{Provider, Usage};
+use nini_core::{Agent, AgentEvent, RunConfig, ToolRegistry};
+use nini_tui::commands::{CommandId, CommandOutcome, dispatch};
 use nini_tui::render::render_frame;
 use nini_tui::state::AppState;
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -41,7 +41,10 @@ fn frame_text(state: &AppState, w: u16, h: u16) -> String {
 fn make_tool_provider() -> Arc<dyn Provider> {
     Arc::new(ProgrammedProvider::from_turns(vec![vec![
         FixtureTurn::Text("ok".to_string()),
-        FixtureTurn::Stop { stop_reason: "end_turn".to_string(), usage: Usage::default() },
+        FixtureTurn::Stop {
+            stop_reason: "end_turn".to_string(),
+            usage: Usage::default(),
+        },
     ]]))
 }
 
@@ -88,14 +91,12 @@ async fn agent_should_compact_at_threshold() {
     // Initially empty → not over budget
     assert!(!agent.should_compact());
     // Add content that pushes over the 50-token budget
-    agent.seed(vec![
-        nini_core::provider::Message {
-            role: nini_core::provider::Role::User,
-            content: vec![nini_core::provider::ContentBlock::Text {
-                text: "z".repeat(400), // 100 tokens — way over 50
-            }],
-        },
-    ]);
+    agent.seed(vec![nini_core::provider::Message {
+        role: nini_core::provider::Role::User,
+        content: vec![nini_core::provider::ContentBlock::Text {
+            text: "z".repeat(400), // 100 tokens — way over 50
+        }],
+    }]);
     assert!(agent.should_compact());
 }
 
@@ -143,7 +144,9 @@ async fn compact_history_prepends_summary_and_keeps_suffix() {
         msgs.iter()
             .filter_map(|m| {
                 if m.role == nini_core::provider::Role::User {
-                    if let Some(nini_core::provider::ContentBlock::Text { text }) = m.content.first() {
+                    if let Some(nini_core::provider::ContentBlock::Text { text }) =
+                        m.content.first()
+                    {
                         Some(text.clone())
                     } else {
                         None
@@ -179,12 +182,13 @@ async fn compact_history_prepends_summary_and_keeps_suffix() {
 #[tokio::test]
 async fn run_auto_compacts_when_over_budget() {
     // Programmed provider that just responds with text.
-    let provider: Arc<dyn Provider> = Arc::new(ProgrammedProvider::from_turns(vec![
-        vec![FixtureTurn::Text("hi".to_string()), FixtureTurn::Stop {
+    let provider: Arc<dyn Provider> = Arc::new(ProgrammedProvider::from_turns(vec![vec![
+        FixtureTurn::Text("hi".to_string()),
+        FixtureTurn::Stop {
             stop_reason: "end_turn".to_string(),
             usage: Usage::default(),
-        }],
-    ]));
+        },
+    ]]));
     let tools = ToolRegistry::new();
     let mut cfg = RunConfig::new("test-model");
     cfg.compaction.context_window = 100;
@@ -192,14 +196,12 @@ async fn run_auto_compacts_when_over_budget() {
     let mut agent = Agent::new(provider, tools, cfg);
 
     // Seed with content that exceeds budget
-    agent.seed(vec![
-        nini_core::provider::Message {
-            role: nini_core::provider::Role::User,
-            content: vec![nini_core::provider::ContentBlock::Text {
-                text: "x".repeat(400), // 100 tokens, over 50-token budget
-            }],
-        },
-    ]);
+    agent.seed(vec![nini_core::provider::Message {
+        role: nini_core::provider::Role::User,
+        content: vec![nini_core::provider::ContentBlock::Text {
+            text: "x".repeat(400), // 100 tokens, over 50-token budget
+        }],
+    }]);
     assert!(agent.should_compact());
 
     let mut saw_compaction = false;
@@ -213,7 +215,10 @@ async fn run_auto_compacts_when_over_budget() {
             }
         }
     }
-    assert!(saw_compaction, "auto-compaction should fire when over budget");
+    assert!(
+        saw_compaction,
+        "auto-compaction should fire when over budget"
+    );
     // After run, history should contain the summary message
     assert!(!agent.messages().is_empty());
     let first_msg = &agent.messages()[0];
@@ -281,8 +286,12 @@ fn compaction_settings_default_is_sensible() {
 // =====================================================================
 #[test]
 fn should_compact_strictly_greater_than_budget() {
-    use nini_core::{ CompactionSettings, should_compact };
-    let s = CompactionSettings { context_window: 1000, reserve_tokens: 100, ..Default::default() };
+    use nini_core::{CompactionSettings, should_compact};
+    let s = CompactionSettings {
+        context_window: 1000,
+        reserve_tokens: 100,
+        ..Default::default()
+    };
     // At exactly the threshold (context_window - reserve_tokens = 900), should NOT compact.
     assert!(!should_compact(900, &s));
     // One above, should compact.

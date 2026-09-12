@@ -6,11 +6,11 @@
 //! - Atomic write via temp file + rename
 
 use async_trait::async_trait;
+use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
 use serde::Deserialize;
-use serde_json::{ json, Value };
-use std::path::{ Path, PathBuf };
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 use tokio::fs;
-use nini_core::tool::{Tool, ToolContext, ToolOutput, ToolError, ToolSpec};
 
 #[derive(Debug, Deserialize)]
 struct EditArgs {
@@ -34,9 +34,14 @@ impl EditTool {
         }
         let occurrences = content.matches(old).count();
         match occurrences {
-            0 => Err(format!("old_text not found in file (searched {} chars)", content.len())),
+            0 => Err(format!(
+                "old_text not found in file (searched {} chars)",
+                content.len()
+            )),
             1 => Ok((content.replacen(old, new, 1), 1)),
-            n => Err(format!("old_text matches {n} locations; must match exactly 1")),
+            n => Err(format!(
+                "old_text matches {n} locations; must match exactly 1"
+            )),
         }
     }
 }
@@ -88,7 +93,9 @@ impl Tool for EditTool {
         let content = fs::read_to_string(&path)
             .await
             .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => ToolError::Io(format!("file not found: {}", path.display())),
+                std::io::ErrorKind::NotFound => {
+                    ToolError::Io(format!("file not found: {}", path.display()))
+                }
                 _ => ToolError::Io(e.to_string()),
             })?;
 
@@ -110,7 +117,11 @@ impl Tool for EditTool {
         }
 
         Ok(ToolOutput {
-            content: format!("replaced {} occurrence(s) in {}", replacements, path.display()),
+            content: format!(
+                "replaced {} occurrence(s) in {}",
+                replacements,
+                path.display()
+            ),
             is_error: false,
             details: Some(json!({
                 "path": path.display().to_string(),

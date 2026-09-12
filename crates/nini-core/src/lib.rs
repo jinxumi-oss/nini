@@ -5,11 +5,11 @@
 use serde::{Deserialize, Serialize};
 
 pub mod agent;
-pub mod provider;
-pub mod tool;
-pub mod skills;
-pub mod settings;
 pub mod compaction;
+pub mod provider;
+pub mod settings;
+pub mod skills;
+pub mod tool;
 
 pub use agent::{AbortHandle, Agent, AgentError, AgentEvent, RunConfig};
 pub use provider::{
@@ -20,9 +20,10 @@ pub use tool::{Tool, ToolContext, ToolError, ToolOutput, ToolRegistry, ToolSpec}
 
 /// Library version, mirrors workspace version.
 pub use compaction::{
-    compact, estimate_entries_tokens, estimate_message_tokens, estimate_provider_messages_tokens,
+    CompactionOutput, CompactionPreparation, CompactionSettings, CutPoint, CutReason, compact,
+    estimate_entries_tokens, estimate_message_tokens, estimate_provider_messages_tokens,
     find_cut_point, generate_local_summary, make_compaction_entry, prepare_compaction,
-    should_compact, CompactionOutput, CompactionPreparation, CompactionSettings, CutPoint, CutReason,
+    should_compact,
 };
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

@@ -139,13 +139,15 @@ fn cli_info_shows_skills() {
 fn cli_demo_runs_autonomously() {
     let (out, err, code) = run_nini(&["demo"], b"");
     assert_eq!(code, 0, "demo should exit 0; stderr: {err}");
-    assert!(err.contains("[demo]") || out.contains("[demo]"), "demo header missing");
+    assert!(
+        err.contains("[demo]") || out.contains("[demo]"),
+        "demo header missing"
+    );
     // The 'find TODOs and fix them' demo emits 4 tool calls + final text.
     assert!(err.contains("tool calls executed"));
     // Should have made at least 1 tool call
     assert!(
-        err.contains("tool calls executed: 4")
-            || err.contains("tool calls executed: 1"),
+        err.contains("tool calls executed: 4") || err.contains("tool calls executed: 1"),
         "demo should report tool call count, got: {err}"
     );
 }
@@ -213,7 +215,10 @@ fn run_nini_with_env(
     env: &[(&str, Option<&str>)],
 ) -> (String, String, i32) {
     let mut cmd = Command::new(nini_bin());
-    cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     for (k, v) in env {
         match v {
             Some(val) => cmd.env(k, val),
@@ -260,10 +265,13 @@ fn cli_openai_compat_requires_base_url() {
         .expect("spawn");
     let out = child.wait_with_output().expect("wait");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_ne!(out.status.code().unwrap_or(-1), 0, "should fail when base url missing");
+    assert_ne!(
+        out.status.code().unwrap_or(-1),
+        0,
+        "should fail when base url missing"
+    );
     assert!(
-        stderr.contains("OPENAI_BASE_URL required")
-            || stderr.contains("OPENAI_API_KEY required"),
+        stderr.contains("OPENAI_BASE_URL required") || stderr.contains("OPENAI_API_KEY required"),
         "expected missing-credential error, got: {stderr}"
     );
 }

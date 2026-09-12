@@ -1,11 +1,11 @@
 //! `write` tool: create or overwrite a file atomically.
 
 use async_trait::async_trait;
+use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
 use serde::Deserialize;
-use serde_json::{ json, Value };
-use std::path::{ Path, PathBuf };
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 use tokio::fs;
-use nini_core::tool::{Tool, ToolContext, ToolOutput, ToolError, ToolSpec};
 
 #[derive(Debug, Deserialize)]
 struct WriteArgs {
@@ -87,11 +87,7 @@ impl Tool for WriteTool {
         }
 
         Ok(ToolOutput {
-            content: format!(
-                "wrote {} bytes to {}",
-                parsed.content.len(),
-                path.display()
-            ),
+            content: format!("wrote {} bytes to {}", parsed.content.len(), path.display()),
             is_error: false,
             details: Some(json!({
                 "path": path.display().to_string(),
@@ -112,7 +108,10 @@ mod tests {
         let path = dir.path().join(r"new.txt");
         let tool = WriteTool::new();
         let out = tool
-            .execute(json!({"path": path.to_str().unwrap(), "content": "hello\n"}), ToolContext::default())
+            .execute(
+                json!({"path": path.to_str().unwrap(), "content": "hello\n"}),
+                ToolContext::default(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -128,7 +127,10 @@ mod tests {
 
         let tool = WriteTool::new();
         let out = tool
-            .execute(json!({"path": path.to_str().unwrap(), "content": "new"}), ToolContext::default())
+            .execute(
+                json!({"path": path.to_str().unwrap(), "content": "new"}),
+                ToolContext::default(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -141,7 +143,10 @@ mod tests {
         let path = dir.path().join(r"sub/dir/file.txt");
         let tool = WriteTool::new();
         let out = tool
-            .execute(json!({"path": path.to_str().unwrap(), "content": "x"}), ToolContext::default())
+            .execute(
+                json!({"path": path.to_str().unwrap(), "content": "x"}),
+                ToolContext::default(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);

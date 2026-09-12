@@ -1,6 +1,11 @@
 //! End-to-end interactive mode test.
 // Test code frequently uses patterns that clippy::style flags
-#![allow(clippy::needless_return, clippy::let_underscore_future, clippy::let_underscore_must_use, clippy::redundant_closure_for_method_calls)]
+#![allow(
+    clippy::needless_return,
+    clippy::let_underscore_future,
+    clippy::let_underscore_must_use,
+    clippy::redundant_closure_for_method_calls
+)]
 //!
 //! Bypasses the actual terminal by using TestBackend, but exercises the
 //! real `run_tui` event loop with a real AgentDriver that runs against the
@@ -12,19 +17,17 @@
 //! - Agent events (text/tool calls) flow into the state
 //! - The final rendered frame contains the full conversation
 
-use futures_util::{ FutureExt, StreamExt };
-use nini_ai::fixture::{ FixtureTurn, ProgrammedProvider };
-use nini_core::provider::Usage;
+use futures_util::{FutureExt, StreamExt};
+use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::ToolRegistry;
-use nini_tui::render::render_frame;
-use nini_tui::runtime::{
-    shared_state, AgentDriver, AgentEventLite, AgentSink, SharedState,
-};
-use nini_tui::state::{ AppState, RunMode, TranscriptLine };
-use nini_tui::Key;
+use nini_core::provider::Usage;
 use nini_tools::BashTool;
-use ratatui::backend::TestBackend;
+use nini_tui::Key;
+use nini_tui::render::render_frame;
+use nini_tui::runtime::{AgentDriver, AgentEventLite, AgentSink, SharedState, shared_state};
+use nini_tui::state::{AppState, RunMode, TranscriptLine};
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -61,48 +64,58 @@ fn fixture_driver(turns: Vec<Vec<FixtureTurn>>) -> AgentDriver {
     // Build a SHARED ProgrammedProvider so each `driver()` call pops the
     // NEXT turn (not the same first turn repeatedly).
     let provider: Arc<ProgrammedProvider> = Arc::new(ProgrammedProvider::from_turns(turns));
-    Arc::new(move |user_msg: String, sink: AgentSink, done: Arc<Notify>| {
-        let provider: Arc<dyn nini_core::Provider> = provider.clone();
-        let tools = ToolRegistry::new().register(Arc::new(BashTool::new()));
-        let cfg = nini_core::RunConfig {
-            model: "test-model".to_string(),
-            ..nini_core::RunConfig::new("test-model")
-        };
-        let mut agent = nini_core::Agent::new(provider, tools, cfg);
-        tokio::spawn(async move {
-            let mut stream = Box::pin(agent.run(nini_core::AgentMessage::user(user_msg.clone())));
-            while let Some(ev) = stream.next().await {
-                let lite = match ev {
-                    Ok(nini_core::AgentEvent::TextDelta { text }) => AgentEventLite::TextDelta(text),
-                    Ok(nini_core::AgentEvent::ToolCallStart { name, .. }) => {
-                        AgentEventLite::ToolCallStart { name }
-                    }
-                    Ok(nini_core::AgentEvent::ToolCallStop { id, input_json }) => {
-                        AgentEventLite::ToolCallStop { id, args: input_json.to_string() }
-                    }
-                    Ok(nini_core::AgentEvent::ToolResult { output, .. }) => {
-                        AgentEventLite::ToolResult {
-                            ok: !output.is_error,
-                            content: output.content,
+    Arc::new(
+        move |user_msg: String, sink: AgentSink, done: Arc<Notify>| {
+            let provider: Arc<dyn nini_core::Provider> = provider.clone();
+            let tools = ToolRegistry::new().register(Arc::new(BashTool::new()));
+            let cfg = nini_core::RunConfig {
+                model: "test-model".to_string(),
+                ..nini_core::RunConfig::new("test-model")
+            };
+            let mut agent = nini_core::Agent::new(provider, tools, cfg);
+            tokio::spawn(async move {
+                let mut stream =
+                    Box::pin(agent.run(nini_core::AgentMessage::user(user_msg.clone())));
+                while let Some(ev) = stream.next().await {
+                    let lite = match ev {
+                        Ok(nini_core::AgentEvent::TextDelta { text }) => {
+                            AgentEventLite::TextDelta(text)
                         }
-                    }
-                    Ok(nini_core::AgentEvent::TurnEnd { usage, .. }) => {
-                        sink.push(AgentEventLite::Usage(
-                            usage.input_tokens,
-                            usage.output_tokens,
-                        ));
-                        AgentEventLite::TurnEnd
-                    }
-                    Ok(nini_core::AgentEvent::Error { message }) => AgentEventLite::Error(message),
-                    Err(_) => continue,
-                    _ => continue,
-                };
-                sink.push(lite);
-            }
-            sink.push(AgentEventLite::Done);
-            done.notify_waiters();
-        })
-    })
+                        Ok(nini_core::AgentEvent::ToolCallStart { name, .. }) => {
+                            AgentEventLite::ToolCallStart { name }
+                        }
+                        Ok(nini_core::AgentEvent::ToolCallStop { id, input_json }) => {
+                            AgentEventLite::ToolCallStop {
+                                id,
+                                args: input_json.to_string(),
+                            }
+                        }
+                        Ok(nini_core::AgentEvent::ToolResult { output, .. }) => {
+                            AgentEventLite::ToolResult {
+                                ok: !output.is_error,
+                                content: output.content,
+                            }
+                        }
+                        Ok(nini_core::AgentEvent::TurnEnd { usage, .. }) => {
+                            sink.push(AgentEventLite::Usage(
+                                usage.input_tokens,
+                                usage.output_tokens,
+                            ));
+                            AgentEventLite::TurnEnd
+                        }
+                        Ok(nini_core::AgentEvent::Error { message }) => {
+                            AgentEventLite::Error(message)
+                        }
+                        Err(_) => continue,
+                        _ => continue,
+                    };
+                    sink.push(lite);
+                }
+                sink.push(AgentEventLite::Done);
+                done.notify_waiters();
+            })
+        },
+    )
 }
 
 /// Run the TUI event loop with a stub backend (no actual terminal needed).
@@ -129,10 +142,12 @@ async fn run_tui_test(
 
     // Run a few ticks of the event loop until `done_signal` fires.
     'main: loop {
-        terminal.draw(|f| {
-            let g = shared.lock().unwrap();
-            render_frame(f, &g)
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                let g = shared.lock().unwrap();
+                render_frame(f, &g)
+            })
+            .unwrap();
         // Check if done
         if done_signal.notified().now_or_never().is_some() {
             break 'main shared.lock().unwrap().clone();
@@ -173,11 +188,22 @@ fn slash_command_through_full_state_machine() {
         .iter()
         .filter_map(|l| l.as_assistant_text())
         .collect();
-    assert!(!assistant_lines.is_empty(), "expected assistant text after /hotkeys dispatch");
-    let joined = assistant_lines.join("
-");
-    assert!(joined.contains("Ctrl+C"), "hotkeys output missing Ctrl+C: {joined}");
-    assert!(joined.contains("Enter"), "hotkeys output missing Enter: {joined}");
+    assert!(
+        !assistant_lines.is_empty(),
+        "expected assistant text after /hotkeys dispatch"
+    );
+    let joined = assistant_lines.join(
+        "
+",
+    );
+    assert!(
+        joined.contains("Ctrl+C"),
+        "hotkeys output missing Ctrl+C: {joined}"
+    );
+    assert!(
+        joined.contains("Enter"),
+        "hotkeys output missing Enter: {joined}"
+    );
 
     // 4. Render the frame and verify visible
     let frame = frame_text(&state, 100, 30);
@@ -196,7 +222,10 @@ fn autocomplete_through_key_presses() {
     for c in "/mo".chars() {
         drive_key(&mut state, Key::char(c));
     }
-    let popup = state.completion.as_ref().expect("popup should be visible after /mo");
+    let popup = state
+        .completion
+        .as_ref()
+        .expect("popup should be visible after /mo");
     // "model" (prefix match) + "scoped-models" (substring match "mo")
     assert!(popup.items.iter().any(|i| i.name == "model"));
     assert!(popup.items.iter().any(|i| i.name == "scoped-models"));
@@ -205,7 +234,10 @@ fn autocomplete_through_key_presses() {
 
     // Type another 'd' → "/mod" → still model + scoped-models match
     drive_key(&mut state, Key::char('d'));
-    let popup = state.completion.as_ref().expect("popup should be visible after /mod");
+    let popup = state
+        .completion
+        .as_ref()
+        .expect("popup should be visible after /mod");
     assert!(popup.items.iter().any(|i| i.name == "model"));
 
     // Frame includes the popup
@@ -256,14 +288,30 @@ async fn multi_turn_agent_via_sink() {
     let shared = shared_state(initial);
 
     let driver = fixture_driver(vec![
-        vec![FixtureTurn::Text("first reply".to_string()),
-             FixtureTurn::Stop { stop_reason: "end_turn".to_string(), usage: Usage::default() }],
-        vec![FixtureTurn::ToolCall {
-            name: "bash".to_string(),
-            args: serde_json::json!({"command": "echo hi"}),
-        }, FixtureTurn::Stop { stop_reason: "tool_use".to_string(), usage: Usage::default() }],
-        vec![FixtureTurn::Text("after tool".to_string()),
-             FixtureTurn::Stop { stop_reason: "end_turn".to_string(), usage: Usage::default() }],
+        vec![
+            FixtureTurn::Text("first reply".to_string()),
+            FixtureTurn::Stop {
+                stop_reason: "end_turn".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::ToolCall {
+                name: "bash".to_string(),
+                args: serde_json::json!({"command": "echo hi"}),
+            },
+            FixtureTurn::Stop {
+                stop_reason: "tool_use".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::Text("after tool".to_string()),
+            FixtureTurn::Stop {
+                stop_reason: "end_turn".to_string(),
+                usage: Usage::default(),
+            },
+        ],
     ]);
 
     // Turn 1: text response
@@ -282,7 +330,11 @@ async fn multi_turn_agent_via_sink() {
     // Now shared has 1 user + 1 divider + 1 assistant + 1 divider = 4 lines
     // (plus the original 2 = 2 + 2 = 4)
     let snap = shared.lock().unwrap().clone();
-    assert!(snap.transcript.iter().any(|l| matches!(l, TranscriptLine::AssistantText(t) if t == "first reply")));
+    assert!(
+        snap.transcript
+            .iter()
+            .any(|l| matches!(l, TranscriptLine::AssistantText(t) if t == "first reply"))
+    );
 
     // Turn 2: bash tool call
     {
@@ -297,9 +349,21 @@ async fn multi_turn_agent_via_sink() {
     done2.notified().await;
     shared.lock().unwrap().mode = RunMode::Editing;
     let snap2 = shared.lock().unwrap().clone();
-    assert!(snap2.transcript.iter().any(|l| matches!(l, TranscriptLine::ToolCall { name, .. } if name == "bash")));
-    assert!(snap2.transcript.iter().any(|l| matches!(l, TranscriptLine::ToolResult { content, .. } if content.contains("hi"))));
-    assert!(snap2.transcript.iter().any(|l| matches!(l, TranscriptLine::AssistantText(t) if t == "after tool")));
+    assert!(
+        snap2
+            .transcript
+            .iter()
+            .any(|l| matches!(l, TranscriptLine::ToolCall { name, .. } if name == "bash"))
+    );
+    assert!(snap2.transcript.iter().any(
+        |l| matches!(l, TranscriptLine::ToolResult { content, .. } if content.contains("hi"))
+    ));
+    assert!(
+        snap2
+            .transcript
+            .iter()
+            .any(|l| matches!(l, TranscriptLine::AssistantText(t) if t == "after tool"))
+    );
 
     // Frame snapshot
     let frame = frame_text(&snap2, 100, 30);
@@ -324,7 +388,10 @@ async fn compaction_visible_in_tui() {
     let frame = frame_text(&state, 100, 24);
     assert!(frame.contains("> hello"), "user msg visible");
     assert!(frame.contains("hi back"), "first reply visible");
-    assert!(frame.contains("CONTEXT SUMMARY"), "compaction marker visible");
+    assert!(
+        frame.contains("CONTEXT SUMMARY"),
+        "compaction marker visible"
+    );
 }
 
 // =====================================================================
@@ -383,21 +450,44 @@ fn input_history_and_submit() {
     drive_key(&mut state, Key::enter());
 
     // 2 user lines + 2 dividers
-    assert_eq!(state.transcript.len(), 4, "expected 2 user + 2 divider, got {}", state.transcript.len());
+    assert_eq!(
+        state.transcript.len(),
+        4,
+        "expected 2 user + 2 divider, got {}",
+        state.transcript.len()
+    );
     assert!(state.input.history.contains(&"first".to_string()));
     assert!(state.input.history.contains(&"second".to_string()));
 
     // Up arrow recalls the most recent
-    drive_key(&mut state, Key::new(crossterm::event::KeyCode::Up, nini_tui::KeyModifiers::NONE));
+    drive_key(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Up, nini_tui::KeyModifiers::NONE),
+    );
     assert_eq!(state.input.text, "second");
     // Up again → first
-    drive_key(&mut state, Key::new(crossterm::event::KeyCode::Up, nini_tui::KeyModifiers::NONE));
+    drive_key(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Up, nini_tui::KeyModifiers::NONE),
+    );
     assert_eq!(state.input.text, "first");
     // Down → back to second
-    drive_key(&mut state, Key::new(crossterm::event::KeyCode::Down, nini_tui::KeyModifiers::NONE));
+    drive_key(
+        &mut state,
+        Key::new(
+            crossterm::event::KeyCode::Down,
+            nini_tui::KeyModifiers::NONE,
+        ),
+    );
     assert_eq!(state.input.text, "second");
     // Down → empty (editing)
-    drive_key(&mut state, Key::new(crossterm::event::KeyCode::Down, nini_tui::KeyModifiers::NONE));
+    drive_key(
+        &mut state,
+        Key::new(
+            crossterm::event::KeyCode::Down,
+            nini_tui::KeyModifiers::NONE,
+        ),
+    );
     assert_eq!(state.input.text, "");
 }
 
@@ -416,7 +506,10 @@ async fn full_pipeline_drive_keys_then_run_agent() {
 
     let driver = fixture_driver(vec![vec![
         FixtureTurn::Text("hello back".to_string()),
-        FixtureTurn::Stop { stop_reason: "end_turn".to_string(), usage: Usage::default() },
+        FixtureTurn::Stop {
+            stop_reason: "end_turn".to_string(),
+            usage: Usage::default(),
+        },
     ]]);
 
     // 2. Type and submit via the runtime's submit_user_input
@@ -434,12 +527,23 @@ async fn full_pipeline_drive_keys_then_run_agent() {
 
     // 4. Inspect the resulting state
     let snapshot = shared.lock().unwrap().clone();
-    assert_eq!(snapshot.mode, RunMode::Editing, "should return to Editing after Done");
-    assert!(snapshot.transcript.iter().any(|l| l.as_assistant_text().map(|t| t == "hello back").unwrap_or(false)));
+    assert_eq!(
+        snapshot.mode,
+        RunMode::Editing,
+        "should return to Editing after Done"
+    );
+    assert!(snapshot.transcript.iter().any(|l| {
+        l.as_assistant_text()
+            .map(|t| t == "hello back")
+            .unwrap_or(false)
+    }));
 
     // 5. Render and check the frame
     let frame = frame_text(&snapshot, 100, 30);
     assert!(frame.contains("> echo hi"));
     assert!(frame.contains("hello back"));
-    assert!(frame.contains("[ready]"), "status bar should be ready after completion");
+    assert!(
+        frame.contains("[ready]"),
+        "status bar should be ready after completion"
+    );
 }

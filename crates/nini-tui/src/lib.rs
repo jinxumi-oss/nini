@@ -15,13 +15,15 @@
 /// Library version, mirrors workspace version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod commands;
 pub mod keys;
-pub mod state;
 pub mod render;
 pub mod runtime;
-pub mod commands;
+pub mod state;
 
-pub use keys::{ default_keymap, resolve, Key, KeyAction, KeyBinding, KeyModifiers };
+pub use commands::{
+    CommandId, CommandOutcome, CommandResult, REGISTRY, by_name, complete, dispatch, parse,
+};
+pub use keys::{Key, KeyAction, KeyBinding, KeyModifiers, default_keymap, resolve};
 pub use runtime::run;
-pub use state::{ AppState, InputBuffer, RunMode, TokenStats, TranscriptLine };
-pub use commands::{ CommandId, REGISTRY, by_name, complete, dispatch, parse, CommandOutcome, CommandResult };
+pub use state::{AppState, InputBuffer, RunMode, TokenStats, TranscriptLine};

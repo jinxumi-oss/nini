@@ -16,9 +16,15 @@ pub enum TranscriptLine {
     User(String),
     AssistantText(String),
     /// Tool invocation. `args` is rendered as a one-line JSON preview.
-    ToolCall { name: String, args: String },
+    ToolCall {
+        name: String,
+        args: String,
+    },
     /// Tool result. `Ok`/`Err` reflects `ToolOutput.is_error`.
-    ToolResult { ok: bool, content: String },
+    ToolResult {
+        ok: bool,
+        content: String,
+    },
     /// System-injected divider (turn boundary).
     Divider,
 }
@@ -312,7 +318,8 @@ pub struct CompletionPopup {
     /// The items to display. Each entry has the command name + description.
     pub items: Vec<CompletionItem>,
     /// Currently selected item index (highlighted). 0-based.
-    pub selected: usize,}
+    pub selected: usize,
+}
 
 /// One entry in the completion popup.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,7 +332,10 @@ pub struct CompletionItem {
 
 impl CompletionPopup {
     pub fn new() -> Self {
-        Self { items: Vec::new(), selected: 0 }
+        Self {
+            items: Vec::new(),
+            selected: 0,
+        }
     }
 
     pub fn with_items(items: Vec<CompletionItem>) -> Self {
@@ -412,15 +422,22 @@ impl AppState {
     }
 
     pub fn push_assistant(&mut self, text: impl Into<String>) {
-        self.transcript.push(TranscriptLine::AssistantText(text.into()));
+        self.transcript
+            .push(TranscriptLine::AssistantText(text.into()));
     }
 
     pub fn push_tool_call(&mut self, name: impl Into<String>, args: impl Into<String>) {
-        self.transcript.push(TranscriptLine::ToolCall { name: name.into(), args: args.into() });
+        self.transcript.push(TranscriptLine::ToolCall {
+            name: name.into(),
+            args: args.into(),
+        });
     }
 
     pub fn push_tool_result(&mut self, ok: bool, content: impl Into<String>) {
-        self.transcript.push(TranscriptLine::ToolResult { ok, content: content.into() });
+        self.transcript.push(TranscriptLine::ToolResult {
+            ok,
+            content: content.into(),
+        });
     }
 
     pub fn push_divider(&mut self) {

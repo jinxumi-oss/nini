@@ -9,6 +9,7 @@
 #![allow(dead_code)] // Forward-compat fields for future features
 
 use async_trait::async_trait;
+use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,6 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
-use nini_core::tool::{Tool, ToolContext, ToolOutput, ToolError, ToolSpec};
 
 /// Default command timeout in seconds (2 minutes, matching spec).
 pub const DEFAULT_TIMEOUT_SECS: u64 = 120;

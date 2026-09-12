@@ -3,7 +3,7 @@
 //!
 //! Mirrors spec `packages/coding-agent/src/core/skills.ts`.
 
-use serde::{ Deserialize, Serialize };
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Skill metadata from the frontmatter.
@@ -68,8 +68,7 @@ pub fn load_skills(cwd: &Path) -> LoadSkillsResult {
     }
 
     // Project-level shadows user-level on name collision
-    let mut by_name: std::collections::BTreeMap<String, Skill> =
-        std::collections::BTreeMap::new();
+    let mut by_name: std::collections::BTreeMap<String, Skill> = std::collections::BTreeMap::new();
     for s in all.into_iter().rev() {
         by_name.entry(s.name.clone()).or_insert(s);
     }
@@ -77,12 +76,7 @@ pub fn load_skills(cwd: &Path) -> LoadSkillsResult {
     result
 }
 
-fn load_from_dir(
-    dir: &Path,
-    source: SkillSource,
-    out: &mut Vec<Skill>,
-    errors: &mut Vec<String>,
-) {
+fn load_from_dir(dir: &Path, source: SkillSource, out: &mut Vec<Skill>, errors: &mut Vec<String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -110,7 +104,10 @@ fn load_skill_file(path: &Path, source: SkillSource) -> Result<Skill, String> {
         Some(s) => serde_yaml::from_str(&s).map_err(|e| e.to_string())?,
         None => SkillFrontmatter::default(),
     };
-    let base_dir = path.parent().ok_or_else(|| "no parent".to_string())?.to_path_buf();
+    let base_dir = path
+        .parent()
+        .ok_or_else(|| "no parent".to_string())?
+        .to_path_buf();
     let name = fm
         .name
         .clone()
@@ -143,7 +140,9 @@ fn split_frontmatter(text: &str) -> (Option<String>, String) {
     if let Some(end_idx) = after_first.find("\n---") {
         let fm = &after_first[..end_idx];
         let rest_start = end_idx + 4;
-        let body = after_first[rest_start..].trim_start_matches('\n').to_string();
+        let body = after_first[rest_start..]
+            .trim_start_matches('\n')
+            .to_string();
         return (Some(fm.to_string()), body);
     }
     (None, text.to_string())

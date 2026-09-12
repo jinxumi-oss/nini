@@ -40,8 +40,6 @@ pub struct SseEvent {
     pub eof: bool,
 }
 
-
-
 impl SseEvent {
     /// Construct a new event with the given event type and data payload.
     pub fn new(event: impl Into<String>, data: impl Into<String>) -> Self {

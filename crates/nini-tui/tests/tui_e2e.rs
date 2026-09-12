@@ -6,15 +6,15 @@
 //! 3. Drive the agent event stream into the transcript and verify the rendered output.
 
 use futures_util::StreamExt;
-use nini_ai::fixture::{ FixtureTurn, ProgrammedProvider };
+use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::Usage;
-use nini_core::{ Agent, AgentEvent, RunConfig, ToolRegistry };
+use nini_core::{Agent, AgentEvent, RunConfig, ToolRegistry};
 use nini_tools::BashTool;
 use nini_tui::render::render_frame;
-use nini_tui::state::{ AppState, RunMode, TranscriptLine };
-use nini_tui::{ Key, KeyAction, KeyModifiers };
-use ratatui::backend::TestBackend;
+use nini_tui::state::{AppState, RunMode, TranscriptLine};
+use nini_tui::{Key, KeyAction, KeyModifiers};
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use std::sync::Arc;
 
 /// Snapshot the visible text of a frame, ignoring ANSI styling.
@@ -50,7 +50,7 @@ fn render_to_text(state: &AppState, width: u16, height: u16) -> String {
 /// Drive a `Key` into the state machine (the same logic `runtime::handle_key`
 /// uses, but inlined here so tests don't need a real terminal).
 fn drive(state: &mut AppState, key: Key) {
-    use nini_tui::keys::{ default_keymap, resolve };
+    use nini_tui::keys::{default_keymap, resolve};
     let action = resolve(&default_keymap(), key);
     match action {
         KeyAction::Insert(c) => {
@@ -94,7 +94,10 @@ fn drive(state: &mut AppState, key: Key) {
             }
         }
         KeyAction::Quit => state.mode = RunMode::Quitting,
-        KeyAction::SwitchModel | KeyAction::ShowHelp | KeyAction::ScrollUp | KeyAction::ScrollDown => {}
+        KeyAction::SwitchModel
+        | KeyAction::ShowHelp
+        | KeyAction::ScrollUp
+        | KeyAction::ScrollDown => {}
         KeyAction::Noop => {}
     }
 }
@@ -125,11 +128,26 @@ fn empty_state_layout_is_stable() {
     );
 
     // Key hints row at the bottom
-    assert!(frame.contains("F1"), "key hints missing F1. Frame:\n{frame}");
-    assert!(frame.contains("Ctrl+C"), "key hints missing Ctrl+C. Frame:\n{frame}");
-    assert!(frame.contains("Ctrl+D"), "key hints missing Ctrl+D. Frame:\n{frame}");
-    assert!(frame.contains("Enter"), "key hints missing Enter. Frame:\n{frame}");
-    assert!(frame.contains("Ctrl+L"), "key hints missing Ctrl+L. Frame:\n{frame}");
+    assert!(
+        frame.contains("F1"),
+        "key hints missing F1. Frame:\n{frame}"
+    );
+    assert!(
+        frame.contains("Ctrl+C"),
+        "key hints missing Ctrl+C. Frame:\n{frame}"
+    );
+    assert!(
+        frame.contains("Ctrl+D"),
+        "key hints missing Ctrl+D. Frame:\n{frame}"
+    );
+    assert!(
+        frame.contains("Enter"),
+        "key hints missing Enter. Frame:\n{frame}"
+    );
+    assert!(
+        frame.contains("Ctrl+L"),
+        "key hints missing Ctrl+L. Frame:\n{frame}"
+    );
 }
 
 // ====================================================================
@@ -144,7 +162,10 @@ fn typing_appends_to_prompt() {
     assert_eq!(state.input.cursor, 2);
 
     let frame = render_to_text(&state, 80, 24);
-    assert!(frame.contains("hi"), "typed text missing from frame. Frame:\n{frame}");
+    assert!(
+        frame.contains("hi"),
+        "typed text missing from frame. Frame:\n{frame}"
+    );
 }
 
 // ====================================================================
@@ -179,7 +200,10 @@ fn enter_submits_and_pushes_user_message() {
     assert!(matches!(&state.transcript[1], TranscriptLine::Divider));
 
     let frame = render_to_text(&state, 80, 24);
-    assert!(frame.contains("> hello"), "transcript missing user message. Frame:\n{frame}");
+    assert!(
+        frame.contains("> hello"),
+        "transcript missing user message. Frame:\n{frame}"
+    );
 }
 
 // ====================================================================
@@ -199,14 +223,26 @@ fn history_recall_via_arrow_keys() {
     drive(&mut state, Key::enter());
 
     // Cursor in editing (no history selected). Up → previous
-    drive(&mut state, Key::new(crossterm::event::KeyCode::Up, KeyModifiers::NONE));
+    drive(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Up, KeyModifiers::NONE),
+    );
     assert_eq!(state.input.text, "second");
-    drive(&mut state, Key::new(crossterm::event::KeyCode::Up, KeyModifiers::NONE));
+    drive(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Up, KeyModifiers::NONE),
+    );
     assert_eq!(state.input.text, "first");
     // Down → next
-    drive(&mut state, Key::new(crossterm::event::KeyCode::Down, KeyModifiers::NONE));
+    drive(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Down, KeyModifiers::NONE),
+    );
     assert_eq!(state.input.text, "second");
-    drive(&mut state, Key::new(crossterm::event::KeyCode::Down, KeyModifiers::NONE));
+    drive(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Down, KeyModifiers::NONE),
+    );
     assert_eq!(state.input.text, "");
 }
 
@@ -221,7 +257,10 @@ fn ctrl_a_goes_to_line_start() {
     }
     // Cursor at end (position 11). Ctrl+A → 0.
     assert_eq!(state.input.cursor, 11);
-    drive(&mut state, Key::new(crossterm::event::KeyCode::Char('a'), KeyModifiers::CTRL));
+    drive(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Char('a'), KeyModifiers::CTRL),
+    );
     assert_eq!(state.input.text, "hello world");
     assert_eq!(state.input.cursor, 0);
 }
@@ -237,9 +276,15 @@ fn ctrl_k_kills_to_line_end() {
     }
     state.input.move_to_start();
     for _ in 0..6 {
-        drive(&mut state, Key::new(crossterm::event::KeyCode::Right, KeyModifiers::NONE));
+        drive(
+            &mut state,
+            Key::new(crossterm::event::KeyCode::Right, KeyModifiers::NONE),
+        );
     }
-    drive(&mut state, Key::new(crossterm::event::KeyCode::Char('k'), KeyModifiers::CTRL));
+    drive(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Char('k'), KeyModifiers::CTRL),
+    );
     assert_eq!(state.input.text, "hello ");
     assert_eq!(state.input.cursor, 6);
 }
@@ -253,7 +298,10 @@ fn ctrl_u_clears_input() {
     for c in "discard me".chars() {
         drive(&mut state, Key::char(c));
     }
-    drive(&mut state, Key::new(crossterm::event::KeyCode::Char('u'), KeyModifiers::CTRL));
+    drive(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Char('u'), KeyModifiers::CTRL),
+    );
     assert_eq!(state.input.text, "");
     assert_eq!(state.input.cursor, 0);
 }
@@ -268,12 +316,18 @@ fn ctrl_arrows_navigate_words() {
         drive(&mut state, Key::char(c));
     }
     // Cursor at end (position 13). Move word left.
-    drive(&mut state, Key::new(crossterm::event::KeyCode::Left, KeyModifiers::CTRL));
+    drive(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Left, KeyModifiers::CTRL),
+    );
     // move_word_left lands at the start of the trailing non-ws run.
     // "one two three" @ pos 13 → strip "three" → "one two " @ 8 (start of "three")
     assert_eq!(state.input.cursor, 8, "should land at start of 'three'");
     // Step again → strip "two" → "one " @ 4 (start of "two")
-    drive(&mut state, Key::new(crossterm::event::KeyCode::Left, KeyModifiers::CTRL));
+    drive(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Left, KeyModifiers::CTRL),
+    );
     assert_eq!(state.input.cursor, 4, "should land at start of 'two'");
 }
 
@@ -296,7 +350,10 @@ fn esc_clears_input_when_editing() {
 #[test]
 fn ctrl_d_qui_tui() {
     let mut state = AppState::new("test-model");
-    drive(&mut state, Key::new(crossterm::event::KeyCode::Char('d'), KeyModifiers::CTRL));
+    drive(
+        &mut state,
+        Key::new(crossterm::event::KeyCode::Char('d'), KeyModifiers::CTRL),
+    );
     assert_eq!(state.mode, RunMode::Quitting);
 }
 
@@ -317,8 +374,14 @@ fn transcript_renders_all_line_kinds() {
     let frame = render_to_text(&state, 80, 24);
     assert!(frame.contains("> find bugs"), "user line missing");
     assert!(frame.contains("searching..."), "assistant line missing");
-    assert!(frame.contains("[tool call] grep"), "tool call label missing");
-    assert!(frame.contains("[tool result] main.rs:42"), "tool result label missing");
+    assert!(
+        frame.contains("[tool call] grep"),
+        "tool call label missing"
+    );
+    assert!(
+        frame.contains("[tool result] main.rs:42"),
+        "tool result label missing"
+    );
 }
 
 // ====================================================================
@@ -327,8 +390,8 @@ fn transcript_renders_all_line_kinds() {
 // ====================================================================
 #[tokio::test]
 async fn full_e2e_user_typed_command_then_agent_responds() {
-    use nini_tui::keys::{ default_keymap, resolve };
     use crossterm::event::KeyCode;
+    use nini_tui::keys::{default_keymap, resolve};
 
     let mut state = AppState::new("test-model");
 
@@ -341,17 +404,23 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
 
     // Run a fixture agent that calls bash then echoes back
     let provider = Arc::new(ProgrammedProvider::from_turns(vec![
-        vec![FixtureTurn::ToolCall {
-            name: "bash".to_string(),
-            args: serde_json::json!({"command": "echo hello"}),
-        }, FixtureTurn::Stop {
-            stop_reason: "tool_use".to_string(),
-            usage: Usage::default(),
-        }],
-        vec![FixtureTurn::Text("hello".to_string()), FixtureTurn::Stop {
-            stop_reason: "end_turn".to_string(),
-            usage: Usage::default(),
-        }],
+        vec![
+            FixtureTurn::ToolCall {
+                name: "bash".to_string(),
+                args: serde_json::json!({"command": "echo hello"}),
+            },
+            FixtureTurn::Stop {
+                stop_reason: "tool_use".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::Text("hello".to_string()),
+            FixtureTurn::Stop {
+                stop_reason: "end_turn".to_string(),
+                usage: Usage::default(),
+            },
+        ],
     ]));
     let tools = ToolRegistry::new().register(Arc::new(BashTool::new()));
     let mut agent = Agent::new(provider, tools, RunConfig::new("test-model"));
@@ -390,7 +459,10 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
     // Final rendered frame should contain the user message, the tool call,
     // the tool result, and the assistant's "hello".
     let frame = render_to_text(&state, 100, 30);
-    assert!(frame.contains("> echo hello"), "user message missing in frame");
+    assert!(
+        frame.contains("> echo hello"),
+        "user message missing in frame"
+    );
     assert!(frame.contains("[tool call] bash"), "tool call line missing");
     assert!(frame.contains("[tool result]"), "tool result line missing");
     assert!(frame.contains("hello"), "assistant text missing");
@@ -421,8 +493,14 @@ fn empty_state_pixel_layout_regression() {
 
     // Status bar should be on line 0 (index 0)
     let first_line = frame.lines().next().unwrap();
-    assert!(first_line.contains("nini"), "line 0 should contain 'nini' status bar, got: {first_line:?}");
-    assert!(first_line.contains("[ready]"), "line 0 should show [ready] mode, got: {first_line:?}");
+    assert!(
+        first_line.contains("nini"),
+        "line 0 should contain 'nini' status bar, got: {first_line:?}"
+    );
+    assert!(
+        first_line.contains("[ready]"),
+        "line 0 should show [ready] mode, got: {first_line:?}"
+    );
 
     // Prompt block ("input" border) should be in the bottom region.
     // Layout: status(1) + transcript(min 3) + prompt(3) + hints(1) = 24
@@ -437,8 +515,14 @@ fn empty_state_pixel_layout_regression() {
 
     // Last line (row 23) is the key hints
     let hints_line = frame.lines().last().unwrap();
-    assert!(hints_line.contains("F1"), "last line should be hints, got: {hints_line:?}");
-    assert!(hints_line.contains("Ctrl+C"), "last line should mention Ctrl+C");
+    assert!(
+        hints_line.contains("F1"),
+        "last line should be hints, got: {hints_line:?}"
+    );
+    assert!(
+        hints_line.contains("Ctrl+C"),
+        "last line should mention Ctrl+C"
+    );
 }
 
 // ====================================================================
@@ -468,7 +552,10 @@ fn running_mode_status_bar() {
     let mut state = AppState::new("test-model");
     state.mode = RunMode::Running;
     let frame = render_to_text(&state, 80, 24);
-    assert!(frame.contains("[running...]"), "running mode missing in frame");
+    assert!(
+        frame.contains("[running...]"),
+        "running mode missing in frame"
+    );
 }
 
 // ====================================================================
@@ -510,7 +597,10 @@ fn whitespace_only_submit_is_silent() {
     }
     drive(&mut state, Key::enter());
     // No transcript lines added
-    assert!(state.transcript.is_empty(), "whitespace submit should not add to transcript");
+    assert!(
+        state.transcript.is_empty(),
+        "whitespace submit should not add to transcript"
+    );
 }
 
 // ====================================================================
@@ -529,29 +619,43 @@ async fn full_demo_pipeline_through_tui_state() {
     // Run the scripted demo fixture
     let cwd = std::env::current_dir().unwrap();
     let provider = Arc::new(ProgrammedProvider::from_turns(vec![
-        vec![FixtureTurn::ToolCall {
-            name: "grep".to_string(),
-            args: serde_json::json!({"pattern": "TODO"}),
-        }, FixtureTurn::Stop {
-            stop_reason: "tool_use".to_string(),
-            usage: Usage::default(),
-        }],
-        vec![FixtureTurn::ToolCall {
-            name: "read".to_string(),
-            args: serde_json::json!({"path": "src/main.rs"}),
-        }, FixtureTurn::Stop {
-            stop_reason: "tool_use".to_string(),
-            usage: Usage::default(),
-        }],
-        vec![FixtureTurn::ToolCall {
-            name: "edit".to_string(),
-            args: serde_json::json!({"old_text": "TODO", "new_text": "DONE"}),
-        }, FixtureTurn::Stop {
-            stop_reason: "tool_use".to_string(),
-            usage: Usage::default(),
-        }],
-        vec![FixtureTurn::Text("Found and fixed TODOs.".to_string()),
-             FixtureTurn::Stop { stop_reason: "end_turn".to_string(), usage: Usage::default() }],
+        vec![
+            FixtureTurn::ToolCall {
+                name: "grep".to_string(),
+                args: serde_json::json!({"pattern": "TODO"}),
+            },
+            FixtureTurn::Stop {
+                stop_reason: "tool_use".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::ToolCall {
+                name: "read".to_string(),
+                args: serde_json::json!({"path": "src/main.rs"}),
+            },
+            FixtureTurn::Stop {
+                stop_reason: "tool_use".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::ToolCall {
+                name: "edit".to_string(),
+                args: serde_json::json!({"old_text": "TODO", "new_text": "DONE"}),
+            },
+            FixtureTurn::Stop {
+                stop_reason: "tool_use".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::Text("Found and fixed TODOs.".to_string()),
+            FixtureTurn::Stop {
+                stop_reason: "end_turn".to_string(),
+                usage: Usage::default(),
+            },
+        ],
     ]));
     let tools = ToolRegistry::new().register(Arc::new(BashTool::new()));
     let mut agent = Agent::new(provider, tools, RunConfig::new("test-model"));
@@ -576,10 +680,22 @@ async fn full_demo_pipeline_through_tui_state() {
     // Render and assert the full pipeline produced visible output
     let frame = render_to_text(&state, 100, 30);
     assert!(frame.contains("> find TODOs"), "user message in transcript");
-    assert!(frame.contains("Found and fixed TODOs"), "final assistant text");
-    assert!(frame.contains("[tool call] grep"), "grep tool call rendered");
-    assert!(frame.contains("[tool call] read"), "read tool call rendered");
-    assert!(frame.contains("[tool call] edit"), "edit tool call rendered");
+    assert!(
+        frame.contains("Found and fixed TODOs"),
+        "final assistant text"
+    );
+    assert!(
+        frame.contains("[tool call] grep"),
+        "grep tool call rendered"
+    );
+    assert!(
+        frame.contains("[tool call] read"),
+        "read tool call rendered"
+    );
+    assert!(
+        frame.contains("[tool call] edit"),
+        "edit tool call rendered"
+    );
 
     // Token totals still 0 from fixture (real providers would populate)
     assert_eq!(state.tokens.input, 0);

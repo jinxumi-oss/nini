@@ -58,22 +58,34 @@ impl Key {
 
     /// A plain printable character with no modifiers.
     pub fn char(c: char) -> Self {
-        Self { code: KeyCode::Char(c), modifiers: KeyModifiers::NONE }
+        Self {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::NONE,
+        }
     }
 
     /// Backspace.
     pub fn backspace() -> Self {
-        Self { code: KeyCode::Backspace, modifiers: KeyModifiers::NONE }
+        Self {
+            code: KeyCode::Backspace,
+            modifiers: KeyModifiers::NONE,
+        }
     }
 
     /// Enter.
     pub fn enter() -> Self {
-        Self { code: KeyCode::Enter, modifiers: KeyModifiers::NONE }
+        Self {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+        }
     }
 
     /// Esc.
     pub fn esc() -> Self {
-        Self { code: KeyCode::Esc, modifiers: KeyModifiers::NONE }
+        Self {
+            code: KeyCode::Esc,
+            modifiers: KeyModifiers::NONE,
+        }
     }
 
     pub fn with_modifiers(mut self, m: KeyModifiers) -> Self {
@@ -94,7 +106,10 @@ impl From<KeyEvent> for Key {
         if e.modifiers.contains(CtMods::ALT) {
             m |= KeyModifiers::ALT;
         }
-        Self { code: e.code, modifiers: m }
+        Self {
+            code: e.code,
+            modifiers: m,
+        }
     }
 }
 
@@ -155,36 +170,105 @@ pub fn default_keymap() -> Vec<KeyBinding> {
     let ctrl = KeyModifiers::CTRL;
     vec![
         // Submit / newline
-        KeyBinding { key: Key::enter(), action: Submit },
-        KeyBinding { key: Key::enter().with_modifiers(KeyModifiers::SHIFT), action: Newline },
+        KeyBinding {
+            key: Key::enter(),
+            action: Submit,
+        },
+        KeyBinding {
+            key: Key::enter().with_modifiers(KeyModifiers::SHIFT),
+            action: Newline,
+        },
         // Abort / quit
-        KeyBinding { key: Key::esc(), action: Abort },
-        KeyBinding { key: Key::new(KeyCode::Char('c'), ctrl), action: Abort },
-        KeyBinding { key: Key::new(KeyCode::Char('d'), ctrl), action: Quit },
+        KeyBinding {
+            key: Key::esc(),
+            action: Abort,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('c'), ctrl),
+            action: Abort,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('d'), ctrl),
+            action: Quit,
+        },
         // Switch model
-        KeyBinding { key: Key::new(KeyCode::Char('l'), ctrl), action: SwitchModel },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('l'), ctrl),
+            action: SwitchModel,
+        },
         // Help
-        KeyBinding { key: Key::new(KeyCode::F(1), KeyModifiers::NONE), action: ShowHelp },
+        KeyBinding {
+            key: Key::new(KeyCode::F(1), KeyModifiers::NONE),
+            action: ShowHelp,
+        },
         // Cursor motion
-        KeyBinding { key: Key::new(KeyCode::Left, KeyModifiers::NONE), action: MoveLeft },
-        KeyBinding { key: Key::new(KeyCode::Right, KeyModifiers::NONE), action: MoveRight },
-        KeyBinding { key: Key::new(KeyCode::Up, KeyModifiers::NONE), action: MoveUp },
-        KeyBinding { key: Key::new(KeyCode::Down, KeyModifiers::NONE), action: MoveDown },
-        KeyBinding { key: Key::new(KeyCode::Home, KeyModifiers::NONE), action: MoveLineStart },
-        KeyBinding { key: Key::new(KeyCode::End, KeyModifiers::NONE), action: MoveLineEnd },
-        KeyBinding { key: Key::new(KeyCode::Left, ctrl), action: MoveWordLeft },
-        KeyBinding { key: Key::new(KeyCode::Right, ctrl), action: MoveWordRight },
+        KeyBinding {
+            key: Key::new(KeyCode::Left, KeyModifiers::NONE),
+            action: MoveLeft,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Right, KeyModifiers::NONE),
+            action: MoveRight,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Up, KeyModifiers::NONE),
+            action: MoveUp,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Down, KeyModifiers::NONE),
+            action: MoveDown,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Home, KeyModifiers::NONE),
+            action: MoveLineStart,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::End, KeyModifiers::NONE),
+            action: MoveLineEnd,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Left, ctrl),
+            action: MoveWordLeft,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Right, ctrl),
+            action: MoveWordRight,
+        },
         // Editing
-        KeyBinding { key: Key::backspace(), action: Backspace },
-        KeyBinding { key: Key::new(KeyCode::Delete, KeyModifiers::NONE), action: Delete },
-        KeyBinding { key: Key::new(KeyCode::Char('a'), ctrl), action: MoveLineStart },
-        KeyBinding { key: Key::new(KeyCode::Char('k'), ctrl), action: KillToLineEnd },
-        KeyBinding { key: Key::new(KeyCode::Char('w'), ctrl), action: KillWordBackward },
+        KeyBinding {
+            key: Key::backspace(),
+            action: Backspace,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Delete, KeyModifiers::NONE),
+            action: Delete,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('a'), ctrl),
+            action: MoveLineStart,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('k'), ctrl),
+            action: KillToLineEnd,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('w'), ctrl),
+            action: KillWordBackward,
+        },
         // Scroll
-        KeyBinding { key: Key::new(KeyCode::PageUp, KeyModifiers::NONE), action: ScrollUp },
-        KeyBinding { key: Key::new(KeyCode::PageDown, KeyModifiers::NONE), action: ScrollDown },
+        KeyBinding {
+            key: Key::new(KeyCode::PageUp, KeyModifiers::NONE),
+            action: ScrollUp,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::PageDown, KeyModifiers::NONE),
+            action: ScrollDown,
+        },
         // Clear input
-        KeyBinding { key: Key::new(KeyCode::Char('u'), ctrl), action: ClearInput },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('u'), ctrl),
+            action: ClearInput,
+        },
     ]
 }
 
@@ -213,9 +297,18 @@ mod tests {
         let km = default_keymap();
         assert_eq!(resolve(&km, Key::enter()), KeyAction::Submit);
         assert_eq!(resolve(&km, Key::esc()), KeyAction::Abort);
-        assert_eq!(resolve(&km, Key::new(KeyCode::Char('c'), KeyModifiers::CTRL)), KeyAction::Abort);
-        assert_eq!(resolve(&km, Key::new(KeyCode::Char('d'), KeyModifiers::CTRL)), KeyAction::Quit);
-        assert_eq!(resolve(&km, Key::new(KeyCode::Char('l'), KeyModifiers::CTRL)), KeyAction::SwitchModel);
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Char('c'), KeyModifiers::CTRL)),
+            KeyAction::Abort
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Char('d'), KeyModifiers::CTRL)),
+            KeyAction::Quit
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Char('l'), KeyModifiers::CTRL)),
+            KeyAction::SwitchModel
+        );
     }
 
     #[test]
@@ -240,16 +333,28 @@ mod tests {
     #[test]
     fn arrow_keys_move() {
         let km = default_keymap();
-        assert_eq!(resolve(&km, Key::new(KeyCode::Left, KeyModifiers::NONE)), KeyAction::MoveLeft);
-        assert_eq!(resolve(&km, Key::new(KeyCode::Right, KeyModifiers::NONE)), KeyAction::MoveRight);
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Left, KeyModifiers::NONE)),
+            KeyAction::MoveLeft
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Right, KeyModifiers::NONE)),
+            KeyAction::MoveRight
+        );
     }
 
     #[test]
     fn ctrl_arrows_move_word() {
         let km = default_keymap();
         let ctrl = KeyModifiers::CTRL;
-        assert_eq!(resolve(&km, Key::new(KeyCode::Left, ctrl)), KeyAction::MoveWordLeft);
-        assert_eq!(resolve(&km, Key::new(KeyCode::Right, ctrl)), KeyAction::MoveWordRight);
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Left, ctrl)),
+            KeyAction::MoveWordLeft
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Right, ctrl)),
+            KeyAction::MoveWordRight
+        );
     }
 
     #[test]

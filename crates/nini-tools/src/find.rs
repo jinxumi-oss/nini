@@ -2,10 +2,10 @@
 
 use async_trait::async_trait;
 use ignore::WalkBuilder;
+use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
 use serde::Deserialize;
-use serde_json::{ json, Value };
+use serde_json::{Value, json};
 use std::path::PathBuf;
-use nini_core::tool::{Tool, ToolContext, ToolOutput, ToolError, ToolSpec};
 
 #[derive(Debug, Deserialize)]
 struct FindArgs {
@@ -89,7 +89,11 @@ impl Tool for FindTool {
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
             }
-            let name = entry.path().file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let name = entry
+                .path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
             if matcher.is_match(name) || matcher.is_match(&entry.path().to_string_lossy()) {
                 results.push(entry.path().display().to_string());
                 if results.len() >= limit {
@@ -168,7 +172,10 @@ mod tests {
 
         let tool = FindTool::new();
         let out = tool
-            .execute(json!({"pattern": "*.rs", "path": dir.path().to_str().unwrap()}), ToolContext::default())
+            .execute(
+                json!({"pattern": "*.rs", "path": dir.path().to_str().unwrap()}),
+                ToolContext::default(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -181,7 +188,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let tool = FindTool::new();
         let out = tool
-            .execute(json!({"pattern": "*.nonexistent", "path": dir.path().to_str().unwrap()}), ToolContext::default())
+            .execute(
+                json!({"pattern": "*.nonexistent", "path": dir.path().to_str().unwrap()}),
+                ToolContext::default(),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);

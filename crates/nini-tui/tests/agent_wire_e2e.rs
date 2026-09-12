@@ -1,23 +1,28 @@
 //! End-to-end integration tests: keystroke → submit → agent task →
 //! AgentSink → SharedState → render → snapshot.
 // Test code frequently uses patterns that clippy::style flags
-#![allow(clippy::needless_return, clippy::let_underscore_future, clippy::let_underscore_must_use, clippy::redundant_closure_for_method_calls)]
+#![allow(
+    clippy::needless_return,
+    clippy::let_underscore_future,
+    clippy::let_underscore_must_use,
+    clippy::redundant_closure_for_method_calls
+)]
 //!
 //! These tests verify the full vertical slice: user types a message, presses
 //! Enter, the agent runs, and the TUI transcript updates with tool calls
 //! and the final response.
 
 use futures_util::StreamExt;
-use nini_ai::fixture::{ FixtureTurn, ProgrammedProvider };
+use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::Usage;
-use nini_core::{ Agent, AgentEvent, RunConfig, ToolRegistry };
+use nini_core::{Agent, AgentEvent, RunConfig, ToolRegistry};
 use nini_tools::BashTool;
-use nini_tui::render::render_frame;
-use nini_tui::runtime::{ shared_state, AgentEventLite, AgentSink };
-use nini_tui::state::AppState;
 use nini_tui::Key;
-use ratatui::backend::TestBackend;
+use nini_tui::render::render_frame;
+use nini_tui::runtime::{AgentEventLite, AgentSink, shared_state};
+use nini_tui::state::AppState;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -80,7 +85,10 @@ fn make_fixture_driver(
                         AgentEventLite::ToolCallStart { name }
                     }
                     Ok(AgentEvent::ToolCallStop { id, input_json }) => {
-                        AgentEventLite::ToolCallStop { id, args: input_json.to_string() }
+                        AgentEventLite::ToolCallStop {
+                            id,
+                            args: input_json.to_string(),
+                        }
                     }
                     Ok(AgentEvent::ToolResult { output, .. }) => {
                         let content = output.content.clone();
@@ -88,7 +96,10 @@ fn make_fixture_driver(
                         AgentEventLite::ToolResult { ok, content }
                     }
                     Ok(AgentEvent::TurnEnd { usage, .. }) => {
-                        sink.push(AgentEventLite::Usage(usage.input_tokens, usage.output_tokens));
+                        sink.push(AgentEventLite::Usage(
+                            usage.input_tokens,
+                            usage.output_tokens,
+                        ));
                         AgentEventLite::TurnEnd
                     }
                     Ok(AgentEvent::Error { message }) => AgentEventLite::Error(message),
@@ -138,17 +149,23 @@ async fn submit_triggers_agent_and_renders_response() {
 
     // Construct driver: model calls bash then says "hello"
     let driver: nini_tui::runtime::AgentDriver = Arc::new(make_fixture_driver(vec![
-        vec![FixtureTurn::ToolCall {
-            name: "bash".to_string(),
-            args: serde_json::json!({"command": "echo hello"}),
-        }, FixtureTurn::Stop {
-            stop_reason: "tool_use".to_string(),
-            usage: Usage::default(),
-        }],
-        vec![FixtureTurn::Text("hello".to_string()), FixtureTurn::Stop {
-            stop_reason: "end_turn".to_string(),
-            usage: Usage::default(),
-        }],
+        vec![
+            FixtureTurn::ToolCall {
+                name: "bash".to_string(),
+                args: serde_json::json!({"command": "echo hello"}),
+            },
+            FixtureTurn::Stop {
+                stop_reason: "tool_use".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::Text("hello".to_string()),
+            FixtureTurn::Stop {
+                stop_reason: "end_turn".to_string(),
+                usage: Usage::default(),
+            },
+        ],
     ]));
 
     // Simulate submit: directly call sink-side logic (since handle_key uses
@@ -176,7 +193,10 @@ async fn submit_triggers_agent_and_renders_response() {
     // Frame must contain user message, tool call line, tool result line, and
     // the assistant's "hello" text.
     assert!(frame.contains("> echo hello"), "user message missing");
-    assert!(frame.contains("[tool call] bash"), "tool call label missing");
+    assert!(
+        frame.contains("[tool call] bash"),
+        "tool call label missing"
+    );
     assert!(frame.contains("[tool result]"), "tool result label missing");
     assert!(frame.contains("hello"), "assistant text missing");
 
@@ -194,7 +214,10 @@ async fn multiple_submits_accumulate_in_transcript() {
     // First turn
     let turns1: Vec<Vec<FixtureTurn>> = vec![vec![
         FixtureTurn::Text("first response".to_string()),
-        FixtureTurn::Stop { stop_reason: "end_turn".to_string(), usage: Usage::default() },
+        FixtureTurn::Stop {
+            stop_reason: "end_turn".to_string(),
+            usage: Usage::default(),
+        },
     ]];
     let sink1 = AgentSink::new(shared.clone());
     let driver1 = make_fixture_driver(turns1);
@@ -205,7 +228,10 @@ async fn multiple_submits_accumulate_in_transcript() {
     // Second turn
     let turns2: Vec<Vec<FixtureTurn>> = vec![vec![
         FixtureTurn::Text("second response".to_string()),
-        FixtureTurn::Stop { stop_reason: "end_turn".to_string(), usage: Usage::default() },
+        FixtureTurn::Stop {
+            stop_reason: "end_turn".to_string(),
+            usage: Usage::default(),
+        },
     ]];
     let sink2 = AgentSink::new(shared.clone());
     let driver2 = make_fixture_driver(turns2);
@@ -221,10 +247,13 @@ async fn multiple_submits_accumulate_in_transcript() {
     assert!(frame.contains("second response"), "second response missing");
 
     // Two dividers (one after each user message).
-    let divider_count = frame.matches("─────────").count()
-        + frame.matches("─").count().saturating_sub(20); // crude: accept any dashes
+    let divider_count =
+        frame.matches("─────────").count() + frame.matches("─").count().saturating_sub(20); // crude: accept any dashes
     // Just check transcript length grew.
-    assert!(snapshot.transcript.len() >= 6, "expected at least 6 transcript lines (2x user+assistant+divider)");
+    assert!(
+        snapshot.transcript.len() >= 6,
+        "expected at least 6 transcript lines (2x user+assistant+divider)"
+    );
     let _ = divider_count;
 }
 
@@ -275,7 +304,9 @@ async fn tool_call_args_are_updated_on_stop() {
     let shared = shared_state(AppState::new("test-model"));
     let sink = AgentSink::new(shared.clone());
 
-    sink.push(AgentEventLite::ToolCallStart { name: "bash".to_string() });
+    sink.push(AgentEventLite::ToolCallStart {
+        name: "bash".to_string(),
+    });
     // Before stop, args is empty string
     let snap1 = shared.lock().unwrap().clone();
     if let Some(nini_tui::state::TranscriptLine::ToolCall { args, .. }) = snap1.transcript.last() {
@@ -289,8 +320,7 @@ async fn tool_call_args_are_updated_on_stop() {
     });
 
     let snap2 = shared.lock().unwrap().clone();
-    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, name }) =
-        snap2.transcript.last()
+    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, name }) = snap2.transcript.last()
     {
         assert_eq!(name, "bash");
         assert_eq!(args, r#"{"command":"ls"}"#);
@@ -299,7 +329,10 @@ async fn tool_call_args_are_updated_on_stop() {
     }
 
     let frame = render(&snap2, 100, 24);
-    assert!(frame.contains(r#"{"command":"ls"}"#), "tool call args missing in frame");
+    assert!(
+        frame.contains(r#"{"command":"ls"}"#),
+        "tool call args missing in frame"
+    );
 }
 
 // =====================================================================
@@ -315,18 +348,27 @@ async fn running_mode_visible_while_agent_runs() {
 
     // Render before any events arrive
     let frame_before = render(&shared.lock().unwrap().clone(), 80, 24);
-    assert!(frame_before.contains("[running...]"), "running indicator missing");
+    assert!(
+        frame_before.contains("[running...]"),
+        "running indicator missing"
+    );
 
     // Now push a text delta and verify it appears
     sink.push(AgentEventLite::TextDelta("partial response".to_string()));
     let frame_after = render(&shared.lock().unwrap().clone(), 80, 24);
-    assert!(frame_after.contains("partial response"), "text delta missing");
+    assert!(
+        frame_after.contains("partial response"),
+        "text delta missing"
+    );
 
     // Final Done
     sink.push(AgentEventLite::Done);
     let frame_done = render(&shared.lock().unwrap().clone(), 80, 24);
     assert!(frame_done.contains("[ready]"), "should be back to ready");
-    assert!(!frame_done.contains("[running...]"), "should not be running anymore");
+    assert!(
+        !frame_done.contains("[running...]"),
+        "should not be running anymore"
+    );
 }
 
 // =====================================================================
@@ -338,19 +380,43 @@ async fn multiple_tool_calls_accumulate() {
     let sink = AgentSink::new(shared.clone());
 
     // Three tool calls back to back (realistic for bash → read → edit)
-    sink.push(AgentEventLite::ToolCallStart { name: "bash".to_string() });
-    sink.push(AgentEventLite::ToolCallStop { id: "t1".into(), args: r#"{"command":"ls"}"#.into() });
-    sink.push(AgentEventLite::ToolResult { ok: true, content: "main.rs".into() });
+    sink.push(AgentEventLite::ToolCallStart {
+        name: "bash".to_string(),
+    });
+    sink.push(AgentEventLite::ToolCallStop {
+        id: "t1".into(),
+        args: r#"{"command":"ls"}"#.into(),
+    });
+    sink.push(AgentEventLite::ToolResult {
+        ok: true,
+        content: "main.rs".into(),
+    });
 
-    sink.push(AgentEventLite::ToolCallStart { name: "read".to_string() });
-    sink.push(AgentEventLite::ToolCallStop { id: "t2".into(), args: r#"{"path":"main.rs"}"#.into() });
-    sink.push(AgentEventLite::ToolResult { ok: true, content: "fn main() {}".into() });
+    sink.push(AgentEventLite::ToolCallStart {
+        name: "read".to_string(),
+    });
+    sink.push(AgentEventLite::ToolCallStop {
+        id: "t2".into(),
+        args: r#"{"path":"main.rs"}"#.into(),
+    });
+    sink.push(AgentEventLite::ToolResult {
+        ok: true,
+        content: "fn main() {}".into(),
+    });
 
     let snap = shared.lock().unwrap().clone();
-    assert!(snap.transcript.iter().any(|l| matches!(l, nini_tui::state::TranscriptLine::ToolCall { name, .. } if name == "bash")));
-    assert!(snap.transcript.iter().any(|l| matches!(l, nini_tui::state::TranscriptLine::ToolCall { name, .. } if name == "read")));
+    assert!(snap.transcript.iter().any(
+        |l| matches!(l, nini_tui::state::TranscriptLine::ToolCall { name, .. } if name == "bash")
+    ));
+    assert!(snap.transcript.iter().any(
+        |l| matches!(l, nini_tui::state::TranscriptLine::ToolCall { name, .. } if name == "read")
+    ));
     // Two results
-    let result_count = snap.transcript.iter().filter(|l| matches!(l, nini_tui::state::TranscriptLine::ToolResult { .. })).count();
+    let result_count = snap
+        .transcript
+        .iter()
+        .filter(|l| matches!(l, nini_tui::state::TranscriptLine::ToolResult { .. }))
+        .count();
     assert_eq!(result_count, 2);
 }
 
@@ -391,15 +457,23 @@ async fn full_pipeline_drive_keys_then_run_agent() {
     let shared = shared_state(state);
     let sink = AgentSink::new(shared.clone());
     let driver: nini_tui::runtime::AgentDriver = Arc::new(make_fixture_driver(vec![
-        vec![FixtureTurn::ToolCall {
-            name: "grep".to_string(),
-            args: serde_json::json!({"pattern": "TODO"}),
-        }, FixtureTurn::Stop {
-            stop_reason: "tool_use".to_string(),
-            usage: Usage::default(),
-        }],
-        vec![FixtureTurn::Text("Found 3 TODOs and fixed them.".to_string()),
-              FixtureTurn::Stop { stop_reason: "end_turn".to_string(), usage: Usage::default() }],
+        vec![
+            FixtureTurn::ToolCall {
+                name: "grep".to_string(),
+                args: serde_json::json!({"pattern": "TODO"}),
+            },
+            FixtureTurn::Stop {
+                stop_reason: "tool_use".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::Text("Found 3 TODOs and fixed them.".to_string()),
+            FixtureTurn::Stop {
+                stop_reason: "end_turn".to_string(),
+                usage: Usage::default(),
+            },
+        ],
     ]));
 
     let submitted = "find TODOs and fix them".to_string();
@@ -421,7 +495,11 @@ async fn full_pipeline_drive_keys_then_run_agent() {
 
     // 5. The transcript should have 5+ lines: user, divider, tool_call,
     //    tool_result, assistant, divider (from TurnEnd).
-    assert!(snap.transcript.len() >= 5, "expected ≥5 transcript lines, got {}", snap.transcript.len());
+    assert!(
+        snap.transcript.len() >= 5,
+        "expected ≥5 transcript lines, got {}",
+        snap.transcript.len()
+    );
 }
 
 // =====================================================================

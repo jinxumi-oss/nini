@@ -10,8 +10,8 @@
 //! testing even without provider credentials. Real LLM summarization is
 //! a follow-up.
 
-use crate::{ AgentMessage, ContentBlock, Entry, EntryType };
-use serde::{ Deserialize, Serialize };
+use crate::{AgentMessage, ContentBlock, Entry, EntryType};
+use serde::{Deserialize, Serialize};
 
 /// Settings for compaction. Mirrors spec `CompactionSettings`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +38,10 @@ impl Default for CompactionSettings {
 ///
 /// Returns true if `context_tokens > context_window - reserve_tokens`.
 pub fn should_compact(context_tokens: u32, settings: &CompactionSettings) -> bool {
-    context_tokens > settings.context_window.saturating_sub(settings.reserve_tokens)
+    context_tokens
+        > settings
+            .context_window
+            .saturating_sub(settings.reserve_tokens)
 }
 
 /// Estimated cost of a single `ContentBlock::Text`.
@@ -80,7 +83,9 @@ pub fn estimate_provider_messages_tokens(messages: &[crate::provider::Message]) 
             let mut chars = 0usize;
             for b in &m.content {
                 match b {
-                    crate::provider::ContentBlock::Text { text } => chars = chars.saturating_add(text.len()),
+                    crate::provider::ContentBlock::Text { text } => {
+                        chars = chars.saturating_add(text.len())
+                    }
                     crate::provider::ContentBlock::ToolUse { input, .. } => {
                         let s = serde_json::to_string(input).unwrap_or_default();
                         chars = chars.saturating_add(s.len());
@@ -139,11 +144,15 @@ pub fn find_cut_point(entries: &[Entry]) -> CutPoint {
         if let Some(msg) = &entry.message {
             if msg.role == crate::Role::User {
                 // A user message with non-empty text content marks a turn boundary.
-                let has_text = msg.content.iter().any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
+                let has_text = msg
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
                 if has_text {
                     // Check that the previous entry isn't a tool result (which
                     // would mean we're inside a tool sequence).
-                    let prev_is_tool_result = i.checked_sub(1)
+                    let prev_is_tool_result = i
+                        .checked_sub(1)
                         .and_then(|p| entries.get(p))
                         .and_then(|e| e.message.as_ref())
                         .map(|m| m.role == crate::Role::Tool)
@@ -160,11 +169,20 @@ pub fn find_cut_point(entries: &[Entry]) -> CutPoint {
     }
 
     if let Some(idx) = last_user_turn {
-        CutPoint { keep_from: idx, reason: CutReason::OldestUserTurn }
+        CutPoint {
+            keep_from: idx,
+            reason: CutReason::OldestUserTurn,
+        }
     } else if let Some(idx) = last_user_msg {
-        CutPoint { keep_from: idx, reason: CutReason::OldestUserMessage }
+        CutPoint {
+            keep_from: idx,
+            reason: CutReason::OldestUserMessage,
+        }
     } else {
-        CutPoint { keep_from: 0, reason: CutReason::NoSafeCut }
+        CutPoint {
+            keep_from: 0,
+            reason: CutReason::NoSafeCut,
+        }
     }
 }
 
@@ -185,7 +203,10 @@ pub struct CompactionPreparation {
 
 /// Prepare a compaction: split entries into [summarize, retain] using the
 /// cut-point heuristic.
-pub fn prepare_compaction(entries: &[Entry], previous_summary: Option<String>) -> CompactionPreparation {
+pub fn prepare_compaction(
+    entries: &[Entry],
+    previous_summary: Option<String>,
+) -> CompactionPreparation {
     let cut = find_cut_point(entries);
     let keep_from = cut.keep_from.min(entries.len());
     CompactionPreparation {
@@ -322,12 +343,19 @@ where
     // Build the new compaction entry (preserves retention list verbatim).
     let summary_tokens = estimate_message_tokens(&AgentMessage {
         role: crate::Role::User, // system would be better, but stick with what we have
-        content: vec![ContentBlock::Text { text: summary.clone() }],
+        content: vec![ContentBlock::Text {
+            text: summary.clone(),
+        }],
         timestamp: 0,
     });
 
     // Compute the tokens for retained entries + the new compaction entry.
-    let retained_tokens: u32 = prep.retained.iter().filter_map(|e| e.message.as_ref()).map(estimate_message_tokens).sum();
+    let retained_tokens: u32 = prep
+        .retained
+        .iter()
+        .filter_map(|e| e.message.as_ref())
+        .map(estimate_message_tokens)
+        .sum();
     let tokens_after = summary_tokens + retained_tokens;
 
     let _ = settings; // reserved for future size limits on summary
@@ -344,7 +372,10 @@ where
 /// Construct the new compaction `Entry` from a `CompactionOutput`.
 pub fn make_compaction_entry(out: &CompactionOutput) -> Entry {
     Entry {
-        id: format!("compaction_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+        id: format!(
+            "compaction_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ),
         parent_id: None,
         seq: 0, // assigned by caller
         timestamp: chrono::Utc::now().timestamp_millis(),
@@ -360,7 +391,7 @@ pub fn make_compaction_entry(out: &CompactionOutput) -> Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ AgentMessage, ContentBlock, Entry, EntryType, Role };
+    use crate::{AgentMessage, ContentBlock, Entry, EntryType, Role};
 
     fn make_user_entry(id: &str, text: &str, parent: Option<&str>, seq: u64) -> Entry {
         Entry {
@@ -393,7 +424,8 @@ mod tests {
     }
 
     fn make_tool_entry(id: &str, name: &str, args: &str, parent: Option<&str>, seq: u64) -> Entry {
-        let input: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+        let input: serde_json::Value =
+            serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
         Entry {
             id: id.into(),
             parent_id: parent.map(|s| s.to_string()),
@@ -421,7 +453,11 @@ mod tests {
     // ============================================================
     #[test]
     fn should_compact_returns_true_above_budget() {
-        let s = CompactionSettings { context_window: 1000, reserve_tokens: 100, ..Default::default() };
+        let s = CompactionSettings {
+            context_window: 1000,
+            reserve_tokens: 100,
+            ..Default::default()
+        };
         assert!(!should_compact(800, &s));
         assert!(!should_compact(900, &s));
         assert!(should_compact(901, &s));
@@ -498,9 +534,7 @@ mod tests {
 
     #[test]
     fn cut_point_no_user_returns_zero() {
-        let entries = vec![
-            make_assistant_entry("a1", "hi", None, 1),
-        ];
+        let entries = vec![make_assistant_entry("a1", "hi", None, 1)];
         let cut = find_cut_point(&entries);
         assert_eq!(cut.keep_from, 0);
         assert_eq!(cut.reason, CutReason::NoSafeCut);
@@ -593,9 +627,12 @@ mod tests {
         ];
         let settings = CompactionSettings::default();
         let prev = Some("# Previous summary\nUser asked about bugs.".to_string());
-        let out = compact(&entries, &settings, prev.clone(), |_entries, prev_summary| {
-            format!("merged: {}", prev_summary.as_deref().unwrap_or(""))
-        });
+        let out = compact(
+            &entries,
+            &settings,
+            prev.clone(),
+            |_entries, prev_summary| format!("merged: {}", prev_summary.as_deref().unwrap_or("")),
+        );
         assert!(out.summary.starts_with("merged: "));
     }
 
@@ -627,14 +664,24 @@ mod tests {
         // to compact (the 20 alternating turns).
         let mut entries: Vec<Entry> = Vec::new();
         entries.push(Entry {
-            id: "c0".into(), parent_id: None, seq: 0, timestamp: 0,
+            id: "c0".into(),
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
             entry_type: EntryType::Compaction,
-            message: None, summary: Some("prior context".into()),
-            from_id: None, custom_type: None, data: None,
+            message: None,
+            summary: Some("prior context".into()),
+            from_id: None,
+            custom_type: None,
+            data: None,
         });
         for i in 0..20 {
             if i % 2 == 0 {
-                let parent: String = if i == 0 { "c0".into() } else { format!("a{}", i - 1) };
+                let parent: String = if i == 0 {
+                    "c0".into()
+                } else {
+                    format!("a{}", i - 1)
+                };
                 entries.push(make_user_entry(
                     &format!("u{i}"),
                     &"x".repeat(100),

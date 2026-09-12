@@ -1,6 +1,11 @@
 //! Autocomplete popup tests.
 // Test code frequently uses patterns that clippy::style flags
-#![allow(clippy::needless_return, clippy::let_underscore_future, clippy::let_underscore_must_use, clippy::redundant_closure_for_method_calls)]
+#![allow(
+    clippy::needless_return,
+    clippy::let_underscore_future,
+    clippy::let_underscore_must_use,
+    clippy::redundant_closure_for_method_calls
+)]
 //!
 //! Verifies:
 //! - `InputBuffer::slash_prefix` correctly identifies the prefix
@@ -12,9 +17,9 @@
 //! - The popup renders correctly in the frame
 
 use nini_tui::render::render_frame;
-use nini_tui::state::{ AppState, CompletionPopup, RunMode };
-use ratatui::backend::TestBackend;
+use nini_tui::state::{AppState, CompletionPopup, RunMode};
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 fn frame_text(state: &AppState, w: u16, h: u16) -> String {
     let backend = TestBackend::new(w, h);
@@ -165,7 +170,10 @@ fn refresh_resets_selection_when_item_filtered_out() {
     s.refresh_completion();
     let popup = s.completion.as_ref().unwrap();
     assert!(popup.items.iter().any(|i| i.name == "reload"));
-    assert_eq!(popup.selected, 0, "selection should reset when item filtered out");
+    assert_eq!(
+        popup.selected, 0,
+        "selection should reset when item filtered out"
+    );
 }
 
 // =====================================================================
@@ -212,17 +220,17 @@ fn apply_completion_without_popup_is_noop() {
 fn popup_navigation_wraps_up() {
     let mut p = CompletionPopup {
         items: vec![
-        nini_tui::state::CompletionItem {
-            name: "a".into(),
-            description: "first".into(),
-            argument_hint: None,
-        },
-        nini_tui::state::CompletionItem {
-            name: "b".into(),
-            description: "second".into(),
-            argument_hint: None,
-        },
-    ],
+            nini_tui::state::CompletionItem {
+                name: "a".into(),
+                description: "first".into(),
+                argument_hint: None,
+            },
+            nini_tui::state::CompletionItem {
+                name: "b".into(),
+                description: "second".into(),
+                argument_hint: None,
+            },
+        ],
         selected: 0,
     };
     assert_eq!(p.selected, 0);
@@ -236,17 +244,17 @@ fn popup_navigation_wraps_up() {
 fn popup_navigation_wraps_down() {
     let mut p = CompletionPopup {
         items: vec![
-        nini_tui::state::CompletionItem {
-            name: "a".into(),
-            description: "first".into(),
-            argument_hint: None,
-        },
-        nini_tui::state::CompletionItem {
-            name: "b".into(),
-            description: "second".into(),
-            argument_hint: None,
-        },
-    ],
+            nini_tui::state::CompletionItem {
+                name: "a".into(),
+                description: "first".into(),
+                argument_hint: None,
+            },
+            nini_tui::state::CompletionItem {
+                name: "b".into(),
+                description: "second".into(),
+                argument_hint: None,
+            },
+        ],
         selected: 0,
     };
     p.select_down();
@@ -556,7 +564,10 @@ fn frame_with_popup_has_consistent_height() {
     s.refresh_completion();
     let frame_with = frame_text(&s, 80, 24);
     let line_count = frame_with.lines().count();
-    assert_eq!(line_count, 24, "frame height should remain 24 even with popup");
+    assert_eq!(
+        line_count, 24,
+        "frame height should remain 24 even with popup"
+    );
 }
 
 // =====================================================================
@@ -609,7 +620,10 @@ fn popup_dismissed_on_mode_change() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    assert!(s.completion.is_some(), "completion should be set after refresh");
+    assert!(
+        s.completion.is_some(),
+        "completion should be set after refresh"
+    );
     // Simulate submit → mode change to Running
     s.mode = RunMode::Running;
     // The render layer doesn't auto-clear; verify popup survives (caller

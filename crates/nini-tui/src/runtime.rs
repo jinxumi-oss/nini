@@ -7,21 +7,21 @@
 //!   into the shared state via [`AgentSink`].
 #![allow(unused_mut)] // render/runtime use mut bindings for future hook points
 
-use crate::keys::{ resolve, Key, KeyAction };
-use crossterm::event::KeyCode;
+use crate::keys::{Key, KeyAction, resolve};
 use crate::render::render_frame;
-use crate::state::{ AppState, RunMode, TranscriptLine };
+use crate::state::{AppState, RunMode, TranscriptLine};
 use anyhow::Result;
-use crossterm::event::{ Event, EventStream, KeyEvent };
+use crossterm::event::KeyCode;
+use crossterm::event::{Event, EventStream, KeyEvent};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::StreamExt;
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::io::{ stdout, Stdout };
-use std::sync::{ Arc, Mutex };
+use ratatui::backend::CrosstermBackend;
+use std::io::{Stdout, stdout};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -41,9 +41,17 @@ pub fn shared_state(state: AppState) -> SharedState {
 #[derive(Debug, Clone)]
 pub enum AgentEventLite {
     TextDelta(String),
-    ToolCallStart { name: String },
-    ToolCallStop { id: String, args: String },
-    ToolResult { ok: bool, content: String },
+    ToolCallStart {
+        name: String,
+    },
+    ToolCallStop {
+        id: String,
+        args: String,
+    },
+    ToolResult {
+        ok: bool,
+        content: String,
+    },
     TurnEnd,
     Error(String),
     Usage(u32, u32),
@@ -71,8 +79,7 @@ impl AgentSink {
                 AgentEventLite::ToolCallStart { name } => s.push_tool_call(name, ""),
                 AgentEventLite::ToolCallStop { id, args } => {
                     // Update the most recent tool call line with final args.
-                    if let Some(TranscriptLine::ToolCall { args: a, .. }) =
-                        s.transcript.last_mut()
+                    if let Some(TranscriptLine::ToolCall { args: a, .. }) = s.transcript.last_mut()
                     {
                         *a = args;
                     } else {
@@ -102,8 +109,7 @@ impl AgentSink {
 /// A function that drives one agent turn. Called by the runtime after Submit.
 /// `sink` receives the agent's events. `done` is notified when the turn
 /// finishes (whether successfully, with error, or aborted).
-pub type AgentDriver =
-    Arc<dyn Fn(String, AgentSink, Arc<Notify>) -> JoinHandle<()> + Send + Sync>;
+pub type AgentDriver = Arc<dyn Fn(String, AgentSink, Arc<Notify>) -> JoinHandle<()> + Send + Sync>;
 
 /// Public entrypoint: run the TUI. `bootstrap` is called once to seed the
 /// `AppState`. `agent_driver` is spawned whenever the user submits a message.
@@ -408,7 +414,9 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                             }
                             crate::commands::CommandOutcome::PromptArgument { .. } => {
                                 // v1: prompt-argument flow not implemented; show fallback.
-                                state.push_assistant("(prompt argument — not yet wired)".to_string());
+                                state.push_assistant(
+                                    "(prompt argument — not yet wired)".to_string(),
+                                );
                                 state.push_divider();
                             }
                         }
@@ -430,7 +438,10 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             }
         }
         KeyAction::Quit => state.mode = RunMode::Quitting,
-        KeyAction::SwitchModel | KeyAction::ShowHelp | KeyAction::ScrollUp | KeyAction::ScrollDown => {}
+        KeyAction::SwitchModel
+        | KeyAction::ShowHelp
+        | KeyAction::ScrollUp
+        | KeyAction::ScrollDown => {}
         KeyAction::Noop => {}
     }
 }

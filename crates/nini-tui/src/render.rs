@@ -19,21 +19,30 @@
 //! ```
 #![allow(unused_mut)] // render/runtime use mut bindings for future hook points
 
-use crate::state::{ AppState, CompletionItem, RunMode, TranscriptLine };
-use ratatui::layout::{ Constraint, Direction, Layout, Rect };
-use ratatui::style::{ Color, Modifier, Style };
-use ratatui::text::{ Line as RLine, Span };
-use ratatui::widgets::{ Block, Borders, Clear, List, ListItem, Paragraph, Wrap };
+use crate::state::{AppState, CompletionItem, RunMode, TranscriptLine};
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line as RLine, Span};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 /// Render the full TUI frame.
 pub fn render_frame(f: &mut Frame, state: &AppState) {
     let area = f.area();
     // When a completion popup is showing, we steal one row from the
     // transcript area so the popup floats above the prompt.
-    let popup_height = if state.completion.as_ref().map(|p| !p.is_empty()).unwrap_or(false) {
+    let popup_height = if state
+        .completion
+        .as_ref()
+        .map(|p| !p.is_empty())
+        .unwrap_or(false)
+    {
         // Up to 8 lines + 2 (border)
-        let n = state.completion.as_ref().map(|p| p.items.len()).unwrap_or(0);
+        let n = state
+            .completion
+            .as_ref()
+            .map(|p| p.items.len())
+            .unwrap_or(0);
         (n as u16).min(8) + 2
     } else {
         0
@@ -41,16 +50,21 @@ pub fn render_frame(f: &mut Frame, state: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),                            // status bar
-            Constraint::Min(3),                               // transcript
+            Constraint::Length(1), // status bar
+            Constraint::Min(3),    // transcript
             Constraint::Length(if popup_height > 0 { popup_height } else { 3 }), // prompt OR popup
-            Constraint::Length(1),                            // key hints
+            Constraint::Length(1), // key hints
         ])
         .split(area);
 
     render_status(f, state, chunks[0]);
     render_transcript(f, state, chunks[1]);
-    if state.completion.as_ref().map(|p| !p.is_empty()).unwrap_or(false) {
+    if state
+        .completion
+        .as_ref()
+        .map(|p| !p.is_empty())
+        .unwrap_or(false)
+    {
         render_completion_popup(f, state, chunks[2]);
     } else {
         render_prompt(f, state, chunks[2]);
@@ -71,13 +85,28 @@ fn render_status(f: &mut Frame, state: &AppState, area: Rect) {
     };
     let session = state.session_id.as_deref().unwrap_or("(no session)");
     let line = RLine::from(vec![
-        Span::styled(" nini ", Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::raw(format!(" model={} session={} {mode} ", state.model, session)),
         Span::styled(
-            format!("tokens: in={} out={} ", state.tokens.input, state.tokens.output),
+            " nini ",
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(
+            " model={} session={} {mode} ",
+            state.model, session
+        )),
+        Span::styled(
+            format!(
+                "tokens: in={} out={} ",
+                state.tokens.input, state.tokens.output
+            ),
             Style::default().fg(Color::DarkGray),
         ),
-        Span::styled(format!("{} ", state.status), Style::default().fg(Color::Yellow)),
+        Span::styled(
+            format!("{} ", state.status),
+            Style::default().fg(Color::Yellow),
+        ),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -96,12 +125,21 @@ fn render_transcript(f: &mut Frame, state: &AppState, area: Rect) {
             }
             TranscriptLine::ToolCall { name, args } => ListItem::new(RLine::from(vec![
                 Span::styled("[tool call] ", Style::default().fg(Color::Magenta)),
-                Span::styled(name.as_str(), Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    name.as_str(),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(format!(" {args}")),
             ])),
             TranscriptLine::ToolResult { ok, content } => ListItem::new(RLine::from(vec![
                 Span::styled(
-                    if *ok { "[tool result] " } else { "[tool error] " },
+                    if *ok {
+                        "[tool result] "
+                    } else {
+                        "[tool error] "
+                    },
                     Style::default().fg(if *ok { Color::Cyan } else { Color::Red }),
                 ),
                 Span::raw(content.as_str()),
@@ -122,7 +160,11 @@ fn render_transcript(f: &mut Frame, state: &AppState, area: Rect) {
 }
 
 fn render_prompt(f: &mut Frame, state: &AppState, area: Rect) {
-    let prompt_symbol = if state.mode == RunMode::Running { "⏵" } else { "❯" };
+    let prompt_symbol = if state.mode == RunMode::Running {
+        "⏵"
+    } else {
+        "❯"
+    };
     let text = state.input.text.clone();
     let cursor_byte = state.input.cursor;
 
@@ -140,7 +182,12 @@ fn render_prompt(f: &mut Frame, state: &AppState, area: Rect) {
         for (i, l) in lines.iter().enumerate() {
             let prefix = if i == 0 { prompt_symbol } else { " " };
             line_widgets.push(RLine::from(vec![
-                Span::styled(format!("{prefix} "), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{prefix} "),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(l.as_str()),
             ]));
         }
@@ -161,17 +208,35 @@ fn render_prompt(f: &mut Frame, state: &AppState, area: Rect) {
 
 fn render_key_hints(f: &mut Frame, _state: &AppState, area: Rect) {
     let hints = RLine::from(vec![
-        Span::styled(" F1 ", Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Span::styled(
+            " F1 ",
+            Style::default().bg(Color::DarkGray).fg(Color::White),
+        ),
         Span::raw("help "),
-        Span::styled(" Ctrl+C ", Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Span::styled(
+            " Ctrl+C ",
+            Style::default().bg(Color::DarkGray).fg(Color::White),
+        ),
         Span::raw("quit "),
-        Span::styled(" Ctrl+D ", Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Span::styled(
+            " Ctrl+D ",
+            Style::default().bg(Color::DarkGray).fg(Color::White),
+        ),
         Span::raw("exit "),
-        Span::styled(" Enter ", Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Span::styled(
+            " Enter ",
+            Style::default().bg(Color::DarkGray).fg(Color::White),
+        ),
         Span::raw("send "),
-        Span::styled(" Ctrl+L ", Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Span::styled(
+            " Ctrl+L ",
+            Style::default().bg(Color::DarkGray).fg(Color::White),
+        ),
         Span::raw("model "),
-        Span::styled(" ↑↓ ", Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Span::styled(
+            " ↑↓ ",
+            Style::default().bg(Color::DarkGray).fg(Color::White),
+        ),
         Span::raw("history"),
     ]);
     f.render_widget(Paragraph::new(hints), area);
@@ -179,8 +244,12 @@ fn render_key_hints(f: &mut Frame, _state: &AppState, area: Rect) {
 
 /// Render the slash-command completion popup above the prompt.
 fn render_completion_popup(f: &mut Frame, state: &AppState, area: Rect) {
-    let Some(popup) = &state.completion else { return };
-    if popup.items.is_empty() { return; }
+    let Some(popup) = &state.completion else {
+        return;
+    };
+    if popup.items.is_empty() {
+        return;
+    }
 
     let lines: Vec<RLine> = popup
         .items
@@ -189,32 +258,44 @@ fn render_completion_popup(f: &mut Frame, state: &AppState, area: Rect) {
         .map(|(i, item)| {
             let is_selected = i == popup.selected;
             let name_style = if is_selected {
-                Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             };
             let mut spans = vec![Span::styled(format!("/{}", item.name), name_style)];
             if let Some(hint) = &item.argument_hint {
                 spans.push(Span::styled(
                     format!(" {hint}"),
-                    Style::default().fg(if is_selected { Color::Black } else { Color::DarkGray }),
+                    Style::default().fg(if is_selected {
+                        Color::Black
+                    } else {
+                        Color::DarkGray
+                    }),
                 ));
             }
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
                 item.description.as_str(),
-                Style::default().fg(if is_selected { Color::Black } else { Color::Gray }),
+                Style::default().fg(if is_selected {
+                    Color::Black
+                } else {
+                    Color::Gray
+                }),
             ));
             RLine::from(spans)
         })
         .collect();
-    let para = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" commands (up/down select, Tab/Enter accept, Esc cancel) ")
-                .border_style(Style::default().fg(Color::Cyan)),
-        );
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" commands (up/down select, Tab/Enter accept, Esc cancel) ")
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
     f.render_widget(para, area);
 }
 

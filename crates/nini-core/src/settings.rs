@@ -105,7 +105,8 @@ pub fn load_models_json(cwd: &Path) -> ModelsJson {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from);
     let candidates = vec![
-        user.as_ref().map(|h| h.join(".pi").join("agent").join("models.json")),
+        user.as_ref()
+            .map(|h| h.join(".pi").join("agent").join("models.json")),
         Some(cwd.join(".pi").join("models.json")),
     ];
 
@@ -166,11 +167,7 @@ mod tests {
         std::fs::create_dir_all(&pi_dir).unwrap();
 
         let mut f = std::fs::File::create(pi_dir.join("settings.json")).unwrap();
-        writeln!(
-            f,
-            r#"{{"provider": "openai", "model": "gpt-5"}}"#
-        )
-        .unwrap();
+        writeln!(f, r#"{{"provider": "openai", "model": "gpt-5"}}"#).unwrap();
 
         let s = load_settings(dir.path());
         assert_eq!(s.provider.as_deref(), Some("openai"));
