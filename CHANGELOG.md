@@ -40,5 +40,5 @@ project follows [Semantic Versioning](https://semver.org/).
 
 Initial public release. Not announced on any external channel.
 
-[Unreleased]: https://github.com/jinxumi/nini/compare/main...HEAD
-[0.4.0]: https://github.com/jinxumi/nini/releases/tag/v0.4.0
+[Unreleased]: https://github.com/jinxumi-oss/nini/compare/main...HEAD
+[0.4.0]: https://github.com/jinxumi-oss/nini/releases/tag/v0.4.0

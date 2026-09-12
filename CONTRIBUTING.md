@@ -10,7 +10,7 @@ respectful. Assume good faith. Don't be a jerk.
 
 ## Reporting bugs
 
-Open a [GitHub issue](https://github.com/jinxumi/nini/issues/new?template=bug_report.md).
+Open a [GitHub issue](https://github.com/jinxumi-oss/nini/issues/new?template=bug_report.md).
 Include:
 
 - nini version (`nini --version`)
@@ -22,7 +22,7 @@ Include:
 
 ## Requesting features
 
-Use the [feature request template](https://github.com/jinxumi/nini/issues/new?template=feature_request.md).
+Use the [feature request template](https://github.com/jinxumi-oss/nini/issues/new?template=feature_request.md).
 Look for the `good first issue` label — those are scoped, well-defined
 tasks suitable for first-time contributors.
 
@@ -101,7 +101,7 @@ short version:
 ## Setting up a development environment
 
 ```bash
-git clone https://github.com/jinxumi/nini
+git clone https://github.com/jinxumi-oss/nini
 cd nini
 cargo test --workspace          # ~30 seconds, all 233 tests
 cargo clippy --workspace --all-targets

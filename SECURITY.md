@@ -18,7 +18,7 @@ Report privately via GitHub's [private vulnerability reporting][gh-private]
 on the nini repository. This routes the report to maintainers privately
 without disclosing it publicly.
 
-[gh-private]: https://github.com/jinxumi/nini/security/advisories/new
+[gh-private]: https://github.com/jinxumi-oss/nini/security/advisories/new
 
 When reporting, include:
 
