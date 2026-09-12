@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "specSource": "https://github.com/earendil-works/pi.git",
+  "specTag": "v0.85.1",
+  "specCommit": "d981de1229ef899957bbe968bc8dcda02a21f477",
+  "specCommitShort": "d981de12",
+  "specCommitDate": "2026-09-05T13:54:46+02:00",
+  "specCommitMessage": "Release v0.85.1",
+  "specPath": "references/spec-v0.85.1/",
+  "fileCount": 19,
+  "totalSize": 3549534,
+  "filesByGroup": {
+    "compaction": [
+      {
+        "path": "compaction/branch-summarization.ts",
+        "size": 9537,
+        "sha256": "38fed20de82bad088ab0a49c7c46e8c801c0bf448dc8a86d7c0f8f225d43792e"
+      },
+      {
+        "path": "compaction/compaction.ts",
+        "size": 27410,
+        "sha256": "6e7aec0d27cb566f8f85f7dd13850eda98f5ddf7e78f9a919fb3dd03c3ea3a8a"
+      },
+      {
+        "path": "compaction/utils.ts",
+        "size": 4312,
+        "sha256": "85ea768b590e683727aecaf6ac72cf4218806e66313bc3ed2e1593867592d6c0"
+      }
+    ],
+    "fixtures": [
+      {
+        "path": "fixtures/legacy-v3-before-compaction.jsonl",
+        "size": 2370492,
+        "sha256": "56f9cf221541c09091cf082ad2ed0c4b4931ef5e8857a42dc623afae35a2e59c"
+      },
+      {
+        "path": "fixtures/legacy-v3-large.jsonl",
+        "size": 974011,
+        "sha256": "f029e59c3aec82fd6227eae51fc8839862a92b5e2426731ea9715eaf968a0ba4"
+      }
+    ],
+    "jsonl": [
+      {
+        "path": "jsonl/codec.ts",
+        "size": 2270,
+        "sha256": "f1104b8b6dfc1eac68741cd5cca688057476c5c45e3572930fe19f9a46bc2c9e"
+      },
+      {
+        "path": "jsonl/legacy-v3.ts",
+        "size": 17390,
+        "sha256": "06a0555c75b31208f121b846a45dbf5702772c8c9e03a4847dc4efdffa25255c"
+      },
+      {
+        "path": "jsonl/repo.ts",
+        "size": 13889,
+        "sha256": "44b44c4236a9ef3472233282b40b9f1b23371669666b332b1577fbfc992a84c1"
+      },
+      {
+        "path": "jsonl/storage.ts",
+        "size": 13791,
+        "sha256": "efa268d333d7051220956ac79621800aa91aca4b0980c0f2952757caf74ed005"
+      },
+      {
+        "path": "jsonl/types.ts",
+        "size": 1069,
+        "sha256": "adf69fa5c1a61a83e4bead6307bfd8c30c9e09d36e6288419ed47093d4bc067d"
+      }
+    ],
+    "session": [
+      {
+        "path": "session/commit.ts",
+        "size": 3541,
+        "sha256": "78f930aadd8b5d6245a9bf3b4514df454a404de53b46d65525dffc7d00a5a383"
+      },
+      {
+        "path": "session/types.ts",
+        "size": 17814,
+        "sha256": "16dba39aec608eb65c3cfe22dee20b394a7368f706a8e4b6cc7acf8e90dd275e"
+      },
+      {
+        "path": "session/values.ts",
+        "size": 6141,
+        "sha256": "b3f87fef7b5faf58e4ab99a1baaafd9df47f73acf2a92cefcc7279b9eb43e50b"
+      }
+    ],
+    "settings": [
+      {
+        "path": "settings/settings-manager.ts",
+        "size": 44154,
+        "sha256": "962d3fb1b585bac171c3553bf09113033182d0b9a6ca2e8c01e3b778048a6850"
+      }
+    ],
+    "skills": [
+      {
+        "path": "skills/skills.ts",
+        "size": 14687,
+        "sha256": "055dbfde974fd1951267dd6f9204b5d713ff0004e0991eb870fce9158c6e359a"
+      }
+    ],
+    "slash-commands": [
+      {
+        "path": "slash-commands/slash-commands.ts",
+        "size": 2240,
+        "sha256": "c0bf481c18d6791ce1468f687404e607baf641db041ff2a021d1fa254d6b26a0"
+      }
+    ],
+    "system-prompt": [
+      {
+        "path": "system-prompt/system-prompt.ts",
+        "size": 6283,
+        "sha256": "c660d28416c4674ba65fb0357d74462749b0741e72a2b15865573198f6b21519"
+      }
+    ],
+    "tools": [
+      {
+        "path": "tools/bash.ts",
+        "size": 13719,
+        "sha256": "1f1130cdb33b9c7a74f81aeac9d3bb0208a8a30d65a0bf238f8ec30d39e21778"
+      },
+      {
+        "path": "tools/index.ts",
+        "size": 6784,
+        "sha256": "3c66ea1e03530fb85436ee639f35add8bf72718ac6e76b738a1f41be58a2b472"
+      }
+    ]
+  },
+  "compatClaim": "nini 0.x targets Pi v0.85.1 session format (JSONL v4 native + legacy-v3 bridge) and 23 builtin slash commands",
+  "upgradeProcedure": [
+    "1. cd references/pi-upstream && git fetch --tags --depth=1",
+    "2. git checkout <new-tag>",
+    "3. Update specCommit / specTag / specCommitDate in SPEC.lock",
+    "4. Re-copy spec files to references/spec-v0.85.1-<new-tag>/",
+    "5. Regenerate sha256 list",
+    "6. Run nini-session roundtrip tests against new fixtures",
+    "7. Bump nini compatClaim"
+  ]
+}

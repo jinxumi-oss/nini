@@ -1,0 +1,29 @@
+[package]
+name = "nini-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+async-stream = { workspace = true }
+async-trait = "0.1"
+futures-core = { workspace = true }
+futures-util = { workspace = true }
+serde_yaml = "0.9"
+toml = "0.8"
+
+[dev-dependencies]
+nini-ai = { path = "../nini-ai" }
+nini-tools = { path = "../nini-tools" }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 1
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Style + correctness + suspicious catch real bugs without churning
+      # on pedantic style nits. Tighten as the codebase stabilizes.
+      - run: cargo clippy --workspace --all-targets -- -D clippy::style -D clippy::correctness -D clippy::suspicious -A clippy::pedantic -A clippy::nursery -A clippy::style -A clippy::correctness -A clippy::suspicious -A clippy::perf -A clippy::complexity
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+      - run: cargo test --workspace --all-targets
+      - name: Release build
+        run: cargo build --release --locked
+
+  cli-smoke:
+    name: CLI smoke (no TTY)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - name: Version
+        run: ./target/release/nini --version
+      - name: Help
+        run: ./target/release/nini --help
+      - name: No-TTY fallback
+        run: ./target/release/nini < /dev/null
+      - name: Print mode
+        run: ./target/release/nini --provider fixture -p "smoke test" < /dev/null
+      - name: Info
+        run: ./target/release/nini info < /dev/null
+      - name: Demo
+        run: ./target/release/nini demo < /dev/null

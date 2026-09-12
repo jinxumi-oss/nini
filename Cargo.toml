@@ -1,0 +1,98 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nini-core",
+    "crates/nini-ai",
+    "crates/nini-session",
+    "crates/nini-tools",
+    "crates/nini-tui",
+    "crates/nini-ext",
+    "crates/nini-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.42", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip"] }
+
+# Bytes / streams
+bytes = "1.8"
+futures-util = "0.3"
+futures-core = "0.3"
+async-stream = "0.3"
+pin-project-lite = "0.2"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Errors
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUIDs
+uuid = { version = "1.10", features = ["v7", "serde"] }
+
+# Process tree / kill (POSIX signals + sysinfo)
+nix = { version = "0.29", features = ["signal", "process"] }
+sysinfo = "0.32"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Test only
+tempfile = "3.13"
+wiremock = "0.6"
+proptest = "1.5"
+tokio-stream = "0.1"
+assert_matches = "1.5"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "allow"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pragmatic relaxations for v1 polish
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+trivially_copy_pass_by_ref = "allow"
+unnested_or_patterns = "allow"
+ignored_unit_patterns = "allow"
+result_unit_err = "allow"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = 1

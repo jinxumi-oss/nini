@@ -1,0 +1,27 @@
+# Build artifacts
+target/
+**/target/
+
+# Cargo
+!**/Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# OS
+Thumbs.db
+
+# Test artifacts
+*.tmp
+.cache/
+
+# Generated
+*.gen.*
+
+# references/ excludes — we only ship our pure spec extract, not upstream clone
+references/pi-upstream/
+references/pi-upstream.git/

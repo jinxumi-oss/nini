@@ -1,0 +1,590 @@
+//! End-to-end TUI tests using `ratatui::backend::TestBackend`.
+//!
+//! These tests:
+//! 1. Render the empty TUI and snapshot the layout (status bar / transcript / prompt / hints).
+//! 2. Drive the state machine via keystrokes and verify each frame's text content.
+//! 3. Drive the agent event stream into the transcript and verify the rendered output.
+
+use futures_util::StreamExt;
+use nini_ai::fixture::{ FixtureTurn, ProgrammedProvider };
+use nini_core::provider::Usage;
+use nini_core::{ Agent, AgentEvent, RunConfig, ToolRegistry };
+use nini_tools::BashTool;
+use nini_tui::render::render_frame;
+use nini_tui::state::{ AppState, RunMode, TranscriptLine };
+use nini_tui::{ Key, KeyAction, KeyModifiers };
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
+use std::sync::Arc;
+
+/// Snapshot the visible text of a frame, ignoring ANSI styling.
+fn frame_text(terminal: &Terminal<TestBackend>) -> String {
+    let buffer = terminal.backend().buffer().clone();
+    let mut out = String::new();
+    let area = buffer.area;
+    for y in 0..area.height {
+        let mut line = String::new();
+        for x in 0..area.width {
+            if let Some(cell) = buffer.cell((x, y)) {
+                line.push_str(cell.symbol());
+            } else {
+                line.push(' ');
+            }
+        }
+        // Trim trailing whitespace per line for cleaner snapshots
+        let line_trimmed = line.trim_end_matches(' ').to_string();
+        out.push_str(&line_trimmed);
+        out.push('\n');
+    }
+    out
+}
+
+/// Render the TUI state into a fresh `TestBackend` and return the frame text.
+fn render_to_text(state: &AppState, width: u16, height: u16) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| render_frame(f, state)).unwrap();
+    frame_text(&terminal)
+}
+
+/// Drive a `Key` into the state machine (the same logic `runtime::handle_key`
+/// uses, but inlined here so tests don't need a real terminal).
+fn drive(state: &mut AppState, key: Key) {
+    use nini_tui::keys::{ default_keymap, resolve };
+    let action = resolve(&default_keymap(), key);
+    match action {
+        KeyAction::Insert(c) => {
+            if state.mode == RunMode::Editing {
+                state.input.insert_char(c);
+            }
+        }
+        KeyAction::Newline => {
+            if state.mode == RunMode::Editing {
+                state.input.insert_char('\n');
+            }
+        }
+        KeyAction::Backspace => state.input.backspace(),
+        KeyAction::Delete => state.input.delete(),
+        KeyAction::MoveLeft => state.input.move_left(),
+        KeyAction::MoveRight => state.input.move_right(),
+        KeyAction::MoveLineStart => state.input.move_to_start(),
+        KeyAction::MoveLineEnd => state.input.move_to_end(),
+        KeyAction::MoveWordLeft => state.input.move_word_left(),
+        KeyAction::MoveWordRight => state.input.move_word_right(),
+        KeyAction::MoveUp => state.input.recall_history(-1),
+        KeyAction::MoveDown => state.input.recall_history(1),
+        KeyAction::KillToLineStart => state.input.kill_to_line_start(),
+        KeyAction::KillToLineEnd => state.input.kill_to_line_end(),
+        KeyAction::KillWordBackward => state.input.kill_word_backward(),
+        KeyAction::ClearInput => state.input.clear(),
+        KeyAction::Submit => {
+            if state.mode == RunMode::Editing {
+                let text = state.input.submit();
+                if !text.trim().is_empty() {
+                    state.push_user(text);
+                    state.push_divider();
+                }
+            }
+        }
+        KeyAction::Abort => {
+            if state.mode == RunMode::Running {
+                state.mode = RunMode::Aborted;
+            } else {
+                state.input.clear();
+            }
+        }
+        KeyAction::Quit => state.mode = RunMode::Quitting,
+        KeyAction::SwitchModel | KeyAction::ShowHelp | KeyAction::ScrollUp | KeyAction::ScrollDown => {}
+        KeyAction::Noop => {}
+    }
+}
+
+// ====================================================================
+// Test 1: Empty state renders correctly (status bar, transcript, prompt, hints)
+// ====================================================================
+#[test]
+fn empty_state_layout_is_stable() {
+    let state = AppState::new("test-model");
+    let frame = render_to_text(&state, 80, 24);
+
+    // Status bar contains the model name and "[ready]"
+    assert!(
+        frame.contains("model=test-model"),
+        "status bar missing model name. Frame:\n{frame}"
+    );
+    assert!(
+        frame.contains("[ready]"),
+        "status bar missing mode. Frame:\n{frame}"
+    );
+
+    // Transcript area exists (empty line between status and prompt)
+    // Prompt editor block border with title "input"
+    assert!(
+        frame.contains("input"),
+        "prompt block missing 'input' title. Frame:\n{frame}"
+    );
+
+    // Key hints row at the bottom
+    assert!(frame.contains("F1"), "key hints missing F1. Frame:\n{frame}");
+    assert!(frame.contains("Ctrl+C"), "key hints missing Ctrl+C. Frame:\n{frame}");
+    assert!(frame.contains("Ctrl+D"), "key hints missing Ctrl+D. Frame:\n{frame}");
+    assert!(frame.contains("Enter"), "key hints missing Enter. Frame:\n{frame}");
+    assert!(frame.contains("Ctrl+L"), "key hints missing Ctrl+L. Frame:\n{frame}");
+}
+
+// ====================================================================
+// Test 2: Typing characters inserts them into the prompt
+// ====================================================================
+#[test]
+fn typing_appends_to_prompt() {
+    let mut state = AppState::new("test-model");
+    drive(&mut state, Key::char('h'));
+    drive(&mut state, Key::char('i'));
+    assert_eq!(state.input.text, "hi");
+    assert_eq!(state.input.cursor, 2);
+
+    let frame = render_to_text(&state, 80, 24);
+    assert!(frame.contains("hi"), "typed text missing from frame. Frame:\n{frame}");
+}
+
+// ====================================================================
+// Test 3: Backspace removes last character
+// ====================================================================
+#[test]
+fn backspace_removes_char() {
+    let mut state = AppState::new("test-model");
+    drive(&mut state, Key::char('a'));
+    drive(&mut state, Key::char('b'));
+    drive(&mut state, Key::char('c'));
+    assert_eq!(state.input.text, "abc");
+    drive(&mut state, Key::backspace());
+    assert_eq!(state.input.text, "ab");
+    assert_eq!(state.input.cursor, 2);
+}
+
+// ====================================================================
+// Test 4: Enter submits and pushes user message to transcript
+// ====================================================================
+#[test]
+fn enter_submits_and_pushes_user_message() {
+    let mut state = AppState::new("test-model");
+    for c in "hello".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    drive(&mut state, Key::enter());
+
+    assert_eq!(state.input.text, "", "input should be cleared after submit");
+    assert_eq!(state.transcript.len(), 2, "should have user line + divider");
+    assert!(matches!(&state.transcript[0], TranscriptLine::User(s) if s == "hello"));
+    assert!(matches!(&state.transcript[1], TranscriptLine::Divider));
+
+    let frame = render_to_text(&state, 80, 24);
+    assert!(frame.contains("> hello"), "transcript missing user message. Frame:\n{frame}");
+}
+
+// ====================================================================
+// Test 5: History navigation with up/down arrows
+// ====================================================================
+#[test]
+fn history_recall_via_arrow_keys() {
+    let mut state = AppState::new("test-model");
+    for c in "first".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    drive(&mut state, Key::enter());
+
+    for c in "second".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    drive(&mut state, Key::enter());
+
+    // Cursor in editing (no history selected). Up → previous
+    drive(&mut state, Key::new(crossterm::event::KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(state.input.text, "second");
+    drive(&mut state, Key::new(crossterm::event::KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(state.input.text, "first");
+    // Down → next
+    drive(&mut state, Key::new(crossterm::event::KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(state.input.text, "second");
+    drive(&mut state, Key::new(crossterm::event::KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(state.input.text, "");
+}
+
+// ====================================================================
+// Test 6: Ctrl+A goes to beginning of line (readline behavior)
+// ====================================================================
+#[test]
+fn ctrl_a_goes_to_line_start() {
+    let mut state = AppState::new("test-model");
+    for c in "hello world".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    // Cursor at end (position 11). Ctrl+A → 0.
+    assert_eq!(state.input.cursor, 11);
+    drive(&mut state, Key::new(crossterm::event::KeyCode::Char('a'), KeyModifiers::CTRL));
+    assert_eq!(state.input.text, "hello world");
+    assert_eq!(state.input.cursor, 0);
+}
+
+// ====================================================================
+// Test 7: Ctrl+K kills from cursor to end of line
+// ====================================================================
+#[test]
+fn ctrl_k_kills_to_line_end() {
+    let mut state = AppState::new("test-model");
+    for c in "hello world".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    state.input.move_to_start();
+    for _ in 0..6 {
+        drive(&mut state, Key::new(crossterm::event::KeyCode::Right, KeyModifiers::NONE));
+    }
+    drive(&mut state, Key::new(crossterm::event::KeyCode::Char('k'), KeyModifiers::CTRL));
+    assert_eq!(state.input.text, "hello ");
+    assert_eq!(state.input.cursor, 6);
+}
+
+// ====================================================================
+// Test 8: Ctrl+U clears the entire input
+// ====================================================================
+#[test]
+fn ctrl_u_clears_input() {
+    let mut state = AppState::new("test-model");
+    for c in "discard me".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    drive(&mut state, Key::new(crossterm::event::KeyCode::Char('u'), KeyModifiers::CTRL));
+    assert_eq!(state.input.text, "");
+    assert_eq!(state.input.cursor, 0);
+}
+
+// ====================================================================
+// Test 9: Word navigation with Ctrl+arrows
+// ====================================================================
+#[test]
+fn ctrl_arrows_navigate_words() {
+    let mut state = AppState::new("test-model");
+    for c in "one two three".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    // Cursor at end (position 13). Move word left.
+    drive(&mut state, Key::new(crossterm::event::KeyCode::Left, KeyModifiers::CTRL));
+    // move_word_left lands at the start of the trailing non-ws run.
+    // "one two three" @ pos 13 → strip "three" → "one two " @ 8 (start of "three")
+    assert_eq!(state.input.cursor, 8, "should land at start of 'three'");
+    // Step again → strip "two" → "one " @ 4 (start of "two")
+    drive(&mut state, Key::new(crossterm::event::KeyCode::Left, KeyModifiers::CTRL));
+    assert_eq!(state.input.cursor, 4, "should land at start of 'two'");
+}
+
+// ====================================================================
+// Test 10: Esc clears input when editing
+// ====================================================================
+#[test]
+fn esc_clears_input_when_editing() {
+    let mut state = AppState::new("test-model");
+    for c in "junk".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    drive(&mut state, Key::esc());
+    assert_eq!(state.input.text, "");
+}
+
+// ====================================================================
+// Test 11: Ctrl+D quits the TUI
+// ====================================================================
+#[test]
+fn ctrl_d_qui_tui() {
+    let mut state = AppState::new("test-model");
+    drive(&mut state, Key::new(crossterm::event::KeyCode::Char('d'), KeyModifiers::CTRL));
+    assert_eq!(state.mode, RunMode::Quitting);
+}
+
+// ====================================================================
+// Test 12: Transcript renders user/assistant/tool lines distinctly
+// ====================================================================
+#[test]
+fn transcript_renders_all_line_kinds() {
+    let mut state = AppState::new("test-model");
+    state.push_user("find bugs");
+    state.push_divider();
+    state.push_assistant("searching...");
+    state.push_divider();
+    state.push_tool_call("grep", "{\"pattern\":\"TODO\"}");
+    state.push_tool_result(true, "main.rs:42: // TODO: ...");
+    state.push_divider();
+
+    let frame = render_to_text(&state, 80, 24);
+    assert!(frame.contains("> find bugs"), "user line missing");
+    assert!(frame.contains("searching..."), "assistant line missing");
+    assert!(frame.contains("[tool call] grep"), "tool call label missing");
+    assert!(frame.contains("[tool result] main.rs:42"), "tool result label missing");
+}
+
+// ====================================================================
+// Test 13: Full E2E — drive keystrokes, then run a fixture agent,
+//            push events into the transcript, render, and snapshot.
+// ====================================================================
+#[tokio::test]
+async fn full_e2e_user_typed_command_then_agent_responds() {
+    use nini_tui::keys::{ default_keymap, resolve };
+    use crossterm::event::KeyCode;
+
+    let mut state = AppState::new("test-model");
+
+    // User types "echo hello" and submits
+    for c in "echo hello".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    drive(&mut state, Key::enter());
+    // State is now Editing with transcript = [User("echo hello"), Divider]
+
+    // Run a fixture agent that calls bash then echoes back
+    let provider = Arc::new(ProgrammedProvider::from_turns(vec![
+        vec![FixtureTurn::ToolCall {
+            name: "bash".to_string(),
+            args: serde_json::json!({"command": "echo hello"}),
+        }, FixtureTurn::Stop {
+            stop_reason: "tool_use".to_string(),
+            usage: Usage::default(),
+        }],
+        vec![FixtureTurn::Text("hello".to_string()), FixtureTurn::Stop {
+            stop_reason: "end_turn".to_string(),
+            usage: Usage::default(),
+        }],
+    ]));
+    let tools = ToolRegistry::new().register(Arc::new(BashTool::new()));
+    let mut agent = Agent::new(provider, tools, RunConfig::new("test-model"));
+    let mut stream = std::pin::pin!(agent.run(nini_core::AgentMessage::user("echo hello")));
+
+    // Feed events into transcript (this is what the TUI runtime will do)
+    let mut total_tokens = 0u32;
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(AgentEvent::TextDelta { text }) => state.push_assistant(text),
+            Ok(AgentEvent::ToolCallStart { name, .. }) => {
+                state.push_tool_call(name, "");
+            }
+            Ok(AgentEvent::ToolCallStop { id, input_json }) => {
+                // Update the last tool call line with the final args
+                if let Some(TranscriptLine::ToolCall { args, .. }) = state.transcript.last_mut() {
+                    *args = input_json.to_string();
+                } else {
+                    state.push_tool_call(id, input_json.to_string());
+                }
+            }
+            Ok(AgentEvent::ToolResult { output, .. }) => {
+                state.push_tool_result(!output.is_error, output.content);
+            }
+            Ok(AgentEvent::TurnEnd { usage, .. }) => {
+                total_tokens += usage.input_tokens + usage.output_tokens;
+                state.tokens.input += usage.input_tokens as u64;
+                state.tokens.output += usage.output_tokens as u64;
+                state.push_divider();
+            }
+            Ok(AgentEvent::Error { message }) => state.push_assistant(format!("error: {message}")),
+            _ => {}
+        }
+    }
+
+    // Final rendered frame should contain the user message, the tool call,
+    // the tool result, and the assistant's "hello".
+    let frame = render_to_text(&state, 100, 30);
+    assert!(frame.contains("> echo hello"), "user message missing in frame");
+    assert!(frame.contains("[tool call] bash"), "tool call line missing");
+    assert!(frame.contains("[tool result]"), "tool result line missing");
+    assert!(frame.contains("hello"), "assistant text missing");
+    // Key hints still visible
+    assert!(frame.contains("F1"));
+    assert!(frame.contains("Ctrl+C"));
+
+    // Token accounting is wired (even if zero from fixture)
+    let _ = total_tokens;
+
+    // Sanity: we processed some keystrokes via drive() — verify they didn't
+    // corrupt the state machine
+    assert!(resolve(&default_keymap(), Key::enter()) == KeyAction::Submit);
+    let _ = KeyCode::Backspace;
+}
+
+// ====================================================================
+// Test 14: Layout snapshot regression — exact pixel layout of empty TUI
+// ====================================================================
+#[test]
+fn empty_state_pixel_layout_regression() {
+    let state = AppState::new("test-model");
+    // 80x24 is the standard terminal size — verify we render cleanly
+    let frame = render_to_text(&state, 80, 24);
+    // The frame must have exactly 24 lines (one per row)
+    let line_count = frame.lines().count();
+    assert_eq!(line_count, 24, "expected 24 lines, got {line_count}");
+
+    // Status bar should be on line 0 (index 0)
+    let first_line = frame.lines().next().unwrap();
+    assert!(first_line.contains("nini"), "line 0 should contain 'nini' status bar, got: {first_line:?}");
+    assert!(first_line.contains("[ready]"), "line 0 should show [ready] mode, got: {first_line:?}");
+
+    // Prompt block ("input" border) should be in the bottom region.
+    // Layout: status(1) + transcript(min 3) + prompt(3) + hints(1) = 24
+    // prompt top border is at row 1+transcript_height. Since transcript is min(3)
+    // and area is 24, prompt starts at row 24 - 3 - 1 = 20.
+    let prompt_line_idx = 20;
+    let prompt_line = frame.lines().nth(prompt_line_idx).unwrap();
+    assert!(
+        prompt_line.contains("input") || prompt_line.contains("❯"),
+        "row {prompt_line_idx} should be prompt border or content, got: {prompt_line:?}"
+    );
+
+    // Last line (row 23) is the key hints
+    let hints_line = frame.lines().last().unwrap();
+    assert!(hints_line.contains("F1"), "last line should be hints, got: {hints_line:?}");
+    assert!(hints_line.contains("Ctrl+C"), "last line should mention Ctrl+C");
+}
+
+// ====================================================================
+// Test 15: Narrow terminal — prompt and transcript wrap correctly
+// ====================================================================
+#[test]
+fn narrow_terminal_handles_long_text() {
+    let mut state = AppState::new("test-model");
+    // Type a long line that exceeds 40 cols
+    let long = "a".repeat(60);
+    for c in long.chars() {
+        drive(&mut state, Key::char(c));
+    }
+    // Render in a 40-wide terminal
+    let frame = render_to_text(&state, 40, 12);
+    // Just assert it doesn't panic and the text is present somewhere
+    assert!(frame.contains("aaa"), "long text should be in frame");
+    let line_count = frame.lines().count();
+    assert_eq!(line_count, 12);
+}
+
+// ====================================================================
+// Test 16: Running mode shows [running...] in status bar
+// ====================================================================
+#[test]
+fn running_mode_status_bar() {
+    let mut state = AppState::new("test-model");
+    state.mode = RunMode::Running;
+    let frame = render_to_text(&state, 80, 24);
+    assert!(frame.contains("[running...]"), "running mode missing in frame");
+}
+
+// ====================================================================
+// Test 17: Aborted mode shows [aborted]
+// ====================================================================
+#[test]
+fn aborted_mode_status_bar() {
+    let mut state = AppState::new("test-model");
+    state.mode = RunMode::Aborted;
+    let frame = render_to_text(&state, 80, 24);
+    assert!(frame.contains("[aborted]"), "aborted mode missing in frame");
+}
+
+// ====================================================================
+// Test 18: Shift+Enter inserts a newline (multi-line input)
+// ====================================================================
+#[test]
+fn shift_enter_inserts_newline() {
+    use crossterm::event::KeyCode;
+    let mut state = AppState::new("test-model");
+    for c in "line1".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    drive(&mut state, Key::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    for c in "line2".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    assert_eq!(state.input.text, "line1\nline2");
+}
+
+// ====================================================================
+// Test 19: Submit with whitespace-only input does NOT add to transcript
+// ====================================================================
+#[test]
+fn whitespace_only_submit_is_silent() {
+    let mut state = AppState::new("test-model");
+    for c in "   ".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    drive(&mut state, Key::enter());
+    // No transcript lines added
+    assert!(state.transcript.is_empty(), "whitespace submit should not add to transcript");
+}
+
+// ====================================================================
+// Test 20: Full demo pipeline — like `nini demo` but driven through the TUI state machine
+// ====================================================================
+#[tokio::test]
+async fn full_demo_pipeline_through_tui_state() {
+    let mut state = AppState::new("test-model");
+
+    // User types the demo task and submits
+    for c in "find TODOs and fix them".chars() {
+        drive(&mut state, Key::char(c));
+    }
+    drive(&mut state, Key::enter());
+
+    // Run the scripted demo fixture
+    let cwd = std::env::current_dir().unwrap();
+    let provider = Arc::new(ProgrammedProvider::from_turns(vec![
+        vec![FixtureTurn::ToolCall {
+            name: "grep".to_string(),
+            args: serde_json::json!({"pattern": "TODO"}),
+        }, FixtureTurn::Stop {
+            stop_reason: "tool_use".to_string(),
+            usage: Usage::default(),
+        }],
+        vec![FixtureTurn::ToolCall {
+            name: "read".to_string(),
+            args: serde_json::json!({"path": "src/main.rs"}),
+        }, FixtureTurn::Stop {
+            stop_reason: "tool_use".to_string(),
+            usage: Usage::default(),
+        }],
+        vec![FixtureTurn::ToolCall {
+            name: "edit".to_string(),
+            args: serde_json::json!({"old_text": "TODO", "new_text": "DONE"}),
+        }, FixtureTurn::Stop {
+            stop_reason: "tool_use".to_string(),
+            usage: Usage::default(),
+        }],
+        vec![FixtureTurn::Text("Found and fixed TODOs.".to_string()),
+             FixtureTurn::Stop { stop_reason: "end_turn".to_string(), usage: Usage::default() }],
+    ]));
+    let tools = ToolRegistry::new().register(Arc::new(BashTool::new()));
+    let mut agent = Agent::new(provider, tools, RunConfig::new("test-model"));
+    let mut stream = std::pin::pin!(agent.run(nini_core::AgentMessage::user("find TODOs")));
+
+    while let Some(ev) = stream.next().await {
+        if let Ok(AgentEvent::TextDelta { text }) = ev {
+            state.push_assistant(text);
+        } else if let Ok(AgentEvent::ToolCallStart { name, .. }) = ev {
+            state.push_tool_call(name, "");
+        } else if let Ok(AgentEvent::ToolCallStop { input_json, .. }) = ev {
+            if let Some(TranscriptLine::ToolCall { args, .. }) = state.transcript.last_mut() {
+                *args = input_json.to_string();
+            }
+        } else if let Ok(AgentEvent::ToolResult { output, .. }) = ev {
+            state.push_tool_result(!output.is_error, output.content);
+        } else if let Ok(AgentEvent::TurnEnd { .. }) = ev {
+            state.push_divider();
+        }
+    }
+
+    // Render and assert the full pipeline produced visible output
+    let frame = render_to_text(&state, 100, 30);
+    assert!(frame.contains("> find TODOs"), "user message in transcript");
+    assert!(frame.contains("Found and fixed TODOs"), "final assistant text");
+    assert!(frame.contains("[tool call] grep"), "grep tool call rendered");
+    assert!(frame.contains("[tool call] read"), "read tool call rendered");
+    assert!(frame.contains("[tool call] edit"), "edit tool call rendered");
+
+    // Token totals still 0 from fixture (real providers would populate)
+    assert_eq!(state.tokens.input, 0);
+    assert_eq!(state.tokens.output, 0);
+
+    // Just to silence unused warnings on `cwd`
+    let _ = cwd;
+}
