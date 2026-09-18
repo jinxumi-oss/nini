@@ -19,7 +19,7 @@
 
 use futures_util::{FutureExt, StreamExt};
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
-use nini_core::ToolRegistry;
+use nini_core::tool::ToolRegistry;
 use nini_core::provider::Usage;
 use nini_tools::BashTool;
 use nini_tui::Key;
@@ -546,4 +546,594 @@ async fn full_pipeline_drive_keys_then_run_agent() {
         frame.contains("[ready]"),
         "status bar should be ready after completion"
     );
+}
+
+// =====================================================================
+// Regression: slash commands dispatched through submit_user_input (not apply_action)
+// Ensures the live runtime path intercepts /quit, /hotkeys, /model, /export
+// BEFORE spawning the agent. Without the fix these tests fail because slash
+// commands were forwarded to the agent driver as user text.
+// =====================================================================
+
+/// No-op agent driver that should NEVER be called for slash commands.
+fn noop_driver() -> AgentDriver {
+    Arc::new(|_user_msg, _sink, _done| {
+        tokio::spawn(async move {
+            unreachable!("agent driver must not be called for slash commands");
+        })
+    })
+}
+
+/// REGRESSION: /quit through submit_user_input sets mode to Quitting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slash_quit_via_submit_user_input() {
+    use nini_tui::runtime::submit_user_input;
+
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/quit".to_string();
+        s.input.cursor = 5;
+    }
+
+    // submit_user_input should intercept /quit without spawning the agent.
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert_eq!(snap.mode, RunMode::Quitting, "/quit should set Quitting mode");
+    // Transcript should be unchanged (no user message pushed for slash commands).
+    assert_eq!(snap.transcript.len(), 0, "/quit should not push to transcript");
+
+    // done must NOT be notified (no agent task was spawned).
+    let notified = timeout(Duration::from_millis(50), done.notified())
+        .await;
+    assert!(
+        notified.is_err(),
+        "agent driver must not have been called for /quit"
+    );
+}
+
+/// REGRESSION: /hotkeys through submit_user_input dispatches locally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slash_hotkeys_via_submit_user_input() {
+    use nini_tui::runtime::submit_user_input;
+
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/hotkeys".to_string();
+        s.input.cursor = 8;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert_eq!(snap.mode, RunMode::Editing, "/hotkeys should keep Editing mode");
+
+    // /hotkeys should push one assistant block with keybinding lines.
+    let assistant_lines: Vec<_> = snap
+        .transcript
+        .iter()
+        .filter_map(|l| l.as_assistant_text())
+        .collect();
+    assert!(!assistant_lines.is_empty(), "hotkeys should push assistant text");
+    let all_text = assistant_lines.join(" ");
+    assert!(
+        all_text.contains("Ctrl+C") && all_text.contains("Enter"),
+        "hotkeys output should contain keybinding text"
+    );
+
+    // Agent must NOT have been spawned.
+    let notified = timeout(Duration::from_millis(50), done.notified())
+        .await;
+    assert!(
+        notified.is_err(),
+        "agent driver must not have been called for /hotkeys"
+    );
+}
+
+/// REGRESSION: /model through submit_user_input updates state.model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slash_model_via_submit_user_input() {
+    use nini_tui::runtime::submit_user_input;
+
+    let state = AppState::new("old-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/model anthropic/claude-sonnet-4".to_string();
+        s.input.cursor = s.input.text.len();
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert_eq!(
+        snap.model, "anthropic/claude-sonnet-4",
+        "/model should update state.model"
+    );
+    assert_eq!(snap.mode, RunMode::Editing);
+
+    let notified = timeout(Duration::from_millis(50), done.notified())
+        .await;
+    assert!(
+        notified.is_err(),
+        "agent driver must not have been called for /model"
+    );
+}
+
+/// REGRESSION: /export through submit_user_input dispatches locally.
+/// Verifies the command dispatches without spawning the agent and the output
+/// contains a path matching `session-TIMESTAMP.html`. File-system write is
+/// covered by the dispatch-level integration test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slash_export_via_submit_user_input() {
+    use nini_tui::runtime::submit_user_input;
+
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/export".to_string();
+        s.input.cursor = 7;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+    let snap = shared.lock().unwrap().clone();
+    assert_eq!(snap.mode, RunMode::Editing);
+
+    // One assistant line should mention the export path.
+    let paths: Vec<_> = snap
+        .transcript
+        .iter()
+        .filter_map(|l| l.as_assistant_text())
+        .filter(|t| t.contains("export →"))
+        .collect();
+    assert!(!paths.is_empty(), "/export should push assistant text with path");
+
+    // The path should be `session-TIMESTAMP.html`.
+    let path_line = paths[0];
+    assert!(
+        path_line.contains("session-") && path_line.ends_with(".html"),
+        "path should be session-TIMESTAMP.html: {path_line}"
+    );
+
+    // Agent must NOT have been spawned.
+    let notified = timeout(Duration::from_millis(50), done.notified())
+        .await;
+    assert!(
+        notified.is_err(),
+        "agent driver must not have been called for /export"
+    );
+}
+
+/// REGRESSION: regular non-slash input still spawns the agent driver.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn regular_input_via_submit_user_input_still_spawns_agent() {
+    use nini_tui::runtime::submit_user_input;
+
+    // This test already exists (full_pipeline_drive_keys_then_run_agent) but
+    // we duplicate it here with a clearer name to document the split:
+    // slash → local dispatch, non-slash → agent driver.
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    let driver = fixture_driver(vec![vec![
+        FixtureTurn::Text("hello".to_string()),
+        FixtureTurn::Stop { stop_reason: "end_turn".to_string(), usage: Usage::default() },
+    ]]);
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "say hello".to_string();
+        s.input.cursor = s.input.text.len();
+    }
+
+    submit_user_input(&shared, &driver, done.clone());
+
+    // The agent should complete within 2 seconds.
+    timeout(Duration::from_secs(2), done.notified())
+        .await
+        .expect("agent should complete within 2s");
+
+    let snap = shared.lock().unwrap().clone();
+    assert_eq!(snap.mode, RunMode::Editing);
+    // User message should be in transcript (pushed before spawning agent).
+    assert!(snap.transcript.iter().any(|l| matches!(l, TranscriptLine::User(_))));
+    // Assistant response should be in transcript.
+    assert!(snap.transcript.iter().any(|l| {
+        l.as_assistant_text().map(|t| t == "hello").unwrap_or(false)
+    }));
+}
+
+/// REGRESSION: `!cmd` passthrough executes locally and pushes a BashExecution line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bang_cmd_passthrough_executes_locally() {
+    use nini_tui::runtime::submit_user_input;
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "!echo hello-from-bang".to_string();
+        s.input.cursor = 21;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert_eq!(snap.mode, RunMode::Editing);
+
+    // Transcript should contain a BashExecution line.
+    let bash_count = snap
+        .transcript
+        .iter()
+        .filter(|l| matches!(l, nini_tui::state::TranscriptLine::BashExecution { .. }))
+        .count();
+    assert!(bash_count >= 1, "!cmd should produce at least one BashExecution line");
+
+    // Agent must NOT have been spawned.
+    let notified = timeout(Duration::from_millis(50), done.notified()).await;
+    assert!(notified.is_err(), "agent driver must not have been called for !cmd");
+}
+
+/// REGRESSION: !!cmd (two bangs) does not crash and dispatches locally too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn double_bang_cmd_passthrough() {
+    use nini_tui::runtime::submit_user_input;
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "!!echo skipped-context".to_string();
+        s.input.cursor = 21;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert_eq!(snap.mode, RunMode::Editing);
+    let bash_count = snap
+        .transcript
+        .iter()
+        .filter(|l| matches!(l, nini_tui::state::TranscriptLine::BashExecution { .. }))
+        .count();
+    assert!(bash_count >= 1, "!!cmd should also produce a BashExecution line");
+}
+
+/// REGRESSION: /model with NO args signals the runtime to open the selector.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slash_model_no_args_signals_selector_open() {
+    use nini_tui::runtime::submit_user_input;
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/model".to_string();
+        s.input.cursor = 6;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert!(
+        snap.status.starts_with("open_selector:"),
+        "status should signal selector open, got: {}",
+        snap.status
+    );
+    assert_eq!(snap.model, "test-model", "model shouldn't change from empty /model");
+}
+
+/// REGRESSION: /thinking with NO args signals the runtime to open the selector.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slash_thinking_no_args_signals_selector_open() {
+    use nini_tui::runtime::submit_user_input;
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/thinking".to_string();
+        s.input.cursor = 9;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert!(
+        snap.status.starts_with("open_selector:"),
+        "status should signal selector open, got: {}",
+        snap.status
+    );
+}
+
+/// REGRESSION: /session with NO args signals the runtime to open the selector.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slash_session_no_args_signals_selector_open() {
+    use nini_tui::runtime::submit_user_input;
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/session".to_string();
+        s.input.cursor = 8;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert!(
+        snap.status.starts_with("open_selector:"),
+        "status should signal selector open, got: {}",
+        snap.status
+    );
+}
+
+/// REGRESSION: /tree with NO args signals the runtime to open the selector.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slash_tree_no_args_signals_selector_open() {
+    use nini_tui::runtime::submit_user_input;
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/tree".to_string();
+        s.input.cursor = 5;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert!(
+        snap.status.starts_with("open_selector:"),
+        "status should signal selector open, got: {}",
+        snap.status
+    );
+}
+
+/// REGRESSION: /trust with NO args signals the runtime to open the selector.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slash_trust_no_args_signals_selector_open() {
+    use nini_tui::runtime::submit_user_input;
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/trust".to_string();
+        s.input.cursor = 6;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert!(
+        snap.status.starts_with("open_selector:"),
+        "status should signal selector open, got: {}",
+        snap.status
+    );
+}
+
+/// REGRESSION: cycle_model advances through models_cycle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cycle_model_advances_through_models_cycle() {
+    let mut state = AppState::new("anthropic/claude-sonnet-4-5");
+    state.models_cycle = vec![
+        "anthropic/claude-sonnet-4-5".into(),
+        "anthropic/claude-haiku-4-5".into(),
+        "anthropic/claude-opus-4-7".into(),
+    ];
+    state.models_cycle_idx = Some(0);
+
+    nini_tui::runtime::apply_action(&mut state, Key::new(
+        crossterm::event::KeyCode::Char('p'),
+        nini_tui::KeyModifiers::CTRL,
+    ));
+    assert_eq!(state.model, "anthropic/claude-haiku-4-5");
+    assert_eq!(state.models_cycle_idx, Some(1));
+
+    nini_tui::runtime::apply_action(&mut state, Key::new(
+        crossterm::event::KeyCode::Char('p'),
+        nini_tui::KeyModifiers::CTRL,
+    ));
+    assert_eq!(state.model, "anthropic/claude-opus-4-7");
+    assert_eq!(state.models_cycle_idx, Some(2));
+
+    nini_tui::runtime::apply_action(&mut state, Key::new(
+        crossterm::event::KeyCode::Char('p'),
+        nini_tui::KeyModifiers::CTRL,
+    ));
+    assert_eq!(state.model, "anthropic/claude-sonnet-4-5");
+    assert_eq!(state.models_cycle_idx, Some(0));
+}
+
+/// REGRESSION: cycle_model_prev wraps backward.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cycle_model_prev_wraps_backward() {
+    let mut state = AppState::new("anthropic/claude-sonnet-4-5");
+    state.models_cycle = vec![
+        "anthropic/claude-sonnet-4-5".into(),
+        "anthropic/claude-haiku-4-5".into(),
+    ];
+    state.models_cycle_idx = Some(0);
+    nini_tui::runtime::apply_action(&mut state, Key::new(
+        crossterm::event::KeyCode::Char('p'),
+        nini_tui::KeyModifiers::CTRL | nini_tui::KeyModifiers::SHIFT,
+    ));
+    assert_eq!(state.model, "anthropic/claude-haiku-4-5");
+}
+
+/// REGRESSION: cycle_thinking advances through levels.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cycle_thinking_advances_through_levels() {
+    let mut state = AppState::new("test");
+    state.status = "thinking: medium".to_string();
+    nini_tui::runtime::apply_action(&mut state, Key::new(
+        crossterm::event::KeyCode::Char('t'),
+        nini_tui::KeyModifiers::CTRL,
+    ));
+    assert_eq!(state.status, "thinking: high");
+    nini_tui::runtime::apply_action(&mut state, Key::new(
+        crossterm::event::KeyCode::Char('t'),
+        nini_tui::KeyModifiers::CTRL,
+    ));
+    assert_eq!(state.status, "thinking: xhigh");
+}
+
+/// REGRESSION: cycle_model with empty cycle shows hint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cycle_model_empty_cycle_shows_hint() {
+    let mut state = AppState::new("test");
+    state.models_cycle = Vec::new();
+    nini_tui::runtime::apply_action(&mut state, Key::new(
+        crossterm::event::KeyCode::Char('p'),
+        nini_tui::KeyModifiers::CTRL,
+    ));
+    assert!(state.status.contains("no model cycle"));
+}
+
+/// REGRESSION: /settings with NO args signals the runtime to open the selector.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slash_settings_no_args_signals_selector_open() {
+    use nini_tui::runtime::submit_user_input;
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/settings".to_string();
+        s.input.cursor = 9;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    let snap = shared.lock().unwrap().clone();
+    assert!(
+        snap.status.starts_with("open_selector:"),
+        "status should signal selector open, got: {}",
+        snap.status
+    );
+}
+
+/// REGRESSION: user input during compaction is queued, not spawned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn submit_during_compaction_queues_message() {
+    use nini_tui::runtime::submit_user_input;
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    // Mark app as compacting (Pi parity: pendingNextTurnMessages
+    // are collected during compaction).
+    {
+        let mut s = shared.lock().unwrap();
+        s.is_compacting = true;
+        s.input.text = "queued message".to_string();
+        s.input.cursor = 14;
+    }
+
+    submit_user_input(&shared, &noop_driver(), done.clone());
+
+    // The message should be queued, NOT sent to the agent.
+    let snap = shared.lock().unwrap().clone();
+    assert_eq!(snap.pending_next_turn_messages, vec!["queued message".to_string()]);
+    // Agent must NOT have been spawned.
+    let notified = timeout(Duration::from_millis(50), done.notified()).await;
+    assert!(notified.is_err(), "agent driver must not have been called during compaction");
+    // Mode should not be Running (we didn't spawn).
+    assert_ne!(snap.mode, RunMode::Running);
+}
+
+/// REGRESSION: pending_next_turn_messages drained correctly after compaction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queue_is_drained_after_compaction_completes() {
+    use nini_tui::state::TranscriptLine;
+    let mut state = AppState::new("test-model");
+    state.pending_next_turn_messages.push("queued 1".into());
+    state.pending_next_turn_messages.push("queued 2".into());
+    // Drain the queue into a local Vec (avoids borrow conflict with
+    // push_user which mutably borrows state).
+    let drained: Vec<String> = state.pending_next_turn_messages.drain(..).collect();
+    for msg in drained {
+        state.push_user(msg);
+    }
+    assert!(state.pending_next_turn_messages.is_empty());
+    let user_count = state
+        .transcript
+        .iter()
+        .filter(|l| matches!(l, TranscriptLine::User(_)))
+        .count();
+    assert_eq!(user_count, 2);
+}
+
+/// REGRESSION: AgentSink maps PhaseChanged payload to state.status.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phase_changed_event_updates_state_status() {
+    use nini_tui::runtime::{AgentEventLite, AgentSink};
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let sink = AgentSink::new(shared.clone());
+    // Simulate the agent emitting phase transitions.
+    sink.push(AgentEventLite::PhaseChanged("Working".into()));
+    {
+        let s = shared.lock().unwrap();
+        assert_eq!(s.status, "Working");
+    }
+    sink.push(AgentEventLite::PhaseChanged("Compacting".into()));
+    {
+        let s = shared.lock().unwrap();
+        assert_eq!(s.status, "Compacting");
+    }
+    sink.push(AgentEventLite::PhaseChanged("Idle".into()));
+    {
+        let s = shared.lock().unwrap();
+        assert_eq!(s.status, "Idle");
+    }
+}
+
+/// REGRESSION: AgentSink handles all AgentEventLite variants without panicking.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_sink_handles_all_variants() {
+    use nini_tui::runtime::{AgentEventLite, AgentSink};
+    let state = AppState::new("test-model");
+    let shared = shared_state(state);
+    let sink = AgentSink::new(shared.clone());
+    // Fire one of every variant; none should panic.
+    sink.push(AgentEventLite::TextDelta("a".into()));
+    sink.push(AgentEventLite::ToolCallStart { name: "bash".into() });
+    sink.push(AgentEventLite::ToolCallStop { id: "tc-1".into(), args: "{}".into() });
+    sink.push(AgentEventLite::ToolResult { ok: true, content: "ok".into() });
+    sink.push(AgentEventLite::TurnEnd);
+    sink.push(AgentEventLite::Error("e".into()));
+    sink.push(AgentEventLite::Usage(10, 5));
+    sink.push(AgentEventLite::PhaseChanged("Working".into()));
+    // Should not have panicked. Note: pushing `Done` would reset status
+    // back to "ready" — so we assert before that.
+    let s = shared.lock().unwrap();
+    assert_eq!(s.status, "Working");
+    drop(s); // release lock before pushing Done (sink.push needs the lock)
+    sink.push(AgentEventLite::Done);
 }

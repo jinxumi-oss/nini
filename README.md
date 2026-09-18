@@ -4,7 +4,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.4--alpha-yellow)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-233%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-528%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -18,7 +18,7 @@ settings, and models.json keep working.
 - **Single 4.3 MB binary** instead of a Node.js toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **233 unit + integration tests** including property-based SSE fuzz
+- **528 unit + integration tests** including property-based SSE fuzz
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
 
@@ -121,24 +121,24 @@ output a "not yet implemented" message instead of taking real action.
 | Command | Argument | Status |
 |---|---|---|
 | `/settings` | — | stub |
-| `/model` | `<provider/model>` | full |
+| `/model` | `<provider/model>` | partial (sets state, not persisted) |
 | `/tree` | — | stub |
-| `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | full |
+| `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | partial (validates, not persisted) |
 | `/scoped-models` | — | stub |
 | `/export` | — | full (writes HTML to `~/.pi/agent/exports/`) |
 | `/import` | — | stub |
 | `/share` | — | stub |
-| `/copy` | — | full (prints to stdout) |
-| `/name` | `<name>` | full |
-| `/session` | — | full |
+| `/copy` | — | partial (prints to stdout, no clipboard) |
+| `/name` | `<name>` | partial (in-memory only, not persisted) |
+| `/session` | — | partial (in-memory state, no session file) |
 | `/changelog` | — | stub |
-| `/hotkeys` | — | full |
+| `/hotkeys` | — | full (keybinding list) |
 | `/fork` | — | stub |
 | `/clone` | — | stub |
-| `/trust` | — | stub |
+| `/trust` | — | partial (in-memory only) |
 | `/login` | `<provider>` | stub |
 | `/logout` | — | stub |
-| `/new` | — | full |
+| `/new` | — | full (clears transcript) |
 | `/compact` | — | stub |
 | `/resume` | — | stub |
 | `/reload` | — | full (re-reads skills) |
@@ -166,12 +166,13 @@ same session JSONL.
 These are intentional gaps and will be filled in subsequent releases.
 File an issue if you need any of them sooner.
 
-- 14 slash commands are stubbed (see table above)
+- 12 slash commands are stubbed; 11 are partial (see table above)
 - Compaction uses a deterministic local summary, not LLM-based
-- Session persistence (`--continue` / `--session <id>`) is not wired
+- Session persistence (`--continue` / `--session <id>`) is not wired into the TUI
 - 5 of ~51 Pi providers implemented natively; configure the rest via `models.json`
 - No OAuth / device-flow auth — env API keys only
-- No extension runtime (the `chord` equivalent is deferred to v2)
+- No extension runtime (deferred to v2)
+- Model/thinking/name changes are in-memory only; not persisted to `settings.json`
 
 ## Architecture
 
