@@ -354,22 +354,45 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     }
 }
 
-fn render_key_hints(f: &mut Frame, _state: &AppState, theme: &Theme, area: Rect) {
-    let hints = RLine::from(vec![
-        Span::styled(" F1 ", theme.bg_style("dim").fg(Color::White)),
-        Span::raw("help "),
-        Span::styled(" Ctrl+C ", theme.bg_style("dim").fg(Color::White)),
-        Span::raw("quit "),
-        Span::styled(" Ctrl+D ", theme.bg_style("dim").fg(Color::White)),
-        Span::raw("exit "),
-        Span::styled(" Enter ", theme.bg_style("dim").fg(Color::White)),
-        Span::raw("send "),
-        Span::styled(" Ctrl+L ", theme.bg_style("dim").fg(Color::White)),
-        Span::raw("model "),
-        Span::styled(" ↑↓ ", theme.bg_style("dim").fg(Color::White)),
-        Span::raw("history"),
-    ]);
-    f.render_widget(Paragraph::new(hints), area);
+fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    // Build hint segments dynamically based on the current mode.
+    // Pi shows different hints when editing vs running vs selecting —
+    // we mirror that with a small segment list.
+    let hints: Vec<(&str, &str)> = match state.mode {
+        RunMode::Editing => vec![
+            (" F1 ", "help "),
+            (" Enter ", "send "),
+            (" Shift+Enter ", "newline "),
+            (" Ctrl+L ", "model "),
+            (" Ctrl+C ", "quit "),
+        ],
+        RunMode::Running => vec![
+            (" Esc ", "abort "),
+            (" Ctrl+C ", "force-quit "),
+        ],
+        RunMode::Aborted => vec![
+            (" Enter ", "retry "),
+            (" Esc ", "clear "),
+        ],
+        RunMode::Quitting => vec![(" Ctrl+C ", "force-quit ")],
+    };
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut current_width = 0usize;
+    for (key, desc) in hints {
+        // Truncate gracefully when the footer would overflow the row.
+        let extra = key.len() + desc.len();
+        if current_width + extra > area.width as usize {
+            break;
+        }
+        spans.push(Span::styled(
+            key.to_string(),
+            theme.bg_style("dim").fg(Color::White),
+        ));
+        spans.push(Span::raw(desc.to_string()));
+        current_width += extra;
+    }
+    f.render_widget(Paragraph::new(RLine::from(spans)), area);
 }
 
 /// Render the slash-command completion popup above the prompt.
@@ -633,5 +656,68 @@ mod status_tests {
         std::env::set_var("HOME", "/home/testuser");
         let result = shorten_home(std::path::Path::new("/var/log"));
         assert_eq!(result, "/var/log");
+    }
+}
+
+#[cfg(test)]
+mod footer_tests {
+    use super::*;
+    use crate::state::AppState;
+
+    fn footer_text(state: &AppState) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(200, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_key_hints(f, state, &Theme::default(), f.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for x in 0..buf.area.width {
+            if let Some(c) = buf.cell((x, 0)) {
+                out.push_str(c.symbol());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn footer_editing_mode_shows_send_and_help() {
+        let state = AppState::new("m");
+        let text = footer_text(&state);
+        assert!(text.contains("F1"));
+        assert!(text.contains("help"));
+        assert!(text.contains("Enter"));
+        assert!(text.contains("send"));
+        // Editing mode should NOT show abort hint.
+        assert!(!text.contains("abort"));
+    }
+
+    #[test]
+    fn footer_running_mode_shows_abort() {
+        let mut state = AppState::new("m");
+        state.mode = RunMode::Running;
+        let text = footer_text(&state);
+        assert!(text.contains("Esc"));
+        assert!(text.contains("abort"));
+        // Running mode should NOT show send hint.
+        assert!(!text.contains("send"));
+    }
+
+    #[test]
+    fn footer_aborted_mode_shows_retry() {
+        let mut state = AppState::new("m");
+        state.mode = RunMode::Aborted;
+        let text = footer_text(&state);
+        assert!(text.contains("retry"));
+    }
+
+    #[test]
+    fn footer_quitting_mode_shows_force_quit() {
+        let mut state = AppState::new("m");
+        state.mode = RunMode::Quitting;
+        let text = footer_text(&state);
+        assert!(text.contains("force-quit"));
     }
 }
