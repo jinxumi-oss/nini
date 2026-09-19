@@ -1555,3 +1555,97 @@ use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
         assert_eq!(s.keep_recent_tokens, 20000);
     }
 }
+
+#[cfg(test)]
+mod demo {
+    use super::*;
+    use crate::entries::{
+        AgentMessage as EAM, AssistantMessage, SessionEntry, SessionMessageEntry,
+        StopReason as ESR, StringOrContentBlocks, ToolResultMessage, Usage, UserMessage,
+    };
+    use crate::entries::ContentBlock as ECB;
+    use crate::entries::Cost as ECost;
+
+    #[test]
+    fn demo_real_world_pi_format() {
+        let entries = vec![
+            SessionEntry::Message(SessionMessageEntry {
+                id: "u1".into(),
+                parent_id: None,
+                timestamp: "t".into(),
+                message: EAM::User(UserMessage {
+                    content: StringOrContentBlocks::String(
+                        "用 sqlx 写一个 user repository，不要用 diesel".into(),
+                    ),
+                    timestamp: 0,
+                }),
+            }),
+            SessionEntry::Message(SessionMessageEntry {
+                id: "a1".into(),
+                parent_id: Some("u1".into()),
+                timestamp: "t".into(),
+                message: EAM::Assistant(AssistantMessage {
+                    content: vec![
+                        ECB::Thinking {
+                            thinking: "User wants sqlx not diesel, prefers t_ prefix on tables."
+                                .into(),
+                        },
+                        ECB::ToolCall {
+                            id: "t1".into(),
+                            name: "edit".into(),
+                            arguments: serde_json::json!({
+                                "path": "/src/db/users.rs",
+                                "oldText": "diesel",
+                                "newText": "sqlx",
+                            }),
+                        },
+                    ],
+                    api: "anthropic".into(),
+                    provider: "anthropic".into(),
+                    model: "claude".into(),
+                    usage: Usage {
+                        input: 100,
+                        output: 50,
+                        cache_read: 0,
+                        cache_write: 0,
+                        total_tokens: 150,
+                        cost: ECost {
+                            input: 0.0,
+                            output: 0.0,
+                            cache_read: 0.0,
+                            cache_write: 0.0,
+                            total: 0.0,
+                        },
+                    },
+                    stop_reason: ESR::ToolUse,
+                    error_message: None,
+                    timestamp: 5,
+                }),
+            }),
+            SessionEntry::Message(SessionMessageEntry {
+                id: "tr1".into(),
+                parent_id: Some("a1".into()),
+                timestamp: "t".into(),
+                message: EAM::ToolResult(ToolResultMessage {
+                    tool_call_id: "t1".into(),
+                    tool_name: "edit".into(),
+                    content: vec![ECB::Text {
+                        text: "Successfully replaced 1 block(s).".into(),
+                    }],
+                    details: None,
+                    usage: None,
+                    is_error: false,
+                    timestamp: 6,
+                }),
+            }),
+        ];
+
+        let s = serialize_session_entries(&entries);
+        eprintln!("\n--- DEMO: real-world Pi-format conversation serialization ---\n{s}\n--- END ---\n");
+        // Sanity assertions
+        assert!(s.contains("[User]: 用 sqlx"));
+        assert!(s.contains("[Assistant thinking]: User wants sqlx"));
+        assert!(s.contains("[Assistant tool calls]: edit("));
+        assert!(s.contains("[Tool result]: Successfully replaced"));
+    }
+}
