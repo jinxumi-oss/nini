@@ -121,13 +121,13 @@ fn empty_state_layout_is_stable() {
     let state = AppState::new("test-model");
     let frame = render_to_text(&state, 80, 24);
 
-    // Status bar contains the model name and "[ready]"
+    // Status bar contains the model name. (New format: 'nini test-model | idle')
     assert!(
-        frame.contains("model=test-model"),
+        frame.contains("test-model"),
         "status bar missing model name. Frame:\n{frame}"
     );
     assert!(
-        frame.contains("[ready]"),
+        frame.contains("idle") || frame.contains("[ready]"),
         "status bar missing mode. Frame:\n{frame}"
     );
 
@@ -516,8 +516,8 @@ fn empty_state_pixel_layout_regression() {
         "line 0 should contain 'nini' status bar, got: {first_line:?}"
     );
     assert!(
-        first_line.contains("[ready]"),
-        "line 0 should show [ready] mode, got: {first_line:?}"
+        first_line.contains("idle") || first_line.contains("[ready]"),
+        "line 0 should show idle/[ready] mode, got: {first_line:?}"
     );
 
     // Prompt block ("input" border) should be in the bottom region.
@@ -570,8 +570,9 @@ fn running_mode_status_bar() {
     let mut state = AppState::new("test-model");
     state.mode = RunMode::Running;
     let frame = render_to_text(&state, 80, 24);
+    // New 5-state status bar shows 'working…' label + spinner.
     assert!(
-        frame.contains("[running...]"),
+        frame.contains("working") || frame.contains("running"),
         "running mode missing in frame"
     );
 }
@@ -583,8 +584,14 @@ fn running_mode_status_bar() {
 fn aborted_mode_status_bar() {
     let mut state = AppState::new("test-model");
     state.mode = RunMode::Aborted;
+    // Set the runtime status string to indicate abort.
+    state.status = "aborted".to_string();
     let frame = render_to_text(&state, 80, 24);
-    assert!(frame.contains("[aborted]"), "aborted mode missing in frame");
+    // Aborted is Idle phase; the status string carries the abort label.
+    assert!(
+        frame.contains("aborted") || frame.contains("[aborted]"),
+        "aborted mode missing in frame"
+    );
 }
 
 // ====================================================================

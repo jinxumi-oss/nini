@@ -579,6 +579,23 @@ pub struct AppState {
     pub scroll_offset: usize,
     /// User-visible status (e.g., "running...", "ready").
     pub status: String,
+    /// Current working directory for the status bar (e.g., "~/nini").
+    /// `None` until the runtime populates it.
+    pub cwd: Option<PathBuf>,
+    /// Current git branch name, if any. `None` outside a git repo or
+    /// before the runtime populates it. Mirrors Pi's footer.
+    pub git_branch: Option<String>,
+    /// Total estimated cost (USD) for the session, surfaced in the
+    /// status bar when non-zero. Mirrors Pi's footer.
+    pub cost_usd: f64,
+    /// Provider's context-window size (tokens). Used to compute
+    /// `context_percent` shown in the status bar. Mirrors Pi's
+    /// `getContextUsage()` percent.
+    pub context_window: u32,
+    /// Last API-reported `usage.input` token count. Combined with
+    /// `cache_read_tokens` and `context_window` to display a progress
+    /// bar in the status bar.
+    pub context_used: u32,
     /// Active selector panel (TreeSelector / SessionSelector / etc.).
     /// When `Some`, the runtime emits selector UI events on top of the
     /// transcript. Mirrors pi's selector stack.
@@ -610,6 +627,29 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Update session-level metadata shown in the status bar.
+    /// All fields are optional: pass `None` to clear.
+    pub fn set_status_bar_metadata(
+        &mut self,
+        cwd: Option<PathBuf>,
+        git_branch: Option<String>,
+    ) {
+        self.cwd = cwd;
+        self.git_branch = git_branch;
+    }
+
+    /// Update cost + context usage shown in the status bar.
+    pub fn set_status_bar_usage(
+        &mut self,
+        cost_usd: f64,
+        context_window: u32,
+        context_used: u32,
+    ) {
+        self.cost_usd = cost_usd;
+        self.context_window = context_window;
+        self.context_used = context_used;
+    }
+
     /// Cheap clone for the render loop. Skips the `selector` field
     /// (Box<dyn SelectorState> doesn't implement Clone).
     pub fn clone_for_render(&self) -> Self {
@@ -630,6 +670,11 @@ impl AppState {
             abort_signal: self.abort_signal.clone(),
             scroll_offset: self.scroll_offset,
             is_compacting: self.is_compacting,
+            cwd: self.cwd.clone(),
+            git_branch: self.git_branch.clone(),
+            cost_usd: self.cost_usd,
+            context_window: self.context_window,
+            context_used: self.context_used,
             autoscroll: self.autoscroll,
             completion: self.completion.clone(),
             session: self.session.clone(),
@@ -663,6 +708,11 @@ impl AppState {
             autoscroll: true,
             scroll_offset: 0,
             status: "ready".to_string(),
+            cwd: None,
+            git_branch: None,
+            cost_usd: 0.0,
+            context_window: 0,
+            context_used: 0,
             completion: None,
             session: None,
             session_path: None,

@@ -294,10 +294,12 @@ async fn token_usage_accumulates() {
     assert_eq!(snapshot.tokens.input, 300);
     assert_eq!(snapshot.tokens.output, 150);
 
-    // Render and verify status bar shows totals
+    // Render and verify status bar shows totals. New status-bar
+    // format: 'in 300 | out 150' (with optional K/M suffix for
+    // large values, but raw integers for small totals).
     let frame = render(&snapshot, 100, 24);
-    assert!(frame.contains("in=300"), "input token total missing");
-    assert!(frame.contains("out=150"), "output token total missing");
+    assert!(frame.contains("in 300"), "input token total missing");
+    assert!(frame.contains("out 150"), "output token total missing");
 }
 
 // =====================================================================
@@ -350,10 +352,11 @@ async fn running_mode_visible_while_agent_runs() {
     // Set mode to Running (simulating what submit does)
     shared.lock().unwrap().mode = nini_tui::state::RunMode::Running;
 
-    // Render before any events arrive
+    // Render before any events arrive. The new 5-state status bar
+    // shows the spinner + 'working…' label when RunMode is Running.
     let frame_before = render(&shared.lock().unwrap().clone(), 80, 24);
     assert!(
-        frame_before.contains("[running...]"),
+        frame_before.contains("working") || frame_before.contains("running"),
         "running indicator missing"
     );
 
@@ -368,7 +371,11 @@ async fn running_mode_visible_while_agent_runs() {
     // Final Done
     sink.push(AgentEventLite::Done);
     let frame_done = render(&shared.lock().unwrap().clone(), 80, 24);
-    assert!(frame_done.contains("[ready]"), "should be back to ready");
+    // New 5-state status bar shows 'idle' when not running.
+    assert!(
+        frame_done.contains("idle") || frame_done.contains("[ready]"),
+        "should be back to ready"
+    );
     assert!(
         !frame_done.contains("[running...]"),
         "should not be running anymore"

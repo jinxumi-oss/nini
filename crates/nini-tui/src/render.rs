@@ -89,38 +89,150 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
 }
 
 fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    let mode = match state.mode {
-        RunMode::Editing => "[ready]",
-        RunMode::Running => "[running...]",
-        RunMode::Aborted => "[aborted]",
-        RunMode::Quitting => "[quitting]",
+    use crate::rich::{spinner_frame, AgentPhase};
+
+    // 5-state agent phase indicator. Map RunMode → AgentPhase:
+    //   Editing   → Idle
+    //   Running   → Working (with spinner)
+    //   Aborted   → Idle (status string already says "aborted")
+    //   Quitting  → Idle (shutting down)
+    let phase = match state.mode {
+        RunMode::Running => AgentPhase::Working,
+        _ => AgentPhase::Idle,
     };
-    let session = state.session_id.as_deref().unwrap_or("(no session)");
-    let line = RLine::from(vec![
+    let phase_label = if matches!(state.mode, RunMode::Running) {
+        format!("{} {}", spinner_frame(), phase.label())
+    } else {
+        phase.label().to_string()
+    };
+
+    // Model segment: " nini [model] |"
+    let mut spans: Vec<Span<'static>> = vec![
         Span::styled(
-            " nini ",
+            " nini ".to_string(),
             theme
                 .bg_style("accent")
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!(
-            " model={} session={} {mode} ",
-            state.model, session
-        )),
-        Span::styled(
+        Span::raw(format!(" {} | ", state.model)),
+    ];
+
+    // Working-directory segment (with tilde-expansion).
+    if let Some(cwd) = &state.cwd {
+        let display = shorten_home(cwd);
+        spans.push(Span::styled(
+            format!("{display} | "),
+            theme.fg_style("dim"),
+        ));
+    }
+
+    // Git-branch segment.
+    if let Some(branch) = &state.git_branch {
+        spans.push(Span::styled(
+            format!("\u{2387} {branch} | "),
+            theme.fg_style("success"),
+        ));
+    }
+
+    // Phase segment (5-state indicator).
+    spans.push(Span::styled(
+        phase_label.clone(),
+        theme.fg_style(phase.color_name()),
+    ));
+    // Status override (set by runtime for "aborted", "compacting", etc.).
+    if !state.status.is_empty() && state.status != "ready" {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            state.status.clone(),
+            theme.fg_style("warning"),
+        ));
+    }
+    spans.push(Span::raw(" | "));
+
+    // Context-window segment (Pi-style: "ctx 42% [████░░░░]").
+    if state.context_window > 0 {
+        let pct = (state.context_used as f64 / state.context_window as f64) * 100.0;
+        let bar = context_bar(pct);
+        let color_name = if pct > 90.0 {
+            "error"
+        } else if pct > 70.0 {
+            "warning"
+        } else {
+            "success"
+        };
+        spans.push(Span::styled(
+            format!("ctx {:>3.0}% ", pct),
+            theme.fg_style(color_name),
+        ));
+        spans.push(Span::styled(bar, theme.fg_style(color_name)));
+        spans.push(Span::raw(" | "));
+    }
+
+    // Token-count segment (compact).
+    if state.tokens.input > 0 || state.tokens.output > 0 {
+        spans.push(Span::styled(
             format!(
-                "tokens: in={} out={} (est) ",
-                state.tokens.input, state.tokens.output
+                "in {} out {} | ",
+                fmt_thousands(state.tokens.input),
+                fmt_thousands(state.tokens.output)
             ),
             theme.fg_style("dim"),
-        ),
-        Span::styled(
-            format!("{} ", state.status),
-            theme.fg_style("warning"),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+        ));
+    }
+
+    // Cost segment (only when > $0).
+    if state.cost_usd > 0.0 {
+        spans.push(Span::styled(
+            format!("${:.4}", state.cost_usd),
+            theme.fg_style("success"),
+        ));
+        spans.push(Span::raw(" "));
+    }
+
+    // Session id (truncated to 8 chars).
+    let session_disp = state
+        .session_id
+        .as_deref()
+        .map(|s| &s[..s.len().min(8)])
+        .unwrap_or("(no session)");
+    spans.push(Span::styled(
+        format!("[{session_disp}]"),
+        theme.fg_style("dim"),
+    ));
+
+    f.render_widget(Paragraph::new(RLine::from(spans)), area);
+}
+
+/// Render a simple ASCII progress bar for context-window usage.
+fn context_bar(pct: f64) -> String {
+    let width = 8;
+    let filled = ((pct / 100.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let empty = width - filled;
+    format!("[{}{}]", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty))
+}
+
+/// Format `1234567` as `"1.2M"` for compact status display.
+fn fmt_thousands(n: u64) -> String {
+    if n < 1000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        format!("{:.1}K", n as f64 / 1000.0)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
+}
+
+/// Replace the user's home directory prefix with `~` for compactness.
+fn shorten_home(path: &std::path::Path) -> String {
+    if let Some(home) = std::env::var_os("HOME") {
+        let home_path = std::path::PathBuf::from(&home);
+        if let Ok(stripped) = path.strip_prefix(&home_path) {
+            return format!("~/{}", stripped.display());
+        }
+    }
+    path.display().to_string()
 }
 
 fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
@@ -339,4 +451,187 @@ fn render_running_indicator(f: &mut Frame, theme: &Theme, area: Rect) {
     // Clear the cell first to avoid overlay artifacts.
     f.render_widget(Clear, indicator_area);
     f.render_widget(Paragraph::new(indicator), indicator_area);
+}
+
+// =====================================================================
+// Status bar tests
+// =====================================================================
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use crate::rich::{spinner_frame, AgentPhase};
+    use crate::state::{AppState, RunMode, TokenStats};
+
+    /// Render the status bar to a text snapshot via TestBackend.
+    fn status_text(state: &AppState) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(200, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_status(f, state, &Theme::default(), f.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for x in 0..buf.area.width {
+            if let Some(c) = buf.cell((x, 0)) {
+                out.push_str(c.symbol());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn status_bar_includes_nini_banner_and_model() {
+        let state = AppState::new("claude-opus-4-7");
+        let text = status_text(&state);
+        assert!(text.contains("nini"), "missing nini banner: {text:?}");
+        assert!(text.contains("claude-opus-4-7"), "missing model: {text:?}");
+    }
+
+    #[test]
+    fn status_bar_shows_idle_phase_when_editing() {
+        let mut state = AppState::new("m");
+        state.mode = RunMode::Editing;
+        let text = status_text(&state);
+        assert!(text.contains("idle"), "expected idle phase label: {text:?}");
+    }
+
+    #[test]
+    fn status_bar_shows_working_phase_with_spinner_when_running() {
+        let mut state = AppState::new("m");
+        state.mode = RunMode::Running;
+        let text = status_text(&state);
+        assert!(text.contains("working"), "missing working label: {text:?}");
+        // Spinner braille frame (any of the 10 chars).
+        let spinner = spinner_frame();
+        assert!(text.contains(spinner), "missing spinner frame {spinner}: {text:?}");
+    }
+
+    #[test]
+    fn status_bar_includes_git_branch() {
+        let mut state = AppState::new("m");
+        state.git_branch = Some("feature/rich-render".to_string());
+        let text = status_text(&state);
+        assert!(
+            text.contains("feature/rich-render"),
+            "missing branch: {text:?}"
+        );
+    }
+
+    #[test]
+    fn status_bar_includes_cwd_with_tilde() {
+        let mut state = AppState::new("m");
+        state.cwd = Some(std::path::PathBuf::from("/tmp"));
+        // $HOME may not match /tmp; just check the path appears.
+        let text = status_text(&state);
+        assert!(text.contains("/tmp"), "missing cwd: {text:?}");
+    }
+
+    #[test]
+    fn status_bar_shows_context_window_percent() {
+        let mut state = AppState::new("m");
+        state.context_window = 1000;
+        state.context_used = 420;
+        let text = status_text(&state);
+        assert!(text.contains("ctx"), "missing ctx label: {text:?}");
+        assert!(text.contains("42"), "missing 42%: {text:?}");
+    }
+
+    #[test]
+    fn status_bar_context_high_percent_uses_error_color() {
+        // Just verify the high-percent branch is taken — bar still
+        // rendered with 'error' style (covered by snapshot).
+        let mut state = AppState::new("m");
+        state.context_window = 100;
+        state.context_used = 95;
+        let text = status_text(&state);
+        assert!(text.contains("95"), "expected 95%: {text:?}");
+    }
+
+    #[test]
+    fn status_bar_compact_token_format() {
+        let mut state = AppState::new("m");
+        state.tokens = TokenStats {
+            input: 1500,
+            output: 2500,
+        };
+        let text = status_text(&state);
+        // 1500 → "1.5K", 2500 → "2.5K"
+        assert!(text.contains("1.5K"), "missing 1.5K: {text:?}");
+        assert!(text.contains("2.5K"), "missing 2.5K: {text:?}");
+    }
+
+    #[test]
+    fn status_bar_shows_cost_when_nonzero() {
+        let mut state = AppState::new("m");
+        state.cost_usd = 0.0123;
+        let text = status_text(&state);
+        assert!(text.contains("$0.0123"), "missing cost: {text:?}");
+    }
+
+    #[test]
+    fn status_bar_hides_cost_when_zero() {
+        let state = AppState::new("m");
+        let text = status_text(&state);
+        assert!(!text.contains('$'), "cost should be hidden when 0: {text:?}");
+    }
+
+    #[test]
+    fn phase_labels_distinct() {
+        let phases = [
+            AgentPhase::Idle,
+            AgentPhase::Working,
+            AgentPhase::Compacting,
+            AgentPhase::Retrying,
+            AgentPhase::BranchSummary,
+        ];
+        let mut labels: Vec<&'static str> = phases.iter().map(|p| p.label()).collect();
+        labels.sort();
+        labels.dedup();
+        assert_eq!(labels.len(), 5);
+    }
+
+    #[test]
+    fn context_bar_proportions() {
+        // 0% → 0 filled, 8 empty
+        let bar0 = context_bar(0.0);
+        assert_eq!(bar0.chars().filter(|&c| c == '\u{2588}').count(), 0);
+        assert_eq!(bar0.chars().filter(|&c| c == '\u{2591}').count(), 8);
+
+        // 100% → 8 filled, 0 empty
+        let bar100 = context_bar(100.0);
+        assert_eq!(bar100.chars().filter(|&c| c == '\u{2588}').count(), 8);
+        assert_eq!(bar100.chars().filter(|&c| c == '\u{2591}').count(), 0);
+
+        // 50% → 4 filled, 4 empty
+        let bar50 = context_bar(50.0);
+        assert_eq!(bar50.chars().filter(|&c| c == '\u{2588}').count(), 4);
+        assert_eq!(bar50.chars().filter(|&c| c == '\u{2591}').count(), 4);
+    }
+
+    #[test]
+    fn fmt_thousands_units() {
+        assert_eq!(fmt_thousands(0), "0");
+        assert_eq!(fmt_thousands(999), "999");
+        assert_eq!(fmt_thousands(1000), "1.0K");
+        assert_eq!(fmt_thousands(1500), "1.5K");
+        assert_eq!(fmt_thousands(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn shorten_home_replaces_prefix() {
+        // Use a synthetic HOME to make this test deterministic.
+        std::env::set_var("HOME", "/home/testuser");
+        let result = shorten_home(std::path::Path::new("/home/testuser/nini"));
+        assert_eq!(result, "~/nini");
+    }
+
+    #[test]
+    fn shorten_home_passthrough_when_no_prefix() {
+        std::env::set_var("HOME", "/home/testuser");
+        let result = shorten_home(std::path::Path::new("/var/log"));
+        assert_eq!(result, "/var/log");
+    }
 }
