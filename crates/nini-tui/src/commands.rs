@@ -357,8 +357,22 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             let path = match dir {
                 Some(d) => {
                     let _ = std::fs::create_dir_all(&d);
-                    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S-%6f"); // microseconds for parallel-safety
-                    let p = d.join(format!("session-{ts}.html"));
+                    // Filename: session-{ts_us}-{pid}-{tid}.html
+                    // Microsecond + pid + tid ensures parallel-safe unique
+                    // filenames even when two threads write in the
+                    // same microsecond (cargo test --test-threads>1).
+                    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S-%6f");
+                    let pid = std::process::id();
+                    // Use a thread-id fallback: std::thread::current().id()
+                    // returns a non-Hash ThreadId; format its debug repr
+                    // (e.g. "ThreadId(N)") which is process-unique.
+                    let tid = format!("{:?}", std::thread::current().id())
+                        .chars()
+                        .filter(|c| c.is_ascii_digit())
+                        .collect::<String>();
+                    let p = d.join(format!(
+                        "session-{ts}-{pid}-t{tid}.html"
+                    ));
                     if std::fs::write(&p, &html).is_ok() {
                         p.display().to_string()
                     } else {
