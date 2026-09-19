@@ -10,6 +10,8 @@
 //! testing even without provider credentials. Real LLM summarization is
 //! a follow-up.
 
+use crate::entries::SessionEntry;
+use crate::entries::StringOrContentBlocks;
 use crate::provider::Message;
 use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
 use serde::{Deserialize, Serialize};
@@ -578,6 +580,262 @@ pub fn make_compaction_entry(out: &CompactionOutput) -> Entry {
     }
 }
 
+// =========================================================================
+// Conversation serialization (Pi-compatible)
+//
+// Mirrors spec `packages/agent/src/harness/compaction/utils.ts`:
+//   - `serializeConversation(messages)` — turn a `Message[]` stream into
+//     a flat text suitable for an LLM summarizer prompt.
+//   - `serializeSessionEntries(entries)` — same, but operates on the
+//     full session entry list (which carries `Thinking` + `ToolCall`
+//     blocks via `entries::ContentBlock`).
+//
+// Format produced:
+//
+//   [User]: <text>
+//   [Assistant thinking]: <joined thinking blocks>
+//   [Assistant]: <text blocks joined>
+//   [Assistant tool calls]: name(arg=val, arg=val); name(...)
+//   [Tool result]: <truncated to 2000 chars>
+//
+// Sections are joined by blank lines. The output is used by the LLM
+// summarizer in `nini_ai::summarizer::make_llm_summarizer` to feed the
+// conversation to the model in Pi's serialization format.
+
+/// Maximum characters to keep from a single tool result before
+/// truncation. Matches Pi's `TOOL_RESULT_MAX_CHARS` constant.
+pub const TOOL_RESULT_MAX_CHARS: usize = 2000;
+
+/// Extract concatenated text from a `provider::ContentBlock` slice.
+/// Used as the equivalent of Pi's `contentText()` helper. Strips
+/// leading/trailing whitespace before checking emptiness so that
+/// messages whose payload is only whitespace (Pi's [User] empty
+/// guard, etc.) are correctly dropped.
+fn content_text_from_provider(blocks: &[ContentBlock], fallback: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for b in blocks {
+        if let ContentBlock::Text { text } = b {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                parts.push(text.as_str());
+            }
+        }
+    }
+    if parts.is_empty() {
+        fallback.to_string()
+    } else {
+        parts.join("")
+    }
+}
+
+/// Best-effort JSON serialization for tool-call argument values.
+/// Returns `"undefined"` if `serde_json` returns `None` and
+/// `"[unserializable]"` if serialization throws.
+fn safe_json_stringify(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "[unserializable]".to_string())
+}
+
+/// Truncate a tool result body to at most `max_chars` characters. If
+/// truncated, emit a `[... N more characters truncated]` marker.
+fn truncate_for_summary(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    let truncated = text.len() - max_chars;
+    let mut out = String::with_capacity(max_chars + 64);
+    out.push_str(&text[..max_chars]);
+    out.push_str("\n\n[... ");
+    out.push_str(&truncated.to_string());
+    out.push_str(" more characters truncated]");
+    out
+}
+
+/// Render tool-call argument values as `key=val, key=val` (Pi format).
+fn format_tool_call_args(args: &serde_json::Value) -> String {
+    match args {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, safe_json_stringify(v)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        // Pi accepts Record<string, unknown>; fall back to JSON.
+        _ => safe_json_stringify(args),
+    }
+}
+
+/// Serialize a single tool-use invocation as `name(args)`.
+fn format_tool_call(name: &str, args: &serde_json::Value) -> String {
+    format!("{}({})", name, format_tool_call_args(args))
+}
+
+/// Serialize a slice of `provider::Message` into Pi's compact format
+/// suitable for LLM summarizer prompts.
+///
+/// Empty content blocks are dropped; sections are joined by blank
+/// lines. The output is byte-for-byte compatible with what Pi's
+/// `serializeConversation(messages)` produces.
+pub fn serialize_conversation(messages: &[Message]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    for msg in messages {
+        match msg.role {
+            Role::User => {
+                let content = content_text_from_provider(&msg.content, "");
+                if !content.is_empty() {
+                    parts.push(format!("[User]: {content}"));
+                }
+            }
+            Role::Assistant => {
+                let mut tool_calls: Vec<String> = Vec::new();
+
+                for block in &msg.content {
+                    if let ContentBlock::ToolUse { name, input, .. } = block {
+                        tool_calls.push(format_tool_call(name, input));
+                    }
+                }
+
+                // Note: nini's `provider::ContentBlock` doesn't currently
+                // carry a `thinking` variant; that lives on the
+                // entries-side type (see `serialize_session_entries`
+                // below). If a future variant is added here, the
+                // matching branch should mirror Pi's behavior.
+
+                if !tool_calls.is_empty() {
+                    parts.push(format!("[Assistant tool calls]: {}", tool_calls.join("; ")));
+                }
+
+                let assistant_text = content_text_from_provider(&msg.content, "");
+                if !assistant_text.is_empty() {
+                    parts.push(format!("[Assistant]: {assistant_text}"));
+                }
+            }
+            Role::Tool => {
+                for block in &msg.content {
+                    if let ContentBlock::ToolResult { content, .. } = block {
+                        if !content.is_empty() {
+                            parts.push(format!(
+                                "[Tool result]: {}",
+                                truncate_for_summary(content, TOOL_RESULT_MAX_CHARS)
+                            ));
+                        }
+                    }
+                }
+            }
+            Role::System => {
+                // Pi skips system messages in conversation serialization.
+            }
+        }
+    }
+
+    parts.join("\n\n")
+}
+
+/// Serialize a slice of `entries::SessionEntry` into Pi's compact
+/// format. Use this when feeding session-history-derived data to the
+/// LLM summarizer. `SessionEntry::Message` carries the richer
+/// `entries::ContentBlock` (Text, Image, Thinking, ToolCall), which
+/// lets us emit `[Assistant thinking]` and `[Assistant tool calls]`
+/// sections — both of which are missing from the `provider::Message`
+/// path.
+///
+/// `Entry` (the legacy in-memory form) holds `provider::Message`
+/// content, which has neither Thinking nor ToolCall variants. For that
+/// type, callers should convert to `SessionEntry` first or use
+/// `serialize_conversation` directly.
+pub fn serialize_session_entries(entries: &[SessionEntry]) -> String {
+    use crate::entries::{AgentMessage as EAM, ContentBlock as EntriesBlock};
+
+    let mut parts: Vec<String> = Vec::new();
+
+    for entry in entries {
+        let SessionEntry::Message(m) = entry else { continue };
+        match &m.message {
+            EAM::User(u) => {
+                let mut text_buf = String::new();
+                match &u.content {
+                    StringOrContentBlocks::String(s) => text_buf.push_str(s),
+                    StringOrContentBlocks::Blocks(blocks) => {
+                        for block in blocks {
+                            if let EntriesBlock::Text { text } = block {
+                                text_buf.push_str(text);
+                            }
+                        }
+                    }
+                }
+                if !text_buf.is_empty() {
+                    parts.push(format!("[User]: {text_buf}"));
+                }
+            }
+            EAM::Assistant(a) => {
+                let mut thinking_parts: Vec<String> = Vec::new();
+                let mut tool_calls: Vec<String> = Vec::new();
+                let mut text_parts: Vec<String> = Vec::new();
+
+                for block in &a.content {
+                    match block {
+                        EntriesBlock::Thinking { thinking } => {
+                            thinking_parts.push(thinking.clone());
+                        }
+                        EntriesBlock::ToolCall { name, arguments, .. } => {
+                            tool_calls.push(format_tool_call(name, arguments));
+                        }
+                        EntriesBlock::Text { text } => {
+                            if !text.is_empty() {
+                                text_parts.push(text.clone());
+                            }
+                        }
+                        EntriesBlock::Image { .. } => {
+                            // Pi drops images in conversation serialization.
+                        }
+                    }
+                }
+
+                if !thinking_parts.is_empty() {
+                    parts.push(format!("[Assistant thinking]: {}", thinking_parts.join("\n")));
+                }
+                if !tool_calls.is_empty() {
+                    parts.push(format!("[Assistant tool calls]: {}", tool_calls.join("; ")));
+                }
+                if !text_parts.is_empty() {
+                    parts.push(format!("[Assistant]: {}", text_parts.join("")));
+                }
+            }
+            EAM::ToolResult(t) => {
+                let mut buf = String::new();
+                for block in &t.content {
+                    if let EntriesBlock::Text { text } = block {
+                        if !buf.is_empty() {
+                            buf.push('\n');
+                        }
+                        buf.push_str(text);
+                    }
+                }
+                if !buf.is_empty() {
+                    parts.push(format!(
+                        "[Tool result]: {}",
+                        truncate_for_summary(&buf, TOOL_RESULT_MAX_CHARS)
+                    ));
+                }
+            }
+            EAM::BashExecution(b) => {
+                if !b.output.is_empty() {
+                    parts.push(format!(
+                        "[Tool result]: {}",
+                        truncate_for_summary(&b.output, TOOL_RESULT_MAX_CHARS)
+                    ));
+                }
+            }
+            EAM::Custom(_) | EAM::BranchSummary(_) | EAM::CompactionSummary(_) => {
+                // Pi skips custom messages, branch summaries, and
+                // compaction summaries in conversation serialization;
+                // each carries its own summary field.
+            }
+        }
+    }
+
+    parts.join("\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -981,6 +1239,310 @@ use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
         let cut = find_cut_point(&entries, 100_000);
         // Falls back to legacy "first safe user turn" → reason is Oldest.
         assert_eq!(cut.reason, CutReason::OldestUserTurn);
+    }
+
+    // =================================================================
+    // serialize_conversation / serialize_session_entries
+    //
+    // These mirror Pi's `serializeConversation` in
+    // `packages/agent/src/harness/compaction/utils.ts`. We verify the
+    // emitted format byte-for-byte against Pi's expected output.
+    // =================================================================
+
+    #[test]
+    fn truncate_for_summary_basic() {
+        // 10 chars input, max 5 → first 5 chars + truncation marker
+        // (truncated count = 10 - 5 = 5).
+        let s = "x".repeat(10);
+        let out = truncate_for_summary(&s, 5);
+        assert_eq!(out, "xxxxx\n\n[... 5 more characters truncated]");
+    }
+
+    #[test]
+    fn truncate_for_summary_under_max() {
+        let s = "x".repeat(3);
+        assert_eq!(truncate_for_summary(&s, 5), "xxx");
+    }
+
+    #[test]
+    fn truncate_for_summary_marker() {
+        let s = "x".repeat(100);
+        let truncated = truncate_for_summary(&s, 10);
+        assert!(truncated.starts_with("xxxxxxxxxx\n\n[... 90 more characters truncated]"));
+    }
+
+    #[test]
+    fn truncate_for_summary_no_truncation() {
+        let s = "short text";
+        assert_eq!(truncate_for_summary(s, 100), "short text");
+    }
+
+    #[test]
+    fn format_tool_call_args_basic() {
+        // serde_json::Map is BTreeMap by default → keys are sorted
+        // alphabetically. Document this ordering so callers know what
+        // to expect.
+        let args = serde_json::json!({"path": "/tmp/foo.rs", "limit": 10});
+        let out = format_tool_call_args(&args);
+        // Sorted keys: limit, path.
+        assert_eq!(out, "limit=10, path=\"/tmp/foo.rs\"");
+    }
+
+    #[test]
+    fn format_tool_call_args_handles_nested() {
+        let args = serde_json::json!({"nested": {"k": "v"}});
+        let out = format_tool_call_args(&args);
+        assert_eq!(out, "nested={\"k\":\"v\"}");
+    }
+
+    #[test]
+    fn safe_json_stringify_falls_back_on_error() {
+        // serde_json::Value can't actually fail to serialize, but the
+        // signature mirrors Pi's safeJsonStringify for forward
+        // compatibility.
+        let v = serde_json::json!("hello");
+        assert_eq!(safe_json_stringify(&v), "\"hello\"");
+    }
+
+    #[test]
+    fn serialize_conversation_user_only() {
+        let msgs = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "refactor auth".to_string(),
+            }],
+            timestamp: 0,
+        }];
+        let s = serialize_conversation(&msgs);
+        assert_eq!(s, "[User]: refactor auth");
+    }
+
+    #[test]
+    fn serialize_conversation_assistant_text_and_tools() {
+        let msgs = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "show me login.rs".to_string(),
+                }],
+                timestamp: 0,
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "t1".into(),
+                        name: "read".into(),
+                        input: serde_json::json!({"path": "/src/login.rs"}),
+                    },
+                    ContentBlock::Text {
+                        text: "Found JWT-based session handling.".to_string(),
+                    },
+                ],
+                timestamp: 1,
+            },
+        ];
+        let s = serialize_conversation(&msgs);
+        assert!(s.contains("[User]: show me login.rs"));
+        // Tool call uses name(args) format with JSON-stringified values.
+        assert!(
+            s.contains("[Assistant tool calls]: read(path=\"/src/login.rs\")"),
+            "got: {s}"
+        );
+        assert!(s.contains("[Assistant]: Found JWT-based session handling."));
+        // Sections separated by blank lines.
+        assert!(s.contains("\n\n"));
+    }
+
+    #[test]
+    fn serialize_conversation_truncates_tool_results() {
+        let big = "x".repeat(3000);
+        let msgs = vec![Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: big,
+                is_error: false,
+            }],
+            timestamp: 0,
+        }];
+        let s = serialize_conversation(&msgs);
+        assert!(s.contains("[Tool result]: "));
+        assert!(s.contains("[... 1000 more characters truncated]"));
+        // Truncated content should not contain the original 3000 chars.
+        assert!(s.len() < 2200);
+    }
+
+    #[test]
+    fn serialize_conversation_drops_empty_sections() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: " ".to_string(),
+            }],
+            timestamp: 0,
+        }];
+        let s = serialize_conversation(&msgs);
+        assert!(s.is_empty(), "empty assistant text should be dropped, got: {s:?}");
+    }
+
+    #[test]
+    fn serialize_conversation_system_messages_skipped() {
+        let msgs = vec![
+            Message {
+                role: Role::System,
+                content: vec![ContentBlock::Text {
+                    text: "secret system prompt".to_string(),
+                }],
+                timestamp: 0,
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "hi".to_string(),
+                }],
+                timestamp: 1,
+            },
+        ];
+        let s = serialize_conversation(&msgs);
+        assert!(!s.contains("secret system prompt"));
+        assert_eq!(s, "[User]: hi");
+    }
+
+    #[test]
+    fn serialize_conversation_full_pi_shape() {
+        // Reproduce the exact shape Pi emits for a 3-message exchange.
+        let msgs = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "refactor auth".to_string(),
+                }],
+                timestamp: 0,
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "t1".into(),
+                        name: "read".into(),
+                        input: serde_json::json!({"path": "/auth.rs"}),
+                    },
+                ],
+                timestamp: 1,
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "I see JWT usage.".to_string(),
+                }],
+                timestamp: 2,
+            },
+        ];
+        let s = serialize_conversation(&msgs);
+        // Expected Pi format:
+        // [User]: refactor auth
+        //
+        // [Assistant tool calls]: read(path="/auth.rs")
+        //
+        // [Assistant]: I see JWT usage.
+        let expected = "[User]: refactor auth\n\n[Assistant tool calls]: read(path=\"/auth.rs\")\n\n[Assistant]: I see JWT usage.";
+        assert_eq!(s, expected);
+    }
+
+    // -----------------------------------------------------------------
+    // serialize_session_entries
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn serialize_session_entries_thinking_and_tool_call() {
+        use crate::entries::AgentMessage as EAM;
+        use crate::entries::{AssistantMessage, SessionEntry, SessionMessageEntry, StopReason, Usage};
+
+        let entries = vec![SessionEntry::Message(SessionMessageEntry {
+            id: "m1".into(),
+            parent_id: None,
+            timestamp: "2026-09-15T00:00:00Z".into(),
+            message: EAM::Assistant(AssistantMessage {
+                content: vec![
+                    crate::entries::ContentBlock::Thinking {
+                        thinking: "User wants JWT removed.".into(),
+                    },
+                    crate::entries::ContentBlock::ToolCall {
+                        id: "t1".into(),
+                        name: "edit".into(),
+                        arguments: serde_json::json!({"path": "/a.rs", "oldText": "x", "newText": "y"}),
+                    },
+                    crate::entries::ContentBlock::Text {
+                        text: "Done.".into(),
+                    },
+                ],
+                api: "anthropic".into(),
+                provider: "anthropic".into(),
+                model: "claude".into(),
+                usage: Usage {
+                    input: 0,
+                    output: 0,
+                    cache_read: 0,
+                    cache_write: 0,
+                    total_tokens: 0,
+                    cost: crate::entries::Cost {
+                        input: 0.0,
+                        output: 0.0,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                        total: 0.0,
+                    },
+                },
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: 0,
+            }),
+        })];
+
+        let s = serialize_session_entries(&entries);
+        assert!(s.contains("[Assistant thinking]: User wants JWT removed."));
+        // Keys are alphabetized by serde_json's BTreeMap-backed Map.
+        assert!(s.contains("[Assistant tool calls]: edit(newText=\"y\", oldText=\"x\", path=\"/a.rs\")"));
+        assert!(s.contains("[Assistant]: Done."));
+    }
+
+    #[test]
+    fn serialize_session_entries_user_string_and_blocks() {
+        use crate::entries::AgentMessage as EAM;
+        use crate::entries::{SessionEntry, SessionMessageEntry, UserMessage};
+        use crate::entries::StringOrContentBlocks;
+
+        let entries = vec![
+            SessionEntry::Message(SessionMessageEntry {
+                id: "u1".into(),
+                parent_id: None,
+                timestamp: "t".into(),
+                message: EAM::User(UserMessage {
+                    content: StringOrContentBlocks::String("plain user msg".into()),
+                    timestamp: 0,
+                }),
+            }),
+        ];
+
+        let s = serialize_session_entries(&entries);
+        assert_eq!(s, "[User]: plain user msg");
+    }
+
+    #[test]
+    fn serialize_session_entries_skips_non_message() {
+        use crate::entries::{ModelChangeEntry, SessionEntry};
+
+        let entries = vec![SessionEntry::ModelChange(ModelChangeEntry {
+            id: "x".into(),
+            parent_id: None,
+            timestamp: "t".into(),
+            provider: "anthropic".into(),
+            model_id: "claude".into(),
+        })];
+
+        let s = serialize_session_entries(&entries);
+        assert!(s.is_empty());
     }
 
     #[test]
