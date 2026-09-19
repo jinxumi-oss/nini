@@ -19,7 +19,10 @@
 //! ```
 #![allow(unused_mut)] // render/runtime use mut bindings for future hook points
 
-use crate::markdown::render_markdown;
+use crate::rich::{
+    render_assistant_message, render_bash_execution, render_divider, render_tool_call,
+    render_tool_result, render_user_message,
+};
 use crate::selector::{SelectorItem, SelectorPanel};
 use crate::state::{AppState, RunMode, TranscriptLine};
 use crate::theme::Theme;
@@ -135,95 +138,57 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         let start = end.saturating_sub(visible_height);
         (start, end)
     };
-    let items: Vec<ListItem> = state
-        .transcript
-        .iter()
-        .skip(start)
-        .take(end.saturating_sub(start))
-        .map(|line| match line {
-            TranscriptLine::User(text) => ListItem::new(RLine::from(vec![
-                Span::styled("> ", theme.fg_style("success")),
-                Span::raw(text.as_str()),
-            ])),
-            TranscriptLine::AssistantText(text) => {
-                // Render as Markdown: convert to themed spans.
-                let lines = render_markdown(text, theme);
-                if lines.is_empty() {
-                    ListItem::new(RLine::from(Span::raw("")))
-                } else {
-                    // For multiple lines, wrap them all in one ListItem by joining.
-                    // ratatui ListItem supports multi-line items via Line composition.
-                    // We use the first line for the ListItem and let the rest
-                    // fall through to subsequent items by emitting multiple.
-                    if lines.len() == 1 {
-                        ListItem::new(lines.into_iter().next().unwrap())
-                    } else {
-                        // Multi-line: join into a single Line with explicit \n.
-                        // (Most TUI list widgets render Line as one row.)
-                        let mut spans: Vec<Span<'static>> = Vec::new();
-                        for (i, l) in lines.into_iter().enumerate() {
-                            if i > 0 {
-                                spans.push(Span::raw("\n"));
-                            }
-                            spans.extend(l.spans);
-                        }
-                        ListItem::new(RLine::from(spans))
-                    }
-                }
+    // Build ListItems. Each TranscriptLine may map to 1..N rows:
+    //   - User: 1 row (or N rows for multi-line)
+    //   - AssistantText: 1..N rows from Markdown rendering
+    //   - ToolCall/ToolResult: 1..N rows (header + body lines)
+    //   - BashExecution: 1 banner row + N output rows
+    //   - Divider: 1 row
+    //
+    // We flatten per-line expansion into a Vec<ListItem> by emitting
+    // multiple items for a single TranscriptLine. Then truncate to
+    // `visible_height` based on the cumulative tail.
+    let mut items: Vec<ListItem> = Vec::new();
+    for line in state.transcript.iter().skip(start).take(end.saturating_sub(start)) {
+        let new_items: Vec<ListItem> = match line {
+            TranscriptLine::User(text) => render_user_message(text, theme)
+                .into_iter()
+                .map(ListItem::new)
+                .collect(),
+            TranscriptLine::AssistantText(text) => render_assistant_message(text, theme)
+                .into_iter()
+                .map(ListItem::new)
+                .collect(),
+            TranscriptLine::ToolCall { name, args } => {
+                let lines = render_tool_call(name, args, theme);
+                lines.into_iter().map(ListItem::new).collect()
             }
-            TranscriptLine::ToolCall { name, args } => ListItem::new(RLine::from(vec![
-                Span::styled("[tool call] ", theme.fg_style("toolPendingBg")),
-                Span::styled(
-                    name.as_str(),
-                    theme
-                        .fg_style("toolPendingBg")
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!(" {args}")),
-            ])),
-            TranscriptLine::ToolResult { ok, content } => ListItem::new(RLine::from(vec![
-                Span::styled(
-                    if *ok {
-                        "[tool result] "
-                    } else {
-                        "[tool error] "
-                    },
-                    if *ok { theme.fg_style("toolSuccessBg") } else { theme.fg_style("error") },
-                ),
-                Span::raw(content.as_str()),
-            ])),
-            TranscriptLine::Divider => {
-                let div: String = "─".repeat(60);
-                ListItem::new(RLine::from(Span::styled(div, theme.fg_style("dim"))))
+            TranscriptLine::ToolResult { ok, content } => {
+                let lines = render_tool_result(*ok, content, theme);
+                lines.into_iter().map(ListItem::new).collect()
             }
-            TranscriptLine::BashExecution { cmd, output, ok, exit_code, duration_ms, .. } => {
-                let header_color = if *ok { "success" } else { "error" };
-                let header = format!(
-                    "$ {} {} {}ms",
+            TranscriptLine::Divider => vec![ListItem::new(render_divider(theme))],
+            TranscriptLine::BashExecution {
+                cmd,
+                output,
+                ok,
+                exit_code,
+                duration_ms,
+                ..
+            } => {
+                let lines = render_bash_execution(
                     cmd,
-                    exit_code
-                        .map(|c| format!("[exit {c}]"))
-                        .unwrap_or_else(|| "[no exit]".to_string()),
-                    duration_ms
+                    output,
+                    *ok,
+                    *exit_code,
+                    *duration_ms,
+                    theme,
                 );
-                let mut spans = vec![
-                    Span::styled("! ", theme.fg_style("warning").add_modifier(Modifier::BOLD)),
-                    Span::styled(header, theme.fg_style(header_color)),
-                ];
-                let preview: String = output.chars().take(200).collect();
-                for line in preview.lines() {
-                    spans.push(Span::raw(format!("  {line}")));
-                }
-                if output.len() > 200 {
-                    spans.push(Span::styled(
-                        "  ...(truncated)".to_string(),
-                        theme.fg_style("muted"),
-                    ));
-                }
-                ListItem::new(RLine::from(spans))
+                lines.into_iter().map(ListItem::new).collect()
             }
-        })
-        .collect();
+        };
+        items.extend(new_items);
+    }
     let list = List::new(items)
         .block(Block::default().borders(Borders::NONE))
         .style(Style::default());

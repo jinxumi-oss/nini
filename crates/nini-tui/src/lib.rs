@@ -27,6 +27,7 @@ pub mod keybindings_manager;
 pub mod keys;
 pub mod markdown;
 pub mod render;
+pub mod rich;
 pub mod runtime;
 pub mod selector;
 pub mod selectors;

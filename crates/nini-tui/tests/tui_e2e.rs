@@ -389,9 +389,16 @@ fn transcript_renders_all_line_kinds() {
         frame.contains("[tool call] grep"),
         "tool call label missing"
     );
+    // Tool result is now rendered as a 2-row block: header row
+    // ('[tool result] ') on its own line, then the body indented
+    // ('  main.rs:42: ...'). Verify both pieces appear somewhere.
     assert!(
-        frame.contains("[tool result] main.rs:42"),
+        frame.contains("[tool result]"),
         "tool result label missing"
+    );
+    assert!(
+        frame.contains("main.rs:42:"),
+        "tool result body missing"
     );
 }
 
