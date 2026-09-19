@@ -224,9 +224,17 @@ impl Tool for BashTool {
 
 /// Kill the entire process tree rooted at `pid`. Unix-only.
 #[cfg(unix)]
-fn kill_process_tree(pid: u32) {
-    // First, try to kill the process group.
-    let pgid = Pid::from_raw(pid as i32);
+pub(crate) fn kill_process_tree(pid: u32) {
+    // First, try to kill the process group. Reject pids that don't fit in
+    // i32 — calling killpg with a wrapped negative value would target the
+    // current process group, killing nini itself.
+    let pgid = match i32::try_from(pid) {
+        Ok(p) => Pid::from_raw(p),
+        Err(_) => {
+            eprintln!("[nini] pid {pid} out of i32 range; skipping killpg");
+            return;
+        }
+    };
     let _ = killpg(pgid, Signal::SIGTERM);
 
     // Walk the process tree via sysinfo to find children that escaped the
@@ -418,5 +426,18 @@ mod tests {
         assert_eq!(bytecount_lines(b"a\nb\nc"), 3);
         assert_eq!(bytecount_lines(b""), 0);
         assert_eq!(bytecount_lines(b"\n"), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_tree_skips_pids_outside_i32_range() {
+        // A pid that doesn't fit in i32 (e.g. u32::MAX) used to wrap to
+        // a negative number, which Pid::from_raw(negative) would interpret
+        // as a different process group — potentially the current one,
+        // killing nini itself. The fix short-circuits.
+        super::kill_process_tree(u32::MAX);
+        // The test passes if we got here without panicking or killing
+        // ourselves. (No explicit assertion — absence of crash is the
+        // verification.)
     }
 }

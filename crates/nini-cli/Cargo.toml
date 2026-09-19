@@ -15,6 +15,7 @@ nini-core = { path = "../nini-core" }
 nini-ai = { path = "../nini-ai" }
 nini-tools = { path = "../nini-tools" }
 nini-tui = { path = "../nini-tui" }
+nini-session = { path = "../nini-session" }
 clap = { version = "4.5", features = ["derive", "env"] }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -23,6 +24,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
 futures-util = { workspace = true }
+chrono = { workspace = true }
 
 [lints]
 workspace = true

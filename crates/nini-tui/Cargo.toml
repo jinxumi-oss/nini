@@ -10,8 +10,14 @@ publish.workspace = true
 nini-core = { path = "../nini-core" }
 nini-ai = { path = "../nini-ai" }
 nini-tools = { path = "../nini-tools" }
+nini-session = { path = "../nini-session" }
+uuid = { workspace = true }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+notify = "6.1"
+nucleo-matcher = "0.3"
+arboard = "3"
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures-util = { workspace = true }

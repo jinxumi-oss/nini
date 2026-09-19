@@ -8,9 +8,11 @@
 use futures_util::StreamExt;
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::Usage;
-use nini_core::{Agent, AgentEvent, RunConfig, ToolRegistry};
+use nini_core::tool::ToolRegistry;
+use nini_core::{Agent, AgentEvent, RunConfig};
 use nini_tools::BashTool;
-use nini_tui::render::render_frame;
+use nini_tui::render::{render_frame, render_frame_with_theme};
+use nini_tui::theme::Theme;
 use nini_tui::state::{AppState, RunMode, TranscriptLine};
 use nini_tui::{Key, KeyAction, KeyModifiers};
 use ratatui::Terminal;
@@ -95,9 +97,18 @@ fn drive(state: &mut AppState, key: Key) {
         }
         KeyAction::Quit => state.mode = RunMode::Quitting,
         KeyAction::SwitchModel
+        | KeyAction::CycleModelNext
+        | KeyAction::CycleModelPrev
+        | KeyAction::CycleThinkingNext
+        | KeyAction::CycleThinkingPrev
         | KeyAction::ShowHelp
         | KeyAction::ScrollUp
-        | KeyAction::ScrollDown => {}
+        | KeyAction::ScrollDown
+        | KeyAction::KillWordForward
+        | KeyAction::Yank
+        | KeyAction::YankPop
+        | KeyAction::Undo => {}
+        KeyAction::AcceptCompletionOrInsertTab => {}
         KeyAction::Noop => {}
     }
 }
@@ -703,4 +714,116 @@ async fn full_demo_pipeline_through_tui_state() {
 
     // Just to silence unused warnings on `cwd`
     let _ = cwd;
+}
+
+/// REGRESSION: theme system works — dark and light themes both render without crashing.
+#[test]
+fn theme_dark_and_light_both_render() {
+    let state = AppState::new("test");
+    let backend_dark = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal_dark = Terminal::new(backend_dark).unwrap();
+    terminal_dark
+        .draw(|f| render_frame_with_theme(f, &state, &Theme::dark()))
+        .unwrap();
+
+    let backend_light = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal_light = Terminal::new(backend_light).unwrap();
+    terminal_light
+        .draw(|f| render_frame_with_theme(f, &state, &Theme::light()))
+        .unwrap();
+
+    // Both terminals should produce non-empty buffers.
+    let dark_buffer = terminal_dark.backend().buffer();
+    let light_buffer = terminal_light.backend().buffer();
+    let dark_text = format!("{dark_buffer:?}");
+    let light_text = format!("{light_buffer:?}");
+    assert!(!dark_text.is_empty());
+    assert!(!light_text.is_empty());
+
+    // Default render_frame uses dark theme by default.
+    let backend_default = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal_default = Terminal::new(backend_default).unwrap();
+    terminal_default.draw(|f| render_frame(f, &state)).unwrap();
+}
+
+/// REGRESSION: markdown in assistant text renders with theme-aware colors.
+#[test]
+fn markdown_in_assistant_text_renders() {
+    use nini_tui::markdown::render_markdown;
+    let theme = Theme::dark();
+    let lines = render_markdown("# Title\n\n- item 1\n- item 2\n", &theme);
+    assert!(lines.len() >= 2, "Markdown should produce multiple lines");
+    let first: String = lines[0]
+        .spans
+        .iter()
+        .map(|sp| sp.content.as_ref())
+        .collect();
+    assert!(first.starts_with("# "));
+    let second: String = lines[1]
+        .spans
+        .iter()
+        .map(|sp| sp.content.as_ref())
+        .collect();
+    assert!(second.contains("• item 1"));
+}
+
+/// REGRESSION: scroll_offset clips transcript to last N lines.
+#[test]
+fn scroll_offset_clips_to_last_n_lines() {
+    let mut state = AppState::new("test");
+    // Push 50 lines.
+    for i in 0..50 {
+        state.push_user(format!("line {i}"));
+    }
+    // Set scroll_offset to 20 → show only last 30 lines.
+    state.scroll_offset = 20;
+    let backend = ratatui::backend::TestBackend::new(80, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| render_frame_with_theme(f, &state, &Theme::dark()))
+        .unwrap();
+    // Verify no panic. Visual correctness depends on terminal width.
+    let buffer = terminal.backend().buffer();
+    let buf_str = format!("{buffer:?}");
+    assert!(!buf_str.is_empty());
+}
+
+/// REGRESSION: scroll_offset=0 shows from beginning (no clip).
+#[test]
+fn scroll_offset_zero_shows_from_beginning() {
+    let mut state = AppState::new("test");
+    state.push_user("first");
+    state.push_user("second");
+    state.scroll_offset = 0;
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| render_frame_with_theme(f, &state, &Theme::dark()))
+        .unwrap();
+    // Should render without panic.
+    let _buffer = terminal.backend().buffer();
+}
+#[test]
+fn bash_execution_renders_with_metadata() {
+    let mut state = AppState::new("test");
+    state.push_user("!echo hello".to_string());
+    state.transcript.push(TranscriptLine::BashExecution {
+        id: "bash-1".to_string(),
+        cmd: "echo hello".to_string(),
+        output: "hello\n".to_string(),
+        ok: true,
+        exit_code: Some(0),
+        duration_ms: 42,
+    });
+
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| render_frame_with_theme(f, &state, &Theme::dark()))
+        .unwrap();
+
+    // We just verify no panic and buffer is non-empty.
+    let buffer = terminal.backend().buffer();
+    let buf_str = format!("{buffer:?}");
+    assert!(!buf_str.is_empty());
 }

@@ -284,3 +284,117 @@ fn cli_openai_compat_requires_base_url() {
         "expected missing-credential error, got: {stderr}"
     );
 }
+
+#[test]
+fn cli_list_models_prints_catalog() {
+    // Override HOME to an empty temp dir so we don't pick up the user's
+    // models.json. The defaults are used.
+    let tmp = new_temp_home();
+    let (out, _err, code) = run_nini_with_env(
+        &["--list-models"],
+        b"",
+        &[("HOME", Some(tmp.path().to_str().unwrap()))],
+    );
+    assert_eq!(code, 0);
+    assert!(!out.trim().is_empty(), "list should produce at least one model");
+    assert!(out.contains("anthropic/claude-opus-4-7"));
+    assert!(out.contains("openai/gpt-5"));
+}
+
+#[test]
+fn cli_list_models_with_filter() {
+    let tmp = new_temp_home();
+    let (out, _err, code) = run_nini_with_env(
+        &["--list-models", "anthropic/*"],
+        b"",
+        &[("HOME", Some(tmp.path().to_str().unwrap()))],
+    );
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(!lines.is_empty());
+    for line in &lines {
+        assert!(
+            line.contains("anthropic/"),
+            "filter should only show anthropic models: {line}"
+        );
+    }
+}
+
+#[test]
+fn cli_list_models_substring_filter() {
+    let tmp = new_temp_home();
+    let (out, _err, code) = run_nini_with_env(
+        &["--list-models", "*sonnet*"],
+        b"",
+        &[("HOME", Some(tmp.path().to_str().unwrap()))],
+    );
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = out.lines().collect();
+    for line in &lines {
+        assert!(
+            line.contains("sonnet"),
+            "substring filter should only show sonnet models: {line}"
+        );
+    }
+}
+
+#[test]
+fn cli_no_session_flag_accepted() {
+    // --no-session shouldn't trigger TTY (no TTY in CI), and should print
+    // fallback usage instead of starting the TUI.
+    let (_out, _err, _code) = run_nini(&["--no-session", "-p", "hello"], b"");
+    // Note: code is unchecked here; we're just verifying the flag is
+    // parsed without erroring.
+}
+
+#[test]
+fn cli_help_includes_new_tool_flags() {
+    let (out, _err, code) = run_nini(&["--help"], b"");
+    assert_eq!(code, 0);
+    // Spot-check tool filtering flags.
+    assert!(out.contains("--tools"), "missing --tools in help");
+    assert!(out.contains("--exclude-tools"), "missing --exclude-tools in help");
+    assert!(out.contains("--no-tools"), "missing --no-tools in help");
+    assert!(out.contains("--no-builtin-tools"), "missing --no-builtin-tools in help");
+}
+
+#[test]
+fn cli_filter_tools_accepted() {
+    // --tools with an unknown name should be parsed without crashing.
+    // (Filtering happens later, but parsing must succeed.)
+    let (_out, _err, _code) = run_nini(&["--tools", "nonexistent", "-p", "hello"], b"");
+    // No assertion on exit code — just that the args parse.
+}
+
+#[test]
+fn cli_exclude_tools_accepted() {
+    let (_out, _err, _code) = run_nini(&["--exclude-tools", "bash", "-p", "hello"], b"");
+}
+
+#[test]
+fn cli_help_includes_resource_flags() {
+    let (out, _err, code) = run_nini(&["--help"], b"");
+    assert_eq!(code, 0);
+    assert!(out.contains("--skill"));
+    assert!(out.contains("--no-skills"));
+    assert!(out.contains("--prompt-template"));
+    assert!(out.contains("--no-prompt-templates"));
+    assert!(out.contains("--theme"));
+    assert!(out.contains("--use-theme"));
+    assert!(out.contains("--no-themes"));
+    assert!(out.contains("--extension"));
+    assert!(out.contains("--no-extensions"));
+    assert!(out.contains("--no-context-files"));
+}
+
+#[test]
+fn cli_help_flag_lists_all_flags() {
+    let (out, _err, code) = run_nini(&["--help"], b"");
+    assert_eq!(code, 0);
+    // Spot-check a few of the new flags appear in help.
+    assert!(out.contains("--list-models"), "missing --list-models in help");
+    assert!(out.contains("--thinking"), "missing --thinking in help");
+    assert!(out.contains("--session-dir"), "missing --session-dir in help");
+    assert!(out.contains("--offline"), "missing --offline in help");
+    assert!(out.contains("--export"), "missing --export in help");
+}

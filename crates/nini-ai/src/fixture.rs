@@ -154,15 +154,19 @@ impl Provider for FixtureProvider {
 /// (e.g., first call returns a tool_use, second call returns the final text).
 pub struct ProgrammedProvider {
     queue: std::sync::Mutex<Vec<Vec<StreamEvent>>>,
+    cursor: std::sync::Mutex<usize>,
     model: String,
 }
 
 impl ProgrammedProvider {
     /// Create a new programmed provider. Each inner `Vec<StreamEvent>` is
-    /// returned as one stream (one agent turn).
+    /// returned as one stream (one agent turn). When the queue is exhausted,
+    /// subsequent calls wrap around so the agent can serve multi-turn
+    /// conversations without a real LLM.
     pub fn new(turns: Vec<Vec<StreamEvent>>) -> Self {
         Self {
             queue: std::sync::Mutex::new(turns),
+            cursor: std::sync::Mutex::new(0),
             model: "programmed".to_string(),
         }
     }
@@ -242,7 +246,17 @@ impl Provider for ProgrammedProvider {
         &self,
         _req: Request,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
-        let events = self.queue.lock().unwrap().remove(0);
+        let events = {
+            let queue = self.queue.lock().unwrap();
+            if queue.is_empty() {
+                Vec::new()
+            } else {
+                let mut cursor = self.cursor.lock().unwrap();
+                let idx = *cursor % queue.len();
+                *cursor = (*cursor + 1) % queue.len();
+                queue[idx].clone()
+            }
+        };
         Box::pin(try_stream! {
             for ev in events {
                 yield ev;

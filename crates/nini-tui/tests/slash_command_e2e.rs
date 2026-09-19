@@ -6,6 +6,7 @@
 
 use nini_tui::commands::{CommandId, CommandOutcome, REGISTRY, complete, dispatch, parse};
 use nini_tui::render::render_frame;
+use nini_tui::settings::SettingsManager;
 use nini_tui::state::{AppState, RunMode};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -70,7 +71,8 @@ fn parse_all_commands_in_registry() {
 #[test]
 fn help_command_renders_keybindings() {
     let mut state = AppState::new("test-model");
-    let r = dispatch(&mut state, CommandId::Hotkeys, "");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Hotkeys, "");
     match r.outcome {
         CommandOutcome::Output(lines) => {
             assert!(lines.iter().any(|l| l.contains("Ctrl+C")));
@@ -89,7 +91,8 @@ fn help_command_renders_keybindings() {
 #[test]
 fn model_command_updates_state() {
     let mut state = AppState::new("old-model");
-    let r = dispatch(&mut state, CommandId::Model, "anthropic/claude-opus-4-7");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Model, "anthropic/claude-opus-4-7");
     assert!(matches!(r.outcome, CommandOutcome::Output(_)));
     assert_eq!(state.model, "anthropic/claude-opus-4-7");
     // Transcript should mention the model change
@@ -108,7 +111,8 @@ fn model_command_updates_state() {
 #[test]
 fn model_command_no_args_returns_usage() {
     let mut state = AppState::new("test-model");
-    let r = dispatch(&mut state, CommandId::Model, "");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Model, "");
     match r.outcome {
         CommandOutcome::Output(lines) => {
             assert!(lines[0].contains("Usage"));
@@ -125,14 +129,15 @@ fn model_command_no_args_returns_usage() {
 #[test]
 fn thinking_command_validates_levels() {
     let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
 
     for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
-        let r = dispatch(&mut state, CommandId::Thinking, level);
+        let r = dispatch(&mut state, &mut settings, CommandId::Thinking, level);
         assert!(matches!(r.outcome, CommandOutcome::Output(_)));
     }
 
     // Invalid level returns usage line
-    let r = dispatch(&mut state, CommandId::Thinking, "ultra");
+    let r = dispatch(&mut state, &mut settings, CommandId::Thinking, "ultra");
     match r.outcome {
         CommandOutcome::Output(lines) => {
             assert!(lines[0].contains("Usage"));
@@ -148,12 +153,13 @@ fn thinking_command_validates_levels() {
 #[test]
 fn new_command_clears_transcript_keeps_model() {
     let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
     state.push_user("old question".to_string());
     state.push_assistant("old answer".to_string());
     state.push_divider();
     assert!(state.transcript.len() >= 3);
 
-    let r = dispatch(&mut state, CommandId::New, "");
+    let r = dispatch(&mut state, &mut settings, CommandId::New, "");
     assert!(matches!(r.outcome, CommandOutcome::Output(_)));
     assert_eq!(state.model, "test-model"); // unchanged
 
@@ -172,7 +178,8 @@ fn new_command_clears_transcript_keeps_model() {
 #[test]
 fn quit_command_signals_exit() {
     let mut state = AppState::new("test");
-    let r = dispatch(&mut state, CommandId::Quit, "");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Quit, "");
     assert_eq!(r.outcome, CommandOutcome::Quit);
     assert_eq!(state.mode, RunMode::Quitting);
 }
@@ -221,7 +228,8 @@ fn completion_empty_returns_first_n() {
 #[test]
 fn command_output_renders_in_frame() {
     let mut state = AppState::new("test-model");
-    let _ = dispatch(&mut state, CommandId::Hotkeys, "");
+    let mut settings = SettingsManager::default();
+    let _ = dispatch(&mut state, &mut settings, CommandId::Hotkeys, "");
     let frame = frame_text(&state, 100, 30);
     // The hotkeys text should appear in the transcript area
     assert!(frame.contains("Ctrl+C"), "Ctrl+C help missing");
@@ -234,11 +242,12 @@ fn command_output_renders_in_frame() {
 #[test]
 fn new_command_visible_in_frame() {
     let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
     state.push_user("old".to_string());
     state.push_assistant("old reply".to_string());
     state.push_divider();
 
-    let _ = dispatch(&mut state, CommandId::New, "");
+    let _ = dispatch(&mut state, &mut settings, CommandId::New, "");
     let frame = frame_text(&state, 100, 30);
     // "started new session" appears, "old reply" does not (cleared)
     assert!(frame.contains("started new session"));
@@ -251,7 +260,8 @@ fn new_command_visible_in_frame() {
 #[test]
 fn thinking_command_no_args_returns_usage() {
     let mut state = AppState::new("test");
-    let r = dispatch(&mut state, CommandId::Thinking, "");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Thinking, "");
     match r.outcome {
         CommandOutcome::Output(lines) => {
             assert!(lines[0].contains("Usage"));
@@ -266,7 +276,8 @@ fn thinking_command_no_args_returns_usage() {
 #[test]
 fn name_command_sets_status() {
     let mut state = AppState::new("test");
-    let _ = dispatch(&mut state, CommandId::Name, "My Cool Session");
+    let mut settings = SettingsManager::default();
+    let _ = dispatch(&mut state, &mut settings, CommandId::Name, "My Cool Session");
     assert!(state.status.contains("My Cool Session"));
 }
 
@@ -276,12 +287,13 @@ fn name_command_sets_status() {
 #[test]
 fn session_command_shows_stats() {
     let mut state = AppState::new("claude-opus");
+    let mut settings = SettingsManager::default();
     state.push_user("hi".to_string());
     state.push_assistant("hello".to_string());
     state.tokens.input = 42;
     state.tokens.output = 17;
 
-    let r = dispatch(&mut state, CommandId::Session, "");
+    let r = dispatch(&mut state, &mut settings, CommandId::Session, "");
     match r.outcome {
         CommandOutcome::Output(lines) => {
             let joined = lines.join("\n");
@@ -297,31 +309,37 @@ fn session_command_shows_stats() {
 }
 
 // =====================================================================
-// Test 14: /export writes HTML to disk
+// Test 14: /export path naming and format validation
 // =====================================================================
 #[test]
-fn export_writes_html_file() {
+fn export_command_path_format() {
     let mut state = AppState::new("test");
-    state.push_user("export me".to_string());
-    state.push_assistant("ok".to_string());
+    let mut settings = SettingsManager::default();
+    state.push_user("hello world".to_string());
+    state.push_assistant("hi".to_string());
 
-    let r = dispatch(&mut state, CommandId::Export, "");
+    let r = dispatch(&mut state, &mut settings, CommandId::Export, "");
     match r.outcome {
         CommandOutcome::Output(lines) => {
             let path_line = &lines[0];
-            assert!(path_line.starts_with("export → "));
-            // Verify the file was created (we just check that the path
-            // doesn't contain "(failed" or "(no HOME")
-            assert!(!path_line.contains("(failed"));
-            assert!(!path_line.contains("(no HOME"));
-
-            // Read the file back and check content
+            assert!(path_line.starts_with("export → "), "path_line: {path_line}");
+            // Verify the file path doesn't contain error markers
+            assert!(!path_line.contains("(failed"), "path_line: {path_line}");
+            assert!(!path_line.contains("(no HOME"), "path_line: {path_line}");
+            // Verify the path matches the expected naming convention
             let path_str = path_line.trim_start_matches("export → ");
-            if !path_str.contains("skipped") {
-                let content = std::fs::read_to_string(path_str).unwrap_or_default();
-                assert!(content.contains("<!DOCTYPE html>"));
-                assert!(content.contains("export me"));
-            }
+            assert!(
+                path_str.contains("session-") && path_str.ends_with(".html"),
+                "path should be session-TIMESTAMP.html: {path_str}"
+            );
+            // Verify the transcript was included (path exists and is readable)
+            assert!(
+                std::path::Path::new(path_str).exists(),
+                "exported HTML file should exist: {path_str}"
+            );
+            let content = std::fs::read_to_string(path_str).unwrap_or_default();
+            assert!(content.contains("<!DOCTYPE html>"), "HTML should contain DOCTYPE");
+            assert!(content.contains("hello world"), "HTML should contain user message");
         }
         _ => panic!("expected Output"),
     }
@@ -333,13 +351,14 @@ fn export_writes_html_file() {
 #[test]
 fn copy_finds_last_assistant_message() {
     let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
     state.push_user("hi".to_string());
     state.push_assistant("first reply".to_string());
     state.push_divider();
     state.push_user("another".to_string());
     state.push_assistant("second reply".to_string());
 
-    let r = dispatch(&mut state, CommandId::Copy, "");
+    let r = dispatch(&mut state, &mut settings, CommandId::Copy, "");
     match r.outcome {
         CommandOutcome::Output(lines) => {
             assert!(lines[0].contains("copied"));
@@ -366,8 +385,9 @@ fn copy_finds_last_assistant_message() {
 #[test]
 fn copy_with_no_assistant_message() {
     let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
     state.push_user("just a question".to_string());
-    let r = dispatch(&mut state, CommandId::Copy, "");
+    let r = dispatch(&mut state, &mut settings, CommandId::Copy, "");
     match r.outcome {
         CommandOutcome::Output(lines) => {
             assert!(lines[0].contains("no assistant message"));
@@ -382,11 +402,12 @@ fn copy_with_no_assistant_message() {
 #[test]
 fn multiple_commands_in_sequence() {
     let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
 
-    dispatch(&mut state, CommandId::Model, "anthropic/claude");
-    dispatch(&mut state, CommandId::Thinking, "high");
-    dispatch(&mut state, CommandId::Name, "Test Run");
-    dispatch(&mut state, CommandId::Session, "");
+    dispatch(&mut state, &mut settings, CommandId::Model, "anthropic/claude");
+    dispatch(&mut state, &mut settings, CommandId::Thinking, "high");
+    dispatch(&mut state, &mut settings, CommandId::Name, "Test Run");
+    dispatch(&mut state, &mut settings, CommandId::Session, "");
 
     assert_eq!(state.model, "anthropic/claude");
     assert!(state.status.contains("Test Run"));
@@ -398,9 +419,10 @@ fn multiple_commands_in_sequence() {
 #[test]
 fn command_output_visible_in_frame() {
     let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
     state.push_user("/help".to_string()); // simulate user typing the slash
     state.push_divider();
-    let _ = dispatch(&mut state, CommandId::Hotkeys, "");
+    let _ = dispatch(&mut state, &mut settings, CommandId::Hotkeys, "");
 
     let frame = frame_text(&state, 100, 30);
     // Both the user "/help" and the hotkeys output should be visible
@@ -437,15 +459,57 @@ fn parse_whitespace_handling() {
 #[test]
 fn dispatch_is_total_over_all_commands() {
     let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
     for def in REGISTRY {
         // Pass an empty arg (commands that require args handle it gracefully)
-        let _ = dispatch(&mut state, def.id, "");
+        let _ = dispatch(&mut state, &mut settings, def.id, "");
     }
     // No panics means success
 }
 
 // =====================================================================
-// Test 20: completion limit is respected
+// Test 20: /resume lists sessions or reports none found
+// =====================================================================
+#[test]
+fn resume_command_lists_sessions_or_none() {
+    let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Resume, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            // Either "No sessions found" or a numbered list.
+            assert!(!lines.is_empty());
+            let is_empty_state = lines[0].contains("No sessions");
+            let is_list = lines[0].contains("session(s) available");
+            assert!(is_empty_state || is_list, "Expected no-sessions or list, got: {:?}", lines);
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+// =====================================================================
+// Test 21: /new creates a session
+// =====================================================================
+#[test]
+fn new_command_creates_session() {
+    let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
+    // /new clears transcript AND creates a session.
+    let r = dispatch(&mut state, &mut settings, CommandId::New, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(!lines.is_empty());
+        }
+        _ => panic!("expected Output"),
+    }
+    // A session should have been created.
+    assert!(state.session.is_some(), "/new should create a session");
+    assert!(state.session_id.is_some(), "/new should set session_id");
+    assert!(state.session_path.is_some(), "/new should set session_path");
+}
+
+// =====================================================================
+// Test 22: completion limit is respected
 // =====================================================================
 #[test]
 fn completion_respects_limit() {

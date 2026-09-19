@@ -134,6 +134,10 @@ pub enum KeyAction {
     KillToLineStart,
     KillToLineEnd,
     KillWordBackward,
+    KillWordForward,
+    Yank,
+    YankPop,
+    Undo,
     /// Submit the input (Enter without Shift).
     Submit,
     /// Insert a newline (Shift+Enter).
@@ -144,10 +148,21 @@ pub enum KeyAction {
     Quit,
     /// Switch model (placeholder).
     SwitchModel,
+    /// Cycle to next model in `models_cycle` list (Ctrl+P).
+    CycleModelNext,
+    /// Cycle to previous model in `models_cycle` list (Ctrl+Shift+P).
+    CycleModelPrev,
+    /// Cycle to next thinking level (Ctrl+T).
+    CycleThinkingNext,
+    /// Cycle to previous thinking level (Ctrl+Shift+T).
+    CycleThinkingPrev,
     /// Show help.
     ShowHelp,
     /// Clear current input.
     ClearInput,
+    /// Accept the highlighted completion popup item.
+    /// Falls back to inserting a literal Tab if no popup is visible.
+    AcceptCompletionOrInsertTab,
     /// Scroll conversation up/down.
     ScrollUp,
     ScrollDown,
@@ -195,6 +210,26 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         KeyBinding {
             key: Key::new(KeyCode::Char('l'), ctrl),
             action: SwitchModel,
+        },
+        // Cycle model next (Ctrl+P)
+        KeyBinding {
+            key: Key::new(KeyCode::Char('p'), ctrl),
+            action: CycleModelNext,
+        },
+        // Cycle model prev (Ctrl+Shift+P)
+        KeyBinding {
+            key: Key::new(KeyCode::Char('p'), ctrl | KeyModifiers::SHIFT),
+            action: CycleModelPrev,
+        },
+        // Cycle thinking next (Ctrl+T)
+        KeyBinding {
+            key: Key::new(KeyCode::Char('t'), ctrl),
+            action: CycleThinkingNext,
+        },
+        // Cycle thinking prev (Ctrl+Shift+T)
+        KeyBinding {
+            key: Key::new(KeyCode::Char('t'), ctrl | KeyModifiers::SHIFT),
+            action: CycleThinkingPrev,
         },
         // Help
         KeyBinding {
@@ -255,6 +290,26 @@ pub fn default_keymap() -> Vec<KeyBinding> {
             key: Key::new(KeyCode::Char('w'), ctrl),
             action: KillWordBackward,
         },
+        // Alt+d → kill word forward.
+        KeyBinding {
+            key: Key::new(KeyCode::Char('d'), KeyModifiers::ALT),
+            action: KillWordForward,
+        },
+        // Ctrl+y → yank most recent kill.
+        KeyBinding {
+            key: Key::new(KeyCode::Char('y'), ctrl),
+            action: Yank,
+        },
+        // Alt+y → yank-pop (rotate kill ring backward).
+        KeyBinding {
+            key: Key::new(KeyCode::Char('y'), KeyModifiers::ALT),
+            action: YankPop,
+        },
+        // Ctrl+/ → undo.
+        KeyBinding {
+            key: Key::new(KeyCode::Char('/'), ctrl),
+            action: Undo,
+        },
         // Scroll
         KeyBinding {
             key: Key::new(KeyCode::PageUp, KeyModifiers::NONE),
@@ -269,6 +324,13 @@ pub fn default_keymap() -> Vec<KeyBinding> {
             key: Key::new(KeyCode::Char('u'), ctrl),
             action: ClearInput,
         },
+        // Tab: accept completion if popup visible, otherwise insert literal tab.
+        // Note: the runtime checks completion.is_some() and routes to
+        // apply_completion vs insert.
+        KeyBinding {
+            key: Key::new(KeyCode::Tab, KeyModifiers::NONE),
+            action: AcceptCompletionOrInsertTab,
+        },
     ]
 }
 
@@ -279,8 +341,14 @@ pub fn resolve(keymap: &[KeyBinding], key: Key) -> KeyAction {
             return b.action;
         }
     }
-    // Fallback: printable char with no modifiers → Insert(c)
-    if key.modifiers == KeyModifiers::NONE {
+    // Fallback: printable char with no Ctrl/Alt modifiers → Insert(c).
+    // Shift is allowed because terminals send SHIFT+letter for uppercase
+    // letters and most editors (bash, readline, Pi) accept it as a plain
+    // letter. This matches what `Pi` does and lets typed text reach the
+    // input buffer when the user types uppercase letters.
+    if !key.modifiers.contains(KeyModifiers::CTRL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+    {
         if let KeyCode::Char(c) = key.code {
             return KeyAction::Insert(c);
         }
@@ -323,10 +391,15 @@ mod tests {
         let km = default_keymap();
         // Unbound char → Insert
         assert_eq!(resolve(&km, Key::char('h')), KeyAction::Insert('h'));
-        // Ctrl+A is beginning-of-line (readline convention)
+        // Shift+letter (uppercase) is still Insert (matches bash/readline)
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Char('X'), KeyModifiers::SHIFT)),
+            KeyAction::Insert('X'),
+        );
+        // Ctrl+letter is NOT Insert — must be a binding or Noop
         assert_eq!(
             resolve(&km, Key::new(KeyCode::Char('a'), KeyModifiers::CTRL)),
-            KeyAction::MoveLineStart
+            KeyAction::MoveLineStart,
         );
     }
 

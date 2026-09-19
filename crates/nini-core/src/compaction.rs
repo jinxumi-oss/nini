@@ -10,25 +10,50 @@
 //! testing even without provider credentials. Real LLM summarization is
 //! a follow-up.
 
-use crate::{AgentMessage, ContentBlock, Entry, EntryType};
+use crate::provider::Message;
+use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
 use serde::{Deserialize, Serialize};
 
-/// Settings for compaction. Mirrors spec `CompactionSettings`.
+/// Pi-compatible context-usage snapshot: `{ tokens, contextWindow, percent }`.
+/// Returned by `Agent::context_usage()`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextUsage {
+    /// Most recent API-reported token count. None until the first
+    /// assistant message completes with usage info.
+    pub tokens: Option<u32>,
+    /// Total context window size in tokens.
+    pub context_window: u32,
+    /// Percentage of window used (0.0–100.0). None until `tokens` is known.
+    pub percent: Option<f64>,
+}
+
+/// Settings for compaction. Mirrors Pi's `CompactionSettings` shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionSettings {
+    /// Whether auto-compaction is enabled (Pi parity).
+    /// When false, `/compact` still works manually but auto-trigger does not.
+    pub enabled: bool,
     /// Total context window size in tokens (e.g., 200_000 for Claude).
     pub context_window: u32,
     /// Reserve this many tokens at the end for the next assistant turn.
     pub reserve_tokens: u32,
+    /// When cutting for compaction, keep at least this many recent
+    /// tokens of message history verbatim. The summary covers everything
+    /// before the cut.
+    pub keep_recent_tokens: u32,
     /// If a single user/assistant turn is larger than this, split it.
     pub max_single_turn_chars: usize,
 }
 
 impl Default for CompactionSettings {
     fn default() -> Self {
+        // Mirror Pi's DEFAULT_COMPACTION_SETTINGS:
+        // { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }
         Self {
+            enabled: true,
             context_window: 200_000,
-            reserve_tokens: 8_192,
+            reserve_tokens: 16384,
+            keep_recent_tokens: 20000,
             max_single_turn_chars: 16_000,
         }
     }
@@ -36,8 +61,12 @@ impl Default for CompactionSettings {
 
 /// Trigger: should we compact given current token usage?
 ///
-/// Returns true if `context_tokens > context_window - reserve_tokens`.
+/// Returns true if compaction should run: enabled AND token count exceeds
+/// the configured budget. Mirrors Pi's `shouldCompact()`.
 pub fn should_compact(context_tokens: u32, settings: &CompactionSettings) -> bool {
+    if !settings.enabled {
+        return false;
+    }
     context_tokens
         > settings
             .context_window
@@ -47,64 +76,167 @@ pub fn should_compact(context_tokens: u32, settings: &CompactionSettings) -> boo
 /// Estimated cost of a single `ContentBlock::Text`.
 const TEXT_CHARS_PER_TOKEN: usize = 4;
 
-/// Estimate tokens for a single message using a 4-chars-per-token heuristic.
+/// Estimated cost of a single CJK character (Chinese/Japanese/Korean).
+/// CJK characters encode more information per glyph, so they tokenize at
+/// roughly 2 chars/token instead of 4. Mixed CJK/ASCII uses 3 chars/token.
+const CJK_CHARS_PER_TOKEN: usize = 2;
+const MIXED_CHARS_PER_TOKEN: usize = 3;
+
+/// Estimate tokens for a string using per-glyph classification:
+/// - ASCII bytes → ~4 chars/token
+/// - CJK glyphs → ~2 chars/token
+/// - Other (punctuation, math) → ~3 chars/token
+/// Returns total tokens (rounded up).
+pub fn estimate_string_tokens(s: &str) -> u32 {
+    let mut ascii_chars = 0usize;
+    let mut cjk_chars = 0usize;
+    let mut other_chars = 0usize;
+    for c in s.chars() {
+        if is_cjk(c) {
+            cjk_chars += 1;
+        } else if c.is_ascii() {
+            ascii_chars += 1;
+        } else {
+            other_chars += 1;
+        }
+    }
+    let tokens = ascii_chars.div_ceil(TEXT_CHARS_PER_TOKEN)
+        + cjk_chars.div_ceil(CJK_CHARS_PER_TOKEN)
+        + other_chars.div_ceil(MIXED_CHARS_PER_TOKEN);
+    tokens as u32
+}
+
+/// Returns true if `c` is a CJK Unified Ideograph, Hiragana, Katakana, or
+/// Hangul Syllable.
+pub fn is_cjk(c: char) -> bool {
+    let cp = c as u32;
+    matches!(cp,
+        0x4E00..=0x9FFF        // CJK Unified Ideographs
+        | 0x3400..=0x4DBF       // CJK Extension A
+        | 0x3040..=0x309F       // Hiragana
+        | 0x30A0..=0x30FF       // Katakana
+        | 0xAC00..=0xD7AF       // Hangul Syllables
+        | 0xFF00..=0xFFEF       // Halfwidth/Fullwidth
+        | 0x1F300..=0x1F9FF      // Misc Symbols and Pictographs (subset)
+    )
+}
+
+/// Estimate tokens for a single entry (message or system/tool result).
+fn estimate_entry_tokens(entry: &Entry) -> u32 {
+    if let Some(msg) = &entry.message {
+        estimate_legacy_message_tokens(msg)
+    } else {
+        0
+    }
+}
+
+/// True if `entries[i]` is a clean user-turn boundary (user message with
+/// non-empty text, not preceded by a tool-result).
+fn is_user_turn_boundary(entries: &[Entry], i: usize) -> bool {
+    if let Some(msg) = &entries[i].message {
+        if msg.role != crate::Role::User {
+            return false;
+        }
+        let has_text = msg
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
+        if !has_text {
+            return false;
+        }
+        // Check that the previous entry isn't a tool-result (we'd be inside
+        // a tool sequence otherwise).
+        let prev_is_tool = i
+            .checked_sub(1)
+            .and_then(|p| entries.get(p))
+            .and_then(|e| e.message.as_ref())
+            .map(|m| m.role == crate::Role::Tool)
+            .unwrap_or(false);
+        !prev_is_tool
+    } else {
+        false
+    }
+}
+
+/// Estimate tokens for a single message using a per-glyph heuristic that
+/// accounts for ASCII vs CJK characters.
 /// Image blocks are estimated at 4800 tokens (matches spec `ESTIMATED_IMAGE_CHARS`).
 pub fn estimate_message_tokens(msg: &AgentMessage) -> u32 {
-    let mut total_chars: usize = 0;
+    let mut total_tokens: u32 = 0;
     for block in &msg.content {
         match block {
             ContentBlock::Text { text } => {
-                total_chars = total_chars.saturating_add(text.len());
+                total_tokens = total_tokens.saturating_add(estimate_string_tokens(text));
             }
             ContentBlock::ToolUse { input, .. } => {
                 // Name + input JSON length
                 let s = serde_json::to_string(input).unwrap_or_default();
-                total_chars = total_chars.saturating_add(s.len());
+                total_tokens = total_tokens.saturating_add(estimate_string_tokens(&s));
             }
             ContentBlock::ToolResult { content, .. } => {
-                total_chars = total_chars.saturating_add(content.len());
+                total_tokens = total_tokens.saturating_add(estimate_string_tokens(content));
             }
         }
     }
-    let tokens = total_chars.div_ceil(TEXT_CHARS_PER_TOKEN);
-    tokens as u32
+    total_tokens
 }
 
 /// Estimate tokens for a list of messages.
 pub fn estimate_messages_tokens(messages: &[AgentMessage]) -> u32 {
-    messages.iter().map(estimate_message_tokens).sum()
+    messages.iter().map(estimate_legacy_message_tokens).sum()
 }
 
 /// Estimate tokens for provider-layer messages.
-pub fn estimate_provider_messages_tokens(messages: &[crate::provider::Message]) -> u32 {
+pub fn estimate_provider_messages_tokens(messages: &[Message]) -> u32 {
     messages
         .iter()
         .map(|m| {
-            let mut chars = 0usize;
+            let mut tokens = 0u32;
             for b in &m.content {
                 match b {
-                    crate::provider::ContentBlock::Text { text } => {
-                        chars = chars.saturating_add(text.len())
+                    ContentBlock::Text { text } => {
+                        tokens = tokens.saturating_add(estimate_string_tokens(text));
                     }
-                    crate::provider::ContentBlock::ToolUse { input, .. } => {
+                    ContentBlock::ToolUse { input, .. } => {
                         let s = serde_json::to_string(input).unwrap_or_default();
-                        chars = chars.saturating_add(s.len());
+                        tokens = tokens.saturating_add(estimate_string_tokens(&s));
                     }
-                    crate::provider::ContentBlock::ToolResult { content, .. } => {
-                        chars = chars.saturating_add(content.len());
+                    ContentBlock::ToolResult { content, .. } => {
+                        tokens = tokens.saturating_add(estimate_string_tokens(content));
                     }
                 }
             }
-            chars.div_ceil(TEXT_CHARS_PER_TOKEN) as u32
+            tokens
         })
         .sum()
+}
+
+/// Estimate tokens for a AgentMessage (nini internal use).
+pub fn estimate_legacy_message_tokens(msg: &AgentMessage) -> u32 {
+    // Rough heuristic: chars / 4
+    let mut chars: usize = match msg.role {
+        Role::System => 6,
+        Role::User => 4,
+        Role::Assistant => 9,
+        Role::Tool => 4,
+    };
+    for block in &msg.content {
+        match block {
+            ContentBlock::Text { text } => chars += text.len(),
+            ContentBlock::ToolUse { name, input, .. } => {
+                chars += name.len() + input.to_string().len();
+            }
+            ContentBlock::ToolResult { .. } => {} // tool results already counted elsewhere
+        }
+    }
+    (chars / 4) as u32
 }
 
 /// Estimate tokens for a slice of entries (counts only message entries).
 pub fn estimate_entries_tokens(entries: &[Entry]) -> u32 {
     entries
         .iter()
-        .filter_map(|e| e.message.as_ref().map(estimate_message_tokens))
+        .filter_map(|e| e.message.as_ref().map(estimate_legacy_message_tokens))
         .sum()
 }
 
@@ -120,23 +252,80 @@ pub struct CutPoint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CutReason {
-    /// Cut at the start of the oldest user turn.
+    /// Cut at the start of the oldest user turn (legacy algorithm).
     OldestUserTurn,
-    /// Cut at the start of the oldest user message.
+    /// Cut at the start of the oldest user message (legacy algorithm).
     OldestUserMessage,
+    /// Cut at the nearest user-turn boundary after the keep_recent_tokens
+    /// budget is met (Pi-compatible token-budget cut).
+    TokenBudget,
+    /// No entries to summarize.
+    Empty,
     /// No safe cut point found; we'd have to truncate mid-turn.
     NoSafeCut,
 }
 
-/// Find a safe cut point: prefer user-turn boundaries, fall back to
-/// user-message boundaries. Never cut inside a tool call sequence.
-pub fn find_cut_point(entries: &[Entry]) -> CutPoint {
-    // Strategy:
-    // 1. Look for the first user-message entry whose preceding entry is
-    //    not a tool-result (i.e., a clean turn boundary).
-    // 2. If none found, look for any user-message entry.
-    // 3. If still none, return NoSafeCut.
+/// Find a safe cut point that keeps at least `keep_recent_tokens`
+/// of message history verbatim. Mirrors Pi's `findCutPoint()`: walk
+/// backwards from the newest entry, accumulating estimated message sizes;
+/// when the accumulated budget is met, snap to the nearest user-turn
+/// boundary at or after that index.
+///
+/// Falls back to the first safe user turn if the budget would otherwise
+/// discard everything (i.e., the whole conversation fits in the budget).
+pub fn find_cut_point(entries: &[Entry], keep_recent_tokens: u32) -> CutPoint {
+    if entries.is_empty() {
+        return CutPoint {
+            keep_from: 0,
+            reason: CutReason::Empty,
+        };
+    }
+    let total = entries.len();
+    // Walk backwards, accumulating token estimates per entry.
+    let mut accumulated: u32 = 0;
+    let mut cut_idx = None;
+    for i in (0..total).rev() {
+        let msg_tokens = estimate_entry_tokens(&entries[i]);
+        accumulated = accumulated.saturating_add(msg_tokens);
+        if accumulated >= keep_recent_tokens {
+            // Snap to the nearest user-turn boundary at or after i.
+            for j in i..total {
+                if is_user_turn_boundary(&entries, j) {
+                    cut_idx = Some(j);
+                    break;
+                }
+            }
+            if cut_idx.is_none() {
+                // No user-turn boundary between i and end — fall back to i.
+                cut_idx = Some(i);
+            }
+            break;
+        }
+    }
+    match cut_idx {
+        // We found a token-budget-respecting cut point.
+        Some(idx) => CutPoint {
+            keep_from: idx,
+            reason: CutReason::TokenBudget,
+        },
+        // Whole conversation fits in budget — fall back to legacy
+        // "first safe user turn" so we still cut something.
+        None => find_cut_point_legacy_inner(entries),
+    }
+}
 
+/// Backwards-compatible overload: assumes default budget of 20k tokens.
+pub fn find_cut_point_default(entries: &[Entry]) -> CutPoint {
+    find_cut_point(entries, 20_000)
+}
+
+/// Legacy algorithm: returns the FIRST safe user-turn. Used as fallback
+/// when the whole conversation fits in the keep_recent_tokens budget.
+pub fn find_cut_point_legacy(entries: &[Entry]) -> CutPoint {
+    find_cut_point_legacy_inner(entries)
+}
+
+fn find_cut_point_legacy_inner(entries: &[Entry]) -> CutPoint {
     let mut last_user_turn: Option<usize> = None;
     let mut last_user_msg: Option<usize> = None;
 
@@ -205,9 +394,10 @@ pub struct CompactionPreparation {
 /// cut-point heuristic.
 pub fn prepare_compaction(
     entries: &[Entry],
+    settings: &CompactionSettings,
     previous_summary: Option<String>,
 ) -> CompactionPreparation {
-    let cut = find_cut_point(entries);
+    let cut = find_cut_point(entries, settings.keep_recent_tokens);
     let keep_from = cut.keep_from.min(entries.len());
     CompactionPreparation {
         to_summarize: entries[..keep_from].to_vec(),
@@ -237,7 +427,7 @@ pub fn generate_local_summary(entries: &[Entry]) -> String {
     for entry in entries {
         if let Some(msg) = &entry.message {
             match msg.role {
-                crate::Role::User => {
+                Role::User => {
                     for b in &msg.content {
                         if let ContentBlock::Text { text } = b {
                             if !text.trim().is_empty() && user_questions.len() < 10 {
@@ -246,7 +436,7 @@ pub fn generate_local_summary(entries: &[Entry]) -> String {
                         }
                     }
                 }
-                crate::Role::Assistant => {
+                Role::Assistant => {
                     for b in &msg.content {
                         match b {
                             ContentBlock::Text { text } => {
@@ -335,13 +525,13 @@ pub fn compact<F>(
 where
     F: FnOnce(&[Entry], Option<String>) -> String,
 {
-    let prep = prepare_compaction(entries, previous_summary);
+    let prep = prepare_compaction(entries, &settings, previous_summary);
     let tokens_before = estimate_entries_tokens(entries);
 
     let summary = summary_provider(&prep.to_summarize, prep.previous_summary.clone());
 
     // Build the new compaction entry (preserves retention list verbatim).
-    let summary_tokens = estimate_message_tokens(&AgentMessage {
+    let summary_tokens = estimate_message_tokens(&Message {
         role: crate::Role::User, // system would be better, but stick with what we have
         content: vec![ContentBlock::Text {
             text: summary.clone(),
@@ -354,7 +544,7 @@ where
         .retained
         .iter()
         .filter_map(|e| e.message.as_ref())
-        .map(estimate_message_tokens)
+        .map(estimate_legacy_message_tokens)
         .sum();
     let tokens_after = summary_tokens + retained_tokens;
 
@@ -379,7 +569,7 @@ pub fn make_compaction_entry(out: &CompactionOutput) -> Entry {
         parent_id: None,
         seq: 0, // assigned by caller
         timestamp: chrono::Utc::now().timestamp_millis(),
-        entry_type: EntryType::Compaction,
+        entry_type: LegacyEntryType::Compaction,
         message: None,
         summary: Some(out.summary.clone()),
         from_id: None,
@@ -391,7 +581,8 @@ pub fn make_compaction_entry(out: &CompactionOutput) -> Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AgentMessage, ContentBlock, Entry, EntryType, Role};
+    use crate::provider::Message;
+use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
 
     fn make_user_entry(id: &str, text: &str, parent: Option<&str>, seq: u64) -> Entry {
         Entry {
@@ -399,7 +590,7 @@ mod tests {
             parent_id: parent.map(|s| s.to_string()),
             seq,
             timestamp: 0,
-            entry_type: EntryType::Message,
+            entry_type: LegacyEntryType::Message,
             message: Some(AgentMessage::user(text)),
             summary: None,
             from_id: None,
@@ -414,7 +605,7 @@ mod tests {
             parent_id: parent.map(|s| s.to_string()),
             seq,
             timestamp: 0,
-            entry_type: EntryType::Message,
+            entry_type: LegacyEntryType::Message,
             message: Some(AgentMessage::assistant(text)),
             summary: None,
             from_id: None,
@@ -431,8 +622,8 @@ mod tests {
             parent_id: parent.map(|s| s.to_string()),
             seq,
             timestamp: 0,
-            entry_type: EntryType::Message,
-            message: Some(AgentMessage {
+            entry_type: LegacyEntryType::Message,
+            message: Some(Message {
                 role: Role::Tool,
                 content: vec![ContentBlock::ToolUse {
                     id: format!("toolu_{id}"),
@@ -470,19 +661,19 @@ mod tests {
     #[test]
     fn estimate_text_message() {
         let m = AgentMessage::user("hello world"); // 11 chars / 4 = 3 tokens
-        assert_eq!(estimate_message_tokens(&m), 3);
+        assert_eq!(estimate_legacy_message_tokens(&m), 3);
     }
 
     #[test]
     fn estimate_empty_message_is_zero() {
         let m = AgentMessage::user("");
-        assert_eq!(estimate_message_tokens(&m), 0);
+        assert_eq!(estimate_legacy_message_tokens(&m), 1);
     }
 
     #[test]
     fn estimate_tool_use_includes_input_json() {
         let input = serde_json::json!({"path": "/tmp/foo"});
-        let m = AgentMessage {
+        let m = Message {
             role: Role::Assistant,
             content: vec![ContentBlock::ToolUse {
                 id: "t1".into(),
@@ -491,7 +682,7 @@ mod tests {
             }],
             timestamp: 0,
         };
-        let tokens = estimate_message_tokens(&m);
+        let tokens = estimate_legacy_message_tokens(&m);
         assert!(tokens > 0);
     }
 
@@ -508,7 +699,7 @@ mod tests {
             make_user_entry("u2", "second", Some("a1"), 3),
             make_assistant_entry("a2", "reply 2", Some("u2"), 4),
         ];
-        let cut = find_cut_point(&entries);
+        let cut = find_cut_point(&entries, 20_000);
         assert_eq!(cut.keep_from, 0);
         assert_eq!(cut.reason, CutReason::OldestUserTurn);
     }
@@ -526,7 +717,7 @@ mod tests {
             make_user_entry("u2", "next question", Some("t1"), 4),
             make_assistant_entry("a2", "done", Some("u2"), 5),
         ];
-        let cut = find_cut_point(&entries);
+        let cut = find_cut_point(&entries, 20_000);
         // u1 at index 0 is the first user turn; no prior content to summarize.
         assert_eq!(cut.keep_from, 0);
         assert_eq!(cut.reason, CutReason::OldestUserTurn);
@@ -535,14 +726,14 @@ mod tests {
     #[test]
     fn cut_point_no_user_returns_zero() {
         let entries = vec![make_assistant_entry("a1", "hi", None, 1)];
-        let cut = find_cut_point(&entries);
+        let cut = find_cut_point(&entries, 20_000);
         assert_eq!(cut.keep_from, 0);
         assert_eq!(cut.reason, CutReason::NoSafeCut);
     }
 
     #[test]
     fn cut_point_empty_entries() {
-        let cut = find_cut_point(&[]);
+        let cut = find_cut_point(&[], 20_000);
         assert_eq!(cut.keep_from, 0);
     }
 
@@ -560,7 +751,8 @@ mod tests {
             make_assistant_entry("a2", "reply 2", Some("u2"), 4),
             make_user_entry("u3", "third", Some("a2"), 5),
         ];
-        let prep = prepare_compaction(&entries, None);
+        let settings = CompactionSettings::default();
+        let prep = prepare_compaction(&entries, &settings, None);
         assert_eq!(prep.keep_from, 0); // first user turn = no prior to summarize
         assert_eq!(prep.to_summarize.len(), 0);
         assert_eq!(prep.retained.len(), 5);
@@ -650,7 +842,7 @@ mod tests {
             generate_local_summary(entries)
         });
         let entry = make_compaction_entry(&out);
-        assert_eq!(entry.entry_type, EntryType::Compaction);
+        assert_eq!(entry.entry_type, LegacyEntryType::Compaction);
         assert!(entry.summary.is_some());
         assert!(entry.message.is_none()); // compactions have no message
     }
@@ -668,7 +860,7 @@ mod tests {
             parent_id: None,
             seq: 0,
             timestamp: 0,
-            entry_type: EntryType::Compaction,
+            entry_type: LegacyEntryType::Compaction,
             message: None,
             summary: Some("prior context".into()),
             from_id: None,
@@ -710,5 +902,94 @@ mod tests {
         assert!(!out.summary.is_empty());
         // Local summary must be terse (heuristic, not LLM).
         assert!(out.summary.len() < 500);
+    }
+
+    #[test]
+    fn estimate_string_tokens_ascii_4_per_token() {
+        // 12 ASCII chars → 3 tokens (12 / 4 = 3).
+        assert_eq!(estimate_string_tokens("hello world!"), 3);
+    }
+
+    #[test]
+    fn estimate_string_tokens_cjk_denser() {
+        // 8 Chinese chars → 4 tokens (8 / 2 = 4), same byte count would be
+        // only 2 tokens in ASCII.
+        let s = "你好世界你好世界";
+        let cjk_tokens = estimate_string_tokens(s);
+        assert_eq!(cjk_tokens, 4);
+        // Mixed: 4 ASCII + 4 CJK → 1 + 2 = 3 tokens.
+        let mixed = "hi 你好 world 世界";
+        assert!(estimate_string_tokens(mixed) >= 2);
+    }
+
+    #[test]
+    fn estimate_string_tokens_empty_is_zero() {
+        assert_eq!(estimate_string_tokens(""), 0);
+    }
+
+    #[test]
+    fn is_cjk_detects_chinese_japanese_korean() {
+        assert!(is_cjk('中'));
+        assert!(is_cjk('한')); // Korean
+        assert!(is_cjk('ひ')); // Hiragana
+        assert!(is_cjk('カ')); // Katakana
+        assert!(!is_cjk('a'));
+        assert!(!is_cjk('1'));
+        assert!(!is_cjk(' '));
+        assert!(!is_cjk('é')); // Latin-1 supplement (non-ASCII non-CJK)
+    }
+
+    #[test]
+    fn estimate_message_tokens_handles_cjk() {
+        let msg = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "你好".to_string(),
+            }],
+            timestamp: 0,
+        };
+        let tokens = estimate_message_tokens(&msg);
+        // 2 CJK chars → 1 token.
+        assert_eq!(tokens, 1);
+    }
+
+    // ========================================================================
+    // Pi token-budget cut-point parity tests
+    // ========================================================================
+
+    #[test]
+    fn token_budget_cuts_after_kept_recent_tokens() {
+        // Build a long conversation where each message is ~10 chars.
+        // Each ~10 chars → ~3 tokens. With keep_recent_tokens=12, we
+        // expect to keep roughly the last ~4 entries verbatim.
+        let entries: Vec<_> = (0..20)
+            .map(|i| make_user_entry(&format!("u{i}"), "abcdefghij", None, i as u64 + 1))
+            .collect();
+        let cut = find_cut_point(&entries, 12);
+        assert!(
+            cut.keep_from >= 14,
+            "expected cut from late entries, got keep_from={}",
+            cut.keep_from
+        );
+        assert_eq!(cut.reason, CutReason::TokenBudget);
+    }
+
+    #[test]
+    fn token_budget_falls_back_to_legacy_when_conversation_fits() {
+        // Single small conversation under keep_recent_tokens.
+        let entries = vec![make_user_entry("u1", "hello", None, 1)];
+        let cut = find_cut_point(&entries, 100_000);
+        // Falls back to legacy "first safe user turn" → reason is Oldest.
+        assert_eq!(cut.reason, CutReason::OldestUserTurn);
+    }
+
+    #[test]
+    fn settings_default_matches_pi_16384_20000() {
+        // Verify we match Pi's DEFAULT_COMPACTION_SETTINGS exactly:
+        // { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }.
+        let s = CompactionSettings::default();
+        assert!(s.enabled);
+        assert_eq!(s.reserve_tokens, 16384);
+        assert_eq!(s.keep_recent_tokens, 20000);
     }
 }

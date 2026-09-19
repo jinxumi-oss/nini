@@ -1137,3 +1137,68 @@ async fn agent_sink_handles_all_variants() {
     drop(s); // release lock before pushing Done (sink.push needs the lock)
     sink.push(AgentEventLite::Done);
 }
+
+
+/// REGRESSION: tree pick queues full summary into pending_next_turn_messages.
+///
+/// TODO: bridge `SelectorState` (in nini-tui) to `nini_core::branch_summary`
+/// via a `summarize_at` method on the trait so the test can drive it.
+/// Currently the runtime path is WIP and the API surface is in
+/// `nini_core::branch_summary`. Marked `#[ignore]` until the
+/// runtime-level bridge lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "WIP: SelectorState.summarize_at bridge not yet implemented"]
+async fn tree_pick_queues_branch_summary_for_next_turn() {
+    use nini_session::Session;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    // Build a session with entries so the summary has content.
+    let mut session = Session::new("test-cwd");
+    session.push_message(None, nini_core::AgentMessage::user("first"));
+    session.push_message(Some("msg_0".into()), nini_core::AgentMessage::assistant("reply1"));
+    session.push_message(Some("msg_1".into()), nini_core::AgentMessage::user("second"));
+
+    let mut state = AppState::new("test-model");
+    state.session = Some(Arc::new(Mutex::new(session)));
+
+    let shared = shared_state(state);
+    let done = Arc::new(Notify::new());
+
+    // Open tree selector.
+    {
+        let mut s = shared.lock().unwrap();
+        s.input.text = "/tree".into();
+        s.input.cursor = 5;
+    }
+    nini_tui::runtime::submit_user_input(&shared, &noop_driver(), done.clone());
+
+    // Simulate pick by calling apply_selector_result directly.
+    {
+        let mut g = shared.lock().unwrap();
+        g.selector = Some(Box::new(
+            nini_tui::selectors::TreeSelector::from_entries(&[]),
+        ));
+    }
+    // Force a summary to be computed.
+    {
+        let mut g = shared.lock().unwrap();
+        if let Some(_sel) = g.selector.as_mut() {
+            // Pull entries from session directly.
+            if let Some(arc) = g.session.clone() {
+                if let Ok(_guard) = arc.try_lock() {
+                    // Branch summary API surface lives in
+                    // nini_core::branch_summary; the runtime-side
+                    // SelectorState bridge is still WIP. For this
+                    // test we just verify the queue path ran.
+                }
+            }
+        }
+        // Drain pending_next_turn_messages and check the summary landed.
+        let queued = std::mem::take(&mut g.pending_next_turn_messages);
+        assert!(
+            queued.iter().any(|m| m.contains("[BRANCH SUMMARY]")),
+            "branch summary should be queued for next turn; got: {queued:?}"
+        );
+    }
+}

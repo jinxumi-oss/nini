@@ -13,6 +13,7 @@
 //! would require async I/O (e.g., `/login`, `/export`) emit a "not yet
 //! implemented" result — wiring those up is a follow-up.
 
+use crate::settings::SettingsManager;
 use crate::state::{AppState, RunMode, TranscriptLine};
 
 /// 22 Pi-compatible slash commands (canonical order).
@@ -247,17 +248,29 @@ pub enum CommandOutcome {
 #[derive(Debug, Clone)]
 pub struct CommandResult {
     pub outcome: CommandOutcome,
+    /// Optional error message. When present, the runtime shows this to the user
+    /// in the transcript instead of the normal output.
+    pub error: Option<String>,
 }
 
 impl CommandResult {
     pub fn output(lines: Vec<String>) -> Self {
         Self {
             outcome: CommandOutcome::Output(lines),
+            error: None,
+        }
+    }
+    /// Wrap a command result that failed with an error message.
+    pub fn error(msg: impl Into<String>) -> Self {
+        Self {
+            outcome: CommandOutcome::Output(vec![]),
+            error: Some(msg.into()),
         }
     }
     pub fn quit() -> Self {
         Self {
             outcome: CommandOutcome::Quit,
+            error: None,
         }
     }
     pub fn prompt(prompt: impl Into<String>, next: CommandId) -> Self {
@@ -266,6 +279,7 @@ impl CommandResult {
                 prompt: prompt.into(),
                 next,
             },
+            error: None,
         }
     }
 }
@@ -274,7 +288,10 @@ impl CommandResult {
 ///
 /// `args` is the raw input after the command name (whitespace-trimmed).
 /// For commands without an `argument_hint`, `args` should be empty.
-pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResult {
+/// `settings` is used for commands that persist to ~/.pi/agent/settings.json
+/// (e.g., /model, /thinking). Pass `&mut SettingsManager::default()` if persistence
+/// is not needed.
+pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: CommandId, args: &str) -> CommandResult {
     let args = args.trim();
     match id {
         CommandId::Settings => {
@@ -299,6 +316,7 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
                 ]);
             }
             state.model = args.to_string();
+            settings.set_default_model(args);
             state.push_assistant(format!("(model set to {})", args));
             state.push_divider();
             CommandResult::output(vec![format!("model → {args}")])
@@ -319,6 +337,7 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
                     valid.join("|")
                 )]);
             }
+            settings.set_default_thinking_level(args);
             state.push_assistant(format!("(thinking level: {args})"));
             state.push_divider();
             CommandResult::output(vec![format!("thinking → {args}")])
@@ -338,7 +357,7 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
             let path = match dir {
                 Some(d) => {
                     let _ = std::fs::create_dir_all(&d);
-                    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f"); // ms to avoid parallel-test collisions
+                    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S-%6f"); // microseconds for parallel-safety
                     let p = d.join(format!("session-{ts}.html"));
                     if std::fs::write(&p, &html).is_ok() {
                         p.display().to_string()
@@ -359,18 +378,27 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
             "(share — GitHub gist upload not yet implemented)".to_string(),
         ]),
         CommandId::Copy => {
-            // v1: print the last assistant message to stdout. Real impl uses
-            // arboard or similar clipboard crate.
+            // Copy the last assistant message to the system clipboard.
+            // Falls back to stdout (for headless) if clipboard unavailable.
             let last_assistant = state.transcript.iter().rev().find_map(|l| match l {
                 TranscriptLine::AssistantText(s) => Some(s.clone()),
                 _ => None,
             });
             match last_assistant {
                 Some(msg) => {
-                    println!("{msg}"); // v1: also print to stdout for verification
-                    CommandResult::output(vec![
-                        "(copied to clipboard — also printed to stdout)".to_string(),
-                    ])
+                    match crate::clipboard::copy(&msg) {
+                        Ok(()) => CommandResult::output(vec![
+                            format!("(copied {} bytes to clipboard)", msg.len()),
+                        ]),
+                        Err(_e) => {
+                            // Fallback: print to stdout so headless users
+                            // can still grab the text.
+                            println!("{msg}");
+                            CommandResult::output(vec![
+                                format!("(copied {} bytes to stdout — clipboard unavailable)", msg.len()),
+                            ])
+                        }
+                    }
                 }
                 None => CommandResult::output(vec!["(no assistant message to copy)".to_string()]),
             }
@@ -439,13 +467,36 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
             "(logout — credential removal not yet implemented)".to_string(),
         ]),
         CommandId::New => {
-            // Clear the transcript for a fresh session.
+            // Clear the transcript and create a fresh session.
             let prev_len = state.transcript.len();
             state.transcript.clear();
             state.tokens = Default::default();
+
+            // Derive a session file path: ~/.pi/agent/sessions/<project>/<timestamp>.jsonl
+            let home = std::env::var("HOME").ok();
+            let cwd = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "default".to_string());
+            let dir = home.as_deref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".pi")
+                .join("agent")
+                .join("sessions")
+                .join(&cwd);
+            let _ = std::fs::create_dir_all(&dir);
+            let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+            let session_path = dir.join(format!("{ts}.jsonl"));
+            state.session_init(session_path);
+
             state.push_assistant("(started new session)".to_string());
             state.push_divider();
-            CommandResult::output(vec![format!("new: cleared {prev_len} transcript lines")])
+            CommandResult::output(vec![format!(
+                "new: cleared {} lines, session {}",
+                prev_len,
+                state.session_id.as_deref().unwrap_or("?")
+            )])
         }
         CommandId::Compact => {
             // v1: placeholder. Real compactor lands with P011.
@@ -453,9 +504,92 @@ pub fn dispatch(state: &mut AppState, id: CommandId, args: &str) -> CommandResul
             state.push_divider();
             CommandResult::output(vec!["compact: not yet implemented".to_string()])
         }
-        CommandId::Resume => CommandResult::output(vec![
-            "(resume — JSONL session resume not yet implemented)".to_string(),
-        ]),
+        CommandId::Resume => {
+            // /resume [n] — list available sessions or load by index.
+            // Scans ~/.pi/agent/sessions/ for .jsonl files.
+            fn session_entries() -> Vec<std::fs::DirEntry> {
+                let home = std::env::var("HOME").ok();
+                let base = home.as_deref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let dir = base.join(".pi").join("agent").join("sessions");
+                std::fs::read_dir(&dir)
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|e| e.path().extension().map(|s| s == "jsonl").unwrap_or(false))
+                    .collect()
+            }
+
+            let entries = session_entries();
+            if entries.is_empty() {
+                return CommandResult::output(vec![
+                    "No sessions found.".to_string(),
+                    "Sessions are stored in ~/.pi/agent/sessions/".to_string(),
+                ]);
+            }
+
+            // If args is a number, load that session directly.
+            if let Ok(idx) = args.trim().parse::<usize>() {
+                if idx == 0 || idx > entries.len() {
+                    return CommandResult::error(format!(
+                        "Invalid index {idx}. Available: 1–{}",
+                        entries.len()
+                    ));
+                }
+                let entry = &entries[idx - 1];
+                let path = entry.path();
+                if let Err(e) = state.session_load(path.clone()) {
+                    return CommandResult::error(format!("Failed to load session: {e}"));
+                }
+                // Rebuild transcript from session entries.
+                state.transcript.clear();
+                let session_id = state.session_id.clone().unwrap_or_default();
+                // Take ownership of the session Arc so we can lock it without
+                // keeping a borrow of state.
+                let session_arc = state.session.take();
+                if let Some(arc) = session_arc {
+                    if let Ok(guard) = arc.try_lock() {
+                        for entry in &guard.entries {
+                            if let Some(msg) = entry_legacy_message(entry) {
+                                for block in &msg.content {
+                                    if let nini_core::ContentBlock::Text { text } = block {
+                                        match msg.role {
+                                            nini_core::Role::User => state.push_user(text.clone()),
+                                            nini_core::Role::Assistant => state.push_assistant(text.clone()),
+                                            nini_core::Role::System | nini_core::Role::Tool => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Restore the Arc.
+                    state.session = Some(arc);
+                }
+                state.push_assistant(format!("(loaded session {session_id})"));
+                state.push_divider();
+                return CommandResult::output(vec![format!(
+                    "Resumed: {}",
+                    path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+                )]);
+            }
+
+            // No arg or non-numeric: list sessions.
+            let mut lines = Vec::new();
+            lines.push(format!("{} session(s) available:", entries.len()));
+            for (i, entry) in entries.iter().enumerate() {
+                let path = entry.path();
+                let name = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                lines.push(format!("  {}: {}", i + 1, name));
+            }
+            lines.push("Type /resume <number> to load.".to_string());
+            CommandResult::output(lines)
+        }
         CommandId::Reload => {
             // Reload skills from disk; provider/models are read at startup.
             let cwd = std::env::current_dir().ok();
@@ -490,6 +624,17 @@ fn render_transcript_html(lines: &[TranscriptLine]) -> String {
             TranscriptLine::ToolCall { name, args } => {
                 out.push_str(&format!(
                     "<p class=\"tool\">[tool call] {name} {args}</p>\n"
+                ));
+            }
+            TranscriptLine::BashExecution { cmd, output, ok, exit_code, duration_ms, .. } => {
+                let status = if *ok { "ok" } else { "fail" };
+                let escaped_output = output
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                out.push_str(&format!(
+                    "<p class=\"bash\">! <code>{cmd}</code> [{status}{}] in {duration_ms}ms<br><pre>{escaped_output}</pre></p>\n",
+                    exit_code.map(|c| format!(" exit={c}")).unwrap_or_default(),
                 ));
             }
             TranscriptLine::ToolResult { ok, content } => {
@@ -608,7 +753,8 @@ mod tests {
     #[test]
     fn dispatch_model_sets_state() {
         let mut state = AppState::new("old-model");
-        let r = dispatch(&mut state, CommandId::Model, "anthropic/claude-opus-4-7");
+        let mut settings = SettingsManager::default();
+        let r = dispatch(&mut state, &mut settings, CommandId::Model, "anthropic/claude-opus-4-7");
         match r.outcome {
             CommandOutcome::Output(lines) => {
                 assert!(lines[0].contains("anthropic/claude-opus-4-7"));
@@ -621,9 +767,11 @@ mod tests {
     #[test]
     fn dispatch_thinking_validates_levels() {
         let mut state = AppState::new("test");
-        let r = dispatch(&mut state, CommandId::Thinking, "high");
+        let mut settings = SettingsManager::default();
+        let r = dispatch(&mut state, &mut settings, CommandId::Thinking, "high");
         assert!(matches!(r.outcome, CommandOutcome::Output(_)));
-        let r = dispatch(&mut state, CommandId::Thinking, "bogus");
+        let mut settings = SettingsManager::default();
+        let r = dispatch(&mut state, &mut settings, CommandId::Thinking, "bogus");
         // Returns Usage line — output, not panic
         assert!(matches!(r.outcome, CommandOutcome::Output(_)));
     }
@@ -631,7 +779,8 @@ mod tests {
     #[test]
     fn dispatch_quit_sets_quitting_mode() {
         let mut state = AppState::new("test");
-        let r = dispatch(&mut state, CommandId::Quit, "");
+        let mut settings = SettingsManager::default();
+        let r = dispatch(&mut state, &mut settings, CommandId::Quit, "");
         assert_eq!(r.outcome, CommandOutcome::Quit);
         assert_eq!(state.mode, RunMode::Quitting);
     }
@@ -642,7 +791,8 @@ mod tests {
         state.push_user("hello".to_string());
         state.push_divider();
         assert_eq!(state.transcript.len(), 2);
-        let _ = dispatch(&mut state, CommandId::New, "");
+        let mut settings = SettingsManager::default();
+        let _ = dispatch(&mut state, &mut settings, CommandId::New, "");
         // Transcript should be cleared + a "(started new session)" line added
         assert!(!state.transcript.is_empty());
         assert!(
@@ -657,7 +807,8 @@ mod tests {
     fn dispatch_export_writes_html() {
         let mut state = AppState::new("test");
         state.push_user("hi".to_string());
-        let r = dispatch(&mut state, CommandId::Export, "");
+        let mut settings = SettingsManager::default();
+        let r = dispatch(&mut state, &mut settings, CommandId::Export, "");
         match r.outcome {
             CommandOutcome::Output(lines) => {
                 let path_line = &lines[0];
@@ -682,10 +833,47 @@ mod tests {
 
 /// Helper: count skills from disk. Used by `/reload`.
 pub mod state_helpers {
-    use crate::state::AppState;
     use nini_core::skills::load_skills;
 
     pub fn count_skills(cwd: &std::path::Path) -> usize {
         load_skills(cwd).skills.len()
+    }
+}
+
+
+fn entry_legacy_message(entry: &nini_core::SessionEntry) -> Option<nini_core::AgentMessage> {
+    use nini_core::entries::{AgentMessage as PiMsg, ContentBlock as PiContentBlock};
+    match entry {
+        nini_core::SessionEntry::Message(m) => {
+            match &m.message {
+                PiMsg::User(u) => {
+                    let blocks: Vec<nini_core::ContentBlock> = match &u.content {
+                        nini_core::entries::StringOrContentBlocks::String(s) => {
+                            vec![nini_core::ContentBlock::Text { text: s.clone() }]
+                        }
+                        nini_core::entries::StringOrContentBlocks::Blocks(bs) => bs.iter().map(|b| match b {
+                            PiContentBlock::Text { text } => nini_core::ContentBlock::Text { text: text.clone() },
+                            PiContentBlock::ToolCall { id, name, arguments } => nini_core::ContentBlock::ToolUse {
+                                id: id.clone(), name: name.clone(), input: arguments.clone(),
+                            },
+                            PiContentBlock::Image { .. } | PiContentBlock::Thinking { .. } => nini_core::ContentBlock::Text { text: String::new() },
+                        }).collect(),
+                    };
+                    Some(nini_core::AgentMessage { role: nini_core::Role::User, content: blocks, timestamp: u.timestamp })
+                }
+                PiMsg::Assistant(a) => {
+                    let blocks: Vec<nini_core::ContentBlock> = a.content.iter().map(|b| match b {
+                        PiContentBlock::Text { text } => nini_core::ContentBlock::Text { text: text.clone() },
+                        PiContentBlock::ToolCall { id, name, arguments } => nini_core::ContentBlock::ToolUse {
+                            id: id.clone(), name: name.clone(), input: arguments.clone(),
+                        },
+                        PiContentBlock::Image { .. } | PiContentBlock::Thinking { .. } => nini_core::ContentBlock::Text { text: String::new() },
+                    }).collect();
+                    Some(nini_core::AgentMessage { role: nini_core::Role::Assistant, content: blocks, timestamp: a.timestamp })
+                }
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }

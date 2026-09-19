@@ -45,7 +45,13 @@ pub enum ContentBlock {
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
+    /// Timestamp (ms since epoch). 0 means unset.
+    #[serde(default)]
+    pub timestamp: i64,
 }
+
+/// Legacy alias — many places use `AgentMessage` as the type name.
+/// This is the same as `Message`.
 
 /// Tool specification sent to the model. Re-exported from `tool::ToolSpec`.
 pub use crate::tool::ToolSpec;
@@ -72,6 +78,17 @@ pub struct Usage {
     pub cache_read_tokens: u32,
     #[serde(default)]
     pub cache_write_tokens: u32,
+}
+
+/// Compute context-window token count from a provider-reported Usage.
+/// Mirrors Pi's `calculateContextTokens`: sum of input, output, cache
+/// reads, and cache writes (the last is Pi's behavior; we approximate).
+pub fn context_tokens_from_usage(usage: &Usage) -> u32 {
+    usage
+        .input_tokens
+        .saturating_add(usage.output_tokens)
+        .saturating_add(usage.cache_read_tokens)
+        .saturating_add(usage.cache_write_tokens)
 }
 
 /// A single streaming event from a provider.
@@ -192,3 +209,6 @@ impl From<serde_json::Error> for ProviderError {
         ProviderError::Json(e.to_string())
     }
 }
+
+/// Convenience alias for `Message` — many existing call sites use `AgentMessage`.
+pub type AgentMessage = Message;

@@ -121,9 +121,20 @@ impl ToolRegistry {
         self
     }
 
+    /// In-place registration. Useful when the registry is mutated inside a
+    /// loop where chaining would consume the receiver.
+    pub fn register_mut(&mut self, tool: Arc<dyn Tool>) {
+        self.tools.insert(tool.name().to_string(), tool);
+    }
+
     /// Look up a tool by name.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
+    }
+
+    /// Iterate over all registered tools (as `Arc<dyn Tool>`).
+    pub fn tools(&self) -> impl Iterator<Item = Arc<dyn Tool>> + '_ {
+        self.tools.values().cloned()
     }
 
     /// List all registered tool specs (for the model).

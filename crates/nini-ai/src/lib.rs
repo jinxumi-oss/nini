@@ -19,6 +19,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// SSE parser and streaming types.
 pub mod sse;
 
+/// LLM-backed conversation summarization (used for auto-compaction).
+pub mod summarizer;
+
 /// Anthropic Messages API provider.
 pub mod anthropic;
 
@@ -31,5 +34,19 @@ pub mod openai_responses;
 /// Generic OpenAI-compat preset (any `/v1/chat/completions` endpoint).
 pub mod openai_compat;
 
+/// Google Gemini provider (OpenAI-compat mode for chat completions).
+pub mod google;
+
+/// DeepSeek provider (OpenAI-compat with DeepSeek base URL).
+pub mod deepseek;
+
+/// Groq provider (OpenAI-compat with Groq base URL).
+pub mod groq;
+
 /// Deterministic fixture provider (no network). Used for tests and demos.
 pub mod fixture;
+
+/// Provider that chains multiple inner providers with automatic fallback
+/// on transient failures (5xx, network errors). Used to survive a primary
+/// key/model outage.
+pub mod fallback;

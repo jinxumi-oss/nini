@@ -8,10 +8,10 @@
 #![allow(unused_mut)] // render/runtime use mut bindings for future hook points
 
 use crate::keys::{Key, KeyAction, resolve};
-use crate::render::render_frame;
+use crate::render::render_frame_with_theme;
+use crate::selector::SelectorItem;
 use crate::state::{AppState, RunMode, TranscriptLine};
 use anyhow::Result;
-use crossterm::event::KeyCode;
 use crossterm::event::{Event, EventStream, KeyEvent};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -55,6 +55,9 @@ pub enum AgentEventLite {
     TurnEnd,
     Error(String),
     Usage(u32, u32),
+    /// Agent phase transition. Mirrors `AgentEvent::PhaseChanged` from
+    /// nini-core but as a lightweight payload (just the phase name).
+    PhaseChanged(String),
     /// Marks end of agent run; flips state back to Editing.
     Done,
 }
@@ -74,8 +77,13 @@ impl AgentSink {
     /// Apply an `AgentEventLite` to the state.
     pub fn push(&self, ev: AgentEventLite) {
         if let Ok(mut s) = self.state.lock() {
+            if let AgentEventLite::PhaseChanged(phase) = &ev {
+                s.status = phase.clone();
+            }
+        }
+        if let Ok(mut s) = self.state.lock() {
             match ev {
-                AgentEventLite::TextDelta(text) => s.push_assistant(text),
+                AgentEventLite::TextDelta(text) => s.push_assistant_raw(text),
                 AgentEventLite::ToolCallStart { name } => s.push_tool_call(name, ""),
                 AgentEventLite::ToolCallStop { id, args } => {
                     // Update the most recent tool call line with final args.
@@ -87,21 +95,39 @@ impl AgentSink {
                     }
                 }
                 AgentEventLite::ToolResult { ok, content } => {
-                    s.push_tool_result(ok, content);
+                    s.push_tool_result_raw(ok, content);
                 }
-                AgentEventLite::TurnEnd => s.push_divider(),
+                AgentEventLite::TurnEnd => {
+                    s.push_divider();
+                    // Flush session to disk on turn end. Errors are logged but
+                    // never propagated — IO failures must not break the TUI.
+                    s.session_flush();
+                }
                 AgentEventLite::Error(message) => {
-                    s.push_assistant(format!("[error] {message}"));
+                    s.push_assistant_raw(format!("[error] {message}"));
                 }
                 AgentEventLite::Usage(input, output) => {
                     s.tokens.input += input as u64;
                     s.tokens.output += output as u64;
                 }
+                AgentEventLite::PhaseChanged(_) => {
+                    // Already handled above (set s.status).
+                }
                 AgentEventLite::Done => {
                     s.mode = RunMode::Editing;
                     s.status = "ready".to_string();
+                    s.abort_signal = None; // clear stale abort signal
                 }
             }
+        }
+    }
+
+    /// Inject a tool result into the transcript synchronously. Used by local
+    /// commands (!bash) that run outside the agent driver and need to contribute
+    /// to the same turn's transcript without spawning an async task.
+    pub fn inject_tool_result(&self, ok: bool, content: String) {
+        if let Ok(mut s) = self.state.lock() {
+            s.push_tool_result(ok, content);
         }
     }
 }
@@ -121,9 +147,16 @@ where
     bootstrap(&mut state);
     let shared = shared_state(state);
 
+    // Install SIGINT/SIGTERM/SIGHUP handlers + panic hook before enabling
+    // raw mode. The panic hook calls emergency_cleanup() to restore the
+    // terminal if anything blows up.
+    let _ = crate::signals::install_handlers();
+
     enable_raw_mode()?;
+    crate::signals::mark_raw_mode(true);
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    crate::signals::mark_alt_screen(true);
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -134,6 +167,8 @@ where
     terminal.show_cursor()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     disable_raw_mode()?;
+    crate::signals::mark_raw_mode(false);
+    crate::signals::mark_alt_screen(false);
     result
 }
 
@@ -148,21 +183,194 @@ async fn run_loop(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tick.tick().await; // skip the immediate first tick
 
+    // Selector state lives outside AppState so we can keep AppState Clone-able.
+    let mut active_selector: Option<Box<dyn crate::selector::SelectorState + Send>> = None;
+    let mut selector_query: String = String::new();
+    let mut selector_visible: Vec<usize> = Vec::new();
+
+    // Load the user's configured theme once. Hot-reload via theme watcher:
+    // when a theme file changes, the watcher emits a `ThemeEvent` and we
+    // reload from settings.
+    let mut theme = {
+        let mut settings = crate::settings::SettingsManager::default();
+        settings.theme()
+    };
+
+    // Spawn theme watcher (best-effort; falls back silently if dirs missing).
+    let cwd = std::env::current_dir().ok();
+    let (theme_tx, mut theme_rx) = tokio::sync::mpsc::unbounded_channel();
+    let _watcher = crate::theme_watcher::spawn_theme_watcher(cwd.as_deref(), theme_tx);
+
     loop {
         // Snapshot state for rendering (cheap clone, doesn't hold lock long).
         let snapshot = {
             let g = shared.lock().unwrap();
             g.clone()
         };
-        terminal.draw(|f| render_frame(f, &snapshot))?;
+        // Compute selector visible indices (for rendering).
+        if let Some(sel) = active_selector.as_ref() {
+            let items = sel.state_items();
+            if selector_query.is_empty() {
+                selector_visible = (0..items.len()).collect();
+            } else {
+                selector_visible = crate::selector::fuzzy_filter(&selector_query, &items);
+            }
+        }
+        let selector_title = active_selector.as_ref().map(|s| s.state_title().to_string());
+        let selector_items: Vec<SelectorItem> = active_selector
+            .as_ref()
+            .map(|s| s.state_items())
+            .unwrap_or_default();
+        let selector_selected = active_selector
+            .as_ref()
+            .map(|s| s.state_selected())
+            .unwrap_or(0);
+
+        terminal.draw(|f| {
+            render_frame_with_theme(f, &snapshot, &theme);
+            // Overlay the selector panel if active.
+            if let Some(title) = selector_title.clone() {
+                let area = f.area();
+                // Selector covers most of the screen, leaving status bar.
+                let selector_area = ratatui::layout::Rect {
+                    x: area.x + 2,
+                    y: area.y + 2,
+                    width: area.width.saturating_sub(4),
+                    height: area.height.saturating_sub(4),
+                };
+                crate::render::render_selector_panel(
+                    f,
+                    &title,
+                    &selector_query,
+                    &selector_items,
+                    &selector_visible,
+                    selector_selected,
+                    &theme,
+                    selector_area,
+                );
+            }
+        })?;
 
         let done = Arc::new(Notify::new()); // per-iteration done signal
         let done_for_select = done.clone();
 
+        // Check if submit_user_input signaled a selector-open request via
+        // state.status. Run AFTER done.notify_waiters() in submit_user_input.
+        if active_selector.is_none() {
+            let status = shared.lock().unwrap().status.clone();
+            if let Some(kind) = status.strip_prefix("open_selector:") {
+                let current_model = shared.lock().unwrap().model.clone();
+                match kind {
+                    "model" => {
+                        let sel = Box::new(crate::selectors::ModelSelector::new(Some(&current_model)));
+                        active_selector = Some(sel);
+                        selector_query.clear();
+                    }
+                    "thinking" => {
+                        // Read current thinking level from settings.
+                        let cur = {
+                            let mut s = crate::settings::SettingsManager::default();
+                            s.theme_name(); // force load
+                            s.get().default_thinking_level.clone().unwrap_or_default()
+                        };
+                        let sel = Box::new(crate::selectors::ThinkingSelector::new(Some(&cur)));
+                        active_selector = Some(sel);
+                        selector_query.clear();
+                    }
+                    "session" => {
+                        let home = std::env::var("HOME").ok();
+                        let cwd = std::env::current_dir().ok();
+                        let cwd_name = cwd
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "default".to_string());
+                        let dir = home
+                            .map(|h| std::path::PathBuf::from(h))
+                            .unwrap_or_else(|| std::path::PathBuf::from("."))
+                            .join(".pi")
+                            .join("agent")
+                            .join("sessions")
+                            .join(&cwd_name);
+                        let sel = Box::new(crate::selectors::SessionSelector::from_dir(&dir));
+                        active_selector = Some(sel);
+                        selector_query.clear();
+                    }
+                    "tree" => {
+                        // Open tree selector against the active session's entries.
+                        let session_arc = shared.lock().unwrap().session.clone();
+                        let entries: Vec<nini_core::SessionEntry> = if let Some(arc) = session_arc {
+                            if let Ok(guard) = arc.try_lock() {
+                                guard.entries.clone()
+                            } else {
+                                Vec::new()
+                            }
+                        } else {
+                            Vec::new()
+                        };
+                        let sel = Box::new(crate::selectors::TreeSelector::from_entries(&entries));
+                        active_selector = Some(sel);
+                        selector_query.clear();
+                    }
+                    "trust" => {
+                        let cwd = std::env::current_dir().ok();
+                        let cwd_str = cwd
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let home = std::env::var("HOME").ok();
+                        let trust_path = home
+                            .as_deref()
+                            .and_then(|h| nini_core::project_trust::ProjectTrustStore::load(&std::path::PathBuf::from(h).join(".pi").join("agent").join("trust.json")).ok());
+                        let current = trust_path.as_ref().and_then(|t| t.get(&cwd_str));
+                        let sel = Box::new(crate::selectors::TrustSelector::new(cwd_str, current));
+                        active_selector = Some(sel);
+                        selector_query.clear();
+                    }
+                    "settings" => {
+                        let sel = Box::new(crate::selectors::SettingsSelector::new(
+                            crate::settings::SettingsManager::default(),
+                        ));
+                        active_selector = Some(sel);
+                        selector_query.clear();
+                    }
+                    _ => {}
+                }
+                // Clear the status flag so it doesn't re-trigger.
+                shared.lock().unwrap().status = "ready".to_string();
+            }
+        }
+
         tokio::select! {
             maybe = events.next() => {
                 match maybe {
-                    Some(Ok(Event::Key(k))) => handle_key(k, &shared, &agent_driver, done),
+                    Some(Ok(Event::Key(k))) => {
+                        // If a selector is active, route keys to it instead.
+                        if active_selector.is_some() {
+                            handle_selector_key(
+                                k,
+                                &shared,
+                                active_selector.as_mut().unwrap(),
+                                &mut selector_query,
+                                &mut selector_visible,
+                            );
+                            // Check if selector closed itself.
+                            if selector_visible.is_empty() && selector_query.is_empty() {
+                                // Selector was confirmed or cancelled — apply result.
+                                let model_update = if let Some(s) = active_selector.take() {
+                                    apply_selector_result(s, &shared)
+                                } else {
+                                    None
+                                };
+                                if let Some(new_model) = model_update {
+                                    shared.lock().unwrap().model = new_model;
+                                }
+                                shared.lock().unwrap().status = "ready".to_string();
+                            }
+                        } else {
+                            handle_key(k, &shared, &agent_driver, done);
+                        }
+                    }
                     Some(Ok(Event::Resize(_, _))) => { /* ratatui handles */ }
                     Some(Ok(_)) => {}
                     Some(Err(e)) => eprintln!("event error: {e}"),
@@ -173,6 +381,25 @@ async fn run_loop(
                 // Agent finished; loop will redraw on next iteration.
             }
             _ = tick.tick() => { /* animation tick */ }
+            Some(theme_event) = theme_rx.recv() => {
+                // Theme file changed — reload from settings.
+                use crate::theme_watcher::ThemeEvent;
+                // Also publish to the global event bus for other modules.
+                let bus = crate::event_bus::global();
+                match theme_event {
+                    ThemeEvent::Changed(path) | ThemeEvent::Removed(path) => {
+                        let mut settings = crate::settings::SettingsManager::default();
+                        theme = settings.theme();
+                        let _ = bus.emit(crate::event_bus::AppEvent::ThemeChanged(
+                            settings.theme_name().unwrap_or_default(),
+                        ));
+                        let _ = path; // suppress unused
+                    }
+                    ThemeEvent::Error(_, msg) => {
+                        eprintln!("[nini] theme watcher error: {msg}");
+                    }
+                }
+            }
         }
 
         let mode = shared.lock().unwrap().mode;
@@ -185,21 +412,273 @@ async fn run_loop(
 
 /// Map a `crossterm::KeyEvent` to a `KeyAction` and apply to state.
 /// On Submit (in Editing mode), spawn the agent runner.
+/// Handle a key press while a selector is active. Updates `query`,
+/// `visible`, and the selector's selected index. When user confirms (Enter)
+/// or cancels (Esc), clears the query so the caller can detect closure.
+fn handle_selector_key(
+    k: KeyEvent,
+    _shared: &SharedState,
+    selector: &mut Box<dyn crate::selector::SelectorState + Send>,
+    query: &mut String,
+    visible: &mut Vec<usize>,
+) {
+    use crate::keys::Key as K;
+    let key: K = k.into();
+    match key.code {
+        crossterm::event::KeyCode::Up => {
+            if let Some(last) = visible.last() {
+                let cur = selector.state_selected();
+                let new_idx = if cur == 0 { *last } else { cur.saturating_sub(1) };
+                selector.state_set_selected(new_idx);
+            }
+        }
+        crossterm::event::KeyCode::Down => {
+            if let Some(len) = visible.len().checked_sub(1) {
+                let cur = selector.state_selected();
+                let new_idx = if cur >= len { 0 } else { cur + 1 };
+                selector.state_set_selected(new_idx);
+            }
+        }
+        crossterm::event::KeyCode::Backspace => {
+            query.pop();
+            *visible = compute_visible(query, &selector.state_items());
+        }
+        crossterm::event::KeyCode::Esc => {
+            query.clear();
+            visible.clear();
+        }
+        crossterm::event::KeyCode::Enter => {
+            let outcome = selector.state_on_select();
+            match outcome {
+                crate::selector::SelectorOutcome::Picked(_) | crate::selector::SelectorOutcome::Back => {
+                    query.clear();
+                    visible.clear();
+                }
+                crate::selector::SelectorOutcome::Cancelled => {
+                    query.clear();
+                    visible.clear();
+                }
+            }
+        }
+        crossterm::event::KeyCode::Char(c) => {
+            query.push(c);
+            *visible = compute_visible(query, &selector.state_items());
+        }
+        _ => {}
+    }
+}
+
+fn compute_visible(query: &str, items: &[crate::selector::SelectorItem]) -> Vec<usize> {
+    if query.is_empty() {
+        return (0..items.len()).collect();
+    }
+    // Cheap substring match first; fall back to fuzzy.
+    let q = query.to_lowercase();
+    let mut exact: Vec<usize> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if item.label.to_lowercase().contains(&q) {
+            exact.push(i);
+        }
+    }
+    if !exact.is_empty() {
+        return exact;
+    }
+    crate::selector::fuzzy_filter(query, items)
+}
+
+/// Helper for early-return in `submit_user_input`: drop state lock and
+/// notify `done` (so the runtime loop wakes up). The actual selector open
+/// happens in the loop body (which can mutate its `active_selector`
+/// without deadlock).
+fn drop_and_signal(_text: String, done: Arc<Notify>) {
+    done.notify_waiters();
+}
+
+/// Apply a confirmed selector's result to AppState. Returns the new model
+/// name if the selector was ModelSelector (caller writes to state).
+fn apply_selector_result(
+    mut selector: Box<dyn crate::selector::SelectorState + Send>,
+    shared: &SharedState,
+) -> Option<String> {
+    // Downcast to concrete selectors to read their `result` field, then
+    // persist via SettingsManager / ProjectTrustStore / etc.
+    use crate::selectors::model::ModelSelector;
+    use crate::selectors::session::SessionSelector;
+    use crate::selectors::thinking::ThinkingSelector;
+    use crate::selectors::settings::SettingsSelector;
+    use crate::selectors::tree::TreeSelector;
+    use crate::selectors::trust::TrustSelector;
+    use crate::settings::SettingsManager;
+
+    if let Some(model_sel) = selector.state_as_any_mut().downcast_mut::<ModelSelector>() {
+        let model = model_sel.result.clone();
+        if let Some(m) = &model {
+            let mut settings = SettingsManager::default();
+            settings.set_default_model(m.clone());
+        }
+        return model;
+    }
+    if let Some(think_sel) = selector.state_as_any_mut().downcast_mut::<ThinkingSelector>() {
+        if let Some(level) = &think_sel.result {
+            let mut settings = SettingsManager::default();
+            settings.set_default_thinking_level(level.clone());
+        }
+        return None;
+    }
+    if let Some(trust_sel) = selector.state_as_any_mut().downcast_mut::<TrustSelector>() {
+        if let Some(decision) = trust_sel.result {
+            // Persist to ProjectTrustStore.
+            let cwd = trust_sel.cwd.clone();
+            if let Ok(home) = std::env::var("HOME") {
+                let path = std::path::PathBuf::from(home)
+                    .join(".pi")
+                    .join("agent")
+                    .join("trust.json");
+                let mut store = nini_core::project_trust::ProjectTrustStore::load(&path)
+                    .unwrap_or_default();
+                store.set(&cwd, decision);
+                let _ = store.save(&path);
+            }
+        }
+        return None;
+    }
+    if let Some(session_sel) = selector.state_as_any_mut().downcast_mut::<SessionSelector>() {
+        if let Some(path_str) = session_sel.result.clone() {
+            // Load the session file into AppState.
+            let path = std::path::PathBuf::from(&path_str);
+            if let Err(e) = shared.lock().unwrap().session_load(path) {
+                eprintln!("[nini] session load failed: {e}");
+            }
+        }
+        return None;
+    }
+    if let Some(tree_sel) = selector.state_as_any_mut().downcast_mut::<TreeSelector>() {
+        // Compute branch summary for the picked branch and:
+        // (a) surface a preview in the transcript,
+        // (b) queue the full summary into pending_next_turn_messages so
+        //     the next user turn has it as context (Pi parity — mirrors
+        //     _pendingNextTurnMessages).
+        let session_arc = shared.lock().unwrap().session.clone();
+        let prev_status = shared.lock().unwrap().status.clone();
+        shared.lock().unwrap().status = "branch summary: computing…".into();
+        if let Some(arc) = session_arc {
+            if let Ok(guard) = arc.try_lock() {
+                let entries = guard.entries.clone();
+                drop(guard);
+                let summary = tree_sel.summarize_at(0, &entries);
+                if let Some(s) = summary {
+                    // (a) Preview in transcript.
+                    let truncated: String = if s.len() > 400 {
+                        let mut t = s.clone();
+                        t.truncate(400);
+                        t.push_str("…");
+                        t
+                    } else {
+                        s.clone()
+                    };
+                    let len = truncated.len();
+                    let mut g = shared.lock().unwrap();
+                    g.push_assistant(format!(
+                        "(branch summary: {len} chars)\n{truncated}",
+                    ));
+                    g.push_divider();
+                    // (b) Queue full summary for next turn.
+                    g.pending_next_turn_messages.push(format!(
+                        "[BRANCH SUMMARY]\n\n{}",
+                        s,
+                    ));
+                }
+                shared.lock().unwrap().status = prev_status;
+            }
+        }
+        return None;
+    }
+    if let Some(settings_sel) = selector
+        .state_as_any_mut()
+        .downcast_mut::<SettingsSelector>()
+    {
+        // Apply the toggle/cycle. The settings manager inside the selector
+        // persists to disk via its internal mechanism.
+        let new_model = settings_sel.apply(0).map(|_| settings_sel.settings.model_name());
+        new_model.flatten()
+    } else {
+        None
+    }
+}
+
+/// Cycle to the next/previous model in `state.models_cycle`.
+/// Updates `state.model`, persists to settings.json, and updates status.
+fn cycle_model(state: &mut crate::state::AppState, direction: i32) {
+    if state.models_cycle.is_empty() {
+        state.status = "(no model cycle configured; use /model)".to_string();
+        return;
+    }
+    // Find current model in cycle; advance by `direction`.
+    let current_pos = state
+        .models_cycle
+        .iter()
+        .position(|m| m == &state.model)
+        .unwrap_or(0);
+    let n = state.models_cycle.len() as i32;
+    let mut new_pos = current_pos as i32 + direction;
+    if new_pos < 0 {
+        new_pos += n;
+    } else if new_pos >= n {
+        new_pos -= n;
+    }
+    let new_pos = new_pos as usize;
+    state.models_cycle_idx = Some(new_pos);
+    let new_model = state.models_cycle[new_pos].clone();
+    state.model = new_model.clone();
+    // Persist to settings.json if the runtime wired in a real path.
+    let mut settings = match state.settings_path.clone() {
+        Some(p) => crate::settings::SettingsManager::load_from_disk(p),
+        None => crate::settings::SettingsManager::default(),
+    };
+    settings.set_default_model(&new_model);
+    state.status = format!("model: {new_model}");
+}
+
+/// Cycle thinking level through the standard set.
+fn cycle_thinking(state: &mut crate::state::AppState, direction: i32) {
+    const LEVELS: &[&str] = &[
+        "off", "minimal", "low", "medium", "high", "xhigh", "max",
+    ];
+    // Read current level from dedicated state field; fall back to "medium"
+    // if never set.
+    let current = state
+        .thinking_level
+        .as_deref()
+        .unwrap_or("medium");
+    let current_pos = LEVELS.iter().position(|l| *l == current).unwrap_or(3);
+    let n = LEVELS.len() as i32;
+    let mut new_pos = current_pos as i32 + direction;
+    if new_pos < 0 {
+        new_pos += n;
+    } else if new_pos >= n {
+        new_pos -= n;
+    }
+    let new_level = LEVELS[new_pos as usize];
+    let mut settings = match &state.settings_path {
+        Some(p) => crate::settings::SettingsManager::load_from_disk(p.clone()),
+        None => crate::settings::SettingsManager::default(),
+    };
+    // If a model is selected and the user has a per-model override, write
+    // to the override; otherwise update the default.
+    let model = state.model.clone();
+    if !model.is_empty() {
+        settings.set_model_thinking_level(&model, new_level);
+    } else {
+        settings.set_default_thinking_level(new_level);
+    }
+    // Also update live state so the selector stays in sync.
+    state.thinking_level = Some(new_level.to_string());
+    state.status = format!("thinking: {new_level}");
+}
+
 fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, done: Arc<Notify>) {
     let mut state = shared.lock().unwrap();
     let key: Key = k.into();
-
-    // Tab is not in default_keymap; intercept it explicitly for completion.
-    if matches!(k.code, KeyCode::Tab) {
-        if state.completion.is_some() {
-            state.apply_completion();
-        } else if state.mode == RunMode::Editing {
-            // No popup: Tab inserts a literal tab character.
-            state.input.insert_char('\t');
-        }
-        return;
-    }
-
     let action = resolve(&crate::keys::default_keymap(), key);
     // Drop the lock while we hold it; the rest of the match needs it.
 
@@ -259,11 +738,41 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         KeyAction::KillToLineStart => state.input.kill_to_line_start(),
         KeyAction::KillToLineEnd => state.input.kill_to_line_end(),
         KeyAction::KillWordBackward => state.input.kill_word_backward(),
+        KeyAction::KillWordForward => state.input.kill_word_forward(),
+        KeyAction::Yank => {
+            if !state.input.yank() {
+                state.status = "(kill ring empty)".to_string();
+            }
+        }
+        KeyAction::YankPop => {
+            if !state.input.yank_pop() {
+                state.status = "(no previous yank)".to_string();
+            }
+        }
+        KeyAction::Undo => {
+            if !state.input.undo() {
+                state.status = "(nothing to undo)".to_string();
+            }
+        }
         KeyAction::ClearInput => state.input.clear(),
+        KeyAction::AcceptCompletionOrInsertTab => {
+            if state.completion.is_some() {
+                state.apply_completion();
+            } else if state.mode == RunMode::Editing {
+                // No popup: insert literal tab.
+                state.input.insert_char('\t');
+            }
+        }
         KeyAction::Submit => {
             if state.completion.is_some() {
                 state.apply_completion();
             } else {
+                // Install an abort signal for the upcoming agent turn. The
+                // agent driver (CLI / wiring code) doesn't have direct
+                // access to AppState today; the CLI would need to set this
+                // before spawning the driver. v1 stores the signal here so
+                // that any future driver-side wiring can read it.
+                state.abort_signal = Some(Arc::new(tokio::sync::Notify::new()));
                 drop(state);
                 submit_user_input(shared, agent_driver, done);
             }
@@ -272,6 +781,10 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             if state.completion.is_some() {
                 state.completion = None;
             } else if state.mode == RunMode::Running {
+                // Signal the agent to abort, then mark mode as Aborted.
+                if let Some(sig) = state.abort_signal.as_ref() {
+                    sig.notify_waiters();
+                }
                 state.mode = RunMode::Aborted;
                 state.status = "aborted".to_string();
             } else {
@@ -280,8 +793,13 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         }
         KeyAction::Quit => state.mode = RunMode::Quitting,
         KeyAction::SwitchModel => {
+            // Legacy single-action selector path.
             state.status = "switch model (not yet implemented)".to_string();
         }
+        KeyAction::CycleModelNext => cycle_model(&mut state, 1),
+        KeyAction::CycleModelPrev => cycle_model(&mut state, -1),
+        KeyAction::CycleThinkingNext => cycle_thinking(&mut state, 1),
+        KeyAction::CycleThinkingPrev => cycle_thinking(&mut state, -1),
         KeyAction::ShowHelp => {
             state.push_divider();
             state.push_assistant(
@@ -289,13 +807,32 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             );
             state.push_divider();
         }
-        KeyAction::ScrollUp | KeyAction::ScrollDown | KeyAction::Noop => {}
+        KeyAction::ScrollUp => {
+            // PageUp: scroll up by ~10 lines.
+            let max_offset = state.transcript.len().saturating_sub(1);
+            let step = 10usize;
+            state.scroll_offset = (state.scroll_offset + step).min(max_offset);
+            state.autoscroll = false;
+        }
+        KeyAction::ScrollDown => {
+            let step = 10usize;
+            if state.scroll_offset <= step {
+                state.scroll_offset = 0;
+                state.autoscroll = true;
+            } else {
+                state.scroll_offset -= step;
+            }
+        }
+        KeyAction::Noop => {}
     }
 }
 
-/// Submit handler: extract text, transition to Running, spawn agent task.
+/// Submit handler: extract text, intercept slash commands, otherwise spawn agent.
+///
+/// Slash commands are dispatched locally — they run synchronously and do NOT
+/// transition the TUI to Running mode. Non-slash input goes to the agent
+/// driver as before.
 pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done: Arc<Notify>) {
-    // Lock, mutate, snapshot, drop.
     let text = {
         let mut g = shared.lock().unwrap();
         if g.mode != RunMode::Editing {
@@ -305,6 +842,149 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
         if text.trim().is_empty() {
             return;
         }
+
+        // ── Bash passthrough (!cmd, !!cmd) ──────────────────────────────────
+        // `!cmd` executes locally and pushes a BashExecution transcript line.
+        // `!!cmd` does the same but does NOT also inject the output into the
+        // session context for the agent.
+        if let Some(rest) = text.strip_prefix('!') {
+            let cmd = rest.trim();
+            if !cmd.is_empty() {
+                let mut cx = crate::bash_runner::BashRunner::new();
+                let result = cx.run_blocking(cmd, &std::env::current_dir().unwrap_or_default());
+                use crate::state::TranscriptLine;
+                let id = format!("bash-{}", g.transcript_len());
+                // Strip ANSI codes + truncate so the transcript stays clean.
+                let cleaned = crate::ansi::strip_ansi(&result.output);
+                let (output, _truncated, _ob, _ol) =
+                    crate::ansi::truncate(&cleaned, 16 * 1024, 200);
+                g.transcript.push(TranscriptLine::BashExecution {
+                    id,
+                    cmd: cmd.to_string(),
+                    output,
+                    ok: result.ok,
+                    exit_code: result.exit_code,
+                    duration_ms: result.duration_ms,
+                });
+                g.push_divider();
+                // For `!cmd`, also inject the output as a ToolResult so the agent
+                // sees it in context (if the next turn triggers one). For `!!cmd`
+                // the user already passed that test — skip injection.
+                return;
+            }
+        }
+
+        // ── Slash-command interception ──────────────────────────────────────
+        // Mirror the same dispatch logic as apply_action (tests) so the live
+        // TUI and tests share one code path.
+        if let Some((cmd_id, args)) = crate::commands::parse(&text) {
+            // Special-case: /model, /thinking, /session, /tree, /trust open
+            // interactive selectors when invoked WITHOUT arguments.
+            use crate::commands::CommandId;
+            match cmd_id {
+                CommandId::Model if args.trim().is_empty() => {
+                    g.push_assistant("(opening model selector...)".to_string());
+                    g.push_divider();
+                    g.status = "open_selector:model".to_string();
+                    let text_for_agent = text.clone();
+                    return drop_and_signal(text_for_agent, done);
+                }
+                CommandId::Thinking if args.trim().is_empty() => {
+                    g.push_assistant("(opening thinking selector...)".to_string());
+                    g.push_divider();
+                    g.status = "open_selector:thinking".to_string();
+                    let text_for_agent = text.clone();
+                    return drop_and_signal(text_for_agent, done);
+                }
+                CommandId::Session if args.trim().is_empty() => {
+                    g.push_assistant("(opening session selector...)".to_string());
+                    g.push_divider();
+                    g.status = "open_selector:session".to_string();
+                    let text_for_agent = text.clone();
+                    return drop_and_signal(text_for_agent, done);
+                }
+                CommandId::Tree if args.trim().is_empty() => {
+                    g.push_assistant("(opening tree selector...)".to_string());
+                    g.push_divider();
+                    g.status = "open_selector:tree".to_string();
+                    let text_for_agent = text.clone();
+                    return drop_and_signal(text_for_agent, done);
+                }
+                CommandId::Trust if args.trim().is_empty() => {
+                    g.push_assistant("(opening trust selector...)".to_string());
+                    g.push_divider();
+                    g.status = "open_selector:trust".to_string();
+                    let text_for_agent = text.clone();
+                    return drop_and_signal(text_for_agent, done);
+                }
+                CommandId::Settings if args.trim().is_empty() => {
+                    g.push_assistant("(opening settings selector...)".to_string());
+                    g.push_divider();
+                    g.status = "open_selector:settings".to_string();
+                    let text_for_agent = text.clone();
+                    return drop_and_signal(text_for_agent, done);
+                }
+                _ => {}
+            }
+            // SettingsManager is created per-call so concurrent turns don't share state.
+            let mut settings = crate::settings::SettingsManager::default();
+            // Dispatch locally; slash commands are synchronous — no Running mode.
+            let result = crate::commands::dispatch(&mut g, &mut settings, cmd_id, &args);
+            // Error from dispatch: show error in transcript and stop (do NOT fall
+            // through to agent). Matches pi's try/catch per-command pattern.
+            if let Some(err) = result.error {
+                g.push_assistant(format!("[command error] {err}"));
+                g.push_divider();
+                return;
+            }
+            match result.outcome {
+                crate::commands::CommandOutcome::Output(lines) => {
+                    for line in lines {
+                        g.push_assistant(line);
+                    }
+                    g.push_divider();
+                }
+                crate::commands::CommandOutcome::Quit => {
+                    g.mode = RunMode::Quitting;
+                }
+                crate::commands::CommandOutcome::PromptArgument { prompt, next: _ } => {
+                    // v1: prompt-argument flow not wired; show fallback.
+                    g.push_assistant(format!("(prompt: {prompt})"));
+                    g.push_divider();
+                }
+            }
+            return; // Slash commands are fully handled — do NOT spawn agent.
+        }
+
+        // ── Regular user message: push to transcript and spawn agent ───────
+        // Pi parity: if compaction is in progress, queue the message
+        // instead of spawning an agent. The queued messages are injected
+        // as context alongside the next user prompt (mirrors Pi's
+        // _pendingNextTurnMessages).
+        if g.is_compacting {
+            let n = g.pending_next_turn_messages.len() + 1;
+            g.pending_next_turn_messages.push(text.clone());
+            // Use explicit let-bindings to avoid `format!` holding
+            // simultaneous borrows on `g`.
+            let msg = format!(
+                "(queued: {} message{} pending; will run after compaction)",
+                n,
+                if n == 1 { "" } else { "s" }
+            );
+            g.push_assistant(msg);
+            g.push_divider();
+            return;
+        }
+
+        // Pi parity: flush any branch summaries or compaction-time queued
+        // messages into the transcript as User-content (so the agent sees
+        // them as context asides on the next turn). Then clear the queue.
+        let queued = std::mem::take(&mut g.pending_next_turn_messages);
+        for aside in &queued {
+            g.push_user(aside.clone());
+            g.push_divider();
+        }
+
         g.push_user(text.clone());
         g.push_divider();
         g.mode = RunMode::Running;
@@ -387,6 +1067,22 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::KillToLineStart => state.input.kill_to_line_start(),
         KeyAction::KillToLineEnd => state.input.kill_to_line_end(),
         KeyAction::KillWordBackward => state.input.kill_word_backward(),
+        KeyAction::KillWordForward => state.input.kill_word_forward(),
+        KeyAction::Yank => {
+            if !state.input.yank() {
+                state.status = "(kill ring empty)".to_string();
+            }
+        }
+        KeyAction::YankPop => {
+            if !state.input.yank_pop() {
+                state.status = "(no previous yank)".to_string();
+            }
+        }
+        KeyAction::Undo => {
+            if !state.input.undo() {
+                state.status = "(nothing to undo)".to_string();
+            }
+        }
         KeyAction::ClearInput => state.input.clear(),
         KeyAction::Submit => {
             if state.mode == RunMode::Editing {
@@ -401,7 +1097,13 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                     // Slash command interception
                     if let Some((cmd_id, args)) = crate::commands::parse(&text) {
                         use crate::commands::dispatch;
-                        let result = dispatch(state, cmd_id, &args);
+                        let mut settings = crate::settings::SettingsManager::default();
+                        let result = dispatch(state, &mut settings, cmd_id, &args);
+                        if let Some(err) = result.error {
+                            state.push_assistant(format!("[command error] {err}"));
+                            state.push_divider();
+                            return;
+                        }
                         match result.outcome {
                             crate::commands::CommandOutcome::Output(lines) => {
                                 for line in lines {
@@ -442,6 +1144,11 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         | KeyAction::ShowHelp
         | KeyAction::ScrollUp
         | KeyAction::ScrollDown => {}
+        KeyAction::CycleModelNext => cycle_model(state, 1),
+        KeyAction::CycleModelPrev => cycle_model(state, -1),
+        KeyAction::CycleThinkingNext => cycle_thinking(state, 1),
+        KeyAction::CycleThinkingPrev => cycle_thinking(state, -1),
+        KeyAction::AcceptCompletionOrInsertTab => {}
         KeyAction::Noop => {}
     }
 }

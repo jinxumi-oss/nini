@@ -15,15 +15,32 @@
 /// Library version, mirrors workspace version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod ansi;
+pub mod bash_runner;
+pub mod clipboard;
 pub mod commands;
+pub mod event_bus;
+pub mod file_completion;
+pub mod hyperlink;
+pub mod image_paste;
+pub mod keybindings_manager;
 pub mod keys;
+pub mod markdown;
 pub mod render;
 pub mod runtime;
+pub mod selector;
+pub mod selectors;
+pub mod settings;
+pub mod signals;
 pub mod state;
+pub mod theme;
+pub mod theme_watcher;
 
 pub use commands::{
     CommandId, CommandOutcome, CommandResult, REGISTRY, by_name, complete, dispatch, parse,
 };
+pub use keybindings_manager::KeybindingsManager;
 pub use keys::{Key, KeyAction, KeyBinding, KeyModifiers, default_keymap, resolve};
 pub use runtime::run;
 pub use state::{AppState, InputBuffer, RunMode, TokenStats, TranscriptLine};
+pub use theme::{COLOR_NAMES, Theme};

@@ -8,9 +8,11 @@
 use futures_util::StreamExt;
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::{Provider, Usage};
-use nini_core::{Agent, AgentEvent, RunConfig, ToolRegistry};
+use nini_core::tool::ToolRegistry;
+use nini_core::{Agent, AgentEvent, RunConfig};
 use nini_tui::commands::{CommandId, CommandOutcome, dispatch};
 use nini_tui::render::render_frame;
+use nini_tui::settings::SettingsManager;
 use nini_tui::state::AppState;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -63,14 +65,15 @@ async fn agent_estimated_tokens_counts_history() {
             content: vec![nini_core::provider::ContentBlock::Text {
                 text: "x".repeat(400), // 100 tokens
             }],
-            // timestamp not part of provider message
-        },
+        timestamp: 0,
+},
         nini_core::provider::Message {
             role: nini_core::provider::Role::Assistant,
             content: vec![nini_core::provider::ContentBlock::Text {
                 text: "y".repeat(200), // 50 tokens
             }],
-        },
+        timestamp: 0,
+},
     ]);
     let tokens = agent.estimated_tokens();
     assert_eq!(tokens, 150);
@@ -96,7 +99,8 @@ async fn agent_should_compact_at_threshold() {
         content: vec![nini_core::provider::ContentBlock::Text {
             text: "z".repeat(400), // 100 tokens — way over 50
         }],
-    }]);
+timestamp: 0,
+}]);
     assert!(agent.should_compact());
 }
 
@@ -118,25 +122,29 @@ async fn compact_history_prepends_summary_and_keeps_suffix() {
             content: vec![nini_core::provider::ContentBlock::Text {
                 text: "first user question".to_string(),
             }],
-        },
+        timestamp: 0,
+},
         nini_core::provider::Message {
             role: nini_core::provider::Role::Assistant,
             content: vec![nini_core::provider::ContentBlock::Text {
                 text: "first answer".to_string(),
             }],
-        },
+        timestamp: 0,
+},
         nini_core::provider::Message {
             role: nini_core::provider::Role::User,
             content: vec![nini_core::provider::ContentBlock::Text {
                 text: "second user question".to_string(),
             }],
-        },
+        timestamp: 0,
+},
         nini_core::provider::Message {
             role: nini_core::provider::Role::Assistant,
             content: vec![nini_core::provider::ContentBlock::Text {
                 text: "second answer".to_string(),
             }],
-        },
+        timestamp: 0,
+},
     ]);
     let before_len = agent.messages().len();
 
@@ -201,7 +209,8 @@ async fn run_auto_compacts_when_over_budget() {
         content: vec![nini_core::provider::ContentBlock::Text {
             text: "x".repeat(400), // 100 tokens, over 50-token budget
         }],
-    }]);
+timestamp: 0,
+}]);
     assert!(agent.should_compact());
 
     let mut saw_compaction = false;
@@ -235,7 +244,8 @@ async fn run_auto_compacts_when_over_budget() {
 #[test]
 fn slash_compact_command_dispatches() {
     let mut state = AppState::new("test");
-    let r = dispatch(&mut state, CommandId::Compact, "");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Compact, "");
     // v1: command is a stub that pushes an assistant message.
     match r.outcome {
         CommandOutcome::Output(lines) => {
@@ -277,7 +287,10 @@ fn compaction_settings_default_is_sensible() {
     use nini_core::CompactionSettings;
     let s = CompactionSettings::default();
     assert_eq!(s.context_window, 200_000);
-    assert_eq!(s.reserve_tokens, 8_192);
+    // Pi parity: default reserveTokens=16384, keepRecentTokens=20000.
+    assert_eq!(s.reserve_tokens, 16384);
+    assert!(s.enabled);
+    assert_eq!(s.keep_recent_tokens, 20000);
     assert!(s.max_single_turn_chars > 0);
 }
 

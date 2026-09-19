@@ -15,7 +15,8 @@
 use futures_util::StreamExt;
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::Usage;
-use nini_core::{Agent, AgentEvent, RunConfig, ToolRegistry};
+use nini_core::tool::ToolRegistry;
+use nini_core::{Agent, AgentEvent, RunConfig};
 use nini_tools::BashTool;
 use nini_tui::Key;
 use nini_tui::render::render_frame;
@@ -103,6 +104,9 @@ fn make_fixture_driver(
                         AgentEventLite::TurnEnd
                     }
                     Ok(AgentEvent::Error { message }) => AgentEventLite::Error(message),
+                    Ok(AgentEvent::PhaseChanged(phase)) => {
+                        AgentEventLite::PhaseChanged(format!("{phase:?}"))
+                    }
                     Err(_) => continue,
                     _ => continue,
                 };

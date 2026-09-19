@@ -6,7 +6,8 @@
 use futures_util::StreamExt;
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::Usage;
-use nini_core::{Agent, AgentEvent, RunConfig, ToolRegistry};
+use nini_core::tool::ToolRegistry;
+use nini_core::{Agent, AgentEvent, RunConfig};
 use nini_tools::BashTool;
 use std::sync::Arc;
 
