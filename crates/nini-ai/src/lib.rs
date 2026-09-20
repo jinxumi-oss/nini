@@ -42,6 +42,10 @@ pub mod deepseek;
 
 /// Groq provider (OpenAI-compat with Groq base URL).
 pub mod groq;
+/// Mistral AI provider (OpenAI-compat with Mistral base URL).
+pub mod mistral;
+/// Cohere provider (OpenAI-compat with Cohere base URL).
+pub mod cohere;
 
 /// Deterministic fixture provider (no network). Used for tests and demos.
 pub mod fixture;

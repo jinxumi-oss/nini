@@ -200,6 +200,10 @@ const BUILTIN_CATALOG: &[(&str, &str)] = &[
     ("google/gemini-2.5-pro", "Google Gemini 2.5 Pro"),
     ("deepseek/deepseek-chat", "DeepSeek Chat"),
     ("groq/llama-3.3-70b", "Groq Llama 3.3 70B"),
+    ("mistral/mistral-large-latest", "Mistral Large"),
+    ("mistral/codestral-latest", "Mistral Codestral"),
+    ("cohere/command-r-plus", "Cohere Command R+"),
+    ("cohere/command-r", "Cohere Command R"),
     ("minimax/MiniMax-M3", "MiniMax M3"),
 ];
 
@@ -685,6 +689,24 @@ fn build_provider(
             Ok(Arc::new(match base {
                 Some(b) => nini_ai::groq::GroqProvider::with_base_url(b, key),
                 None => nini_ai::groq::GroqProvider::new(key),
+            }))
+        }
+        "mistral" => {
+            let key = std::env::var("MISTRAL_API_KEY")
+                .context("MISTRAL_API_KEY required for mistral")?;
+            let base = std::env::var("MISTRAL_BASE_URL").ok();
+            Ok(Arc::new(match base {
+                Some(b) => nini_ai::mistral::MistralProvider::with_base_url(b, key),
+                None => nini_ai::mistral::MistralProvider::new(key),
+            }))
+        }
+        "cohere" => {
+            let key = std::env::var("COHERE_API_KEY")
+                .context("COHERE_API_KEY required for cohere")?;
+            let base = std::env::var("COHERE_BASE_URL").ok();
+            Ok(Arc::new(match base {
+                Some(b) => nini_ai::cohere::CohereProvider::with_base_url(b, key),
+                None => nini_ai::cohere::CohereProvider::new(key),
             }))
         }
         other => {
