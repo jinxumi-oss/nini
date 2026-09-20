@@ -689,7 +689,7 @@ fn cycle_thinking(state: &mut crate::state::AppState, direction: i32) {
 fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, done: Arc<Notify>) {
     let mut state = shared.lock().unwrap();
     let key: Key = k.into();
-    let action = resolve(&crate::keys::default_keymap(), key);
+    let action = resolve_with_user_overrides(key);
     // Drop the lock while we hold it; the rest of the match needs it.
 
     match action {
@@ -1031,7 +1031,7 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
 /// Apply a `KeyAction` to a state without spawning anything. Used by tests
 /// and the no-agent mode.
 pub fn apply_action(state: &mut AppState, key: Key) {
-    let action = resolve(&crate::keys::default_keymap(), key);
+    let action = resolve_with_user_overrides(key);
     match action {
         KeyAction::Insert(c) => {
             if state.mode == RunMode::Editing {
@@ -1203,4 +1203,23 @@ pub fn apply_action(state: &mut AppState, key: Key) {
 #[allow(dead_code)]
 fn _typecheck_handle_is_used() {
     let _ = std::mem::size_of::<JoinHandle<()>>();
+}
+
+/// Resolve a key against the built-in keymap plus any user overrides
+/// from `~/.pi/agent/keybindings.json`. The override file is loaded
+/// once on first use and cached for the process lifetime.
+pub fn resolve_with_user_overrides(key: Key) -> KeyAction {
+    use std::sync::OnceLock;
+    use crate::keybindings_manager::load_user_overrides;
+
+    static OVERRIDES: OnceLock<Vec<(KeyAction, Key)>> = OnceLock::new();
+    let overrides = OVERRIDES.get_or_init(load_user_overrides);
+
+    // User overrides take priority over built-ins.
+    for (action, k) in overrides {
+        if *k == key {
+            return *action;
+        }
+    }
+    resolve(&crate::keys::default_keymap(), key)
 }
