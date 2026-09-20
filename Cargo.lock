@@ -1440,6 +1440,7 @@ dependencies = [
  "futures-util",
  "nini-ai",
  "nini-tools",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

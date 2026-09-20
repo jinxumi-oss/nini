@@ -40,6 +40,7 @@ pub enum CommandId {
     New,
     Compact,
     Resume,
+    Prompt,
     Reload,
     Quit,
 }
@@ -186,6 +187,12 @@ pub const REGISTRY: &[CommandDef] = &[
         "resume",
         "Resume a different session",
         None,
+    ),
+    CommandDef::new(
+        CommandId::Prompt,
+        "prompt",
+        "Run a user-defined prompt template (from .pi/prompts/*.md)",
+        Some("<name> [args...]"),
     ),
     CommandDef::new(
         CommandId::Reload,
@@ -1258,6 +1265,96 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             lines.push("Type /resume <number> to load.".to_string());
             CommandResult::output(lines)
         }
+        CommandId::Prompt => {
+            // /prompt <name> [args...]
+            // Loads user-defined prompt templates from `.pi/prompts/` and
+            // `~/.pi/agent/prompts/`, then substitutes $1, $@, $ARGUMENTS
+            // placeholders with positional / quoted args.
+            let cwd = std::env::current_dir().ok();
+            let cwd = match cwd.as_ref() {
+                Some(c) => c.clone(),
+                None => {
+                    return CommandResult::output(vec![
+                        "(prompt: cannot determine cwd)".to_string(),
+                    ]);
+                }
+            };
+            let args_trimmed = args.trim();
+            if args_trimmed.is_empty() {
+                return CommandResult::output(vec![
+                    "Usage: /prompt <name> [args...]".to_string(),
+                    "(prompt templates load from .pi/prompts/ and ~/.pi/agent/prompts/)"
+                        .to_string(),
+                ]);
+            }
+            // Split into template-name + remaining args via shell-style
+            // quoting (matches Pi's parseCommandArgs).
+            let name_tpl_args = nini_core::prompt_template::parse_command_args(args_trimmed);
+            let (name, tpl_args) = match name_tpl_args.split_first() {
+                Some((n, rest)) => (n.clone(), rest.to_vec()),
+                None => {
+                    return CommandResult::output(vec![
+                        "(prompt: empty arguments)".to_string(),
+                    ]);
+                }
+            };
+
+            // Load templates from user + project dirs.
+            let paths: Vec<std::path::PathBuf> = vec![
+                nini_core::prompt_template::user_prompts_dir().unwrap_or_default(),
+                nini_core::prompt_template::project_prompts_dir(&cwd).unwrap_or_default(),
+            ];
+            let mut load_result = nini_core::prompt_template::load_prompt_templates(&paths);
+            let template = load_result
+                .templates
+                .iter()
+                .find(|t| t.name == name)
+                .cloned();
+            let template = match template {
+                Some(t) => t,
+                None => {
+                    let names: Vec<String> = load_result
+                        .templates
+                        .iter()
+                        .map(|t| format!("  /{}: {}", t.name, t.description))
+                        .collect();
+                    let mut out = vec![format!("/prompt: template not found: '{name}'")];
+                    if !names.is_empty() {
+                        out.push(String::new());
+                        out.push("Available templates:".to_string());
+                        out.extend(names);
+                    } else {
+                        out.push(
+                            "(no templates in .pi/prompts/ or ~/.pi/agent/prompts/)"
+                                .to_string(),
+                        );
+                    }
+                    return CommandResult::output(out);
+                }
+            };
+
+            // Apply args. Pi uses parseCommandArgs to handle quoting;
+            // we delegate to the same parser for consistency.
+            let final_prompt =
+                nini_core::prompt_template::format_invocation(&template, &tpl_args);
+            // Inject as a user message in the transcript.
+            state.push_user(final_prompt.clone());
+            state.push_divider();
+            let mut out = vec![format!(
+                "/prompt {}: {} ({} args)",
+                template.name,
+                template.description,
+                tpl_args.len()
+            )];
+            if !load_result.diagnostics.is_empty() {
+                out.push(String::new());
+                out.push("(diagnostics)".to_string());
+                for d in &load_result.diagnostics {
+                    out.push(format!("  - {:?}", d.message));
+                }
+            }
+            CommandResult::output(out)
+        }
         CommandId::Reload => {
             // Reload skills from disk; provider/models are read at startup.
             let cwd = std::env::current_dir().ok();
@@ -1340,13 +1437,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_22_commands() {
-        // Pi spec `builtin.json` declares 23 entries (count field), but the
-        // Pi code base says 22 (+ /quit implicit). Match the spec.
+    fn registry_has_24_commands() {
+        // Pi spec `builtin.json` declares 23 entries (count field), but
+        // nini adds `/prompt` for user-defined prompt templates (loaded
+        // from .pi/prompts/*.md), so 23 + 1 = 24.
         assert_eq!(
             REGISTRY.len(),
-            23,
-            "expected 23 Pi-compatible commands per builtin.json"
+            24,
+            "expected 24 commands (23 Pi builtin + 1 nini /prompt)"
         );
     }
 
@@ -1355,7 +1453,7 @@ mod tests {
         // Sanity: spot-check a handful of names that must be present.
         for name in [
             "settings", "model", "tree", "thinking", "export", "import", "session", "hotkeys",
-            "fork", "clone", "trust", "new", "compact", "resume", "reload", "quit",
+            "fork", "clone", "trust", "new", "compact", "resume", "reload", "prompt", "quit",
         ] {
             assert!(by_name(name).is_some(), "missing command /{name}");
         }

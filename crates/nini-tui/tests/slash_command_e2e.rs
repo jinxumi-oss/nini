@@ -1039,3 +1039,143 @@ fn import_command_with_valid_jsonl_replaces_transcript() {
     assert_eq!(state.session_id.as_deref(), Some("abc123"));
 }
 
+
+
+// =====================================================================
+// /prompt command: loads .md templates from .pi/prompts/ and
+// ~/.pi/agent/prompts/, substitutes $1/$@/$ARGUMENTS placeholders, and
+// injects the rendered text as a user message.
+// =====================================================================
+
+#[test]
+fn prompt_command_unknown_template_lists_available() {
+    use std::io::Write;
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let tmp = tempfile::tempdir().unwrap();
+    let prompts_dir = tmp.path().join(".pi").join("prompts");
+    std::fs::create_dir_all(&prompts_dir).unwrap();
+    let mut f = std::fs::File::create(prompts_dir.join("greet.md")).unwrap();
+    writeln!(
+        f,
+        "---\ndescription: Greet the user\n---\nHello $1"
+    )
+    .unwrap();
+
+    let orig_cwd = std::env::current_dir().ok();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let r = dispatch(&mut state, &mut settings, CommandId::Prompt, "missing");
+    if let Some(orig) = orig_cwd {
+        let _ = std::env::set_current_dir(&orig);
+    }
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            assert!(
+                joined.contains("not found"),
+                "expected 'not found' in error, got: {joined}"
+            );
+            assert!(
+                joined.contains("greet") || joined.contains("Greet"),
+                "expected available template in error, got: {joined}"
+            );
+        }
+        _ => panic!("expected Output, got {:?}", r.outcome),
+    }
+}
+
+#[test]
+fn prompt_command_renders_substituted_template() {
+    use std::io::Write;
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let tmp = tempfile::tempdir().unwrap();
+    let prompts_dir = tmp.path().join(".pi").join("prompts");
+    std::fs::create_dir_all(&prompts_dir).unwrap();
+    let mut f = std::fs::File::create(prompts_dir.join("greet.md")).unwrap();
+    writeln!(f, "---\ndescription: Greet the user\n---\nHello $1").unwrap();
+
+    let orig_cwd = std::env::current_dir().ok();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let r = dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::Prompt,
+        "greet World",
+    );
+    if let Some(orig) = orig_cwd {
+        let _ = std::env::set_current_dir(&orig);
+    }
+    let has_user_world = state.transcript.iter().any(|l| match l {
+        nini_tui::state::TranscriptLine::User(s) => s == "Hello World",
+        _ => false,
+    });
+    assert!(
+        has_user_world,
+        "expected 'Hello World' in transcript, got: {:?}",
+        state
+            .transcript
+            .iter()
+            .filter_map(|l| match l {
+                nini_tui::state::TranscriptLine::User(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn prompt_command_quoted_args_preserve_whitespace() {
+    use std::io::Write;
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let tmp = tempfile::tempdir().unwrap();
+    let prompts_dir = tmp.path().join(".pi").join("prompts");
+    std::fs::create_dir_all(&prompts_dir).unwrap();
+    let mut f = std::fs::File::create(prompts_dir.join("greet.md")).unwrap();
+    writeln!(f, "---\ndescription: Greet user\n---\nHello $1").unwrap();
+
+    let orig_cwd = std::env::current_dir().ok();
+    std::env::set_current_dir(tmp.path()).unwrap();
+    let r = dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::Prompt,
+        "greet \"hello world\"",
+    );
+    if let Some(orig) = orig_cwd {
+        let _ = std::env::set_current_dir(&orig);
+    }
+    let has = state.transcript.iter().any(|l| match l {
+        nini_tui::state::TranscriptLine::User(s) => s == "Hello hello world",
+        _ => false,
+    });
+    assert!(
+        has,
+        "expected 'Hello hello world' (with the space from the quoted arg), got: {:?}",
+        state
+            .transcript
+            .iter()
+            .filter_map(|l| match l {
+                nini_tui::state::TranscriptLine::User(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
+    assert!(matches!(r.outcome, CommandOutcome::Output(_)));
+}
+
+#[test]
+fn prompt_command_no_args_shows_usage() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Prompt, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            assert!(joined.contains("Usage"), "expected 'Usage' in help, got: {joined}");
+            assert!(joined.contains("name"), "expected 'name' in help, got: {joined}");
+        }
+        _ => panic!("expected Output"),
+    }
+}

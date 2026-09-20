@@ -9,6 +9,7 @@ pub mod entries;
 pub mod model_runtime;
 pub mod overflow;
 pub mod project_trust;
+pub mod prompt_template;
 pub mod provider;
 pub mod settings;
 pub mod skills;
