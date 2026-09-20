@@ -230,3 +230,94 @@ mod paste_flow_tests {
         }
     }
 }
+
+/// Variant of `paste_image_from_clipboard()` that also returns the
+/// saved file path and the PNG byte size, so the runtime can show
+/// "pasted 1.2 MB → /tmp/...png" in the status bar.
+///
+/// Returns `None` if the clipboard has no image (or is unavailable).
+/// Returns `Err` on I/O / arboard errors.
+pub fn paste_image_with_size_from_clipboard() -> io::Result<Option<(PathBuf, u64)>> {
+    use crate::clipboard;
+
+    let mut cb = arboard::Clipboard::new()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clipboard open: {e}")))?;
+    let img = match cb.get_image() {
+        Ok(img) => img,
+        Err(arboard::Error::ClipboardNotSupported)
+        | Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+        Err(e) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("clipboard read image: {e}"),
+            ))
+        }
+    };
+
+    let mut png_buf = Vec::with_capacity((img.width as usize) * (img.height as usize) * 4 + 1024);
+    {
+        let mut encoder = png::Encoder::new(&mut png_buf, img.width as u32, img.height as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("png header: {e}")))?;
+        writer
+            .write_image_data(&img.bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("png data: {e}")))?;
+        writer
+            .finish()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("png finish: {e}")))?;
+    }
+
+    let size = png_buf.len() as u64;
+    let path = save_image_to_temp(&png_buf)?;
+    Ok(Some((path, size)))
+}
+
+#[cfg(test)]
+mod paste_with_size_tests {
+    use super::*;
+
+    /// Tests that exercise the actual PNG-encoding logic of
+    /// `save_image_to_temp` + `describe_path`. These don't need
+    /// the system clipboard because they bypass
+    /// `paste_image_from_clipboard` entirely.
+    #[test]
+    fn describe_path_for_png_round_trips_filename() {
+        let p = std::path::PathBuf::from("/var/folders/nini-image-1700.png");
+        let s = describe_path(&p);
+        assert!(s.starts_with("[pasted image:"));
+        assert!(s.contains("nini-image-1700.png"));
+        assert!(s.ends_with("]"));
+    }
+
+    #[test]
+    fn save_image_to_temp_round_trip_png_bytes() {
+        // Use a tiny valid PNG header (8-byte signature + IHDR + IDAT + IEND).
+        // Real PNG signature: \x89 PNG \r \n \x1a \n (8 bytes)
+        let mut png = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        // IHDR chunk (13 bytes data + CRC): width=1, height=1, bit_depth=8,
+        // color_type=2 (RGB), compression=0, filter=0, interlace=0.
+        png.extend_from_slice(&[
+            0x00, 0x00, 0x00, 0x0D, // chunk length
+            0x49, 0x48, 0x44, 0x52, // "IHDR"
+            0x00, 0x00, 0x00, 0x01, // width = 1
+            0x00, 0x00, 0x00, 0x01, // height = 1
+            0x08, // bit depth = 8
+            0x02, // color type = RGB
+            0x00, 0x00, 0x00, // compression, filter, interlace
+        ]);
+        let path = save_image_to_temp(&png).expect("save_image_to_temp");
+        assert!(path.exists(), "saved file should exist");
+        let read_back = std::fs::read(&path).expect("read back");
+        assert_eq!(read_back, png, "bytes should round-trip exactly");
+        // File name should preserve the .png extension.
+        assert_eq!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("png"),
+            "extension preserved"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}

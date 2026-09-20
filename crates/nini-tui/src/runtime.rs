@@ -702,18 +702,32 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         KeyAction::PasteImage => {
             // Try to read an image from the system clipboard. If found,
             // insert its `[pasted image: <path>]` description into the
-            // prompt. If the clipboard has no image (or is unavailable
-            // in headless env), silently fall through to Noop.
-            match crate::image_paste::paste_image_from_clipboard() {
-                Ok(Some(desc)) => {
+            // prompt AND surface a short transcript confirmation so
+            // the user sees what landed. If the clipboard has no image
+            // (or is unavailable in headless env), silently fall
+            // through to Noop.
+            match crate::image_paste::paste_image_with_size_from_clipboard() {
+                Ok(Some((path, size))) => {
+                    let desc = crate::image_paste::describe_path(&path);
+                    // Insert the description char-by-char into the
+                    // prompt input.
                     for c in desc.chars() {
                         state.input.insert_char(c);
                     }
                     state.refresh_completion();
+                    // Surface a short echo in the transcript.
+                    state.push_assistant(format!(
+                        "[pasted] {} ({:.1} KB)",
+                        path.display(),
+                        size as f64 / 1024.0
+                    ));
+                    // Brief status-bar hint.
+                    state.status = format!("pasted {:.1} KB", size as f64 / 1024.0);
                 }
                 Ok(None) => {}
                 Err(e) => {
                     state.push_assistant(format!("[paste error] {e}"));
+                    state.status = format!("paste error");
                 }
             }
         }
@@ -1042,18 +1056,32 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::PasteImage => {
             // Try to read an image from the system clipboard. If found,
             // insert its `[pasted image: <path>]` description into the
-            // prompt. If the clipboard has no image (or is unavailable
-            // in headless env), silently fall through to Noop.
-            match crate::image_paste::paste_image_from_clipboard() {
-                Ok(Some(desc)) => {
+            // prompt AND surface a short transcript confirmation so
+            // the user sees what landed. If the clipboard has no image
+            // (or is unavailable in headless env), silently fall
+            // through to Noop.
+            match crate::image_paste::paste_image_with_size_from_clipboard() {
+                Ok(Some((path, size))) => {
+                    let desc = crate::image_paste::describe_path(&path);
+                    // Insert the description char-by-char into the
+                    // prompt input.
                     for c in desc.chars() {
                         state.input.insert_char(c);
                     }
                     state.refresh_completion();
+                    // Surface a short echo in the transcript.
+                    state.push_assistant(format!(
+                        "[pasted] {} ({:.1} KB)",
+                        path.display(),
+                        size as f64 / 1024.0
+                    ));
+                    // Brief status-bar hint.
+                    state.status = format!("pasted {:.1} KB", size as f64 / 1024.0);
                 }
                 Ok(None) => {}
                 Err(e) => {
                     state.push_assistant(format!("[paste error] {e}"));
+                    state.status = format!("paste error");
                 }
             }
         }

@@ -672,3 +672,38 @@ fn parse_action_resolves_all_documented_actions() {
         );
     }
 }
+
+#[test]
+fn paste_image_appends_echo_to_transcript() {
+    use nini_tui::keys::{Key, KeyModifiers};
+    use nini_tui::runtime::apply_action;
+    use nini_tui::state::TranscriptLine;
+    use crossterm::event::KeyCode;
+
+    // The runtime's PasteImage handler uses
+    // paste_image_with_size_from_clipboard (not the text-returning
+    // variant). In a headless CI env arboard fails to open the
+    // clipboard, so the handler returns Ok(None) and silently does
+    // nothing — no transcript echo, no status bar update. That's
+    // the correct graceful-degradation behavior.
+    let mut state = nini_tui::state::AppState::new("test");
+    state.input.text = "before".to_string();
+    apply_action(
+        &mut state,
+        Key::new(KeyCode::Char('v'), KeyModifiers::CTRL),
+    );
+
+    // No image pasted (no clipboard in CI) → input unchanged,
+    // no [pasted] echo in transcript.
+    assert_eq!(state.input.text, "before");
+    let has_paste_echo = state.transcript.iter().any(|l| {
+        matches!(l, TranscriptLine::AssistantText(s) if s.contains("[pasted]"))
+    });
+    assert!(
+        !has_paste_echo,
+        "unexpected paste echo in headless CI"
+    );
+    // Status bar should also not show "pasted" without an actual
+    // paste event.
+    assert!(!state.status.contains("pasted"));
+}
