@@ -515,9 +515,111 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.push_divider();
             CommandResult::output(vec![format!("export → {path}")])
         }
-        CommandId::Import => CommandResult::output(vec![
-            "(import — JSONL session import not yet implemented)".to_string(),
-        ]),
+        CommandId::Import => {
+            // /import <path-to-jsonl>
+            // Reads a Pi-compatible JSONL session file, parses each
+            // entry, and starts a new in-memory session from it. The
+            // current transcript is replaced with the imported
+            // transcript (capped at 1000 lines to avoid OOM).
+            use nini_core::entries::SessionEntry as SE;
+            let path_str = args.trim();
+            if path_str.is_empty() {
+                return CommandResult::output(vec![
+                    "import <path-to-jsonl> — load a Pi-compatible session file".to_string(),
+                    "examples:".to_string(),
+                    "  /import ~/.pi/agent/sessions/<project>/20260101-120000-abcd.jsonl".to_string(),
+                    "  /import ./my-session.jsonl".to_string(),
+                ]);
+            }
+            let path = std::path::PathBuf::from(path_str);
+            let raw = match std::fs::read_to_string(&path) {
+                Ok(r) => r,
+                Err(e) => {
+                    return CommandResult::output(vec![format!(
+                        "import: read failed: {e}"
+                    )]);
+                }
+            };
+            let mut entries: Vec<SE> = Vec::new();
+            let mut skipped = 0usize;
+            for (i, line) in raw.lines().enumerate() {
+                if i >= 1000 {
+                    skipped += 1;
+                    continue;
+                }
+                match serde_json::from_str::<SE>(line) {
+                    Ok(e) => entries.push(e),
+                    Err(_) => skipped += 1,
+                }
+            }
+            let mut out = vec![format!(
+                "imported {} entries from {} (skipped {skipped} malformed)",
+                entries.len(),
+                path.display()
+            )];
+            // Find a session-info entry (carries session name) and set
+            // the session id + path. nini's JSONL v3 format doesn't have
+            // a SessionHeader variant; metadata is in SessionInfo entries.
+            if let Some(info) = entries.iter().find_map(|e| match e {
+                SE::SessionInfo(i) => Some(i),
+                _ => None,
+            }) {
+                state.session_id = Some(info.id.clone());
+                out.push(format!("session name: {}", info.name));
+            }
+            // Populate transcript from message entries.
+            use nini_core::entries::StringOrContentBlocks;
+            let mut new_transcript = Vec::new();
+            for e in entries.iter() {
+                let SE::Message(m) = e else { continue };
+                match &m.message {
+                    nini_core::entries::AgentMessage::User(u) => {
+                        let text = match &u.content {
+                            StringOrContentBlocks::String(s) => s.clone(),
+                            StringOrContentBlocks::Blocks(bl) => bl
+                                .iter()
+                                .filter_map(|b| match b {
+                                    nini_core::entries::ContentBlock::Text { text } => {
+                                        Some(text.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join(""),
+                        };
+                        new_transcript.push(TranscriptLine::User(text));
+                    }
+                    nini_core::entries::AgentMessage::Assistant(a) => {
+                        let text = a
+                            .content
+                            .iter()
+                            .filter_map(|b| match b {
+                                nini_core::entries::ContentBlock::Text { text } => {
+                                    Some(text.clone())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("");
+                        if !text.is_empty() {
+                            new_transcript.push(TranscriptLine::AssistantText(text));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let imported_count = new_transcript.len();
+            state.transcript = new_transcript;
+            state.tokens = Default::default();
+            state.push_assistant(format!(
+                "[import] {} transcript entries ({} skipped)",
+                imported_count,
+                skipped
+            ));
+            state.push_divider();
+            out.push(format!("transcript: {imported_count} entries"));
+            CommandResult::output(out)
+        }
         CommandId::Share => CommandResult::output(vec![
             "(share — GitHub gist upload not yet implemented)".to_string(),
         ]),
@@ -816,9 +918,65 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.push_divider();
             CommandResult::output(out)
         }
-        CommandId::Login => CommandResult::output(vec![
-            "(login — credential setup not yet implemented)".to_string(),
-        ]),
+        CommandId::Login => {
+            // /login <provider>
+            // nini v1 doesn't run an OAuth/device-flow inside the TUI
+            // (matching the README guidance to use env-var credentials).
+            // Instead, /login prints the env var the user should set,
+            // and verifies (without exposing the value) whether the
+            // current shell has it.
+            let provider_arg = args.trim().to_lowercase();
+            let known: &[(&str, &str)] = &[
+                ("anthropic", "ANTHROPIC_API_KEY"),
+                ("openai", "OPENAI_API_KEY"),
+                ("openai-responses", "OPENAI_API_KEY"),
+                ("openai-compat", "OPENAI_API_KEY"),
+                ("google", "GOOGLE_API_KEY"),
+                ("mistral", "MISTRAL_API_KEY"),
+                ("cohere", "COHERE_API_KEY"),
+                ("deepseek", "DEEPSEEK_API_KEY"),
+                ("groq", "GROQ_API_KEY"),
+                ("together", "TOGETHER_API_KEY"),
+            ];
+            let matched: Vec<(&str, &str)> = if provider_arg.is_empty() {
+                known.iter().map(|x| *x).collect()
+            } else {
+                known
+                    .iter()
+                    .filter(|(name, _)| *name == provider_arg.as_str())
+                    .map(|x| *x)
+                    .collect()
+            };
+            let mut out: Vec<String> = Vec::new();
+            if matched.is_empty() {
+                out.push(format!(
+                    "login: unknown provider {provider_arg:?}"
+                ));
+                out.push("known providers:".to_string());
+                for (name, env) in known {
+                    out.push(format!("  {name} → {env}"));
+                }
+            } else {
+                out.push("nini v1 uses environment variables for credentials.".to_string());
+                out.push(String::new());
+                for (name, env) in &matched {
+                    let present = std::env::var_os(env)
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false);
+                    let status = if present {
+                        "✓ set"
+                    } else {
+                        "✗ not set"
+                    };
+                    out.push(format!("{name}: {env}  {status}"));
+                }
+                out.push(String::new());
+                out.push("To set a credential, exit nini and run:".to_string());
+                out.push("  export ANTHROPIC_API_KEY=sk-ant-...".to_string());
+                out.push("then re-launch nini.".to_string());
+            }
+            CommandResult::output(out)
+        }
         CommandId::Logout => {
             // /logout [provider]
             // Removes the API key for the given provider (or all known

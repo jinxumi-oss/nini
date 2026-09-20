@@ -886,3 +886,156 @@ fn logout_command_list_format() {
         _ => panic!("expected Output"),
     }
 }
+
+// =====================================================================
+// Tests for stage-3 slash commands: /import, /login.
+// =====================================================================
+
+#[test]
+fn login_command_lists_known_providers() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Login, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            assert!(
+                joined.contains("ANTHROPIC_API_KEY"),
+                "expected anthropic env var hint, got: {joined}"
+            );
+            assert!(
+                joined.contains("OPENAI_API_KEY"),
+                "expected openai env var hint, got: {joined}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn login_command_specific_provider_reports_status() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Login, "anthropic");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            assert!(joined.contains("ANTHROPIC_API_KEY"), "got: {joined}");
+            // Test env doesn't have the var, so "not set" should appear.
+            assert!(
+                joined.contains("not set"),
+                "expected 'not set' status, got: {joined}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn login_command_unknown_provider_returns_error() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Login, "fake-provider-xyz");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            assert!(
+                joined.contains("unknown provider"),
+                "expected unknown-provider message, got: {joined}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn import_command_without_path_returns_usage() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Import, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            assert!(
+                joined.contains("path-to-jsonl"),
+                "expected usage message, got: {joined}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn import_command_with_missing_file_returns_error() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::Import,
+        "/tmp/does-not-exist-12345.jsonl",
+    );
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("read failed")),
+                "expected read-failed error, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn import_command_with_valid_jsonl_replaces_transcript() {
+    // Write a JSONL file with 3 valid + 1 garbage line. Avoid `writeln!`
+    // with raw `{{ }}` in format strings (they get unescaped); instead
+    // use `writeln!(f, "...{}", json_str)` with a plain JSON literal.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("session-test.jsonl");
+    std::fs::write(
+        &path,
+        concat!(
+            "{\"type\":\"session_info\",\"id\":\"abc123\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00Z\",\"name\":\"imported\"}\n",
+            "{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:01Z\",\"message\":{\"role\":\"user\",\"content\":\"hello from import\",\"timestamp\":0}}\n",
+            "{\"type\":\"message\",\"id\":\"m2\",\"parentId\":\"m1\",\"timestamp\":\"2026-01-01T00:00:02Z\",\"message\":{\"role\":\"user\",\"content\":\"second user msg\",\"timestamp\":0}}\n",
+            "this is not json\n",
+        ),
+    )
+    .unwrap();
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::Import,
+        path.to_str().unwrap(),
+    );
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            assert!(
+                joined.contains("imported 3 entries"),
+                "expected imported 3 entries, got: {joined}"
+            );
+            assert!(
+                joined.contains("skipped 1"),
+                "expected 'skipped 1' for garbage line, got: {joined}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+    // Transcript now has the imported messages + the [import] echo + a
+    // divider (4 entries total). The important invariant is that we
+    // got exactly the 2 imported user messages, not 3 (which would
+    // include the garbage) or 0.
+    let user_count = state
+        .transcript
+        .iter()
+        .filter(|l| matches!(l, TranscriptLine::User(_)))
+        .count();
+    assert_eq!(user_count, 2, "expected 2 user messages from import, got {user_count}");
+    // Verify session_id set
+    assert_eq!(state.session_id.as_deref(), Some("abc123"));
+}
+
