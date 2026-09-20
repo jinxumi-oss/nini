@@ -24,7 +24,9 @@ pub enum SessionError {
 
 
 use chrono::{DateTime, Utc};
-use nini_core::{CoreError, SessionEntry};
+pub use nini_core::SessionEntry;
+use nini_core::CoreError;
+use nini_core::SessionEntry as _SE;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

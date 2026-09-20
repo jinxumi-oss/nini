@@ -3,12 +3,12 @@
 use serde::{Deserialize, Serialize};
 
 pub mod agent;
-pub mod branch_summary;
-pub mod compaction;
+
 pub mod entries;
 pub mod model_runtime;
 pub mod overflow;
 pub mod project_trust;
+pub mod compaction;
 pub mod prompt_template;
 pub mod provider;
 pub mod settings;

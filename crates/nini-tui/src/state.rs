@@ -882,7 +882,7 @@ impl AppState {
             self.input.cursor,
         ) {
             let cwd = std::env::current_dir().unwrap_or_default();
-            let files = crate::file_completion::search_files(&cwd, &path_prefix);
+            let files = crate::file_completion::search_files_as_struct(&cwd, &path_prefix);
             if files.is_empty() {
                 self.completion = None;
                 return;

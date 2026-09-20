@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
 
-mod startup_ui;
+pub mod startup_ui;
 
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::{Provider, Usage};
