@@ -41,15 +41,25 @@ fn detect_extension(bytes: &[u8]) -> &'static str {
 
 /// Save raw image bytes to a temp file with a guessed extension.
 /// Returns the absolute path on success.
+/// Monotonic per-process counter for unique temp filenames (avoids same-ms races).
+fn next_temp_seq() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
 pub fn save_image_to_temp(bytes: &[u8]) -> io::Result<PathBuf> {
     let ext = detect_extension(bytes);
     let mut tmp = std::env::temp_dir();
+    // pid + monotonic seq + microsecond timestamp → safe even under
+    // parallel test execution where two tests can collide on the same ms.
     let unique = format!(
-        "nini-image-{}-{}",
+        "nini-image-{}-{}-{}",
         std::process::id(),
+        next_temp_seq(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
+            .map(|d| d.as_micros())
             .unwrap_or(0)
     );
     tmp.push(if ext.is_empty() { unique } else { format!("{unique}.{ext}") });
