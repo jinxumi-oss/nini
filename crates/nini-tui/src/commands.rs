@@ -342,9 +342,84 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.push_divider();
             CommandResult::output(vec![format!("thinking → {args}")])
         }
-        CommandId::ScopedModels => CommandResult::output(vec![
-            "(scoped-models — Ctrl+P cycling scope config not yet implemented)".to_string(),
-        ]),
+        CommandId::ScopedModels => {
+            // /scoped-models [add|remove <model>|list|clear]
+            // Mirrors Pi's per-model scoped-models config. Lets the user
+            // curate which models are eligible for Ctrl+P cycling. The
+            // cycle list lives in `state.models_cycle`.
+            let parts: Vec<&str> = args.split_whitespace().collect();
+            let sub = parts.first().copied().unwrap_or("list");
+            match sub {
+                "add" if parts.len() >= 2 => {
+                    let m = parts[1].to_string();
+                    if !state.models_cycle.iter().any(|x| x == &m) {
+                        state.models_cycle.push(m.clone());
+                    }
+                    let _ = settings.flush(); // persist after cycle change
+                    state.push_assistant(format!("[scoped-models] added {m}"));
+                    state.push_divider();
+                    let mut out = vec![
+                        format!("added {m} to cycle"),
+                        format!("cycle ({} models):", state.models_cycle.len()),
+                    ];
+                    for cm in &state.models_cycle {
+                        out.push(format!("  - {cm}"));
+                    }
+                    CommandResult::output(out)
+                }
+                "remove" if parts.len() >= 2 => {
+                    let m = parts[1];
+                    let before = state.models_cycle.len();
+                    state.models_cycle.retain(|x| x != m);
+                    let removed = before - state.models_cycle.len();
+                    let _ = settings.flush();
+                    state.push_assistant(format!(
+                        "[scoped-models] removed {} model(s)",
+                        removed
+                    ));
+                    state.push_divider();
+                    CommandResult::output(vec![format!(
+                        "removed {removed} matching {m}"
+                    )])
+                }
+                "clear" => {
+                    state.models_cycle.clear();
+                    state.models_cycle_idx = None;
+                    let _ = settings.flush();
+                    state.push_assistant("[scoped-models] cleared all".to_string());
+                    state.push_divider();
+                    CommandResult::output(vec!["cleared cycle".to_string()])
+                }
+                _ => {
+                    // list (default)
+                    let mut out: Vec<String> = vec![
+                        format!(
+                            "Ctrl+P cycling scope ({} models)",
+                            state.models_cycle.len()
+                        ),
+                        "".to_string(),
+                    ];
+                    if state.models_cycle.is_empty() {
+                        out.push("(empty — use `/scoped-models add <model>`)".to_string());
+                        out.push(String::new());
+                        out.push("Examples:".to_string());
+                        out.push("  /scoped-models add anthropic/claude-opus-4-7".to_string());
+                        out.push("  /scoped-models add openai/gpt-5".to_string());
+                        out.push("  /scoped-models clear".to_string());
+                    } else {
+                        for (i, m) in state.models_cycle.iter().enumerate() {
+                            let marker = if Some(i) == state.models_cycle_idx {
+                                "→ "
+                            } else {
+                                "  "
+                            };
+                            out.push(format!("{marker}{m}"));
+                        }
+                    }
+                    CommandResult::output(out)
+                }
+            }
+        }
         CommandId::Export => {
             // v1: write a minimal HTML snapshot of the transcript to ~/.pi/agent/exports/.
             let html = render_transcript_html(&state.transcript);
@@ -443,9 +518,52 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             ];
             CommandResult::output(lines)
         }
-        CommandId::Changelog => CommandResult::output(vec![
-            "(changelog — see references/spec-v0.85.1/ for v0.85.1 release notes)".to_string(),
-        ]),
+        CommandId::Changelog => {
+            // Read the project CHANGELOG.md and return the [Unreleased]
+            // section plus the latest released version's section. Falls
+            // back to a one-line note if the file is missing.
+            let path = std::path::Path::new("CHANGELOG.md");
+            let body = std::fs::read_to_string(path).unwrap_or_else(|_| {
+                "(changelog — CHANGELOG.md not found in current directory)".to_string()
+            });
+            let mut lines: Vec<String> = Vec::new();
+            let mut current_section: Option<String> = None;
+            let mut section_count = 0usize;
+            // Emit: the file header (first 6 lines) + [Unreleased] + last
+            // released version. Cap at 80 lines to avoid flooding the
+            // transcript with the full history.
+            for line in body.lines().take(6) {
+                lines.push(line.to_string());
+            }
+            for line in body.lines() {
+                if line.starts_with("## [") {
+                    if section_count >= 2 {
+                        break;
+                    }
+                    current_section = Some(line.to_string());
+                    lines.push(String::new()); // separator
+                    lines.push(line.to_string());
+                    section_count += 1;
+                } else if current_section.is_some() {
+                    lines.push(line.to_string());
+                    if lines.len() > 80 {
+                        lines.push("…(truncated)".to_string());
+                        break;
+                    }
+                }
+            }
+            if lines.is_empty() {
+                lines.push("(changelog empty)".to_string());
+            }
+            // Echo into transcript so the user can scroll back.
+            for l in &lines {
+                if !l.is_empty() {
+                    state.push_assistant(format!("[changelog] {l}"));
+                }
+            }
+            state.push_divider();
+            CommandResult::output(lines)
+        }
         CommandId::Hotkeys => CommandResult::output(vec![
             "Key bindings (Pi-compatible)".to_string(),
             "  F1            show help".to_string(),
@@ -465,15 +583,109 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
         CommandId::Fork => CommandResult::output(vec![
             "(fork — session fork UI not yet implemented)".to_string(),
         ]),
-        CommandId::Clone => CommandResult::output(vec![
-            "(clone — duplicate session not yet implemented)".to_string(),
-        ]),
-        CommandId::Trust => CommandResult::output(vec![format!(
-            "(trust — marked cwd {} as trusted)",
-            std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "(unknown)".to_string())
-        )]),
+        CommandId::Clone => {
+            // /clone — duplicate the current session's JSONL to a new file
+            // with a fresh timestamp. The current in-memory transcript
+            // keeps editing the original; the clone is a side artifact.
+            let Some(path) = &state.session_path else {
+                return CommandResult::output(vec![
+                    "(clone: no active session — start one with /new first)".to_string(),
+                ]);
+            };
+            let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("session");
+            let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S-%6f");
+            let dest = parent.join(format!("{stem}-clone-{ts}.jsonl"));
+            match std::fs::copy(path, &dest) {
+                Ok(_) => {
+                    state.push_assistant(format!(
+                        "[clone] {} → {}",
+                        path.display(),
+                        dest.display()
+                    ));
+                    state.push_divider();
+                    CommandResult::output(vec![
+                        format!("cloned to {}", dest.display()),
+                        "use /resume to switch".to_string(),
+                    ])
+                }
+                Err(e) => CommandResult::output(vec![format!("(clone failed: {e})")]),
+            }
+        }
+        CommandId::Trust => {
+            // /trust [trusted|distrust|ask|list|clear]
+            // Persists a TrustDecision for the current working directory
+            // in `~/.pi/agent/trust.json` (Pi-compatible).
+            use nini_core::project_trust::{ProjectTrustStore, TrustDecision};
+            let parts: Vec<&str> = args.split_whitespace().collect();
+            let sub = parts.first().copied().unwrap_or("trusted");
+            let cwd = match std::env::current_dir() {
+                Ok(p) => p.display().to_string(),
+                Err(_) => "(unknown)".to_string(),
+            };
+            let store_path = ProjectTrustStore::default_path();
+            let mut store = store_path
+                .as_ref()
+                .and_then(|p| ProjectTrustStore::load(p).ok())
+                .unwrap_or_default();
+            let decision = match sub {
+                "trusted" | "trust" => Some(TrustDecision::Trusted),
+                "distrust" | "distrusted" | "no" => Some(TrustDecision::Distrusted),
+                "ask" => Some(TrustDecision::Ask),
+                "list" => None,
+                "clear" | "remove" => {
+                    store.clear(&cwd);
+                    if let Some(p) = &store_path {
+                        let _ = store.save(p);
+                    }
+                    state.push_assistant(format!("[trust] cleared cwd={cwd}"));
+                    state.push_divider();
+                    return CommandResult::output(vec![format!("cleared trust for {cwd}")]);
+                }
+                _ => None,
+            };
+            let mut out: Vec<String> = Vec::new();
+            if let Some(d) = decision {
+                store.set(&cwd, d);
+                if let Some(p) = &store_path {
+                    if let Err(e) = store.save(p) {
+                        out.push(format!("(warning: save failed: {e})"));
+                    }
+                } else {
+                    out.push("(warning: trust store path unavailable)".to_string());
+                }
+                let label = match d {
+                    TrustDecision::Trusted => "trusted",
+                    TrustDecision::Distrusted => "distrusted",
+                    TrustDecision::Ask => "ask each time",
+                };
+                out.push(format!("cwd: {cwd}"));
+                out.push(format!("decision: {label}"));
+                state.push_assistant(format!("[trust] cwd={cwd} → {label}"));
+            } else {
+                // list (default)
+                out.push(format!("Trust store (cwd: {cwd})"));
+                match store.get(&cwd) {
+                    Some(d) => {
+                        let label = match d {
+                            TrustDecision::Trusted => "trusted",
+                            TrustDecision::Distrusted => "distrusted",
+                            TrustDecision::Ask => "ask",
+                        };
+                        out.push(format!("  current: {label}"));
+                    }
+                    None => out.push("  current: (unset — defaults to ask)".to_string()),
+                }
+                out.push(String::new());
+                out.push("usage:".to_string());
+                out.push("  /trust             mark cwd as trusted".to_string());
+                out.push("  /trust distrust    mark cwd as distrusted".to_string());
+                out.push("  /trust ask         prompt every time".to_string());
+                out.push("  /trust clear       remove trust decision".to_string());
+            }
+            state.push_divider();
+            CommandResult::output(out)
+        }
         CommandId::Login => CommandResult::output(vec![
             "(login — credential setup not yet implemented)".to_string(),
         ]),
@@ -513,10 +725,101 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             )])
         }
         CommandId::Compact => {
-            // v1: placeholder. Real compactor lands with P011.
-            state.push_assistant("(manual compaction — algorithm lands in v1.1)".to_string());
+            // Manual compaction: call the local heuristic summarizer
+            // (matches the algorithm used by the auto-compaction path).
+            // The runtime could pass an LLM-backed summary_fn to call
+            // the LLM here; for now we mirror the local heuristic so
+            // users always get a deterministic summary.
+            //
+            // We slice the transcript: everything before the cut point
+            // gets summarized, the cut point onward stays verbatim. The
+            // cut point is `transcript.len() / 2` for manual compaction
+            // (auto-compaction uses the same find_cut_point algorithm).
+            use nini_core::Entry;
+            let total = state.transcript.len();
+            if total < 4 {
+                // Short transcript: don't mutate, just return a one-line
+                // status. (Tests verify transcript is unchanged.)
+                return CommandResult::output(vec![
+                    "compact: nothing to compact (transcript has < 4 entries)".to_string(),
+                ]);
+            }
+            let cut_at = total / 2;
+            // Drain prefix out, convert TranscriptLine → legacy Entry.
+            let prefix_lines: Vec<_> = state.transcript.drain(..cut_at).collect();
+            let prefix_entries: Vec<Entry> = prefix_lines
+                .iter()
+                .enumerate()
+                .filter_map(|(i, l)| {
+                    use crate::state::TranscriptLine;
+                    match l {
+                        TranscriptLine::User(s) => Some(Entry::message(
+                            format!("c{}-u", i),
+                            None,
+                            (i as u64) + 1,
+                            nini_core::AgentMessage::user(s.clone()),
+                        )),
+                        TranscriptLine::AssistantText(s) => Some(Entry::message(
+                            format!("c{}-a", i),
+                            None,
+                            (i as u64) + 1,
+                            nini_core::AgentMessage::assistant(s.clone()),
+                        )),
+                        TranscriptLine::ToolCall { name, args } => {
+                            let args_json: serde_json::Value = serde_json::from_str(args)
+                                .unwrap_or_else(|_| serde_json::Value::String(args.clone()));
+                            Some(Entry::message(
+                                format!("c{}-tc", i),
+                                None,
+                                (i as u64) + 1,
+                                nini_core::AgentMessage {
+                                    role: nini_core::Role::Assistant,
+                                    content: vec![nini_core::provider::ContentBlock::ToolUse {
+                                        id: String::new(),
+                                        name: name.clone(),
+                                        input: args_json,
+                                    }],
+                                    timestamp: 0,
+                                },
+                            ))
+                        }
+                        TranscriptLine::ToolResult { ok: _, content }
+                        | TranscriptLine::BashExecution {
+                            cmd: _,
+                            output: content,
+                            ..
+                        } => Some(Entry::message(
+                            format!("c{}-tr", i),
+                            None,
+                            (i as u64) + 1,
+                            nini_core::AgentMessage {
+                                role: nini_core::Role::Tool,
+                                content: vec![nini_core::provider::ContentBlock::Text {
+                                    text: content.clone(),
+                                }],
+                                timestamp: 0,
+                            },
+                        )),
+                        TranscriptLine::Divider => None,
+                    }
+                })
+                .collect();
+            let summary = nini_core::compaction::generate_local_summary(&prefix_entries);
+            let summary_len = prefix_lines.len();
+            // Replace the prefix with a single summary message.
+            state
+                .transcript
+                .insert(0, TranscriptLine::AssistantText(format!(
+                    "[CONTEXT SUMMARY]\n\n{summary}"
+                )));
+            state.push_assistant(format!(
+                "[compacted] {summary_len} entries → summary"
+            ));
             state.push_divider();
-            CommandResult::output(vec!["compact: not yet implemented".to_string()])
+            CommandResult::output(vec![
+                format!("compacted: {summary_len} entries → summary"),
+                format!("new transcript size: {}", state.transcript.len()),
+            ])
         }
         CommandId::Resume => {
             // /resume [n] — list available sessions or load by index.

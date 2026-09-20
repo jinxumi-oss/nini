@@ -246,21 +246,51 @@ fn slash_compact_command_dispatches() {
     let mut state = AppState::new("test");
     let mut settings = SettingsManager::default();
     let r = dispatch(&mut state, &mut settings, CommandId::Compact, "");
-    // v1: command is a stub that pushes an assistant message.
+    // /compact on an empty/short transcript returns a "nothing to compact"
+    // message (test transcript has 0 entries).
     match r.outcome {
         CommandOutcome::Output(lines) => {
-            assert!(lines[0].contains("not yet implemented"));
+            assert!(
+                lines.iter().any(|l| l.contains("nothing to compact")),
+                "expected nothing-to-compact message, got: {lines:?}"
+            );
         }
         _ => panic!("expected Output"),
     }
-    // Verify the assistant message was pushed to transcript
-    let last_assistant = state
-        .transcript
-        .iter()
-        .rev()
-        .find_map(|l| l.as_assistant_text());
-    assert!(last_assistant.is_some());
-    assert!(last_assistant.unwrap().contains("manual compaction"));
+    // Empty transcript — no compaction happened, transcript unchanged.
+    assert!(state.transcript.is_empty());
+}
+
+#[test]
+fn slash_compact_command_dispatches_with_long_transcript() {
+    let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
+    // Build a long transcript so /compact actually does something.
+    for i in 0..8 {
+        state.push_user(format!("user {i}"));
+        state.push_assistant(format!("assistant {i}"));
+    }
+    let before = state.transcript.len();
+    let r = dispatch(&mut state, &mut settings, CommandId::Compact, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("compacted")),
+                "expected 'compacted' summary line, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+    assert!(state.transcript.len() <= before);
+    assert!(
+        state
+            .transcript
+            .first()
+            .and_then(|l| l.as_assistant_text())
+            .map(|s| s.contains("[CONTEXT SUMMARY]"))
+            .unwrap_or(false),
+        "expected [CONTEXT SUMMARY] at transcript head"
+    );
 }
 
 // =====================================================================

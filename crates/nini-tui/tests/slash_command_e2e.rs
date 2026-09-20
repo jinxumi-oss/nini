@@ -7,7 +7,7 @@
 use nini_tui::commands::{CommandId, CommandOutcome, REGISTRY, complete, dispatch, parse};
 use nini_tui::render::render_frame;
 use nini_tui::settings::SettingsManager;
-use nini_tui::state::{AppState, RunMode};
+use nini_tui::state::{AppState, RunMode, TranscriptLine};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
@@ -517,4 +517,240 @@ fn completion_respects_limit() {
     assert_eq!(r.len(), 3);
     let r = complete("", 100);
     assert_eq!(r.len(), REGISTRY.len());
+}
+
+// =====================================================================
+// Tests for newly implemented commands (changelog / compact / scoped-models
+// / trust / clone) — Phase 1 of the slash-command completion push.
+// =====================================================================
+
+#[test]
+fn changelog_command_renders_release_notes() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    // Run /changelog from the project root so CHANGELOG.md is found.
+    let original_cwd = std::env::current_dir().ok();
+    let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent() // crates/
+        .and_then(|p| p.parent()) // nini/
+        .unwrap()
+        .to_path_buf();
+    std::env::set_current_dir(&project_root).unwrap();
+    let r = dispatch(&mut state, &mut settings, CommandId::Changelog, "");
+    if let Some(orig) = original_cwd {
+        let _ = std::env::set_current_dir(&orig);
+    }
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            assert!(
+                joined.contains("# Changelog") || joined.contains("nini"),
+                "expected changelog header, got: {joined}"
+            );
+        }
+        _ => panic!("expected Output, got {:?}", r.outcome),
+    }
+    // Transcript should contain a [changelog] annotation
+    assert!(state.transcript.iter().any(|l| {
+        matches!(l, TranscriptLine::AssistantText(s) if s.contains("[changelog]"))
+    }));
+}
+
+#[test]
+fn compact_command_short_transcript_returns_early() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    state.push_user("hi".to_string());
+    state.push_assistant("hello".to_string());
+    let before = state.transcript.len();
+    let r = dispatch(&mut state, &mut settings, CommandId::Compact, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("nothing to compact")),
+                "expected early-return message, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+    // When short transcript returns early, the command does NOT push
+    // any echo line — state should be untouched.
+    assert_eq!(
+        state.transcript.len(),
+        before,
+        "short transcript should not be mutated"
+    );
+}
+
+#[test]
+fn compact_command_long_transcript_replaces_prefix_with_summary() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    // Build a long transcript with 10 user/assistant pairs.
+    for i in 0..10 {
+        state.push_user(format!("question {i}: how to refactor auth?"));
+        state.push_assistant(format!(
+            "answer {i}: use sqlx, not diesel; t_ prefix on tables."
+        ));
+    }
+    let before = state.transcript.len();
+    let r = dispatch(&mut state, &mut settings, CommandId::Compact, "");
+    assert!(matches!(r.outcome, CommandOutcome::Output(_)));
+    // Transcript should now have a [CONTEXT SUMMARY] line at the front.
+    assert!(
+        state.transcript[0]
+            .as_assistant_text()
+            .map(|s| s.contains("[CONTEXT SUMMARY]"))
+            .unwrap_or(false),
+        "expected [CONTEXT SUMMARY] header after compaction"
+    );
+    // The transcript should be smaller (or equal).
+    assert!(state.transcript.len() <= before);
+}
+
+#[test]
+fn scoped_models_add_and_list() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    // Empty cycle.
+    let r = dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::ScopedModels,
+        "list",
+    );
+    assert!(matches!(r.outcome, CommandOutcome::Output(_)));
+
+    // Add a model.
+    let r = dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::ScopedModels,
+        "add anthropic/claude-opus-4-7",
+    );
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("added anthropic/claude-opus-4-7")),
+                "expected add confirmation, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+    assert!(state.models_cycle.contains(&"anthropic/claude-opus-4-7".to_string()));
+
+    // Add a duplicate (should be no-op).
+    let before = state.models_cycle.len();
+    dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::ScopedModels,
+        "add anthropic/claude-opus-4-7",
+    );
+    assert_eq!(state.models_cycle.len(), before);
+
+    // Clear.
+    let r = dispatch(&mut state, &mut settings, CommandId::ScopedModels, "clear");
+    assert!(matches!(r.outcome, CommandOutcome::Output(_)));
+    assert!(state.models_cycle.is_empty());
+}
+
+#[test]
+fn trust_command_marks_cwd_default() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Trust, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            assert!(
+                joined.contains("cwd:") || joined.contains("decision:"),
+                "expected trust output with cwd and decision, got: {joined}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn trust_command_distrust_and_ask() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    // Distrust
+    let r = dispatch(&mut state, &mut settings, CommandId::Trust, "distrust");
+    assert!(matches!(r.outcome, CommandOutcome::Output(_)));
+    // Ask
+    let r = dispatch(&mut state, &mut settings, CommandId::Trust, "ask");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(lines.iter().any(|l| l.contains("ask")));
+        }
+        _ => panic!("expected Output"),
+    }
+    // List
+    let r = dispatch(&mut state, &mut settings, CommandId::Trust, "list");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("ask")),
+                "list should show ask after setting"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn clone_command_without_session_returns_error() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    // No session_path set.
+    let r = dispatch(&mut state, &mut settings, CommandId::Clone, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("no active session")),
+                "expected no-session message, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn clone_command_with_session_duplicates_file() {
+    use std::io::Write;
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    // Create a temp session file.
+    let tmp = tempfile::tempdir().unwrap();
+    let session_path = tmp.path().join("session-test.jsonl");
+    {
+        let mut f = std::fs::File::create(&session_path).unwrap();
+        writeln!(f, "{{\"type\":\"session\"}}").unwrap();
+    }
+    state.session_path = Some(session_path.clone());
+
+    let r = dispatch(&mut state, &mut settings, CommandId::Clone, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("cloned to")),
+                "expected clone confirmation, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+    // The clone file should exist as a sibling.
+    let parent = session_path.parent().unwrap();
+    let clones: Vec<_> = std::fs::read_dir(parent)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .contains("session-test-clone-")
+        })
+        .collect();
+    assert_eq!(clones.len(), 1, "expected exactly 1 clone file, got {clones:?}");
 }
