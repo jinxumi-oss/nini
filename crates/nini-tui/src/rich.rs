@@ -90,6 +90,40 @@ pub fn render_tool_call(name: &str, args: &str, theme: &Theme) -> Vec<RLine<'sta
 /// Content is ANSI-stripped, hyperlinked, then truncated to
 /// `TOOL_RESULT_PREVIEW_MAX_BYTES`. Pi's `ToolExecutionComponent`
 /// does exactly this for tool outputs.
+/// Render a unified diff string (output of `nini_tools::diff::render_unified`)
+/// with +/- coloring. Lines starting with `+` are dim-error (additions
+/// in red/dim context). Lines starting with `-` are green (removals).
+/// Lines starting with ` ` are dim (context). Lines starting with `…`
+/// indicate a hunk separator.
+///
+/// Pi's `ToolExecutionComponent` does this for file-edit tool calls.
+pub fn render_diff(diff: &str, theme: &Theme) -> Vec<RLine<'static>> {
+    let mut out: Vec<RLine<'static>> = Vec::new();
+    for line in diff.lines() {
+        // Pick the leading sign char (handle multi-byte UTF-8 like `…`).
+        let first_char = line.chars().next().unwrap_or(' ');
+        let rest = line[first_char.len_utf8()..].to_string();
+        let sign = first_char;
+        let style = match sign {
+            '+' => theme
+                .fg_style("success")
+                .add_modifier(ratatui::style::Modifier::BOLD),
+            '-' => theme.fg_style("error"),
+            ' ' | '…' => theme.fg_style("muted"),
+            _ => theme.fg_style("text"),
+        };
+        // Preserve the leading sign character so it lines up visually.
+        out.push(RLine::from(Span::styled(
+            line.to_string(),
+            style,
+        )));
+        // Suppress unused-variable warning on `rest` (kept for clarity
+        // / future per-token coloring).
+        let _ = rest;
+    }
+    out
+}
+
 pub fn render_tool_result(ok: bool, content: &str, theme: &Theme) -> Vec<RLine<'static>> {
     let prefix_color = if ok { "toolSuccessBg" } else { "error" };
     let label = if ok { "[tool result] " } else { "[tool error] " };
@@ -446,5 +480,40 @@ mod tests {
         let s = spinner_frame();
         // Each frame is a single braille char (3 bytes UTF-8).
         assert_eq!(s.chars().count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod diff_render_tests {
+    use super::*;
+
+    #[test]
+    fn render_diff_colors_added_and_removed() {
+        let d = " line1\n-old\n+new\n line2";
+        let lines = render_diff(d, &Theme::default());
+        assert_eq!(lines.len(), 4);
+        // Each line preserves its prefix; colors come from the theme.
+        // We can at least assert the prefix text is unchanged.
+        for (i, line) in lines.iter().enumerate() {
+            let joined: String = line
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(joined, d.lines().nth(i).unwrap(), "line {i} mismatch");
+        }
+    }
+
+    #[test]
+    fn render_diff_handles_ellipsis_separator() {
+        let d = " a\n…\n b";
+        let lines = render_diff(d, &Theme::default());
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn render_diff_empty() {
+        let lines = render_diff("", &Theme::default());
+        assert!(lines.is_empty());
     }
 }

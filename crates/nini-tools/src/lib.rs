@@ -5,6 +5,7 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod bash;
+pub mod diff;
 pub mod bash_executor;
 pub mod edit;
 pub mod find;

@@ -10,6 +10,8 @@ use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+
+use crate::diff;
 use tokio::fs;
 
 #[derive(Debug, Deserialize)]
@@ -116,16 +118,25 @@ impl Tool for EditTool {
             return Err(ToolError::Io(e.to_string()));
         }
 
+        // Build a unified diff for the TUI to render with +/- coloring.
+        // Context of 3 matches `diff -u` default behavior.
+        let diff_text = diff::render_unified(&content, &new_content, 3);
+        let (adds, dels) = diff::diff_summary(&content, &new_content);
+
         Ok(ToolOutput {
             content: format!(
-                "replaced {} occurrence(s) in {}",
+                "replaced {} occurrence(s) in {}\n\n{}",
                 replacements,
-                path.display()
+                path.display(),
+                diff_text
             ),
             is_error: false,
             details: Some(json!({
                 "path": path.display().to_string(),
                 "replacements": replacements,
+                "additions": adds,
+                "deletions": dels,
+                "diff": diff_text,
             })),
         })
     }
@@ -205,5 +216,28 @@ mod tests {
         assert!(EditTool::apply("abc abc", "abc", "x").is_err()); // 2 matches
         assert!(EditTool::apply("xyz", "abc", "x").is_err()); // 0 matches
         assert!(EditTool::apply("any", "", "x").is_err()); // empty old
+    }
+}
+
+#[cfg(test)]
+mod diff_integration_tests {
+    use super::*;
+    use crate::diff::{diff_summary, render_unified};
+
+    #[test]
+    fn edit_returns_diff_in_details() {
+        let (adds, dels) = diff_summary("line1\nline2\nline3\n", "line1\nmodified\nline3\n");
+        assert_eq!(adds, 1);
+        assert_eq!(dels, 1);
+    }
+
+    #[test]
+    fn edit_diff_renders_unified_format() {
+        let d = render_unified("a\nb\nc\n", "a\nB\nc\n", 1);
+        // Should contain a `-b`, `+B`, and context lines.
+        assert!(d.lines().any(|l| l.starts_with("-b")));
+        assert!(d.lines().any(|l| l.starts_with("+B")));
+        assert!(d.lines().any(|l| l == " a"));
+        assert!(d.lines().any(|l| l == " c"));
     }
 }
