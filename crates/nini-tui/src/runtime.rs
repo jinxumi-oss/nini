@@ -203,6 +203,10 @@ async fn run_loop(
     // reload from settings.
     let mut theme = {
         let mut settings = crate::settings::SettingsManager::default();
+        let name = settings.theme_name();
+        // Mirror the theme name into AppState so the status bar can
+        // render it without holding the settings lock.
+        shared.lock().unwrap().theme_name = name.clone();
         settings.theme()
     };
 
@@ -399,9 +403,11 @@ async fn run_loop(
                 match theme_event {
                     ThemeEvent::Changed(path) | ThemeEvent::Removed(path) => {
                         let mut settings = crate::settings::SettingsManager::default();
+                        let name = settings.theme_name();
+                        shared.lock().unwrap().theme_name = name.clone();
                         theme = settings.theme();
                         let _ = bus.emit(crate::event_bus::AppEvent::ThemeChanged(
-                            settings.theme_name().unwrap_or_default(),
+                            name.unwrap_or_default(),
                         ));
                         let _ = path; // suppress unused
                     }

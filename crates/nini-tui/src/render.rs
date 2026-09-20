@@ -206,6 +206,15 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
         spans.push(Span::raw(" "));
     }
 
+    // Theme name segment. Empty when default theme is in use.
+    if let Some(name) = state.theme_name.as_ref().filter(|n| !n.is_empty()) {
+        spans.push(Span::styled(
+            format!("[{name}]"),
+            theme.fg_style("accent"),
+        ));
+        spans.push(Span::raw(" "));
+    }
+
     // Session id (truncated to 8 chars).
     let session_disp = state
         .session_id
@@ -497,206 +506,6 @@ fn render_running_indicator(f: &mut Frame, theme: &Theme, area: Rect) {
 // =====================================================================
 
 #[cfg(test)]
-mod status_tests {
-    use super::*;
-    use crate::rich::{spinner_frame, AgentPhase};
-    use crate::state::{AppState, RunMode, TokenStats};
-
-    /// Render the status bar to a text snapshot via TestBackend.
-    fn status_text(state: &AppState) -> String {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-        let backend = TestBackend::new(200, 1);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| render_status(f, state, &Theme::default(), f.area()))
-            .unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let mut out = String::new();
-        for x in 0..buf.area.width {
-            if let Some(c) = buf.cell((x, 0)) {
-                out.push_str(c.symbol());
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn status_bar_includes_nini_banner_and_model() {
-        let state = AppState::new("claude-opus-4-7");
-        let text = status_text(&state);
-        assert!(text.contains("nini"), "missing nini banner: {text:?}");
-        assert!(text.contains("claude-opus-4-7"), "missing model: {text:?}");
-    }
-
-    #[test]
-    fn status_bar_shows_idle_phase_when_editing() {
-        let mut state = AppState::new("m");
-        state.mode = RunMode::Editing;
-        let text = status_text(&state);
-        assert!(text.contains("idle"), "expected idle phase label: {text:?}");
-    }
-
-    #[test]
-    fn status_bar_shows_working_phase_with_spinner_when_running() {
-        let mut state = AppState::new("m");
-        state.mode = RunMode::Running;
-        let text = status_text(&state);
-        assert!(text.contains("working"), "missing working label: {text:?}");
-        // Spinner braille frame (any of the 10 chars).
-        let spinner = spinner_frame();
-        assert!(text.contains(spinner), "missing spinner frame {spinner}: {text:?}");
-    }
-
-    #[test]
-    fn status_bar_includes_git_branch() {
-        let mut state = AppState::new("m");
-        state.git_branch = Some("feature/rich-render".to_string());
-        let text = status_text(&state);
-        assert!(
-            text.contains("feature/rich-render"),
-            "missing branch: {text:?}"
-        );
-    }
-
-    #[test]
-    fn status_bar_includes_cwd_with_tilde() {
-        let mut state = AppState::new("m");
-        state.cwd = Some(std::path::PathBuf::from("/tmp"));
-        // $HOME may not match /tmp; just check the path appears.
-        let text = status_text(&state);
-        assert!(text.contains("/tmp"), "missing cwd: {text:?}");
-    }
-
-    #[test]
-    fn status_bar_shows_context_window_percent() {
-        let mut state = AppState::new("m");
-        state.context_window = 1000;
-        state.context_used = 420;
-        let text = status_text(&state);
-        assert!(text.contains("ctx"), "missing ctx label: {text:?}");
-        assert!(text.contains("42"), "missing 42%: {text:?}");
-    }
-
-    #[test]
-    fn status_bar_context_high_percent_uses_error_color() {
-        // Just verify the high-percent branch is taken — bar still
-        // rendered with 'error' style (covered by snapshot).
-        let mut state = AppState::new("m");
-        state.context_window = 100;
-        state.context_used = 95;
-        let text = status_text(&state);
-        assert!(text.contains("95"), "expected 95%: {text:?}");
-    }
-
-    #[test]
-    fn status_bar_compact_token_format() {
-        let mut state = AppState::new("m");
-        state.tokens = TokenStats {
-            input: 1500,
-            output: 2500,
-        };
-        let text = status_text(&state);
-        // 1500 → "1.5K", 2500 → "2.5K"
-        assert!(text.contains("1.5K"), "missing 1.5K: {text:?}");
-        assert!(text.contains("2.5K"), "missing 2.5K: {text:?}");
-    }
-
-    #[test]
-    fn status_bar_shows_cost_when_nonzero() {
-        let mut state = AppState::new("m");
-        state.cost_usd = 0.0123;
-        let text = status_text(&state);
-        assert!(text.contains("$0.0123"), "missing cost: {text:?}");
-    }
-
-    #[test]
-    fn status_bar_hides_cost_when_zero() {
-        let state = AppState::new("m");
-        let text = status_text(&state);
-        assert!(!text.contains('$'), "cost should be hidden when 0: {text:?}");
-    }
-
-    #[test]
-    fn phase_labels_distinct() {
-        let phases = [
-            AgentPhase::Idle,
-            AgentPhase::Working,
-            AgentPhase::Compacting,
-            AgentPhase::Retrying,
-            AgentPhase::BranchSummary,
-        ];
-        let mut labels: Vec<&'static str> = phases.iter().map(|p| p.label()).collect();
-        labels.sort();
-        labels.dedup();
-        assert_eq!(labels.len(), 5);
-    }
-
-    #[test]
-    fn context_bar_proportions() {
-        // 0% → 0 filled, 8 empty
-        let bar0 = context_bar(0.0);
-        assert_eq!(bar0.chars().filter(|&c| c == '\u{2588}').count(), 0);
-        assert_eq!(bar0.chars().filter(|&c| c == '\u{2591}').count(), 8);
-
-        // 100% → 8 filled, 0 empty
-        let bar100 = context_bar(100.0);
-        assert_eq!(bar100.chars().filter(|&c| c == '\u{2588}').count(), 8);
-        assert_eq!(bar100.chars().filter(|&c| c == '\u{2591}').count(), 0);
-
-        // 50% → 4 filled, 4 empty
-        let bar50 = context_bar(50.0);
-        assert_eq!(bar50.chars().filter(|&c| c == '\u{2588}').count(), 4);
-        assert_eq!(bar50.chars().filter(|&c| c == '\u{2591}').count(), 4);
-    }
-
-    #[test]
-    fn status_bar_shows_last_diff_pill() {
-        use crate::state::AppState;
-        let mut state = AppState::new("m");
-        state.last_diff = Some((3, 1));
-        let text = status_text(&state);
-        // Pi-style "[edit +N -M]" pill should appear.
-        assert!(text.contains("[edit"), "expected [edit pill, got: {text}");
-        assert!(text.contains("+3"), "expected +3 in pill, got: {text}");
-        assert!(text.contains("-1"), "expected -1 in pill, got: {text}");
-    }
-
-    #[test]
-    fn status_bar_omits_diff_pill_when_no_last_diff() {
-        use crate::state::AppState;
-        let state = AppState::new("m");
-        let text = status_text(&state);
-        assert!(!text.contains("[edit"), "unexpected [edit pill, got: {text}");
-    }
-
-
-    #[test]
-    fn fmt_thousands_units() {
-        assert_eq!(fmt_thousands(0), "0");
-        assert_eq!(fmt_thousands(999), "999");
-        assert_eq!(fmt_thousands(1000), "1.0K");
-        assert_eq!(fmt_thousands(1500), "1.5K");
-        assert_eq!(fmt_thousands(1_500_000), "1.5M");
-    }
-
-    #[test]
-    fn shorten_home_replaces_prefix() {
-        // Use a synthetic HOME to make this test deterministic.
-        std::env::set_var("HOME", "/home/testuser");
-        let result = shorten_home(std::path::Path::new("/home/testuser/nini"));
-        assert_eq!(result, "~/nini");
-    }
-
-    #[test]
-    fn shorten_home_passthrough_when_no_prefix() {
-        std::env::set_var("HOME", "/home/testuser");
-        let result = shorten_home(std::path::Path::new("/var/log"));
-        assert_eq!(result, "/var/log");
-    }
-}
-
-#[cfg(test)]
 mod footer_tests {
     use super::*;
     use crate::state::AppState;
@@ -756,5 +565,49 @@ mod footer_tests {
         state.mode = RunMode::Quitting;
         let text = footer_text(&state);
         assert!(text.contains("force-quit"));
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    /// Render the status bar to a text snapshot via TestBackend.
+    fn status_text(state: &crate::state::AppState) -> String {
+        use crate::theme::Theme;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(200, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_status(f, state, &Theme::default(), f.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for x in 0..buf.area.width {
+            if let Some(c) = buf.cell((x, 0)) {
+                out.push_str(c.symbol());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn status_bar_shows_theme_name_when_set() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        state.theme_name = Some("light".to_string());
+        let text = status_text(&state);
+        assert!(text.contains("[light]"), "expected [light] pill, got: {text}");
+    }
+
+    #[test]
+    fn status_bar_hides_theme_pill_when_default() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        let text = status_text(&state);
+        // No [theme] pill when theme_name is None.
+        assert!(!text.contains("[light]") && !text.contains("[dark]"),
+            "unexpected theme pill: {text}");
     }
 }

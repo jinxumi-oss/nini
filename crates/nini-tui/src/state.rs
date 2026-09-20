@@ -590,6 +590,10 @@ pub struct AppState {
     /// edit has been run yet, or when the user explicitly clears
     /// the indicator. Mirrors Pi's `[edit +N -M]` status pill.
     pub last_diff: Option<(usize, usize)>,
+    /// Currently-loaded theme name. Mirrors settings.theme but kept
+    /// here so the status bar can render the name without holding
+    /// the settings lock. `None` means default (dark) theme.
+    pub theme_name: Option<String>,
     /// Total estimated cost (USD) for the session, surfaced in the
     /// status bar when non-zero. Mirrors Pi's footer.
     pub cost_usd: f64,
@@ -680,6 +684,7 @@ impl AppState {
             last_diff: self.last_diff,
             cost_usd: self.cost_usd,
             context_window: self.context_window,
+            theme_name: self.theme_name.clone(),
             context_used: self.context_used,
             autoscroll: self.autoscroll,
             completion: self.completion.clone(),
@@ -721,6 +726,7 @@ impl AppState {
             context_window: 0,
             context_used: 0,
             completion: None,
+            theme_name: None,
             session: None,
             session_path: None,
             models_cycle: Vec::new(),
