@@ -51,6 +51,7 @@ pub enum AgentEventLite {
     ToolResult {
         ok: bool,
         content: String,
+        details: Option<serde_json::Value>,
     },
     TurnEnd,
     Error(String),
@@ -94,7 +95,16 @@ impl AgentSink {
                         s.push_tool_call(id, args);
                     }
                 }
-                AgentEventLite::ToolResult { ok, content } => {
+                AgentEventLite::ToolResult { ok, content, details } => {
+                    // Capture edit-tool diff stats for the status bar pill.
+                    if let Some(d) = &details {
+                        if let (Some(adds), Some(dels)) =
+                            (d.get("additions").and_then(|v| v.as_u64()),
+                             d.get("deletions").and_then(|v| v.as_u64()))
+                        {
+                            s.last_diff = Some((adds as usize, dels as usize));
+                        }
+                    }
                     s.push_tool_result_raw(ok, content);
                 }
                 AgentEventLite::TurnEnd => {

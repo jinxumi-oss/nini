@@ -94,7 +94,7 @@ fn make_fixture_driver(
                     Ok(AgentEvent::ToolResult { output, .. }) => {
                         let content = output.content.clone();
                         let ok = !output.is_error;
-                        AgentEventLite::ToolResult { ok, content }
+                        AgentEventLite::ToolResult { ok, content , details: None}
                     }
                     Ok(AgentEvent::TurnEnd { usage, .. }) => {
                         sink.push(AgentEventLite::Usage(
@@ -401,7 +401,7 @@ async fn multiple_tool_calls_accumulate() {
     sink.push(AgentEventLite::ToolResult {
         ok: true,
         content: "main.rs".into(),
-    });
+    details: None});
 
     sink.push(AgentEventLite::ToolCallStart {
         name: "read".to_string(),
@@ -413,6 +413,7 @@ async fn multiple_tool_calls_accumulate() {
     sink.push(AgentEventLite::ToolResult {
         ok: true,
         content: "fn main() {}".into(),
+        details: None,
     });
 
     let snap = shared.lock().unwrap().clone();

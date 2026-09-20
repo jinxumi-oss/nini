@@ -150,6 +150,22 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     }
     spans.push(Span::raw(" | "));
 
+    // Last edit-tool diff summary: "[edit +N -M]" pill. Cleared when
+    // the user runs any new command (the runtime resets it).
+    if let Some((adds, dels)) = state.last_diff {
+        spans.push(Span::styled("[edit ", theme.fg_style("muted")));
+        spans.push(Span::styled(
+            format!("+{adds}"),
+            theme.fg_style("success"),
+        ));
+        spans.push(Span::styled(
+            format!(" -{dels}"),
+            theme.fg_style("error"),
+        ));
+        spans.push(Span::styled("] ", theme.fg_style("muted")));
+        spans.push(Span::raw("| "));
+    }
+
     // Context-window segment (Pi-style: "ctx 42% [████░░░░]").
     if state.context_window > 0 {
         let pct = (state.context_used as f64 / state.context_window as f64) * 100.0;
@@ -633,6 +649,27 @@ mod status_tests {
         assert_eq!(bar50.chars().filter(|&c| c == '\u{2588}').count(), 4);
         assert_eq!(bar50.chars().filter(|&c| c == '\u{2591}').count(), 4);
     }
+
+    #[test]
+    fn status_bar_shows_last_diff_pill() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        state.last_diff = Some((3, 1));
+        let text = status_text(&state);
+        // Pi-style "[edit +N -M]" pill should appear.
+        assert!(text.contains("[edit"), "expected [edit pill, got: {text}");
+        assert!(text.contains("+3"), "expected +3 in pill, got: {text}");
+        assert!(text.contains("-1"), "expected -1 in pill, got: {text}");
+    }
+
+    #[test]
+    fn status_bar_omits_diff_pill_when_no_last_diff() {
+        use crate::state::AppState;
+        let state = AppState::new("m");
+        let text = status_text(&state);
+        assert!(!text.contains("[edit"), "unexpected [edit pill, got: {text}");
+    }
+
 
     #[test]
     fn fmt_thousands_units() {

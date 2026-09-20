@@ -585,6 +585,11 @@ pub struct AppState {
     /// Current git branch name, if any. `None` outside a git repo or
     /// before the runtime populates it. Mirrors Pi's footer.
     pub git_branch: Option<String>,
+    /// Last edit-tool diff: (additions, deletions) in lines. Surfaced
+    /// briefly in the status bar after each edit. `None` when no
+    /// edit has been run yet, or when the user explicitly clears
+    /// the indicator. Mirrors Pi's `[edit +N -M]` status pill.
+    pub last_diff: Option<(usize, usize)>,
     /// Total estimated cost (USD) for the session, surfaced in the
     /// status bar when non-zero. Mirrors Pi's footer.
     pub cost_usd: f64,
@@ -672,6 +677,7 @@ impl AppState {
             is_compacting: self.is_compacting,
             cwd: self.cwd.clone(),
             git_branch: self.git_branch.clone(),
+            last_diff: self.last_diff,
             cost_usd: self.cost_usd,
             context_window: self.context_window,
             context_used: self.context_used,
@@ -710,6 +716,7 @@ impl AppState {
             status: "ready".to_string(),
             cwd: None,
             git_branch: None,
+            last_diff: None,
             cost_usd: 0.0,
             context_window: 0,
             context_used: 0,

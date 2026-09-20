@@ -94,7 +94,7 @@ fn fixture_driver(turns: Vec<Vec<FixtureTurn>>) -> AgentDriver {
                             AgentEventLite::ToolResult {
                                 ok: !output.is_error,
                                 content: output.content,
-                            }
+                              details: None}
                         }
                         Ok(nini_core::AgentEvent::TurnEnd { usage, .. }) => {
                             sink.push(AgentEventLite::Usage(
@@ -1130,7 +1130,7 @@ async fn agent_sink_handles_all_variants() {
     sink.push(AgentEventLite::TextDelta("a".into()));
     sink.push(AgentEventLite::ToolCallStart { name: "bash".into() });
     sink.push(AgentEventLite::ToolCallStop { id: "tc-1".into(), args: "{}".into() });
-    sink.push(AgentEventLite::ToolResult { ok: true, content: "ok".into() });
+    sink.push(AgentEventLite::ToolResult { ok: true, content: "ok".into() , details: None});
     sink.push(AgentEventLite::TurnEnd);
     sink.push(AgentEventLite::Error("e".into()));
     sink.push(AgentEventLite::Usage(10, 5));

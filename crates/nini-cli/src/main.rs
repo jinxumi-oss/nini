@@ -388,7 +388,7 @@ async fn main() -> Result<()> {
                                 nini_tui::runtime::AgentEventLite::ToolResult {
                                     ok: !output.is_error,
                                     content: output.content,
-                                }
+                                 details: None}
                             }
                             Ok(AgentEvent::TurnEnd { usage, .. }) => {
                                 sink.push(nini_tui::runtime::AgentEventLite::Usage(
