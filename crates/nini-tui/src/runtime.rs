@@ -689,6 +689,24 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
                 state.refresh_completion();
             }
         }
+        KeyAction::PasteImage => {
+            // Try to read an image from the system clipboard. If found,
+            // insert its `[pasted image: <path>]` description into the
+            // prompt. If the clipboard has no image (or is unavailable
+            // in headless env), silently fall through to Noop.
+            match crate::image_paste::paste_image_from_clipboard() {
+                Ok(Some(desc)) => {
+                    for c in desc.chars() {
+                        state.input.insert_char(c);
+                    }
+                    state.refresh_completion();
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    state.push_assistant(format!("[paste error] {e}"));
+                }
+            }
+        }
         KeyAction::Newline => {
             if state.mode == RunMode::Editing {
                 state.input.insert_char('\n');
@@ -1009,6 +1027,24 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             if state.mode == RunMode::Editing {
                 state.input.insert_char(c);
                 state.refresh_completion();
+            }
+        }
+        KeyAction::PasteImage => {
+            // Try to read an image from the system clipboard. If found,
+            // insert its `[pasted image: <path>]` description into the
+            // prompt. If the clipboard has no image (or is unavailable
+            // in headless env), silently fall through to Noop.
+            match crate::image_paste::paste_image_from_clipboard() {
+                Ok(Some(desc)) => {
+                    for c in desc.chars() {
+                        state.input.insert_char(c);
+                    }
+                    state.refresh_completion();
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    state.push_assistant(format!("[paste error] {e}"));
+                }
             }
         }
         KeyAction::Newline => {

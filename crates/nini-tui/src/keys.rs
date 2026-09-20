@@ -160,6 +160,10 @@ pub enum KeyAction {
     ShowHelp,
     /// Clear current input.
     ClearInput,
+    /// Paste an image from the system clipboard. Reads RGBA from
+    /// arboard, encodes to PNG, saves to a temp file, and inserts
+    /// the `[pasted image: <path>]` description into the prompt.
+    PasteImage,
     /// Accept the highlighted completion popup item.
     /// Falls back to inserting a literal Tab if no popup is visible.
     AcceptCompletionOrInsertTab,
@@ -330,6 +334,14 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         KeyBinding {
             key: Key::new(KeyCode::Tab, KeyModifiers::NONE),
             action: AcceptCompletionOrInsertTab,
+        },
+        // Ctrl+V → paste an image from the clipboard. The runtime
+        // reads via arboard, encodes to PNG, saves to a tmp file, and
+        // inserts the description into the prompt. Falls through to
+        // Noop if the clipboard has no image.
+        KeyBinding {
+            key: Key::new(KeyCode::Char('v'), ctrl),
+            action: PasteImage,
         },
     ]
 }

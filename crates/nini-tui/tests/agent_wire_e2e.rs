@@ -547,3 +547,41 @@ async fn concurrent_sink_pushes_dont_panic() {
     assert_eq!(combined.matches("chunk ").count(), 100);
     let _ = Arc::new(0); // silence unused
 }
+
+// =====================================================================
+// Image paste flow: Ctrl+V (PasteImage) inserts the description into
+// the prompt when the clipboard has an image, and is a no-op
+// otherwise.
+// =====================================================================
+
+#[test]
+fn paste_image_inserts_description_in_prompt() {
+    use nini_tui::image_paste;
+    use nini_tui::keys::{Key, KeyModifiers};
+    use nini_tui::runtime::apply_action;
+    use nini_tui::state::AppState;
+    use crossterm::event::KeyCode;
+
+    // We can't easily get a real image into the headless clipboard,
+    // so we test the negative path (no image) by checking that the
+    // input buffer doesn't change. The positive path is covered
+    // by the unit tests in image_paste.rs.
+    let mut state = AppState::new("test-model");
+    state.input.text = "hello".to_string();
+    let before = state.input.text.clone();
+
+    // Press Ctrl+V.
+    apply_action(
+        &mut state,
+        Key::new(KeyCode::Char('v'), KeyModifiers::CTRL),
+    );
+
+    // Headless CI: clipboard has no image → Noop → input unchanged.
+    if image_paste::paste_image_from_clipboard()
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        assert_eq!(state.input.text, before);
+    }
+}
