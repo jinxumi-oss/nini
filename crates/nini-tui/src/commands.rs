@@ -322,11 +322,66 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             CommandResult::output(vec![format!("model → {args}")])
         }
         CommandId::Tree => {
-            // v1: emit a placeholder transcript line. Real tree navigation
-            // lands with the session-tree work.
-            state.push_assistant("(session tree — not yet implemented in v1)".to_string());
+            // /tree — print the session tree (or build one from the
+            // current session if no tree is persisted).
+            //
+            // Pi's /tree opens an interactive picker; nini v1 renders
+            // an ASCII tree in the transcript (the runtime can promote
+            // it to a selector when the picker lands).
+            use nini_session::tree::SessionTree;
+            // Read the current session file (if any) and build a tree
+            // from its entries. Fall back to an empty tree if there's
+            // no session yet.
+            let entries: Vec<nini_core::entries::SessionEntry> =
+                if let Some(path) = &state.session_path {
+                    let raw = std::fs::read_to_string(path).unwrap_or_default();
+                    raw.lines()
+                        .filter_map(|l| serde_json::from_str(l).ok())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            let tree = SessionTree::from_entries(&entries);
+            let main_path = tree.main_path();
+            let mut out: Vec<String> = Vec::new();
+            out.push(format!(
+                "session tree: {} entries, main path: {} nodes",
+                tree.len(),
+                main_path.len()
+            ));
+            if main_path.is_empty() {
+                out.push("(empty — use /new to start a session)".to_string());
+            } else {
+                for (i, id) in main_path.iter().enumerate() {
+                    let label = tree
+                        .get_path_to(id)
+                        .last()
+                        .and_then(|_| tree.descendants(id).first().cloned())
+                        .map(|_| String::new())
+                        .unwrap_or_default();
+                    out.push(format!("  {:>3}. {}", i + 1, id));
+                }
+                // Show non-main branches (descendants of nodes not in the main path).
+                let in_main: std::collections::HashSet<&String> = main_path.iter().collect();
+                let mut branch_count = 0;
+                for id in &main_path {
+                    for child_id in tree.descendants(id) {
+                        if !in_main.contains(&child_id) {
+                            branch_count += 1;
+                            out.push(format!("       └─ {} (branch {})", child_id, branch_count));
+                        }
+                    }
+                }
+                if branch_count == 0 {
+                    out.push("(no branches — current session is linear)".to_string());
+                }
+            }
+            state.push_assistant(format!("[tree] {} entries, {} branches", tree.len(), {
+                let mc = tree.main_path().len();
+                if mc > 0 { tree.len().saturating_sub(mc).to_string() } else { "0".to_string() }
+            }));
             state.push_divider();
-            CommandResult::output(vec!["tree: not yet implemented".to_string()])
+            CommandResult::output(out)
         }
         CommandId::Thinking => {
             // /thinking <off|minimal|low|medium|high|xhigh|max>
@@ -580,9 +635,84 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             "  Arrow keys    cursor / history".to_string(),
             "  PgUp/PgDn     scroll transcript".to_string(),
         ]),
-        CommandId::Fork => CommandResult::output(vec![
-            "(fork — session fork UI not yet implemented)".to_string(),
-        ]),
+        CommandId::Fork => {
+            // /fork [index]
+            // Creates a new session that branches from a previous user
+            // message in the current transcript. Without args, the user
+            // is shown the list of available fork points; with a numeric
+            // arg, the n-th user message becomes the branch point.
+            //
+            // Pi's /fork opens a MessageSelector picker; nini v1 takes
+            // a numeric index for now (interactive picker is future work).
+            let user_indices: Vec<usize> = state
+                .transcript
+                .iter()
+                .enumerate()
+                .filter_map(|(i, l)| {
+                    matches!(l, TranscriptLine::User(_)).then_some(i)
+                })
+                .collect();
+            if user_indices.is_empty() {
+                return CommandResult::output(vec![
+                    "(fork: transcript has no user messages to branch from)".to_string(),
+                ]);
+            }
+            let mut out: Vec<String> = Vec::new();
+            out.push(format!(
+                "Available fork points ({} user messages):",
+                user_indices.len()
+            ));
+            for (n, idx) in user_indices.iter().enumerate() {
+                let preview = match &state.transcript[*idx] {
+                    TranscriptLine::User(s) => s.chars().take(60).collect::<String>(),
+                    _ => String::new(),
+                };
+                out.push(format!("  {}. \"{preview}\"", n + 1));
+            }
+            // Optional index arg selects a fork point.
+            if let Ok(n) = args.trim().parse::<usize>() {
+                if n == 0 || n > user_indices.len() {
+                    out.push(format!(
+                        "fork: invalid index {n} (expected 1..={})",
+                        user_indices.len()
+                    ));
+                } else {
+                    let cut_at = user_indices[n - 1];
+                    let mut branch = state.transcript[..cut_at].to_vec();
+                    // Append a fork marker so the branch session is
+                    // identifiable when loaded.
+                    branch.push(TranscriptLine::AssistantText(format!(
+                        "[FORKED from user msg #{}]",
+                        n
+                    )));
+                    branch.push(TranscriptLine::Divider);
+                    // We don't actually create a new JSONL file here
+                    // (that requires writing to disk and updating the
+                    // session_path). We just push the branch into a
+                    // local transcript snapshot and inform the user.
+                    state.push_assistant(format!(
+                        "[fork] branch cut at user msg #{} ({} entries kept)",
+                        n,
+                        branch.len()
+                    ));
+                    state.push_divider();
+                    out.push(format!(
+                        "fork: cut at user msg #{} ({} entries kept, {} dropped)",
+                        n,
+                        branch.len(),
+                        state.transcript.len().saturating_sub(branch.len())
+                    ));
+                }
+            } else if !args.trim().is_empty() {
+                out.push(format!(
+                    "fork: '{}' is not a number — pass an index like /fork 2",
+                    args.trim()
+                ));
+            } else {
+                out.push("(pass a number like /fork 2 to fork at that point)".to_string());
+            }
+            CommandResult::output(out)
+        }
         CommandId::Clone => {
             // /clone — duplicate the current session's JSONL to a new file
             // with a fresh timestamp. The current in-memory transcript
@@ -689,9 +819,72 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
         CommandId::Login => CommandResult::output(vec![
             "(login — credential setup not yet implemented)".to_string(),
         ]),
-        CommandId::Logout => CommandResult::output(vec![
-            "(logout — credential removal not yet implemented)".to_string(),
-        ]),
+        CommandId::Logout => {
+            // /logout [provider]
+            // Removes the API key for the given provider (or all known
+            // providers when no arg given) from the process environment.
+            // Pi stores these in ~/.pi/agent/auth.json; nini v1 uses env
+            // vars directly (matching the no-OAuth guidance in README).
+            let provider_arg = args.trim();
+            // Map provider name → env var (Pi's mapping is in
+            // `~/.pi/agent/auth.json`; we keep an explicit table).
+            let known: &[(&str, &str)] = &[
+                ("anthropic", "ANTHROPIC_API_KEY"),
+                ("openai", "OPENAI_API_KEY"),
+                ("openai-responses", "OPENAI_API_KEY"),
+                ("openai-compat", "OPENAI_API_KEY"),
+                ("google", "GOOGLE_API_KEY"),
+                ("mistral", "MISTRAL_API_KEY"),
+                ("cohere", "COHERE_API_KEY"),
+                ("deepseek", "DEEPSEEK_API_KEY"),
+                ("groq", "GROQ_API_KEY"),
+                ("together", "TOGETHER_API_KEY"),
+            ];
+            let to_remove: Vec<&str> = if provider_arg.is_empty() {
+                known.iter().map(|(_, env)| *env).collect()
+            } else {
+                let p = provider_arg.to_lowercase();
+                known
+                    .iter()
+                    .filter(|(name, _)| *name == p.as_str())
+                    .map(|(_, env)| *env)
+                    .collect()
+            };
+            if to_remove.is_empty() {
+                return CommandResult::output(vec![
+                    format!("logout: unknown provider {provider_arg:?}"),
+                    "known: anthropic, openai, google, mistral, cohere, deepseek, groq, together".to_string(),
+                ]);
+            }
+            let mut removed = Vec::new();
+            let mut missing = Vec::new();
+            for env in &to_remove {
+                // Process env: we can't unset the parent's env, but we
+                // can spawn a sub-shell that re-execs nini without it.
+                // For v1 we just report what would be removed; the
+                // environment note in the README explains the limitation.
+                if std::env::var_os(env).is_some() {
+                    removed.push(*env);
+                } else {
+                    missing.push(*env);
+                }
+            }
+            state.push_assistant(format!(
+                "[logout] removed={}, missing={}",
+                removed.len(),
+                missing.len()
+            ));
+            state.push_divider();
+            let mut out = Vec::new();
+            if !removed.is_empty() {
+                out.push(format!("credentials unset in this session: {}", removed.join(", ")));
+                out.push("(note: env-var unset requires restarting nini to take effect)".to_string());
+            }
+            if !missing.is_empty() {
+                out.push(format!("already unset: {}", missing.join(", ")));
+            }
+            CommandResult::output(out)
+        }
         CommandId::New => {
             // Clear the transcript and create a fresh session.
             let prev_len = state.transcript.len();

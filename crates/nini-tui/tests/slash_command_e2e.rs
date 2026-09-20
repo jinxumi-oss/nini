@@ -754,3 +754,135 @@ fn clone_command_with_session_duplicates_file() {
         .collect();
     assert_eq!(clones.len(), 1, "expected exactly 1 clone file, got {clones:?}");
 }
+
+// =====================================================================
+// Tests for stage-2 slash commands: /tree, /fork, /logout.
+// =====================================================================
+
+#[test]
+fn tree_command_empty_session_renders_friendly_message() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Tree, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("session tree")),
+                "expected tree header, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn fork_command_no_user_messages_returns_error() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Fork, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("no user messages")),
+                "expected 'no user messages' message, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn fork_command_lists_fork_points_without_index() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    state.push_user("first question".to_string());
+    state.push_assistant("first answer".to_string());
+    state.push_user("second question".to_string());
+    state.push_assistant("second answer".to_string());
+    let r = dispatch(&mut state, &mut settings, CommandId::Fork, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            assert!(joined.contains("2 user messages"), "got: {joined}");
+            assert!(joined.contains("first question"), "got: {joined}");
+            assert!(joined.contains("second question"), "got: {joined}");
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn fork_command_with_invalid_index_returns_error() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    state.push_user("only question".to_string());
+    let r = dispatch(&mut state, &mut settings, CommandId::Fork, "5");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("invalid index")),
+                "expected invalid-index message, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn fork_command_with_valid_index_cuts_transcript() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    state.push_user("first".to_string());
+    state.push_assistant("a1".to_string());
+    state.push_user("second".to_string());
+    state.push_assistant("a2".to_string());
+    state.push_user("third".to_string());
+    state.push_assistant("a3".to_string());
+    let before = state.transcript.len();
+    let r = dispatch(&mut state, &mut settings, CommandId::Fork, "2");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("fork: cut at user msg #2")),
+                "expected cut confirmation, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+    // Transcript grows by 2 (the echo + divider).
+    assert_eq!(state.transcript.len(), before + 2);
+}
+
+#[test]
+fn logout_command_unknown_provider_returns_error() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Logout, "nonexistent-provider");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            assert!(
+                lines.iter().any(|l| l.contains("unknown provider")),
+                "expected unknown-provider error, got: {lines:?}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
+
+#[test]
+fn logout_command_list_format() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Logout, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
+            // Should list credentials status (all unset in test env).
+            assert!(
+                joined.contains("unset") || joined.contains("missing"),
+                "expected unset/missing status, got: {joined}"
+            );
+        }
+        _ => panic!("expected Output"),
+    }
+}
