@@ -1455,8 +1455,11 @@ dependencies = [
 name = "nini-ext"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "libloading",
  "nini-core",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
