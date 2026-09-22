@@ -2,9 +2,9 @@
 
 > A Pi-compatible coding agent, rewritten in Rust.
 
-[![Status](https://img.shields.io/badge/status-v0.4--alpha-yellow)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.5--alpha-yellow)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-528%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-532%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -18,11 +18,11 @@ settings, and models.json keep working.
 - **Single 4.3 MB binary** instead of a Node.js toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **528 unit + integration tests** including property-based SSE fuzz
+- **532 unit + integration tests** including property-based SSE fuzz
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
 
-## Features (v0.4.0)
+## Features (v0.5.0)
 
 | Area | What works |
 |---|---|
@@ -161,7 +161,7 @@ nini reads and writes the same file formats as Pi v0.85.1:
 You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.
 
-## Known limitations (v0.4.0 alpha)
+## Known limitations (v0.5.0 alpha)
 
 These are intentional gaps and will be filled in subsequent releases.
 File an issue if you need any of them sooner.
