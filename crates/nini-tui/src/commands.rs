@@ -1125,7 +1125,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                             (i as u64) + 1,
                             nini_core::AgentMessage::assistant(s.clone()),
                         )),
-                        TranscriptLine::ToolCall { name, args } => {
+                        TranscriptLine::ToolCall { name, args, .. } => {
                             let args_json: serde_json::Value = serde_json::from_str(args)
                                 .unwrap_or_else(|_| serde_json::Value::String(args.clone()));
                             Some(Entry::message(
@@ -1143,7 +1143,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                                 },
                             ))
                         }
-                        TranscriptLine::ToolResult { ok: _, content }
+                        TranscriptLine::ToolResult { ok: _, content, .. }
                         | TranscriptLine::BashExecution {
                             cmd: _,
                             output: content,
@@ -1426,7 +1426,7 @@ fn render_transcript_html(lines: &[TranscriptLine]) -> String {
             TranscriptLine::AssistantText(t) => {
                 out.push_str(&format!("<p class=\"assistant\">{t}</p>\n"));
             }
-            TranscriptLine::ToolCall { name, args } => {
+            TranscriptLine::ToolCall { name, args, .. } => {
                 out.push_str(&format!(
                     "<p class=\"tool\">[tool call] {name} {args}</p>\n"
                 ));
@@ -1442,7 +1442,7 @@ fn render_transcript_html(lines: &[TranscriptLine]) -> String {
                     exit_code.map(|c| format!(" exit={c}")).unwrap_or_default(),
                 ));
             }
-            TranscriptLine::ToolResult { ok, content } => {
+            TranscriptLine::ToolResult { ok, content, .. } => {
                 let cls = "tool";
                 let label = if *ok { "tool result" } else { "tool error" };
                 out.push_str(&format!("<p class=\"{cls}\">[{label}] {content}</p>\n"));

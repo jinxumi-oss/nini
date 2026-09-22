@@ -170,6 +170,11 @@ pub enum KeyAction {
     /// Scroll conversation up/down.
     ScrollUp,
     ScrollDown,
+    /// Toggle collapsed/expanded state on the focused transcript line.
+    /// Default binding: Ctrl+O. Operates on the line at the current
+    /// scroll offset (so the line currently visible at the top of the
+    /// transcript pane toggles).
+    ToggleCollapse,
     /// Unhandled (no binding matched).
     Noop,
 }
@@ -239,6 +244,11 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         KeyBinding {
             key: Key::new(KeyCode::F(1), KeyModifiers::NONE),
             action: ShowHelp,
+        },
+        // Toggle collapsed/expanded on focused transcript line (Ctrl+O)
+        KeyBinding {
+            key: Key::new(KeyCode::Char('o'), ctrl),
+            action: ToggleCollapse,
         },
         // Cursor motion
         KeyBinding {
@@ -416,6 +426,18 @@ mod tests {
     }
 
     #[test]
+
+    #[test]
+    fn ctrl_o_binds_to_toggle_collapse() {
+        use crate::keys::Key as K;
+        let km = default_keymap();
+        // Ctrl+O should map to ToggleCollapse.
+        let k = K::new(KeyCode::Char('o'), KeyModifiers::CTRL);
+        assert_eq!(resolve(&km, k), KeyAction::ToggleCollapse);
+        // Plain 'o' (no Ctrl) should still insert, not toggle.
+        assert_eq!(resolve(&km, K::char('o')), KeyAction::Insert('o'));
+    }
+
     fn arrow_keys_move() {
         let km = default_keymap();
         assert_eq!(

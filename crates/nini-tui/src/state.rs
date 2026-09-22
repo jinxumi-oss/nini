@@ -22,11 +22,17 @@ pub enum TranscriptLine {
     ToolCall {
         name: String,
         args: String,
+        /// When true the rendered preview is collapsed to a single line and
+        /// the full args are hidden until the user toggles via Ctrl+O.
+        collapsed: bool,
     },
     /// Tool result. `Ok`/`Err` reflects `ToolOutput.is_error`.
     ToolResult {
         ok: bool,
         content: String,
+        /// When true the body of the result is hidden — only a one-line
+        /// summary is shown. Ctrl+O toggles.
+        collapsed: bool,
     },
     /// System-injected divider (turn boundary).
     Divider,
@@ -39,6 +45,9 @@ pub enum TranscriptLine {
         ok: bool,
         exit_code: Option<i32>,
         duration_ms: u64,
+        /// When true the multi-line output is hidden behind a header
+        /// summary. Ctrl+O toggles.
+        collapsed: bool,
     },
 }
 
@@ -817,6 +826,7 @@ impl AppState {
         self.transcript.push(TranscriptLine::ToolCall {
             name: name.into(),
             args: args.into(),
+            collapsed: false,
         });
     }
 
@@ -831,6 +841,7 @@ impl AppState {
         self.transcript.push(TranscriptLine::ToolResult {
             ok,
             content: content.into(),
+            collapsed: false,
         });
     }
 
@@ -840,6 +851,44 @@ impl AppState {
 
     pub fn transcript_len(&self) -> usize {
         self.transcript.len()
+    }
+
+    /// Toggle the `collapsed` flag on the transcript line at `index` if
+    /// that line is collapsible (ToolCall / ToolResult / BashExecution).
+    /// Returns true if the toggle changed the line's state.
+    pub fn toggle_collapsed(&mut self, index: usize) -> bool {
+        if let Some(line) = self.transcript.get_mut(index) {
+            match line {
+                TranscriptLine::ToolCall { collapsed, .. }
+                | TranscriptLine::ToolResult { collapsed, .. }
+                | TranscriptLine::BashExecution { collapsed, .. } => {
+                    *collapsed = !*collapsed;
+                    true
+                }
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Collapse every collapsible line in the transcript. Used by
+    /// `/compact-output` (future slash) or `:fold-all` (future keystroke).
+    /// Returns the number of lines collapsed.
+    pub fn collapse_all(&mut self) -> usize {
+        let mut n = 0;
+        for line in self.transcript.iter_mut() {
+            if let TranscriptLine::ToolCall { collapsed, .. }
+            | TranscriptLine::ToolResult { collapsed, .. }
+            | TranscriptLine::BashExecution { collapsed, .. } = line
+            {
+                if !*collapsed {
+                    *collapsed = true;
+                    n += 1;
+                }
+            }
+        }
+        n
     }
 
     /// Update the completion popup from the current input. Hides if no
@@ -1096,5 +1145,113 @@ mod tests {
         s.push_tool_result(true, "ok");
         s.push_divider();
         assert_eq!(s.transcript_len(), 5);
+    }
+
+    #[test]
+    fn toggle_collapsed_flips_tool_call_state() {
+        let mut s = AppState::new("test");
+        s.push_tool_call("bash", "{}");
+        // ToolCall index is 0.
+        assert!(s.toggle_collapsed(0));
+        // Verify the line is now collapsed by re-pushing another line
+        // and reading back the transcript — collapsed flag persists.
+        s.push_divider();
+        match &s.transcript[0] {
+            TranscriptLine::ToolCall { collapsed, .. } => assert!(*collapsed),
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+        // Toggle back to expanded.
+        assert!(s.toggle_collapsed(0));
+        match &s.transcript[0] {
+            TranscriptLine::ToolCall { collapsed, .. } => assert!(!(*collapsed)),
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn toggle_collapsed_flips_tool_result_and_bash() {
+        let mut s = AppState::new("test");
+        s.push_tool_result(true, "ok");
+        s.push_tool_call("read", "{}");
+        // Append a bash via the underlying TranscriptLine constructor
+        // since we don't have a public push_bash helper yet.
+        s.transcript.push(TranscriptLine::BashExecution {
+            id: "b1".to_string(),
+            cmd: "ls".to_string(),
+            output: "file1\nfile2".to_string(),
+            ok: true,
+            exit_code: Some(0),
+            duration_ms: 5,
+            collapsed: false,
+        });
+        // Indexes: 0=ToolResult, 1=ToolCall, 2=BashExecution.
+        assert!(s.toggle_collapsed(0));
+        assert!(s.toggle_collapsed(1));
+        assert!(s.toggle_collapsed(2));
+        match &s.transcript[0] {
+            TranscriptLine::ToolResult { collapsed, .. } => assert!(*collapsed),
+            _ => panic!(),
+        }
+        match &s.transcript[1] {
+            TranscriptLine::ToolCall { collapsed, .. } => assert!(*collapsed),
+            _ => panic!(),
+        }
+        match &s.transcript[2] {
+            TranscriptLine::BashExecution { collapsed, .. } => assert!(*collapsed),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn toggle_collapsed_returns_false_on_user_or_assistant_line() {
+        let mut s = AppState::new("test");
+        s.push_user("hi");
+        s.push_assistant("hello");
+        // Neither user nor assistant lines are collapsible.
+        assert!(!s.toggle_collapsed(0));
+        assert!(!s.toggle_collapsed(1));
+    }
+
+    #[test]
+    fn toggle_collapsed_returns_false_on_out_of_bounds() {
+        let mut s = AppState::new("test");
+        s.push_tool_call("bash", "{}");
+        assert!(!s.toggle_collapsed(99));
+    }
+
+    #[test]
+    fn collapse_all_folds_every_collapsible_line() {
+        let mut s = AppState::new("test");
+        s.push_tool_call("bash", "{}");
+        s.push_tool_result(true, "ok");
+        s.push_divider();
+        s.push_user("hi");
+        s.push_assistant("hello");
+        // Index 5: a bash via direct TranscriptLine.
+        s.transcript.push(TranscriptLine::BashExecution {
+            id: "b2".to_string(),
+            cmd: "ls".to_string(),
+            output: "out".to_string(),
+            ok: true,
+            exit_code: Some(0),
+            duration_ms: 1,
+            collapsed: false,
+        });
+        let folded = s.collapse_all();
+        // 3 collapsible lines were folded.
+        assert_eq!(folded, 3);
+        // After collapse_all, all collapsibles are collapsed.
+        for (i, line) in s.transcript.iter().enumerate() {
+            match line {
+                TranscriptLine::ToolCall { collapsed, .. }
+                | TranscriptLine::ToolResult { collapsed, .. }
+                | TranscriptLine::BashExecution { collapsed, .. } => {
+                    assert!(*collapsed, "index {i} should be collapsed");
+                }
+                _ => {}
+            }
+        }
+        // Calling collapse_all again folds zero new lines.
+        assert_eq!(s.collapse_all(), 0);
     }
 }

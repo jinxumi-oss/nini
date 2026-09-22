@@ -517,3 +517,13 @@ mod diff_render_tests {
         assert!(lines.is_empty());
     }
 }
+
+
+/// Render a dim "[Ctrl+O to expand]" hint shown under a collapsed
+/// tool-output / tool-call / bash-execution block.
+pub fn render_collapsed_hint(theme: &Theme) -> RLine<'static> {
+    RLine::from(Span::styled(
+        "    ▸ Ctrl+O to expand",
+        theme.fg_style("dim"),
+    ))
+}

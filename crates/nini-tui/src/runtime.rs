@@ -862,6 +862,26 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             state.scroll_offset = (state.scroll_offset + step).min(max_offset);
             state.autoscroll = false;
         }
+        KeyAction::ToggleCollapse => {
+            // Toggle collapsed on the most-recent collapsible transcript
+            // line. The user can scroll first (PageUp/PageDown) to put a
+            // specific line at the top, then press Ctrl+O; for the
+            // common "fold the last tool output" use-case, scrolling is
+            // unnecessary because we default to the tail.
+            let total = state.transcript_len();
+            if total > 0 {
+                let mut idx = total - 1;
+                loop {
+                    if state.toggle_collapsed(idx) {
+                        break;
+                    }
+                    if idx == 0 {
+                        break;
+                    }
+                    idx -= 1;
+                }
+            }
+        }
         KeyAction::ScrollDown => {
             let step = 10usize;
             if state.scroll_offset <= step {
@@ -913,6 +933,7 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
                     ok: result.ok,
                     exit_code: result.exit_code,
                     duration_ms: result.duration_ms,
+                    collapsed: false,
                 });
                 g.push_divider();
                 // For `!cmd`, also inject the output as a ToolResult so the agent
@@ -1228,6 +1249,11 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::CycleModelPrev => cycle_model(state, -1),
         KeyAction::CycleThinkingNext => cycle_thinking(state, 1),
         KeyAction::CycleThinkingPrev => cycle_thinking(state, -1),
+        KeyAction::ToggleCollapse => {
+            // No-op: the primary handler at the top of the loop already
+            // performed the toggle. This branch exists so the second
+            // key-dispatch site (for event-bus integration) is exhaustive.
+        }
         KeyAction::AcceptCompletionOrInsertTab => {}
         KeyAction::Noop => {}
     }

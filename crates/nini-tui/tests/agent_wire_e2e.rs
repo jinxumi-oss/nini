@@ -326,7 +326,7 @@ async fn tool_call_args_are_updated_on_stop() {
     });
 
     let snap2 = shared.lock().unwrap().clone();
-    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, name }) = snap2.transcript.last()
+    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, name, .. }) = snap2.transcript.last()
     {
         assert_eq!(name, "bash");
         assert_eq!(args, r#"{"command":"ls"}"#);

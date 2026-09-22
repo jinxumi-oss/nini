@@ -296,13 +296,35 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 .into_iter()
                 .map(ListItem::new)
                 .collect(),
-            TranscriptLine::ToolCall { name, args } => {
+            TranscriptLine::ToolCall { name, args, collapsed } => {
                 let lines = render_tool_call(name, args, theme);
-                lines.into_iter().map(ListItem::new).collect()
+                let mut out: Vec<ListItem> = lines
+                    .into_iter()
+                    .map(ListItem::new)
+                    .collect();
+                if *collapsed {
+                    // Drop everything but the header line, then append the
+                    // expand hint.
+                    if !out.is_empty() {
+                        out.truncate(1);
+                    }
+                    out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
+                }
+                out
             }
-            TranscriptLine::ToolResult { ok, content } => {
+            TranscriptLine::ToolResult { ok, content, collapsed } => {
                 let lines = render_tool_result(*ok, content, theme);
-                lines.into_iter().map(ListItem::new).collect()
+                let mut out: Vec<ListItem> = lines
+                    .into_iter()
+                    .map(ListItem::new)
+                    .collect();
+                if *collapsed {
+                    if !out.is_empty() {
+                        out.truncate(1);
+                    }
+                    out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
+                }
+                out
             }
             TranscriptLine::Divider => vec![ListItem::new(render_divider(theme))],
             TranscriptLine::BashExecution {
@@ -311,6 +333,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 ok,
                 exit_code,
                 duration_ms,
+                collapsed,
                 ..
             } => {
                 let lines = render_bash_execution(
@@ -321,7 +344,17 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                     *duration_ms,
                     theme,
                 );
-                lines.into_iter().map(ListItem::new).collect()
+                let mut out: Vec<ListItem> = lines
+                    .into_iter()
+                    .map(ListItem::new)
+                    .collect();
+                if *collapsed {
+                    if !out.is_empty() {
+                        out.truncate(1);
+                    }
+                    out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
+                }
+                out
             }
         };
         items.extend(new_items);
