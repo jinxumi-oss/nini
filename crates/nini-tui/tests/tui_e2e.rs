@@ -770,11 +770,17 @@ fn markdown_in_assistant_text_renders() {
         .map(|sp| sp.content.as_ref())
         .collect();
     assert!(first.starts_with("# "));
-    let second: String = lines[1]
-        .spans
+    // Paragraph break emits a blank line, then the bullet.
+    let second: String = lines
         .iter()
-        .map(|sp| sp.content.as_ref())
-        .collect();
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("|");
     assert!(second.contains("• item 1"));
 }
 
