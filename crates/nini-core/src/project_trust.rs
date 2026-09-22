@@ -8,6 +8,7 @@ pub enum TrustLevel {
     Ask,
     Trusted,
     Distrusted,
+    Never,
 }
 
 impl Default for TrustLevel {
@@ -23,6 +24,9 @@ impl TrustDecision {
     pub const Trusted: Self = Self { level: TrustLevel::Trusted };
     pub const Distrusted: Self = Self { level: TrustLevel::Distrusted };
     pub const Ask: Self = Self { level: TrustLevel::Ask };
+    pub const Never: Self = Self { level: TrustLevel::Never };
+
+    pub fn new(level: TrustLevel) -> Self { Self { level } }
 }
 
 #[derive(Default)]

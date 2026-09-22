@@ -25,6 +25,7 @@ pub enum SessionError {
 
 use chrono::{DateTime, Utc};
 pub use nini_core::SessionEntry;
+pub use nini_core::entries::AgentMessage;
 use nini_core::CoreError;
 use nini_core::SessionEntry as _SE;
 use serde::{Deserialize, Serialize};

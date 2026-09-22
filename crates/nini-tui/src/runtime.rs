@@ -616,7 +616,7 @@ fn apply_selector_result(
         // Apply the toggle/cycle. The settings manager inside the selector
         // persists to disk via its internal mechanism.
         let new_model = settings_sel.apply(0).map(|_| settings_sel.settings.model_name());
-        new_model.flatten()
+        new_model.and_then(|s| if s.is_empty() { None } else { Some(s) })
     } else {
         None
     }

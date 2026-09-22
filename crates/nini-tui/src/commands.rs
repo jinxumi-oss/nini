@@ -897,6 +897,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                     TrustDecision::Trusted => "trusted",
                     TrustDecision::Distrusted => "distrusted",
                     TrustDecision::Ask => "ask each time",
+                    TrustDecision::Never => "never",
                 };
                 out.push(format!("cwd: {cwd}"));
                 out.push(format!("decision: {label}"));
@@ -910,6 +911,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                             TrustDecision::Trusted => "trusted",
                             TrustDecision::Distrusted => "distrusted",
                             TrustDecision::Ask => "ask",
+                            TrustDecision::Never => "never",
                         };
                         out.push(format!("  current: {label}"));
                     }
