@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod branch_summary;
 pub mod agent;
 
 pub mod entries;
@@ -61,6 +62,23 @@ pub struct Entry {
     pub custom_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+}
+
+impl Default for Entry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
+            entry_type: LegacyEntryType::Message,
+            message: None,
+            summary: None,
+            from_id: None,
+            custom_type: None,
+            data: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
