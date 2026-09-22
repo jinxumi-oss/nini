@@ -1054,6 +1054,22 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
             g.push_divider();
         }
 
+        // ── Auto-compaction trigger ───────────────────────────────────────
+        // Before dispatching the user message, check whether the transcript
+        // is over budget. If so, fold the older half into a deterministic
+        // summary. This is the local-heuristic fallback path; when an
+        // LLM provider is wired in (via the agent driver), the driver
+        // also calls `should_auto_compact` and produces an LLM summary
+        // before the model request, so this serves as the offline
+        // default.
+        if g.should_auto_compact(&g.settings_snapshot) {
+            let folded = g.auto_compact_local();
+            g.push_assistant(format!(
+                "[auto-compact] folded {folded} entries before next turn"
+            ));
+            g.push_divider();
+        }
+
         g.push_user(text.clone());
         g.push_divider();
         g.mode = RunMode::Running;

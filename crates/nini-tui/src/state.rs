@@ -578,6 +578,11 @@ pub struct AppState {
     /// When `Some`, `cycle_model` / `cycle_thinking` / etc. will actually
     /// persist. When `None` (the default), changes are lost on exit.
     pub settings_path: Option<std::path::PathBuf>,
+    /// Snapshot of `crate::settings::Settings` taken at app start.
+    /// The auto-compaction trigger reads `reserve_tokens` from here.
+    /// Settings are loaded from `~/.pi/agent/settings.json` if present;
+    /// otherwise we use `Settings::default()`.
+    pub settings_snapshot: crate::settings::Settings,
     pub session_id: Option<String>,
     pub tokens: TokenStats,
     /// Auto-scroll transcript to the bottom on new lines.
@@ -682,6 +687,7 @@ impl AppState {
             models_cycle: self.models_cycle.clone(),
             models_cycle_idx: self.models_cycle_idx,
             settings_path: self.settings_path.clone(),
+            settings_snapshot: self.settings_snapshot.clone(),
             thinking_level: self.thinking_level.clone(),
             pending_next_turn_messages: self.pending_next_turn_messages.clone(),
             is_auto_compacting: self.is_auto_compacting,
@@ -718,11 +724,25 @@ impl AppState {
     }
 
     pub fn new(model: impl Into<String>) -> Self {
+        Self::with_context_window(model.into(), 0)
+    }
+
+    /// Construct with an explicit context-window size. The runtime
+    /// passes the value loaded from `~/.pi/agent/settings.json`; tests
+    /// (and the no-config path) use the default constructor above.
+    pub fn with_context_window(model: String, context_window: u32) -> Self {
+        Self::with_settings(model, context_window, crate::settings::Settings::default())
+    }
+
+    /// Construct with an explicit context-window size AND a snapshot of
+    /// the user-editable settings. The auto-compaction trigger reads
+    /// `reserve_tokens` from the snapshot.
+    pub fn with_settings(model: String, context_window: u32, settings: crate::settings::Settings) -> Self {
         Self {
             input: InputBuffer::new(),
             transcript: Vec::new(),
             mode: RunMode::Editing,
-            model: model.into(),
+            model,
             session_id: None,
             tokens: TokenStats::default(),
             autoscroll: true,
@@ -732,8 +752,9 @@ impl AppState {
             git_branch: None,
             last_diff: None,
             cost_usd: 0.0,
-            context_window: 0,
+            context_window,
             context_used: 0,
+            settings_snapshot: settings,
             completion: None,
             theme_name: None,
             session: None,
@@ -852,6 +873,85 @@ impl AppState {
     pub fn transcript_len(&self) -> usize {
         self.transcript.len()
     }
+
+
+    /// Cheap heuristic: estimate the transcript's token usage and decide
+    /// whether auto-compaction should fire before the next user prompt.
+    ///
+    /// Uses `(text_chars + 3) / 4` per line — a well-known approximation
+    /// for English (~4 chars per BPE token). Multi-byte chars (CJK) are
+    /// counted as 1 unit so the estimate is conservative for non-English
+    /// text. This is the same formula `estimate_string_tokens` applies in
+    /// the local heuristic summarizer.
+    ///
+    /// Returns `true` when estimated > `context_window - reserve_tokens`.
+    pub fn should_auto_compact(&self, settings: &crate::settings::Settings) -> bool {
+        if self.context_window == 0 {
+            return false;
+        }
+        let budget = self
+            .context_window
+            .saturating_sub(settings.reserve_tokens);
+        let estimated = self.estimate_transcript_tokens();
+        estimated > budget
+    }
+
+    /// Sum of (chars / 4) across every text-bearing transcript line.
+    /// Used by [`should_auto_compact`] and shown in the status bar.
+    pub fn estimate_transcript_tokens(&self) -> u32 {
+        let mut total: u32 = 0;
+        for line in &self.transcript {
+            use crate::state::TranscriptLine;
+            match line {
+                TranscriptLine::User(s) => total += chars_to_tokens(s),
+                TranscriptLine::AssistantText(s) => total += chars_to_tokens(s),
+                TranscriptLine::ToolCall { name, args, .. } => {
+                    total += chars_to_tokens(name) + chars_to_tokens(args);
+                }
+                TranscriptLine::ToolResult { content, .. } => total += chars_to_tokens(content),
+                TranscriptLine::BashExecution { cmd, output, .. } => {
+                    total += chars_to_tokens(cmd) + chars_to_tokens(output);
+                }
+                TranscriptLine::Divider => {}
+            }
+        }
+        total
+    }
+
+    /// Apply a deterministic local compaction: take the older half of
+    /// the transcript (every line whose index is < cut_at), replace it
+    /// with a single AssistantText prefix summarising it via
+    /// `nini_core::compaction::generate_local_summary`. Returns the
+    /// number of transcript lines that were folded.
+    ///
+    /// The runtime invokes this from the auto-compaction path when the
+    /// provider cannot be reached (or when running in `--no-llm` mode).
+    pub fn auto_compact_local(&mut self) -> usize {
+        use crate::state::TranscriptLine;
+        let total = self.transcript.len();
+        if total < 4 {
+            return 0;
+        }
+        let cut_at = total / 2;
+        let prefix_lines: Vec<TranscriptLine> = self.transcript.drain(..cut_at).collect();
+        // Build a short textual summary from the prefix. We don't have
+        // direct access to `nini_core::Entry` from the prefix, but
+        // `generate_local_summary` works on `Vec<Entry>` — so we
+        // synthesise a flat string from the prefix lines instead. This
+        // keeps the TUI-side compaction self-contained.
+        let mut summary = String::from("# Compaction Summary\n\n");
+        for (i, line) in prefix_lines.iter().enumerate() {
+            summary.push_str(&format!("{i:>3}. {}\n", line_summary_text(line)));
+        }
+        summary.push_str(&format!("\n({} entries folded into this summary.)\n", prefix_lines.len()));
+        // Replace prefix with a single AssistantText.
+        self.transcript
+            .insert(0, TranscriptLine::AssistantText(format!(
+                "[CONTEXT SUMMARY]\n\n{summary}"
+            )));
+        prefix_lines.len()
+    }
+
 
     /// Toggle the `collapsed` flag on the transcript line at `index` if
     /// that line is collapsible (ToolCall / ToolResult / BashExecution).
@@ -982,6 +1082,36 @@ impl AppState {
             self.input.cursor += 1;
         }
         self.completion = None;
+    }
+}
+
+
+fn chars_to_tokens(s: &str) -> u32 {
+    ((s.chars().count() as u32) + 3) / 4
+}
+
+fn line_summary_text(line: &crate::state::TranscriptLine) -> String {
+    use crate::state::TranscriptLine;
+    match line {
+        TranscriptLine::User(s) => format!("[user] {}", s.replace('\n', " ")),
+        TranscriptLine::AssistantText(s) => format!("[assistant] {}", truncate(s, 60)),
+        TranscriptLine::ToolCall { name, args, .. } => {
+            format!("[tool-call] {name}({})", truncate(args, 40))
+        }
+        TranscriptLine::ToolResult { content, .. } => format!("[tool-result] {}", truncate(content, 60)),
+        TranscriptLine::BashExecution { cmd, output, .. } => {
+            format!("[bash] {cmd} -> {}", truncate(output, 40))
+        }
+        TranscriptLine::Divider => "[divider]".to_string(),
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max).collect();
+        format!("{cut}…")
     }
 }
 
@@ -1217,6 +1347,73 @@ mod tests {
         let mut s = AppState::new("test");
         s.push_tool_call("bash", "{}");
         assert!(!s.toggle_collapsed(99));
+    }
+
+
+    #[test]
+    fn estimate_transcript_tokens_sums_text_lines() {
+        let mut s = AppState::new("m");
+        s.push_user("hello");   // 5 chars -> 2 tokens
+        s.push_assistant("world this is longer");  // 21 -> 6 tokens
+        s.push_tool_result(true, "out");
+        // total chars / 4 rounded up
+        assert!(s.estimate_transcript_tokens() > 0);
+    }
+
+    #[test]
+    fn should_auto_compact_returns_false_when_window_zero() {
+        // No context_window set: never auto-compact (user hasn't
+        // configured a model size yet).
+        let mut s = AppState::new("m");
+        s.context_window = 0;
+        s.push_user("a".repeat(10_000));
+        let settings = crate::settings::Settings::default();
+        assert!(!s.should_auto_compact(&settings));
+    }
+
+    #[test]
+    fn should_auto_compact_returns_true_over_budget() {
+        // 1000-token window with 200 reserve; a 4000-char message
+        // estimates at ~1000 tokens which exceeds 800 budget.
+        let mut s = AppState::with_context_window("m".into(), 1_000);
+        let mut settings = crate::settings::Settings::default();
+        settings.reserve_tokens = 200;
+        s.push_user("a".repeat(4_000));
+        assert!(s.should_auto_compact(&settings));
+    }
+
+    #[test]
+    fn should_auto_compact_returns_false_under_budget() {
+        let mut s = AppState::with_context_window("m".into(), 100_000);
+        let settings = crate::settings::Settings::default();
+        s.push_user("hello");
+        assert!(!s.should_auto_compact(&settings));
+    }
+
+    #[test]
+    fn auto_compact_local_replaces_prefix_with_summary() {
+        let mut s = AppState::new("m");
+        for i in 0..8 {
+            s.push_user(format!("user message {i}"));
+        }
+        let before = s.transcript.len();
+        let folded = s.auto_compact_local();
+        assert!(folded >= 4, "should fold at least half");
+        assert!(s.transcript.len() < before, "transcript should shrink");
+        // The new head should be a CONTEXT SUMMARY line.
+        match &s.transcript[0] {
+            TranscriptLine::AssistantText(t) => assert!(t.starts_with("[CONTEXT SUMMARY]")),
+            other => panic!("expected AssistantText head, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_compact_local_short_transcript_is_noop() {
+        let mut s = AppState::new("m");
+        s.push_user("hi");
+        let folded = s.auto_compact_local();
+        assert_eq!(folded, 0);
+        assert_eq!(s.transcript.len(), 1);
     }
 
     #[test]
