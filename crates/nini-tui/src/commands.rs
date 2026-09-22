@@ -1253,16 +1253,54 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 )]);
             }
 
-            // No arg or non-numeric: list sessions.
+            // No arg or non-numeric: list sessions, with optional fuzzy
+            // filter via the args (e.g., /resume claude shows only sessions
+            // whose filename contains "claude").
+            let filter = args.trim();
+            let filter_lower = filter.to_lowercase();
             let mut lines = Vec::new();
-            lines.push(format!("{} session(s) available:", entries.len()));
+            lines.push(format!(
+                "{} session(s) available:",
+                if filter.is_empty() {
+                    entries.len().to_string()
+                } else {
+                    format!("{} (filter: \"{}\")", entries.len(), filter)
+                }
+            ));
+            let mut displayed = 0usize;
             for (i, entry) in entries.iter().enumerate() {
                 let path = entry.path();
                 let name = path
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                lines.push(format!("  {}: {}", i + 1, name));
+                if !filter.is_empty() && !name.to_lowercase().contains(&filter_lower) {
+                    continue;
+                }
+                displayed += 1;
+                // Optional: surface file mtime + size for easy scanning.
+                let meta = entry
+                    .metadata()
+                    .ok()
+                    .map(|m| {
+                        let size = m.len();
+                        let modified = m
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| {
+                                chrono::DateTime::<chrono::Utc>::from_timestamp(d.as_secs() as i64, 0)
+                                    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                                    .unwrap_or_default()
+                            })
+                            .unwrap_or_default();
+                        format!("  [{} bytes{}]", size, if modified.is_empty() { String::new() } else { format!(", {}", modified) })
+                    })
+                    .unwrap_or_default();
+                lines.push(format!("  {}: {}{}", i + 1, name, meta));
+            }
+            if displayed == 0 && !filter.is_empty() {
+                lines.push(format!("(no sessions matching \"{}\")", filter));
             }
             lines.push("Type /resume <number> to load.".to_string());
             CommandResult::output(lines)

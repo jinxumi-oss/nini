@@ -5,6 +5,10 @@
 //! the rendered frame reflects the result.
 
 use nini_tui::commands::{CommandId, CommandOutcome, REGISTRY, complete, dispatch, parse};
+// Mutex serializing tests that mutate the HOME environment variable to
+// avoid cross-test interference when cargo runs tests in parallel.
+static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use nini_tui::render::render_frame;
 use nini_tui::settings::SettingsManager;
 use nini_tui::state::{AppState, RunMode, TranscriptLine};
@@ -1062,7 +1066,8 @@ fn prompt_command_unknown_template_lists_available() {
     )
     .unwrap();
 
-    let orig_cwd = std::env::current_dir().ok();
+    let _home_guard = HOME_LOCK.lock().unwrap();
+        let orig_cwd = std::env::current_dir().ok();
     std::env::set_current_dir(tmp.path()).unwrap();
     let r = dispatch(&mut state, &mut settings, CommandId::Prompt, "missing");
     if let Some(orig) = orig_cwd {
@@ -1095,7 +1100,8 @@ fn prompt_command_renders_substituted_template() {
     let mut f = std::fs::File::create(prompts_dir.join("greet.md")).unwrap();
     writeln!(f, "---\ndescription: Greet the user\n---\nHello $1").unwrap();
 
-    let orig_cwd = std::env::current_dir().ok();
+    let _home_guard = HOME_LOCK.lock().unwrap();
+        let orig_cwd = std::env::current_dir().ok();
     std::env::set_current_dir(tmp.path()).unwrap();
     let r = dispatch(
         &mut state,
@@ -1135,7 +1141,8 @@ fn prompt_command_quoted_args_preserve_whitespace() {
     let mut f = std::fs::File::create(prompts_dir.join("greet.md")).unwrap();
     writeln!(f, "---\ndescription: Greet user\n---\nHello $1").unwrap();
 
-    let orig_cwd = std::env::current_dir().ok();
+    let _home_guard = HOME_LOCK.lock().unwrap();
+        let orig_cwd = std::env::current_dir().ok();
     std::env::set_current_dir(tmp.path()).unwrap();
     let r = dispatch(
         &mut state,
