@@ -25,3 +25,10 @@ Thumbs.db
 # references/ excludes — we only ship our pure spec extract, not upstream clone
 references/pi-upstream/
 references/pi-upstream.git/
+
+# Secrets — never commit these even by accident
+.env
+.env.*
+*.pem
+*.key
+secrets/
