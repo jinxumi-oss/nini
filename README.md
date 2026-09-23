@@ -102,9 +102,11 @@ hints. Type `/` to summon the slash-command autocomplete. Press
 | `Shift+Enter` | Newline (multi-line input) |
 | `Esc` | Abort running / clear input / dismiss popup |
 | `Ctrl+C` | Abort current operation |
-| `Ctrl+D` | Quit nini |
+| `Ctrl+D` | Quit nini (double-tap within 3s) |
 | `Ctrl+L` | Switch model |
-| `F1` | Help |
+| `Ctrl+F` | Open transcript search |
+| `Ctrl+Shift+K` | Open command palette |
+| `F1` | Toggle short / extended footer |
 | `Ctrl+A` / `Ctrl+E` | Beginning / end of line |
 | `Ctrl+K` | Kill to end of line |
 | `Ctrl+U` | Clear input |
