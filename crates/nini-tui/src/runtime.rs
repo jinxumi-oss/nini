@@ -760,8 +760,39 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
 
     match action {
         KeyAction::Insert(c) => {
+            // F019: search-mode special keys (n/N) jump matches.
+            if state.search.is_some() {
+                if c == 'n' {
+                    state.search_next();
+                    return;
+                } else if c == 'N' {
+                    state.search_prev();
+                    return;
+                }
+                // Otherwise treat as query char.
+                if let Some(search) = state.search.as_mut() {
+                    search.query.push(c);
+                }
+                let q = state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
+                state.update_search_query(q);
+                return;
+            }
             if state.mode == RunMode::Editing {
                 state.input.insert_char(c);
+                state.refresh_completion();
+            }
+        }
+        KeyAction::OpenSearch => {
+            // F019: open search when input is empty AND no popup is up;
+            // otherwise insert literal `/` so the user can still type
+            // a slash command.
+            if state.mode == RunMode::Editing
+                && state.completion.is_none()
+                && state.input.text.is_empty()
+            {
+                state.begin_search();
+            } else if state.mode == RunMode::Editing {
+                state.input.insert_char('/');
                 state.refresh_completion();
             }
         }
@@ -804,6 +835,16 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             }
         }
         KeyAction::Backspace => {
+            // F019: search-mode backspace mutates the query, not the
+            // input buffer.
+            if state.search.is_some() {
+                if let Some(search) = state.search.as_mut() {
+                    search.query.pop();
+                }
+                let q = state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
+                state.update_search_query(q);
+                return;
+            }
             state.input.backspace();
             state.refresh_completion();
         }
@@ -928,6 +969,10 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         KeyAction::Abort => {
             if state.completion.is_some() {
                 state.completion = None;
+            } else if state.search.is_some() {
+                // Esc exits transcript search (F019).
+                state.end_search();
+                state.status = "ready".to_string();
             } else if state.pending_quit.is_some() {
                 // Esc cancels the pending Ctrl+D quit confirmation.
                 state.pending_quit = None;
@@ -1278,6 +1323,18 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                 state.refresh_completion();
             }
         }
+        KeyAction::OpenSearch => {
+            // Test path mirrors the runtime path.
+            if state.mode == RunMode::Editing
+                && state.completion.is_none()
+                && state.input.text.is_empty()
+            {
+                state.begin_search();
+            } else if state.mode == RunMode::Editing {
+                state.input.insert_char('/');
+                state.refresh_completion();
+            }
+        }
         KeyAction::PasteImage => {
             // Try to read an image from the system clipboard. If found,
             // insert its `[pasted image: <path>]` description into the
@@ -1317,6 +1374,16 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             }
         }
         KeyAction::Backspace => {
+            // F019: search-mode backspace mutates the query, not the
+            // input buffer.
+            if state.search.is_some() {
+                if let Some(search) = state.search.as_mut() {
+                    search.query.pop();
+                }
+                let q = state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
+                state.update_search_query(q);
+                return;
+            }
             state.input.backspace();
             state.refresh_completion();
         }

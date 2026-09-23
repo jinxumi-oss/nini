@@ -62,6 +62,14 @@ impl TranscriptLine {
             _ => None,
         }
     }
+
+    /// Compact one-line summary suitable for transcript search (F019)
+    /// and search UI. Includes a `[type]` prefix so users searching
+    /// for things like 'tool-call' or 'user' can find them without
+    /// needing to know the underlying structure.
+    pub fn summary_text(&self) -> String {
+        line_summary_text_impl(self)
+    }
 }
 
 /// Editable prompt buffer with cursor.
@@ -246,9 +254,9 @@ impl InputBuffer {
         let killed = self.text[self.cursor..].to_string();
         if !killed.is_empty() {
             self.push_kill(killed);
+            self.push_undo_snapshot();
         }
         self.text.truncate(self.cursor);
-        self.push_undo_snapshot();
     }
 
     pub fn kill_word_backward(&mut self) {
@@ -261,10 +269,10 @@ impl InputBuffer {
         let killed = self.text[prev..self.cursor].to_string();
         if !killed.is_empty() {
             self.push_kill(killed);
+            self.push_undo_snapshot();
         }
         self.text.replace_range(prev..self.cursor, "");
         self.cursor = prev;
-        self.push_undo_snapshot();
     }
 
     /// Kill forward (Alt+d) — same as kill_word_backward but going right.
@@ -690,6 +698,10 @@ pub struct AppState {
     /// Set by F1 to signal that the help selector should close on the
     /// next loop iteration (avoids the user having to press Esc).
     pub close_help: bool,
+    /// Transcript search state. `Some` when the user has invoked `/`
+    /// in normal (non-popup) editing mode; the runtime highlights all
+    /// matches and supports n/N to jump between them.
+    pub search: Option<SearchState>,
     /// Active selector panel (TreeSelector / SessionSelector / etc.).
     /// When `Some`, the runtime emits selector UI events on top of the
     /// transcript. Mirrors pi's selector stack.
@@ -718,6 +730,21 @@ pub struct AppState {
     pub session: Option<Arc<Mutex<nini_session::Session>>>,
     /// Path to the session file on disk. Used for atomic write.
     pub session_path: Option<PathBuf>,
+}
+
+/// Transcript full-text search.
+///
+/// Invoked by pressing `/` while no slash-command popup is showing.
+/// `matches` holds transcript line indices in match order; `current`
+/// is the user's cursor into that vec (used by `n`/`N` jumps).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchState {
+    /// The user's query (no leading `/`).
+    pub query: String,
+    /// Indices into the transcript that match `query`.
+    pub matches: Vec<usize>,
+    /// Cursor into `matches`. Wraps when pressing n/N past the ends.
+    pub current: usize,
 }
 
 impl AppState {
@@ -776,6 +803,7 @@ impl AppState {
             pending_quit: self.pending_quit,
             help_extended: self.help_extended,
             close_help: self.close_help,
+            search: self.search.clone(),
             autoscroll: self.autoscroll,
             completion: self.completion.clone(),
             session: self.session.clone(),
@@ -833,6 +861,7 @@ impl AppState {
             pending_quit: None,
             help_extended: false,
             close_help: false,
+            search: None,
             settings_snapshot: settings,
             completion: None,
             theme_name: None,
@@ -1166,6 +1195,64 @@ impl AppState {
         }
         self.completion = None;
     }
+
+    /// Begin a transcript search. Called when the user presses `/` in
+    /// editing mode (with no slash-command popup showing).
+    pub fn begin_search(&mut self) {
+        self.search = Some(SearchState {
+            query: String::new(),
+            matches: Vec::new(),
+            current: 0,
+        });
+    }
+
+    /// Update the search query and recompute matches against the
+    /// current transcript. Case-insensitive substring match.
+    pub fn update_search_query(&mut self, q: String) {
+        let Some(s) = self.search.as_mut() else { return };
+        s.query = q.clone();
+        let q_lower = q.to_lowercase();
+        let mut new_matches: Vec<usize> = Vec::new();
+        for (i, line) in self.transcript.iter().enumerate() {
+            let text = line.summary_text().to_lowercase();
+            if !q_lower.is_empty() && text.contains(&q_lower) {
+                new_matches.push(i);
+            }
+        }
+        s.matches = new_matches;
+        if s.matches.is_empty() {
+            s.current = 0;
+        } else if s.current >= s.matches.len() {
+            s.current = s.matches.len() - 1;
+        }
+    }
+
+    /// Advance to the next match (wraps at the end).
+    pub fn search_next(&mut self) {
+        if let Some(s) = self.search.as_mut() {
+            if !s.matches.is_empty() {
+                s.current = (s.current + 1) % s.matches.len();
+            }
+        }
+    }
+
+    /// Advance to the previous match (wraps at the start).
+    pub fn search_prev(&mut self) {
+        if let Some(s) = self.search.as_mut() {
+            if !s.matches.is_empty() {
+                s.current = if s.current == 0 {
+                    s.matches.len() - 1
+                } else {
+                    s.current - 1
+                };
+            }
+        }
+    }
+
+    /// Close the search overlay and clear highlights.
+    pub fn end_search(&mut self) {
+        self.search = None;
+    }
 }
 
 
@@ -1174,6 +1261,15 @@ fn chars_to_tokens(s: &str) -> u32 {
 }
 
 fn line_summary_text(line: &crate::state::TranscriptLine) -> String {
+    line.summary_text()
+}
+
+/// Public summary form of a transcript line, used by the transcript
+/// search (F019) to do case-insensitive substring matches. We
+/// intentionally include prefixes like `[user]` so users searching
+/// for "tool-call" can find the right lines without guessing the
+/// underlying text.
+pub(crate) fn line_summary_text_impl(line: &crate::state::TranscriptLine) -> String {
     use crate::state::TranscriptLine;
     match line {
         TranscriptLine::User(s) => format!("[user] {}", s.replace('\n', " ")),
@@ -1535,5 +1631,160 @@ mod tests {
         }
         // Calling collapse_all again folds zero new lines.
         assert_eq!(s.collapse_all(), 0);
+    }
+
+    // ============================================================
+    // F019 transcript search
+    // ============================================================
+    #[test]
+    fn search_finds_case_insensitive_substring_matches() {
+        let mut s = AppState::new("test");
+        s.push_user("hello WORLD");
+        s.push_assistant("hi world");
+        s.push_user("goodbye");
+        s.begin_search();
+        s.update_search_query("world".to_string());
+        let search = s.search.as_ref().expect("search active");
+        // Two lines mention "world" (case-insensitive).
+        assert_eq!(search.matches.len(), 2);
+    }
+
+    #[test]
+    fn search_empty_query_yields_no_matches() {
+        let mut s = AppState::new("test");
+        s.push_user("hello");
+        s.begin_search();
+        // Empty query matches nothing (matches is a snapshot of "what
+        // does the user want highlighted"; nothing).
+        s.update_search_query(String::new());
+        assert!(s.search.as_ref().unwrap().matches.is_empty());
+    }
+
+    #[test]
+    fn search_next_advances_with_wrap() {
+        let mut s = AppState::new("test");
+        for i in 0..3 {
+            s.push_user(format!("line {i} match"));
+        }
+        s.begin_search();
+        s.update_search_query("match".to_string());
+        assert_eq!(s.search.as_ref().unwrap().matches.len(), 3);
+        // Initially at index 0; search_next → 1 → 2 → wraps to 0.
+        s.search_next();
+        assert_eq!(s.search.as_ref().unwrap().current, 1);
+        s.search_next();
+        assert_eq!(s.search.as_ref().unwrap().current, 2);
+        s.search_next();
+        assert_eq!(s.search.as_ref().unwrap().current, 0);
+    }
+
+    #[test]
+    fn search_prev_decrements_with_wrap() {
+        let mut s = AppState::new("test");
+        for i in 0..3 {
+            s.push_user(format!("line {i} hit"));
+        }
+        s.begin_search();
+        s.update_search_query("hit".to_string());
+        // current=0; search_prev wraps to last.
+        s.search_prev();
+        assert_eq!(s.search.as_ref().unwrap().current, 2);
+    }
+
+    #[test]
+    fn end_search_clears_state() {
+        let mut s = AppState::new("test");
+        s.push_user("hello");
+        s.begin_search();
+        s.update_search_query("hello".to_string());
+        s.end_search();
+        assert!(s.search.is_none());
+    }
+
+    // ============================================================
+    // F016 undo + kill ring end-to-end verification
+    // ============================================================
+    #[test]
+    fn kill_word_backward_drains_word() {
+        let mut s = AppState::new("test");
+        for c in "hello world".chars() {
+            s.input.insert_char(c);
+        }
+        // Cursor at end (after "world"). kill_word_backward should
+        // remove "world " (the trailing word + space).
+        s.input.kill_word_backward();
+        assert_eq!(s.input.text, "hello");
+    }
+
+    #[test]
+    fn kill_word_forward_drains_word() {
+        let mut s = AppState::new("test");
+        for c in "hello world".chars() {
+            s.input.insert_char(c);
+        }
+        // Move to start, then kill forward — removes "hello" (the
+        // word itself; the trailing space stays).
+        s.input.move_to_start();
+        s.input.kill_word_forward();
+        assert_eq!(s.input.text, " world");
+    }
+
+    #[test]
+    fn kill_word_forward_from_middle_kills_one_word() {
+        // Alt+D semantics: kill forward by one word. From the middle
+        // of "def", should kill the rest of "def" — not " ghi".
+        let mut s = AppState::new("test");
+        for c in "abc def ghi".chars() {
+            s.input.insert_char(c);
+        }
+        // Cursor at index 5 is between 'd' and 'e' of "def".
+        s.input.cursor = 5;
+        s.input.kill_word_forward();
+        // Should remove "ef" (rest of current word); the " ghi"
+        // remains.
+        assert_eq!(s.input.text, "abc d ghi");
+    }
+
+    #[test]
+    fn yank_restores_last_kill() {
+        let mut s = AppState::new("test");
+        for c in "hello world".chars() {
+            s.input.insert_char(c);
+        }
+        s.input.move_to_start();
+        s.input.kill_word_forward(); // kills "hello"
+        assert_eq!(s.input.text, " world");
+        // Yank restores "hello" at the cursor position.
+        let yanked = s.input.yank();
+        assert!(yanked);
+        assert_eq!(s.input.text, "hello world");
+    }
+
+    #[test]
+    fn undo_restores_pre_edit_text() {
+        let mut s = AppState::new("test");
+        for c in "abc".chars() {
+            s.input.insert_char(c);
+        }
+        assert_eq!(s.input.text, "abc");
+        // Ctrl+Z undoes the last char.
+        s.input.undo();
+        assert_eq!(s.input.text, "ab");
+        s.input.undo();
+        assert_eq!(s.input.text, "a");
+    }
+
+    #[test]
+    fn kill_to_line_end_then_undo_roundtrip() {
+        // Ctrl+K kills from cursor to end of line; undo should restore.
+        let mut s = AppState::new("test");
+        for c in "abcdef".chars() {
+            s.input.insert_char(c);
+        }
+        s.input.move_to_start();
+        s.input.kill_to_line_end();
+        assert_eq!(s.input.text, "");
+        s.input.undo();
+        assert_eq!(s.input.text, "abcdef");
     }
 }

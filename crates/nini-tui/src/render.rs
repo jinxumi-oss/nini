@@ -70,6 +70,17 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
         .split(area);
 
     render_status(f, state, theme, chunks[0]);
+    // F019: when transcript search is active, render a search bar
+    // overlay so the user can see the query + match count + which
+    // match is current. The bar floats just below the status bar.
+    if state.search.is_some() {
+        render_search_bar(f, state, theme, Rect {
+            x: chunks[0].x,
+            y: chunks[0].y + 1,
+            width: chunks[0].width,
+            height: 1,
+        });
+    }
     render_transcript(f, state, theme, chunks[1]);
     if state
         .completion
@@ -258,6 +269,40 @@ fn shorten_home(path: &std::path::Path) -> String {
         }
     }
     path.display().to_string()
+}
+
+/// Render the F019 transcript search bar (query + match count + current
+/// index). One row tall, sits just below the status bar.
+fn render_search_bar(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    use ratatui::style::Modifier;
+    use ratatui::text::{Line, Span};
+    let Some(search) = &state.search else { return };
+    let total = search.matches.len();
+    let current = if total == 0 { 0 } else { search.current + 1 };
+    let counter = if total == 0 {
+        "no matches".to_string()
+    } else {
+        format!("{current}/{total}")
+    };
+    let prefix = Span::styled(
+        "/".to_string(),
+        theme.fg_style("accent").add_modifier(Modifier::BOLD),
+    );
+    let query = Span::styled(
+        search.query.clone(),
+        theme.fg_style("text"),
+    );
+    let counter_span = Span::styled(
+        format!("  {counter}"),
+        theme.fg_style(if total == 0 { "error" } else { "dim" }),
+    );
+    let hint = Span::styled(
+        "  n=next  N=prev  Esc=cancel".to_string(),
+        theme.fg_style("muted"),
+    );
+    let line = Line::from(vec![prefix, query, counter_span, hint]);
+    let para = ratatui::widgets::Paragraph::new(line);
+    f.render_widget(para, area);
 }
 
 fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {

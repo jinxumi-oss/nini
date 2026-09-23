@@ -175,6 +175,9 @@ pub enum KeyAction {
     /// scroll offset (so the line currently visible at the top of the
     /// transcript pane toggles).
     ToggleCollapse,
+    /// Open the transcript full-text search (F019). The bare `/` key
+    /// (no Shift/Ctrl) when no slash-command popup is visible.
+    OpenSearch,
     /// Unhandled (no binding matched).
     Noop,
 }
@@ -323,6 +326,13 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         KeyBinding {
             key: Key::new(KeyCode::Char('/'), ctrl),
             action: Undo,
+        },
+        // Plain `/` → open transcript search (only when no slash
+        // popup is visible; the runtime falls back to insert when
+        // the popup would be more useful).
+        KeyBinding {
+            key: Key::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            action: OpenSearch,
         },
         // Scroll
         KeyBinding {
