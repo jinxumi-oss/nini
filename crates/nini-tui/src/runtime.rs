@@ -197,6 +197,12 @@ async fn run_loop(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tick.tick().await; // skip the immediate first tick
 
+    // F020: separate fast poll tick for the external editor flag.
+    // 25ms feels snappy without flooding the lock with reads.
+    let mut editor_poll_tick = tokio::time::interval(Duration::from_millis(25));
+    editor_poll_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    editor_poll_tick.tick().await;
+
     // Selector state lives outside AppState so we can keep AppState Clone-able.
     let mut active_selector: Option<Box<dyn crate::selector::SelectorState + Send>> = None;
     let mut selector_query: String = String::new();
@@ -448,6 +454,16 @@ async fn run_loop(
             }
             _ = done_for_select.notified() => {
                 // Agent finished; loop will redraw on next iteration.
+            }
+            // F020: external editor dance. Polled each iteration
+            // because the dance is synchronous (we leave alt screen
+            // + spawn editor + re-enter) so a Notify wouldn't fire
+            // until after we'd already resumed anyway. We just
+            // check the flag cheaply here.
+            _ = editor_poll_tick.tick() => {
+                if shared.lock().unwrap().pending_external_editor {
+                    handle_external_editor_dance(terminal, &shared);
+                }
             }
             _ = tick.tick() => { /* animation tick */ }
             Some(theme_event) = theme_rx.recv() => {
@@ -800,8 +816,97 @@ fn clear_status_after_selector(shared: &SharedState) {
             || g.status == "switch model (not yet implemented)"
         {
             g.status = "ready".to_string();
+
         }
     }
+}
+
+/// F020: handle Ctrl+G / `/editor` — the external editor dance.
+///
+/// We:
+///   1. Snapshot the current input buffer.
+///   2. Leave the alternate screen + disable raw mode + show cursor.
+///   3. Spawn `$VISUAL` / `$EDITOR` / `nano` / `vi` on a temp file
+///      pre-populated with the snapshot.
+///   4. Read the file back; if it changed, replace the input buffer.
+///   5. Re-enter the alternate screen + enable raw mode + hide cursor
+///      + force a full redraw (the alternate screen is wiped on entry).
+///
+/// Anything that can fail does so gracefully — we surface the error
+/// to the status bar / transcript and continue. The TUI itself is
+/// restored unconditionally via a try-finally-style pattern so a
+/// crash in the editor child doesn't leave the user with a broken
+/// terminal.
+fn handle_external_editor_dance(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    shared: &SharedState,
+) {
+    // 1. Snapshot input and clear the flag.
+    let (initial_text, initial_cursor) = {
+        let mut g = shared.lock().unwrap();
+        g.pending_external_editor = false;
+        (g.input.text.clone(), g.input.cursor)
+    };
+
+    // 2. Suspend the TUI.
+    // We deliberately use execute! on stdout rather than on the
+    // terminal's backend: crossterm's LeaveAlternateScreen /
+    // disable_raw_mode write to the file descriptor directly,
+    // and the terminal wrapper holds its own buffered copy. Going
+    // through execute!() bypasses the buffer and reaches the real
+    // stdout immediately.
+    {
+        let mut stdout = stdout();
+        let _ = execute!(stdout, LeaveAlternateScreen);
+        let _ = disable_raw_mode();
+        crate::signals::mark_alt_screen(false);
+        crate::signals::mark_raw_mode(false);
+        let _ = execute!(stdout, crossterm::cursor::Show);
+    }
+
+    // 3. Spawn the editor synchronously. This call blocks the
+    // run loop until the user finishes editing. That's OK —
+    // the TUI is suspended, so no UI updates are expected.
+    let result = crate::editor::edit_in_external_editor(&initial_text);
+
+    // 4. Resume the TUI BEFORE applying the result. We must be
+    // able to write to the terminal again to redraw the new state.
+    {
+        let mut stdout = stdout();
+        let _ = enable_raw_mode();
+        crate::signals::mark_raw_mode(true);
+        let _ = execute!(stdout, EnterAlternateScreen);
+        crate::signals::mark_alt_screen(true);
+        let _ = execute!(stdout, crossterm::cursor::Hide);
+    }
+
+    // 5. Apply the result (or the error) and force a redraw.
+    match result {
+        Ok(Some(new_text)) => {
+            let mut g = shared.lock().unwrap();
+            // Replace the entire input buffer + push an undo snapshot
+            // so Ctrl+Z restores the pre-edit version.
+            g.input.replace_whole(new_text.clone());
+            g.status = format!("editor: {} chars", new_text.chars().count());
+        }
+        Ok(None) => {
+            // No change.
+            let mut g = shared.lock().unwrap();
+            g.status = "editor: no changes".to_string();
+            // Suppress the unused warning on initial_cursor.
+            let _ = initial_cursor;
+        }
+        Err(e) => {
+            let mut g = shared.lock().unwrap();
+            g.status = format!("editor error: {e}");
+            g.push_assistant(format!("[editor error] {e}"));
+            g.push_divider();
+        }
+    }
+
+    // 6. Force the next render — terminal.clear() wipes any stale
+    // content from the editor session.
+    let _ = terminal.clear();
 }
 
 /// Cycle to the next/previous model in `state.models_cycle`.
@@ -1154,6 +1259,16 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             // ModelSelector is wired.
             state.status = "open_selector:model".to_string();
         }
+        KeyAction::OpenExternalEditor => {
+            // F020: signal the run loop to suspend the TUI, spawn
+            // $VISUAL/$EDITOR on the current input, then resume.
+            // We just set the flag here; the loop owns the actual
+            // suspend/resume dance because it has access to the
+            // terminal handle. The flag is checked on the next
+            // event-loop iteration.
+            state.pending_external_editor = true;
+            state.status = "opening editor…".to_string();
+        }
         KeyAction::CycleModelNext => cycle_model(&mut state, 1),
         KeyAction::CycleModelPrev => cycle_model(&mut state, -1),
         KeyAction::CycleThinkingNext => cycle_thinking(&mut state, 1),
@@ -1477,6 +1592,12 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                 state.input.insert_char('/');
                 state.refresh_completion();
             }
+        }
+        KeyAction::OpenExternalEditor => {
+            // F020: same as the runtime path — set the flag and
+            // let the run loop handle the suspend/resume dance.
+            state.pending_external_editor = true;
+            state.status = "opening editor…".to_string();
         }
         KeyAction::PasteImage => {
             // Try to read an image from the system clipboard. If found,

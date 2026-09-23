@@ -1514,8 +1514,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             // Open the current input in $VISUAL / $EDITOR / nano.
             // Synchronous from the dispatcher's POV; the actual spawn is
             // handled by the runtime (which has access to the file
-            // handles). We just signal it here.
-            state.status = "open_editor:true".to_string();
+            // handles). We just signal it here via the dedicated flag
+            // (not via state.status, which is a transient message
+            // surface that gets cleared after each frame).
+            state.pending_external_editor = true;
+            state.status = "Opening editor…".to_string();
             CommandResult::output(vec![
                 "Opening editor…".to_string(),
             ])

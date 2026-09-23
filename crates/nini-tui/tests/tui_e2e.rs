@@ -111,7 +111,8 @@ fn drive(state: &mut AppState, key: Key) {
         | KeyAction::PasteImage
         | KeyAction::ToggleCollapse
         | KeyAction::OpenSearch
-        | KeyAction::OpenCommandPalette => {}
+        | KeyAction::OpenCommandPalette
+        | KeyAction::OpenExternalEditor => {}
         KeyAction::AcceptCompletionOrInsertTab => {}
         KeyAction::Noop => {}
     }

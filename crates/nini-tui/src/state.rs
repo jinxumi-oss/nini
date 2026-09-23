@@ -392,6 +392,21 @@ impl InputBuffer {
         self.history_cursor = None;
     }
 
+    /// Replace the entire input buffer with `new_text`, snapshotting
+    /// the pre-replace state for Ctrl+Z to restore. The cursor lands
+    /// at the end of the new text (clamped to its byte length).
+    ///
+    /// F020 — used by the external editor dance when the user comes
+    /// back from `$VISUAL` / `$EDITOR` with modified contents.
+    pub fn replace_whole(&mut self, new_text: String) {
+        if new_text == self.text {
+            return; // no-op
+        }
+        self.push_undo_snapshot();
+        self.text = new_text;
+        self.cursor = self.text.len();
+    }
+
     /// Submit the current input. Returns the submitted text.
     pub fn submit(&mut self) -> String {
         let text = self.text.clone();
@@ -691,6 +706,14 @@ pub struct AppState {
     /// second press within `QUIT_CONFIRM_WINDOW_MS` before actually
     /// quitting. Prevents accidental data loss.
     pub pending_quit: Option<std::time::Instant>,
+    /// F020: When `true`, the user pressed Ctrl+G (or `/editor`)
+    /// and the run loop should suspend the TUI and spawn the
+    /// external editor on the current input buffer. The loop
+    /// resets the flag once the editor dance completes (or
+    /// errors out). Lives outside the key-event handler because
+    /// the actual suspend/resume work needs `&mut Terminal`,
+    /// which only the run loop holds.
+    pub pending_external_editor: bool,
     /// Whether the F1 key was toggled on. The renderer swaps the bottom
     /// footer between a short hint set and an extended hint set so the
     /// user can see ALL key bindings without scrolling.
@@ -801,6 +824,7 @@ impl AppState {
             context_used: self.context_used,
             debug_logging: self.debug_logging,
             pending_quit: self.pending_quit,
+            pending_external_editor: self.pending_external_editor,
             help_extended: self.help_extended,
             close_help: self.close_help,
             search: self.search.clone(),
@@ -859,6 +883,7 @@ impl AppState {
             context_used: 0,
             debug_logging: false,
             pending_quit: None,
+            pending_external_editor: false,
             help_extended: false,
             close_help: false,
             search: None,

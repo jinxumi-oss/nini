@@ -181,6 +181,10 @@ pub enum KeyAction {
     /// Open the command palette (F015). Ctrl+K on Linux/Windows,
     /// ⌘K on macOS — both bound to the same action.
     OpenCommandPalette,
+    /// Open the current input buffer in the user's external
+    /// editor ($VISUAL / $EDITOR / nano / vi) for multi-line
+    /// editing (F020). Ctrl+G is the standard binding.
+    OpenExternalEditor,
     /// Unhandled (no binding matched).
     Noop,
 }
@@ -347,6 +351,14 @@ pub fn default_keymap() -> Vec<KeyBinding> {
             key: Key::new(KeyCode::Char('k'), ctrl | KeyModifiers::SHIFT),
             action: OpenCommandPalette,
         },
+        // Ctrl+G → open current input in external editor (F020).
+        // Readline / bash muscle memory: Ctrl+G is "edit in
+        // editor" on most shells. The runtime handles the
+        // suspend/resume dance.
+        KeyBinding {
+            key: Key::new(KeyCode::Char('g'), ctrl),
+            action: OpenExternalEditor,
+        },
         // Scroll
         KeyBinding {
             key: Key::new(KeyCode::PageUp, KeyModifiers::NONE),
@@ -484,6 +496,17 @@ mod tests {
                 K::new(KeyCode::Char('k'), KeyModifiers::CTRL | KeyModifiers::SHIFT)
             ),
             KeyAction::OpenCommandPalette
+        );
+    }
+
+    #[test]
+    fn ctrl_g_opens_external_editor() {
+        // F020: Ctrl+G opens the current input in $VISUAL/$EDITOR.
+        use crate::keys::Key as K;
+        let km = default_keymap();
+        assert_eq!(
+            resolve(&km, K::new(KeyCode::Char('g'), KeyModifiers::CTRL)),
+            KeyAction::OpenExternalEditor
         );
     }
 
