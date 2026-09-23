@@ -63,6 +63,7 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // status bar
+            Constraint::Length(if state.search.is_some() { 1 } else { 0 }), // search bar (only when active)
             Constraint::Min(3),    // transcript
             Constraint::Length(if popup_height > 0 { popup_height } else { 3 }), // prompt OR popup
             Constraint::Length(1), // key hints
@@ -71,31 +72,37 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
 
     render_status(f, state, theme, chunks[0]);
     // F019: when transcript search is active, render a search bar
-    // overlay so the user can see the query + match count + which
-    // match is current. The bar floats just below the status bar.
+    // row (the Layout reserves 1 line for it above the transcript).
     if state.search.is_some() {
-        render_search_bar(f, state, theme, Rect {
-            x: chunks[0].x,
-            y: chunks[0].y + 1,
-            width: chunks[0].width,
-            height: 1,
-        });
+        render_search_bar(f, state, theme, chunks[1]);
     }
-    render_transcript(f, state, theme, chunks[1]);
+    let transcript_chunk = if state.search.is_some() { chunks[2] } else { chunks[1] };
+    render_transcript(f, state, theme, transcript_chunk);
+    // When search is active the layout has 5 rows (status, search,
+    // transcript, prompt, footer); otherwise 4. Index the prompt and
+    // footer accordingly.
+    let (prompt_chunk, footer_chunk) = if state.search.is_some() {
+        (chunks[3], chunks[4])
+    } else {
+        (chunks[2], chunks[3])
+    };
     if state
         .completion
         .as_ref()
         .map(|p| !p.is_empty())
         .unwrap_or(false)
     {
-        render_completion_popup(f, state, theme, chunks[2]);
+        render_completion_popup(f, state, theme, prompt_chunk);
     } else {
-        render_prompt(f, state, theme, chunks[2]);
+        render_prompt(f, state, theme, prompt_chunk);
     }
-    render_key_hints(f, state, theme, chunks[3]);
+    render_key_hints(f, state, theme, footer_chunk);
 
     if state.mode == RunMode::Running {
-        render_running_indicator(f, theme, chunks[1]);
+        // Running spinner replaces the transcript pane; if search is
+        // up, use the shifted index.
+        let transcript_chunk = if state.search.is_some() { chunks[2] } else { chunks[1] };
+        render_running_indicator(f, theme, transcript_chunk);
     }
 }
 
