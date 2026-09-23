@@ -19,6 +19,7 @@ pub mod ansi;
 pub mod bash_runner;
 pub mod clipboard;
 pub mod commands;
+pub mod command_palette;
 pub mod event_bus;
 pub mod file_completion;
 pub mod help_overlay;

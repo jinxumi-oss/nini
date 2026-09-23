@@ -178,6 +178,9 @@ pub enum KeyAction {
     /// Open the transcript full-text search (F019). The bare `/` key
     /// (no Shift/Ctrl) when no slash-command popup is visible.
     OpenSearch,
+    /// Open the command palette (F015). Ctrl+K on Linux/Windows,
+    /// ⌘K on macOS — both bound to the same action.
+    OpenCommandPalette,
     /// Unhandled (no binding matched).
     Noop,
 }
@@ -299,6 +302,9 @@ pub fn default_keymap() -> Vec<KeyBinding> {
             key: Key::new(KeyCode::Char('a'), ctrl),
             action: MoveLineStart,
         },
+        // Ctrl+K → kill from cursor to end of line. Matches readline /
+        // bash / Pi. The command palette (F015) lives on Ctrl+Shift+K
+        // instead so we don't break either muscle memory.
         KeyBinding {
             key: Key::new(KeyCode::Char('k'), ctrl),
             action: KillToLineEnd,
@@ -327,12 +333,19 @@ pub fn default_keymap() -> Vec<KeyBinding> {
             key: Key::new(KeyCode::Char('/'), ctrl),
             action: Undo,
         },
-        // Plain `/` → open transcript search (only when no slash
-        // popup is visible; the runtime falls back to insert when
-        // the popup would be more useful).
+        // Ctrl+F → open transcript search. (Binding `/` was tried first but
+        // it broke typing slash commands from an empty input — see
+        // F019 in docs/plans/v0.6-ux-gap-fixes.md for the follow-up.)
         KeyBinding {
-            key: Key::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            key: Key::new(KeyCode::Char('f'), ctrl),
             action: OpenSearch,
+        },
+        // Ctrl+Shift+K → command palette (F015). Same chord as
+        // Ctrl+K with Shift added — discoverable, mirrors VSCode ⌘K
+        // (Shift modifier avoids colliding with readline's Ctrl+K).
+        KeyBinding {
+            key: Key::new(KeyCode::Char('k'), ctrl | KeyModifiers::SHIFT),
+            action: OpenCommandPalette,
         },
         // Scroll
         KeyBinding {
@@ -446,6 +459,32 @@ mod tests {
         assert_eq!(resolve(&km, k), KeyAction::ToggleCollapse);
         // Plain 'o' (no Ctrl) should still insert, not toggle.
         assert_eq!(resolve(&km, K::char('o')), KeyAction::Insert('o'));
+    }
+
+    #[test]
+    fn ctrl_k_kills_to_line_end() {
+        // F015 (revised): Ctrl+K stays as KillToLineEnd to preserve
+        // readline muscle memory; palette moved to Ctrl+Shift+K.
+        use crate::keys::Key as K;
+        let km = default_keymap();
+        assert_eq!(
+            resolve(&km, K::new(KeyCode::Char('k'), KeyModifiers::CTRL)),
+            KeyAction::KillToLineEnd
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_k_opens_palette() {
+        // F015: Ctrl+Shift+K opens the command palette.
+        use crate::keys::Key as K;
+        let km = default_keymap();
+        assert_eq!(
+            resolve(
+                &km,
+                K::new(KeyCode::Char('k'), KeyModifiers::CTRL | KeyModifiers::SHIFT)
+            ),
+            KeyAction::OpenCommandPalette
+        );
     }
 
     fn arrow_keys_move() {

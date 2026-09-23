@@ -384,6 +384,15 @@ async fn run_loop(
                         active_selector = Some(sel);
                         selector_query.clear();
                     }
+                    "palette" => {
+                        // F015 Ctrl+K command palette: fuzzy-search
+                        // every command + meta action. Enter on a
+                        // hit dispatches it (handled in
+                        // apply_selector_result).
+                        let sel = Box::new(crate::command_palette::CommandPalette::new());
+                        active_selector = Some(sel);
+                        selector_query.clear();
+                    }
                     _ => {}
                 }
                 // Clear the status flag so it doesn't re-trigger.
@@ -488,29 +497,58 @@ fn handle_selector_key(
     let key: K = k.into();
     match key.code {
         crossterm::event::KeyCode::Up => {
-            if let Some(last) = visible.last() {
-                let cur = selector.state_selected();
-                let new_idx = if cur == 0 { *last } else { cur.saturating_sub(1) };
-                selector.state_set_selected(new_idx);
+            // visible holds *indices into the full items list*, so we
+            // navigate by position within visible, then translate back
+            // to the item index. v0.5's bug: it treated cur as both a
+            // visible position AND an items index, so after typing a
+            // filter the highlighted item jumped around unexpectedly.
+            if visible.is_empty() {
+                return;
             }
+            let cur = selector.state_selected();
+            let cur_pos = visible.iter().position(|&i| i == cur).unwrap_or(0);
+            let new_pos = if cur_pos == 0 {
+                visible.len() - 1
+            } else {
+                cur_pos - 1
+            };
+            selector.state_set_selected(visible[new_pos]);
         }
         crossterm::event::KeyCode::Down => {
-            if let Some(len) = visible.len().checked_sub(1) {
-                let cur = selector.state_selected();
-                let new_idx = if cur >= len { 0 } else { cur + 1 };
-                selector.state_set_selected(new_idx);
+            if visible.is_empty() {
+                return;
             }
+            let cur = selector.state_selected();
+            let cur_pos = visible.iter().position(|&i| i == cur).unwrap_or(0);
+            let new_pos = (cur_pos + 1) % visible.len();
+            selector.state_set_selected(visible[new_pos]);
         }
         crossterm::event::KeyCode::Backspace => {
             query.pop();
             *visible = compute_visible(query, &selector.state_items());
+            // After filter change, keep selection valid (clamp to first
+            // visible item) so Enter picks what the user actually sees.
+            if let Some(&first) = visible.first() {
+                selector.state_set_selected(first);
+            }
         }
         crossterm::event::KeyCode::Esc => {
             query.clear();
             visible.clear();
         }
         crossterm::event::KeyCode::Enter => {
-            let outcome = selector.state_on_select();
+            // Translate the items-level `selected` index through the
+            // current `visible` filter so the runtime picks what the
+            // user sees highlighted.
+            let outcome = if !visible.is_empty() {
+                let cur = selector.state_selected();
+                if !visible.contains(&cur) {
+                    selector.state_set_selected(visible[0]);
+                }
+                selector.state_on_select()
+            } else {
+                selector.state_on_select()
+            };
             match outcome {
                 crate::selector::SelectorOutcome::Picked(_) | crate::selector::SelectorOutcome::Back => {
                     query.clear();
@@ -525,6 +563,11 @@ fn handle_selector_key(
         crossterm::event::KeyCode::Char(c) => {
             query.push(c);
             *visible = compute_visible(query, &selector.state_items());
+            // Reset selection to first visible item so Enter picks the
+            // top match (matches the prior "always pick what I see" UX).
+            if let Some(&first) = visible.first() {
+                selector.state_set_selected(first);
+            }
         }
         _ => {}
     }
@@ -663,6 +706,85 @@ fn apply_selector_result(
         // persists to disk via its internal mechanism.
         let new_model = settings_sel.apply(0).map(|_| settings_sel.settings.model_name());
         new_model.and_then(|s| if s.is_empty() { None } else { Some(s) })
+    } else if let Some(palette) = selector
+        .state_as_any_mut()
+        .downcast_mut::<crate::command_palette::CommandPalette>()
+    {
+        // F015: the user picked a palette entry. Read the selected
+        // item and dispatch based on its id prefix.
+        use crate::selector::{SelectorItem, SelectorState};
+        let selected_idx = palette.state_selected();
+        let items = palette.state_items();
+        if let Some(item) = items.get(selected_idx) {
+            // Read the id first so we can drop the lock before
+            // mutating shared state via dispatch().
+            let id = item.id.clone();
+            let label = item.label.clone();
+            match id.as_str() {
+                id if id.starts_with("cmd:/") => {
+                    // Inject the slash command into the input buffer
+                    // and call submit_user_input via the same path
+                    // the runtime uses for an Enter keypress.
+                    let name = id.trim_start_matches("cmd:/").to_string();
+                    let cmd_line = format!("/{name}");
+                    let mut g = shared.lock().unwrap();
+                    g.input.text.clear();
+                    g.input.cursor = 0;
+                    drop(g);
+                    if let Some((cmd_id, args)) = crate::commands::parse(&cmd_line) {
+                        let mut g2 = shared.lock().unwrap();
+                        let mut settings = crate::settings::SettingsManager::default();
+                        let result = crate::commands::dispatch(
+                            &mut g2,
+                            &mut settings,
+                            cmd_id,
+                            &args,
+                        );
+                        // Mirror the runtime's submit_user_input Output
+                        // branch so palette-dispatched commands actually
+                        // show their output.
+                        if let Some(err) = result.error {
+                            g2.push_assistant(format!("[command error] {err}"));
+                            g2.push_divider();
+                        }
+                        match result.outcome {
+                            crate::commands::CommandOutcome::Output(lines) => {
+                                for line in lines {
+                                    g2.push_assistant(line);
+                                }
+                                g2.push_divider();
+                            }
+                            crate::commands::CommandOutcome::Quit => {
+                                g2.mode = crate::state::RunMode::Quitting;
+                            }
+                            crate::commands::CommandOutcome::PromptArgument { prompt, next: _ } => {
+                                g2.push_assistant(format!("(prompt: {prompt})"));
+                                g2.push_divider();
+                            }
+                        }
+                    }
+                }
+                "action:clear" => {
+                    let mut g = shared.lock().unwrap();
+                    g.transcript.clear();
+                    g.push_divider();
+                }
+                "action:exit" => {
+                    let mut g = shared.lock().unwrap();
+                    g.mode = RunMode::Quitting;
+                }
+                _ => {
+                    let mut g = shared.lock().unwrap();
+                    g.push_assistant(format!(
+                        "[palette] unknown action id: {}",
+                        id
+                    ));
+                    g.push_divider();
+                    let _ = label;
+                }
+            }
+        }
+        None
     } else {
         None
     }
@@ -796,6 +918,14 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
                 state.refresh_completion();
             }
         }
+        KeyAction::OpenCommandPalette => {
+            // F015 Ctrl+K: open the command palette. Works from any
+            // editing state; closes any open slash popup first.
+            if state.mode == RunMode::Editing {
+                state.completion = None;
+                state.status = "open_selector:palette".to_string();
+            }
+        }
         KeyAction::PasteImage => {
             // Try to read an image from the system clipboard. If found,
             // insert its `[pasted image: <path>]` description into the
@@ -913,6 +1043,10 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             }
         }
         KeyAction::Submit => {
+            eprintln!("[submit] input.text='{}' completion={} search={}",
+                state.input.text,
+                state.completion.is_some(),
+                state.search.is_some());
             // v0.6: smarter Enter behavior when the completion popup is
             // open. v0.5 always just inserted the highlighted completion
             // into the buffer, requiring a second Enter to actually
@@ -1254,6 +1388,7 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
 
         // ── Regular user message: push to transcript and spawn agent ───────
         // Pi parity: if compaction is in progress, queue the message
+        eprintln!("[submit_user_input] regular path, text='{text}'");
         // instead of spawning an agent. The queued messages are injected
         // as context alongside the next user prompt (mirrors Pi's
         // _pendingNextTurnMessages).
@@ -1305,6 +1440,7 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
     };
 
     // Spawn the agent task with its own sink.
+    eprintln!("[submit_user_input] spawning agent for text='{text}'");
     let sink = AgentSink::new(shared.clone());
     let _handle = (agent_driver)(text, sink, done.clone());
     // The handle is intentionally dropped — the task continues running in
@@ -1321,6 +1457,13 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             if state.mode == RunMode::Editing {
                 state.input.insert_char(c);
                 state.refresh_completion();
+            }
+        }
+        KeyAction::OpenCommandPalette => {
+            // Test path: same as the runtime path (open_selector:palette).
+            if state.mode == RunMode::Editing {
+                state.completion = None;
+                state.status = "open_selector:palette".to_string();
             }
         }
         KeyAction::OpenSearch => {

@@ -109,7 +109,9 @@ fn drive(state: &mut AppState, key: Key) {
         | KeyAction::YankPop
         | KeyAction::Undo
         | KeyAction::PasteImage
-        | KeyAction::ToggleCollapse => {}
+        | KeyAction::ToggleCollapse
+        | KeyAction::OpenSearch
+        | KeyAction::OpenCommandPalette => {}
         KeyAction::AcceptCompletionOrInsertTab => {}
         KeyAction::Noop => {}
     }

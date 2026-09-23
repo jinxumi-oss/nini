@@ -73,19 +73,28 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     render_status(f, state, theme, chunks[0]);
     // F019: when transcript search is active, render a search bar
     // row (the Layout reserves 1 line for it above the transcript).
-    if state.search.is_some() {
+    //
+    // When search is inactive the search slot is 0 rows and the
+    // indices below shift accordingly. Previously (commit d4070d0)
+    // the chunk mapping was hard-coded as `chunks[1]/[2]/[3]/[4]`
+    // without accounting for the 0-height collapse, which made the
+    // transcript render into an empty area and pushed the prompt
+    // up to row 1. v0.6 fix: always use the chunks[] indices in
+    // their Layout order regardless of search state.
+    let (transcript_chunk, prompt_chunk, footer_chunk) = if state.search.is_some() {
+        // status=0, search=1, transcript=2, prompt=3, footer=4
         render_search_bar(f, state, theme, chunks[1]);
-    }
-    let transcript_chunk = if state.search.is_some() { chunks[2] } else { chunks[1] };
-    render_transcript(f, state, theme, transcript_chunk);
-    // When search is active the layout has 5 rows (status, search,
-    // transcript, prompt, footer); otherwise 4. Index the prompt and
-    // footer accordingly.
-    let (prompt_chunk, footer_chunk) = if state.search.is_some() {
-        (chunks[3], chunks[4])
+        (chunks[2], chunks[3], chunks[4])
     } else {
-        (chunks[2], chunks[3])
+        // ratatui keeps chunk indices stable even when one slot has
+        // 0 height, so the transcript/prompt/footer indices are the
+        // SAME as the active case (2, 3, 4) — chunks[1] is just an
+        // empty Rect we never render into. Earlier (commit d4070d0)
+        // this branch used chunks[1]/[2]/[3] which collided with the
+        // transcript Min(3) slot and pushed the prompt up to row 1.
+        (chunks[2], chunks[3], chunks[4])
     };
+    render_transcript(f, state, theme, transcript_chunk);
     if state
         .completion
         .as_ref()
@@ -99,9 +108,8 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     render_key_hints(f, state, theme, footer_chunk);
 
     if state.mode == RunMode::Running {
-        // Running spinner replaces the transcript pane; if search is
-        // up, use the shifted index.
-        let transcript_chunk = if state.search.is_some() { chunks[2] } else { chunks[1] };
+        // Running spinner replaces the transcript pane (already
+        // computed above as `transcript_chunk`).
         render_running_indicator(f, theme, transcript_chunk);
     }
 }
