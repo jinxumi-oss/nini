@@ -21,6 +21,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod event_bus;
 pub mod file_completion;
+pub mod help_overlay;
 pub mod hyperlink;
 pub mod image_paste;
 pub mod keybindings_manager;

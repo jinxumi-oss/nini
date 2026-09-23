@@ -215,6 +215,10 @@ pub trait SelectorState: Any + Send + std::fmt::Debug {
     fn state_selected(&self) -> usize;
     fn state_set_selected(&mut self, idx: usize);
     fn state_on_select(&mut self) -> SelectorOutcome;
+    /// Optional: read the current fuzzy-filter query. Default empty.
+    fn state_query(&self) -> String { String::new() }
+    /// Optional: set the fuzzy-filter query. Default no-op.
+    fn state_set_query(&mut self, _q: String) {}
     /// Back-compat alias used by the runtime layer's downcast helper.
     fn state_as_any_mut(&mut self) -> &mut dyn Any {
         self.as_any_mut()

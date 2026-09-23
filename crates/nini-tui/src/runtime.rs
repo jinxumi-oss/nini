@@ -225,6 +225,17 @@ async fn run_loop(
             let g = shared.lock().unwrap();
             g.clone()
         };
+        // v0.6: F1 sets `state.close_help` to ask the runtime to drop
+        // any active help selector. Pick up that signal here so the
+        // overlay actually disappears when the user toggles F1 again.
+        if snapshot.close_help {
+            active_selector = None;
+            selector_query.clear();
+            selector_visible.clear();
+            let mut g = shared.lock().unwrap();
+            g.close_help = false;
+            drop(g);
+        }
         // Compute selector visible indices (for rendering).
         if let Some(sel) = active_selector.as_ref() {
             let items = sel.state_items();
@@ -365,6 +376,14 @@ async fn run_loop(
                         active_selector = Some(sel);
                         selector_query.clear();
                     }
+                    "help" => {
+                        // v0.6: real /help overlay (was a 1-line status
+                        // string in v0.5). Lists every registered slash
+                        // command with fuzzy filter + description.
+                        let sel = Box::new(crate::help_overlay::HelpSelector::new());
+                        active_selector = Some(sel);
+                        selector_query.clear();
+                    }
                     _ => {}
                 }
                 // Clear the status flag so it doesn't re-trigger.
@@ -396,7 +415,17 @@ async fn run_loop(
                                 if let Some(new_model) = model_update {
                                     shared.lock().unwrap().model = new_model;
                                 }
-                                shared.lock().unwrap().status = "ready".to_string();
+                                // Selector closed: reset any residual
+                                // open_selector:* flag so the status bar
+                                // doesn't display stale 'switch model…'
+                                // / 'open_selector:tree' after the user
+                                // has navigated away.
+                                clear_status_after_selector(&shared);
+                                if let Ok(mut g) = shared.lock() {
+                                    if g.status.is_empty() || g.status.starts_with("open_selector:") {
+                                        g.status = "ready".to_string();
+                                    }
+                                }
                             }
                         } else {
                             handle_key(k, &shared, &agent_driver, done);
@@ -636,6 +665,20 @@ fn apply_selector_result(
         new_model.and_then(|s| if s.is_empty() { None } else { Some(s) })
     } else {
         None
+    }
+}
+
+// Status-string cleanup: every selector branch above eventually falls
+// through to here; we reset state.status to "ready" so that stale
+// strings like "switch model (not yet implemented)" or
+// "open_selector:model" don't linger after the selector closes.
+fn clear_status_after_selector(shared: &SharedState) {
+    if let Ok(mut g) = shared.lock() {
+        if g.status.starts_with("open_selector:")
+            || g.status == "switch model (not yet implemented)"
+        {
+            g.status = "ready".to_string();
+        }
     }
 }
 
@@ -885,6 +928,10 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         KeyAction::Abort => {
             if state.completion.is_some() {
                 state.completion = None;
+            } else if state.pending_quit.is_some() {
+                // Esc cancels the pending Ctrl+D quit confirmation.
+                state.pending_quit = None;
+                state.status = "ready".to_string();
             } else if state.mode == RunMode::Running {
                 // Signal the agent to abort, then mark mode as Aborted.
                 if let Some(sig) = state.abort_signal.as_ref() {
@@ -896,7 +943,30 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
                 state.input.clear();
             }
         }
-        KeyAction::Quit => state.mode = RunMode::Quitting,
+        KeyAction::Quit => {
+            // v0.6: Ctrl+D requires double-tap to actually quit. The
+            // first press sets a pending flag + a status message; the
+            // second press within `QUIT_CONFIRM_WINDOW_MS` exits. After
+            // the window elapses without confirmation, the pending flag
+        // clears and Ctrl+D is a no-op again. This prevents losing
+        // a half-written prompt or in-flight work to a stray Ctrl+D.
+            use std::time::{Duration, Instant};
+            const QUIT_CONFIRM_WINDOW_MS: u64 = 3000;
+            let now = Instant::now();
+            if let Some(pending_at) = state.pending_quit {
+                if now.duration_since(pending_at) <= Duration::from_millis(QUIT_CONFIRM_WINDOW_MS) {
+                    state.pending_quit = None;
+                    state.mode = RunMode::Quitting;
+                } else {
+                    // Window expired; treat this as the first tap again.
+                    state.pending_quit = Some(now);
+                    state.status = "Press Ctrl+D again to quit, or Esc to cancel".to_string();
+                }
+            } else {
+                state.pending_quit = Some(now);
+                state.status = "Press Ctrl+D again to quit, or Esc to cancel".to_string();
+            }
+        }
         KeyAction::SwitchModel => {
             // Mirror `/model` (no args) — set the status flag so the main
             // loop's "open_selector:model" branch spins up the selector.
@@ -910,11 +980,18 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         KeyAction::CycleThinkingNext => cycle_thinking(&mut state, 1),
         KeyAction::CycleThinkingPrev => cycle_thinking(&mut state, -1),
         KeyAction::ShowHelp => {
-            state.push_divider();
-            state.push_assistant(
-                "F1=help  Ctrl+C=quit  Ctrl+D=exit  Enter=send  Ctrl+L=model  ↑↓=history",
-            );
-            state.push_divider();
+            // v0.6: F1 toggles the help overlay + extended footer.
+            // The overlay-close half is handled in the main loop via
+            // `state.close_help` (set true here; loop clears the
+            // active selector and resets the flag).
+            if state.help_extended {
+                state.help_extended = false;
+                state.close_help = true;
+                state.status = "ready".to_string();
+            } else {
+                state.help_extended = true;
+                state.status = "open_selector:help".to_string();
+            }
         }
         KeyAction::ScrollUp => {
             // PageUp: scroll up by ~10 lines.
@@ -977,7 +1054,15 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
         // `!!cmd` does the same but does NOT also inject the output into the
         // session context for the agent.
         if let Some(rest) = text.strip_prefix('!') {
-            let cmd = rest.trim();
+            // v0.6: `!!cmd` is a privacy marker — runs the command and
+            // shows the output in the transcript, but does NOT inject
+            // it into the agent's session context. Useful for sensitive
+            // commands (`!!cat ~/.aws/credentials`) where the user
+            // wants the LLM to never see the bytes.
+            let (private, cmd) = match rest.strip_prefix('!') {
+                Some(c) => (true, c.trim()),
+                None => (false, rest.trim()),
+            };
             if !cmd.is_empty() {
                 let mut cx = crate::bash_runner::BashRunner::new();
                 let result = cx.run_blocking(cmd, &std::env::current_dir().unwrap_or_default());
@@ -997,10 +1082,18 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
                 } else {
                     output
                 };
+                // Show `!!cmd` in the transcript so the user can see what was
+                // actually executed (the privacy marker is for the agent,
+                // not for the user).
+                let cmd_display = if private {
+                    format!("!!{cmd}")
+                } else {
+                    cmd.to_string()
+                };
                 g.transcript.push(TranscriptLine::BashExecution {
                     id,
-                    cmd: cmd.to_string(),
-                    output,
+                    cmd: cmd_display,
+                    output: output.clone(),
                     stderr: crate::ansi::strip_ansi(&result.stderr),
                     ok: result.ok,
                     exit_code: result.exit_code,
@@ -1008,9 +1101,26 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
                     collapsed: false,
                 });
                 g.push_divider();
-                // For `!cmd`, also inject the output as a ToolResult so the agent
-                // sees it in context (if the next turn triggers one). For `!!cmd`
-                // the user already passed that test — skip injection.
+                // For `!cmd`, also inject the output as a user message so
+                // the agent sees it on the next turn. For `!!cmd` the
+                // privacy marker tells us NOT to do that — the LLM will
+                // never learn the contents of this command.
+                if !private {
+                    g.pending_next_turn_messages.push(format!(
+                        "[bash $ {}]\n{}",
+                        cmd,
+                        if result.stderr.is_empty() {
+                            output.clone()
+                        } else {
+                            format!("{output}\n[stderr]\n{}", result.stderr)
+                        }
+                    ));
+                }
+                // Brief status bar hint so users can confirm the privacy
+                // marker actually fired.
+                if private {
+                    g.status = "executed (private)".to_string();
+                }
                 return;
             }
         }

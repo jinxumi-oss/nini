@@ -418,7 +418,27 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
     // Build hint segments dynamically based on the current mode.
     // Pi shows different hints when editing vs running vs selecting —
     // we mirror that with a small segment list.
+    //
+    // v0.6: F1 toggles `state.help_extended`, which switches the
+    // editing-mode footer between a compact 5-row line and an
+    // exhaustive keymap dump. The old code pushed a transcript line
+    // on F1 instead, which clashed with the rest of the layout.
     let hints: Vec<(&str, &str)> = match state.mode {
+        RunMode::Editing if state.help_extended => vec![
+            (" F1 ", "short "),
+            (" Enter ", "send "),
+            (" Shift+Enter ", "newline "),
+            (" Alt+Backspace ", "kill-word "),
+            (" Alt+D ", "Kill "),
+            (" Ctrl+Z ", "undo "),
+            (" Ctrl+Y ", "yank "),
+            (" Ctrl+L ", "model "),
+            (" Ctrl+T ", "thinking "),
+            (" Ctrl+P ", "model+ "),
+            (" Ctrl+O ", "collapse "),
+            (" Ctrl+C ", "quit "),
+            (" Ctrl+D ", "exit "),
+        ],
         RunMode::Editing => vec![
             (" F1 ", "help "),
             (" Enter ", "send "),

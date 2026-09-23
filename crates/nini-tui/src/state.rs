@@ -679,6 +679,17 @@ pub struct AppState {
     /// true, the runtime appends per-keystroke lines to
     /// `~/.nini/state.log` so users can `tail -f` it.
     pub debug_logging: bool,
+    /// When `Some`, the user pressed Ctrl+D and we're awaiting a
+    /// second press within `QUIT_CONFIRM_WINDOW_MS` before actually
+    /// quitting. Prevents accidental data loss.
+    pub pending_quit: Option<std::time::Instant>,
+    /// Whether the F1 key was toggled on. The renderer swaps the bottom
+    /// footer between a short hint set and an extended hint set so the
+    /// user can see ALL key bindings without scrolling.
+    pub help_extended: bool,
+    /// Set by F1 to signal that the help selector should close on the
+    /// next loop iteration (avoids the user having to press Esc).
+    pub close_help: bool,
     /// Active selector panel (TreeSelector / SessionSelector / etc.).
     /// When `Some`, the runtime emits selector UI events on top of the
     /// transcript. Mirrors pi's selector stack.
@@ -762,6 +773,9 @@ impl AppState {
             theme_name: self.theme_name.clone(),
             context_used: self.context_used,
             debug_logging: self.debug_logging,
+            pending_quit: self.pending_quit,
+            help_extended: self.help_extended,
+            close_help: self.close_help,
             autoscroll: self.autoscroll,
             completion: self.completion.clone(),
             session: self.session.clone(),
@@ -816,6 +830,9 @@ impl AppState {
             context_window,
             context_used: 0,
             debug_logging: false,
+            pending_quit: None,
+            help_extended: false,
+            close_help: false,
             settings_snapshot: settings,
             completion: None,
             theme_name: None,
