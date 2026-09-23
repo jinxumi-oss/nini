@@ -232,6 +232,8 @@ fn popup_navigation_wraps_up() {
             },
         ],
         selected: 0,
+        scroll_offset: 0,
+        max_visible: 8,
     };
     assert_eq!(p.selected, 0);
     p.select_up();
@@ -256,6 +258,8 @@ fn popup_navigation_wraps_down() {
             },
         ],
         selected: 0,
+        scroll_offset: 0,
+        max_visible: 8,
     };
     p.select_down();
     assert_eq!(p.selected, 1);
@@ -421,7 +425,7 @@ fn popup_shows_argument_hint() {
 }
 
 // =====================================================================
-// Test 11: Popup limited to 8 items
+// Test 11: Popup exposes all commands (v0.6: scrolling handles viewport)
 // =====================================================================
 #[test]
 fn popup_caps_at_8_items() {
@@ -429,7 +433,14 @@ fn popup_caps_at_8_items() {
     s.input.insert_char('/');
     s.refresh_completion();
     let popup = s.completion.as_ref().unwrap();
-    assert_eq!(popup.items.len(), 8);
+    // v0.6: empty prefix returns the whole registry; the viewport scrolls.
+    assert!(
+        popup.items.len() >= 28,
+        "expected at least 28 commands, got {}",
+        popup.items.len()
+    );
+    // Viewport itself is still 8 rows.
+    assert_eq!(popup.max_visible, 8);
 }
 
 // =====================================================================
@@ -510,7 +521,10 @@ fn rapid_typing_updates_popup_progressively() {
     let mut s = AppState::new("test");
     s.input.insert_char('/');
     s.refresh_completion();
-    assert_eq!(s.completion.as_ref().unwrap().items.len(), 8);
+    // v0.6: empty prefix returns whole registry; viewport is 8.
+    let popup = s.completion.as_ref().unwrap();
+    assert!(popup.items.len() >= 28);
+    assert_eq!(popup.max_visible, 8);
 
     // Type each char, refresh after each
     for c in "model".chars() {

@@ -42,6 +42,9 @@ pub enum TranscriptLine {
         id: String,
         cmd: String,
         output: String,
+        /// Standard error captured separately so the UI can render it in
+        /// `error` color. Empty when the command produced no stderr.
+        stderr: String,
         ok: bool,
         exit_code: Option<i32>,
         duration_ms: u64,
@@ -482,8 +485,15 @@ pub struct TokenStats {
 pub struct CompletionPopup {
     /// The items to display. Each entry has the command name + description.
     pub items: Vec<CompletionItem>,
-    /// Currently selected item index (highlighted). 0-based.
+    /// Currently selected item index (highlighted). 0-based, into `items`.
     pub selected: usize,
+    /// Scroll offset into `items` for the popup's viewport. Lets the
+    /// popup show results beyond the visible window without losing the
+    /// user's selection position. 0-based, inclusive.
+    pub scroll_offset: usize,
+    /// How many rows the renderer can show. Default 8 to match v0.5's
+    /// hard cap; can be tuned by callers.
+    pub max_visible: usize,
 }
 
 /// One entry in the completion popup.
@@ -495,11 +505,19 @@ pub struct CompletionItem {
     pub argument_hint: Option<String>,
 }
 
+/// Default viewport size for the scrollable completion popup. v0.5
+/// hard-capped at 8, which made 15 of 23 commands invisible; v0.6 keeps
+/// the same default so the UX doesn't shift, but callers can shrink /
+/// grow it.
+pub const DEFAULT_COMPLETION_VISIBLE: usize = 8;
+
 impl CompletionPopup {
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
             selected: 0,
+            scroll_offset: 0,
+            max_visible: DEFAULT_COMPLETION_VISIBLE,
         }
     }
 
@@ -513,7 +531,28 @@ impl CompletionPopup {
         self.items.is_empty()
     }
 
-    /// Move the selection up. Wraps around.
+    /// Total number of items in the popup.
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// True when the popup has more items than fit in the viewport.
+    pub fn needs_scroll(&self) -> bool {
+        self.items.len() > self.max_visible
+    }
+
+    /// True when the currently-highlighted item has an `argument_hint`
+    /// (so Enter should apply+space, not submit). v0.6 uses this for
+    /// F008's single-Enter logic.
+    pub fn selected_item_has_argument_hint(&self) -> bool {
+        self.items
+            .get(self.selected)
+            .and_then(|i| i.argument_hint.as_ref())
+            .is_some()
+    }
+
+    /// Move the selection up. Wraps around, and adjusts the scroll
+    /// window so the selected item stays visible.
     pub fn select_up(&mut self) {
         if self.items.is_empty() {
             return;
@@ -523,14 +562,31 @@ impl CompletionPopup {
         } else {
             self.selected - 1
         };
+        self.scroll_into_view();
     }
 
-    /// Move the selection down. Wraps around.
+    /// Move the selection down. Wraps around, and adjusts the scroll
+    /// window so the selected item stays visible.
     pub fn select_down(&mut self) {
         if self.items.is_empty() {
             return;
         }
         self.selected = (self.selected + 1) % self.items.len();
+        self.scroll_into_view();
+    }
+
+    /// Make sure `self.selected` is in
+    /// `[scroll_offset, scroll_offset + max_visible)`.
+    pub fn scroll_into_view(&mut self) {
+        if self.max_visible == 0 || self.items.len() <= self.max_visible {
+            self.scroll_offset = 0;
+            return;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + self.max_visible {
+            self.scroll_offset = self.selected + 1 - self.max_visible;
+        }
     }
 
     /// Return the currently selected item, if any.
@@ -619,6 +675,10 @@ pub struct AppState {
     /// `cache_read_tokens` and `context_window` to display a progress
     /// bar in the status bar.
     pub context_used: u32,
+    /// Whether verbose debug logging is on (toggled by `/debug`). When
+    /// true, the runtime appends per-keystroke lines to
+    /// `~/.nini/state.log` so users can `tail -f` it.
+    pub debug_logging: bool,
     /// Active selector panel (TreeSelector / SessionSelector / etc.).
     /// When `Some`, the runtime emits selector UI events on top of the
     /// transcript. Mirrors pi's selector stack.
@@ -701,6 +761,7 @@ impl AppState {
             context_window: self.context_window,
             theme_name: self.theme_name.clone(),
             context_used: self.context_used,
+            debug_logging: self.debug_logging,
             autoscroll: self.autoscroll,
             completion: self.completion.clone(),
             session: self.session.clone(),
@@ -754,6 +815,7 @@ impl AppState {
             cost_usd: 0.0,
             context_window,
             context_used: 0,
+            debug_logging: false,
             settings_snapshot: settings,
             completion: None,
             theme_name: None,
@@ -1021,6 +1083,8 @@ impl AppState {
                 self.completion = Some(CompletionPopup {
                     items,
                     selected: new_selection,
+                    scroll_offset: 0,
+                    max_visible: DEFAULT_COMPLETION_VISIBLE,
                 });
             }
             return;
@@ -1057,6 +1121,8 @@ impl AppState {
             self.completion = Some(CompletionPopup {
                 items,
                 selected: 0,
+                scroll_offset: 0,
+                max_visible: DEFAULT_COMPLETION_VISIBLE,
             });
             return;
         }
@@ -1309,6 +1375,7 @@ mod tests {
             id: "b1".to_string(),
             cmd: "ls".to_string(),
             output: "file1\nfile2".to_string(),
+            stderr: String::new(),
             ok: true,
             exit_code: Some(0),
             duration_ms: 5,
@@ -1429,6 +1496,7 @@ mod tests {
             id: "b2".to_string(),
             cmd: "ls".to_string(),
             output: "out".to_string(),
+            stderr: String::new(),
             ok: true,
             exit_code: Some(0),
             duration_ms: 1,

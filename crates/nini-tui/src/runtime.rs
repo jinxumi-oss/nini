@@ -55,7 +55,7 @@ pub enum AgentEventLite {
     },
     TurnEnd,
     Error(String),
-    Usage(u32, u32),
+    Usage(u32, u32, f64),
     /// Agent phase transition. Mirrors `AgentEvent::PhaseChanged` from
     /// nini-core but as a lightweight payload (just the phase name).
     PhaseChanged(String),
@@ -116,9 +116,13 @@ impl AgentSink {
                 AgentEventLite::Error(message) => {
                     s.push_assistant_raw(format!("[error] {message}"));
                 }
-                AgentEventLite::Usage(input, output) => {
+                AgentEventLite::Usage(input, output, cost) => {
                     s.tokens.input += input as u64;
                     s.tokens.output += output as u64;
+                    // Cost is denominated in USD; add to running total.
+                    if cost > 0.0 {
+                        s.cost_usd += cost;
+                    }
                 }
                 AgentEventLite::PhaseChanged(_) => {
                     // Already handled above (set s.status).
@@ -242,15 +246,28 @@ async fn run_loop(
 
         terminal.draw(|f| {
             render_frame_with_theme(f, &snapshot, &theme);
-            // Overlay the selector panel if active.
+            // Overlay the selector panel if active. Crucially, the
+            // selector only covers the *transcript* area — never the
+            // input bar or footer. v0.5 used `height = area.height - 4`
+            // which left the selector's bottom edge overlapping the
+            // input row, producing the `i│put` / transcript-bleed
+            // glitch reported in the v0.6 UX survey.
             if let Some(title) = selector_title.clone() {
                 let area = f.area();
-                // Selector covers most of the screen, leaving status bar.
-                let selector_area = ratatui::layout::Rect {
-                    x: area.x + 2,
-                    y: area.y + 2,
-                    width: area.width.saturating_sub(4),
-                    height: area.height.saturating_sub(4),
+                // Same vertical layout as render_frame_with_theme:
+                //   [status 1] [transcript N] [prompt 3] [footer 1]
+                // Selector fills the transcript area only.
+                let selector_area = if area.height >= 5 {
+                    ratatui::layout::Rect {
+                        x: area.x + 2,
+                        y: area.y + 1,
+                        width: area.width.saturating_sub(4),
+                        // Subtract status(1) + prompt(3) + footer(1) +
+                        // 1 row padding so the selector doesn't bleed.
+                        height: area.height.saturating_sub(6),
+                    }
+                } else {
+                    area
                 };
                 crate::render::render_selector_panel(
                     f,
@@ -812,6 +829,46 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             }
         }
         KeyAction::Submit => {
+            // v0.6: smarter Enter behavior when the completion popup is
+            // open. v0.5 always just inserted the highlighted completion
+            // into the buffer, requiring a second Enter to actually
+            // submit. Now we:
+            //   * If exactly one item matches (or the typed prefix is
+            //     already exact): submit immediately.
+            //   * If multiple candidates AND the highlighted item carries
+            //     an `argument_hint`: insert the full command + space
+            //     and leave the cursor for arguments (don't submit yet).
+            //   * If multiple candidates AND no hint: insert + submit in
+            //     one shot.
+            //
+            // Tab still does the pure "accept" path, so power users can
+            // always preview before submitting.
+            if let Some(popup) = state.completion.as_ref() {
+                let items = &popup.items;
+                let unique = items.len() == 1;
+                let exact = state
+                    .input
+                    .text
+                    .trim_start()
+                    .trim_start_matches('/')
+                    .split_whitespace()
+                    .next()
+                    .map(|cmd| items.iter().any(|i| i.name == cmd))
+                    .unwrap_or(false);
+                if unique || exact {
+                    // Fall through to submit below — but clear the popup
+                    // first so submit_user_input sees Editing without
+                    // completion.
+                    state.completion = None;
+                } else if popup.selected_item_has_argument_hint() {
+                    state.apply_completion();
+                    return;
+                } else {
+                    state.apply_completion();
+                    // Don't return — let submit proceed.
+                    state.completion = None;
+                }
+            }
             if state.completion.is_some() {
                 state.apply_completion();
             } else {
@@ -841,8 +898,12 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         }
         KeyAction::Quit => state.mode = RunMode::Quitting,
         KeyAction::SwitchModel => {
-            // Legacy single-action selector path.
-            state.status = "switch model (not yet implemented)".to_string();
+            // Mirror `/model` (no args) — set the status flag so the main
+            // loop's "open_selector:model" branch spins up the selector.
+            // The previous implementation only set a status string, which
+            // made Ctrl+L a no-op despite the CHANGELOG claiming
+            // ModelSelector is wired.
+            state.status = "open_selector:model".to_string();
         }
         KeyAction::CycleModelNext => cycle_model(&mut state, 1),
         KeyAction::CycleModelPrev => cycle_model(&mut state, -1),
@@ -923,13 +984,24 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
                 use crate::state::TranscriptLine;
                 let id = format!("bash-{}", g.transcript_len());
                 // Strip ANSI codes + truncate so the transcript stays clean.
-                let cleaned = crate::ansi::strip_ansi(&result.output);
+                let cleaned_out = crate::ansi::strip_ansi(&result.output);
                 let (output, _truncated, _ob, _ol) =
-                    crate::ansi::truncate(&cleaned, 16 * 1024, 200);
+                    crate::ansi::truncate(&cleaned_out, 16 * 1024, 200);
+                // For timeout, append a clear suffix so users know output
+                // may be incomplete.
+                let output = if result.timed_out {
+                    format!(
+                        "{output}\n…(timed out after {} ms)",
+                        result.duration_ms
+                    )
+                } else {
+                    output
+                };
                 g.transcript.push(TranscriptLine::BashExecution {
                     id,
                     cmd: cmd.to_string(),
                     output,
+                    stderr: crate::ansi::strip_ansi(&result.stderr),
                     ok: result.ok,
                     exit_code: result.exit_code,
                     duration_ms: result.duration_ms,

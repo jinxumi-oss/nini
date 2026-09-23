@@ -217,9 +217,12 @@ fn completion_no_match_empty() {
 }
 
 #[test]
-fn completion_empty_returns_first_n() {
+fn completion_empty_returns_all() {
+    // v0.6: empty query returns the WHOLE list (popup scrolling
+    // takes care of clipping to the viewport). v0.5 capped at `limit`,
+    // hiding 20 commands from autocomplete.
     let r = complete("", 5);
-    assert_eq!(r.len(), 5);
+    assert!(r.len() >= 28, "expected ≥28 commands, got {}", r.len());
     // First 5 in registry order (settings, model, tree, thinking, scoped-models)
     assert_eq!(r[0].name, "settings");
     assert_eq!(r[1].name, "model");
@@ -516,11 +519,16 @@ fn new_command_creates_session() {
 // Test 22: completion limit is respected
 // =====================================================================
 #[test]
-fn completion_respects_limit() {
+fn completion_returns_full_registry_on_empty() {
+    // v0.6: empty query returns the WHOLE list (popup scrolling
+    // clips to viewport). The limit arg is unused for empty query.
     let r = complete("", 3);
-    assert_eq!(r.len(), 3);
+    assert_eq!(r.len(), REGISTRY.len());
     let r = complete("", 100);
     assert_eq!(r.len(), REGISTRY.len());
+    // "mo" matches `model` (prefix) and `scoped-models` (substring).
+    let r = complete("mo", 3);
+    assert_eq!(r.len(), 2);
 }
 
 // =====================================================================

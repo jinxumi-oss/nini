@@ -186,6 +186,7 @@ pub fn render_tool_result(ok: bool, content: &str, theme: &Theme) -> Vec<RLine<'
 pub fn render_bash_execution(
     cmd: &str,
     output: &str,
+    stderr: &str,
     ok: bool,
     exit_code: Option<i32>,
     duration_ms: u64,
@@ -226,6 +227,29 @@ pub fn render_bash_execution(
         if i + 1 < lines.len() && i + 1 == max_lines && lines.len() > max_lines {
             out.push(RLine::from(Span::styled(
                 format!("  …({} more lines)", lines.len() - max_lines),
+                theme.fg_style("dim"),
+            )));
+        }
+    }
+
+    // Render stderr in error color, separated by a "stderr:" header so
+    // users can distinguish from stdout. Only emitted when non-empty.
+    let stderr_trim = stderr.trim();
+    if !stderr_trim.is_empty() {
+        let stderr_lines: Vec<&str> = stderr_trim.lines().collect();
+        out.push(RLine::from(Span::styled(
+            "  stderr:".to_string(),
+            theme.fg_style("error").add_modifier(ratatui::style::Modifier::BOLD),
+        )));
+        for line in stderr_lines.iter().take(max_lines) {
+            out.push(RLine::from(Span::styled(
+                format!("  {line}"),
+                theme.fg_style("error"),
+            )));
+        }
+        if stderr_lines.len() > max_lines {
+            out.push(RLine::from(Span::styled(
+                format!("  …({} more stderr lines)", stderr_lines.len() - max_lines),
                 theme.fg_style("dim"),
             )));
         }
@@ -408,7 +432,8 @@ mod tests {
 
     #[test]
     fn render_bash_execution_with_status() {
-        let lines = render_bash_execution("ls", "file1\nfile2", true, Some(0), 42, &theme());
+        let lines =
+            render_bash_execution("ls", "file1\nfile2", "", true, Some(0), 42, &theme());
         // Header + output lines.
         assert!(lines.len() >= 2);
         // First line is the banner.
@@ -428,7 +453,8 @@ mod tests {
         for i in 0..100 {
             out.push_str(&format!("line {i}\n"));
         }
-        let lines = render_bash_execution("cat big", &out, true, Some(0), 100, &theme());
+        let lines =
+            render_bash_execution("cat big", &out, "", true, Some(0), 100, &theme());
         assert!(lines.len() <= 18); // banner + 16 max + truncation marker
     }
 
@@ -437,6 +463,7 @@ mod tests {
         let lines = render_bash_execution(
             "echo",
             "\x1b[32mgreen\x1b[0m text",
+            "",
             true,
             Some(0),
             5,
@@ -447,6 +474,26 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
         assert!(!joined.contains('\x1b'));
+    }
+
+    #[test]
+    fn render_bash_execution_with_stderr() {
+        let lines = render_bash_execution(
+            "bash",
+            "ok",
+            "warning: something",
+            true,
+            Some(0),
+            1,
+            &theme(),
+        );
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(joined.contains("ok"), "stdout missing");
+        assert!(joined.contains("warning: something"), "stderr missing");
+        assert!(joined.contains("stderr"), "stderr header missing");
     }
 
     #[test]

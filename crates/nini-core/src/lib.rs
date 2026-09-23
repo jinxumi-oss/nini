@@ -6,6 +6,7 @@ pub mod branch_summary;
 pub mod agent;
 
 pub mod entries;
+pub mod git;
 pub mod model_runtime;
 pub mod overflow;
 pub mod project_trust;

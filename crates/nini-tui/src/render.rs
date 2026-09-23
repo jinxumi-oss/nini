@@ -330,6 +330,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
             TranscriptLine::BashExecution {
                 cmd,
                 output,
+                stderr,
                 ok,
                 exit_code,
                 duration_ms,
@@ -339,6 +340,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 let lines = render_bash_execution(
                     cmd,
                     output,
+                    stderr,
                     *ok,
                     *exit_code,
                     *duration_ms,
@@ -462,10 +464,18 @@ fn render_completion_popup(f: &mut Frame, state: &AppState, theme: &Theme, area:
         return;
     }
 
+    // Compute the visible window of items. Default viewport is 8 rows;
+    // arrow keys scroll within the bounds when the list is longer.
+    let max_visible = popup.max_visible.max(1);
+    let total = popup.items.len();
+    let start = popup.scroll_offset.min(total.saturating_sub(1));
+    let end = (start + max_visible).min(total);
     let lines: Vec<RLine> = popup
         .items
         .iter()
         .enumerate()
+        .skip(start)
+        .take(end - start)
         .map(|(i, item)| {
             let is_selected = i == popup.selected;
             let name_style = if is_selected {
@@ -493,10 +503,24 @@ fn render_completion_popup(f: &mut Frame, state: &AppState, theme: &Theme, area:
             RLine::from(spans)
         })
         .collect();
+
+    // Title shows scroll position when the popup is long enough to
+    // overflow — gives users a concrete "3/23" indicator so they know
+    // there's more.
+    let title = if total > max_visible {
+        format!(
+            " commands ({}/{} ≤, ↑↓ navigate) ",
+            popup.selected + 1,
+            total
+        )
+    } else {
+        " commands (up/down select, Tab/Enter accept, Esc cancel) ".to_string()
+    };
+
     let para = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" commands (up/down select, Tab/Enter accept, Esc cancel) ")
+            .title(title)
             .border_style(theme.fg_style("accent")),
     );
     f.render_widget(para, area);

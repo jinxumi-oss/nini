@@ -43,6 +43,10 @@ pub enum CommandId {
     Prompt,
     Reload,
     Quit,
+    Help,
+    Debug,
+    Status,
+    Editor,
 }
 
 /// Static definition: name, description, argument hint.
@@ -201,6 +205,30 @@ pub const REGISTRY: &[CommandDef] = &[
         None,
     ),
     CommandDef::new(CommandId::Quit, "quit", "Quit nini", None),
+    CommandDef::new(
+        CommandId::Help,
+        "help",
+        "Show the help overlay (full list of slash commands)",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Debug,
+        "debug",
+        "Toggle verbose debug logging to ~/.nini/state.log",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Status,
+        "status",
+        "Show current session info: tokens, cwd, git branch, cost",
+        None,
+    ),
+    CommandDef::new(
+        CommandId::Editor,
+        "editor",
+        "Open the current prompt in $VISUAL / $EDITOR / nano for multi-line editing",
+        None,
+    ),
 ];
 
 /// Look up a command by name (case-sensitive, exact match).
@@ -217,7 +245,11 @@ pub fn by_name(name: &str) -> Option<&'static CommandDef> {
 /// The list is capped at `limit` (default 8).
 pub fn complete(query: &str, limit: usize) -> Vec<&'static CommandDef> {
     if query.is_empty() {
-        return REGISTRY.iter().take(limit).collect();
+        // Empty query: return ALL commands, not just the first `limit`.
+        // The popup's scroll_offset will clip to the viewport, so users
+        // can scroll past the first 8 with arrow keys. v0.5 hard-capped
+        // at 8 and hid 20 commands; v0.6 makes everything reachable.
+        return REGISTRY.iter().collect();
     }
     let q = query.to_lowercase();
     let mut scored: Vec<(usize, &CommandDef)> = REGISTRY
@@ -1183,20 +1215,60 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
         }
         CommandId::Resume => {
             // /resume [n] — list available sessions or load by index.
-            // Scans ~/.pi/agent/sessions/ for .jsonl files.
-            fn session_entries() -> Vec<std::fs::DirEntry> {
-                let home = std::env::var("HOME").ok();
-                let base = home.as_deref()
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| std::path::PathBuf::from("."));
-                let dir = base.join(".pi").join("agent").join("sessions");
-                std::fs::read_dir(&dir)
-                    .ok()
+            // Scans ~/.pi/agent/sessions/ recursively for .jsonl files.
+            // v0.5 only read the top-level directory and missed the
+            // per-cwd subdirectories where nini actually writes its
+            // sessions; v0.6 uses walkdir to find them all.
+            fn session_entries() -> Vec<std::path::PathBuf> {
+                let home = match std::env::var("HOME").ok() {
+                    Some(h) => std::path::PathBuf::from(h),
+                    None => return Vec::new(),
+                };
+                let base = home.join(".pi").join("agent").join("sessions");
+                if !base.exists() {
+                    return Vec::new();
+                }
+                let mut out: Vec<std::path::PathBuf> = walkdir::WalkDir::new(&base)
+                    .max_depth(4)
                     .into_iter()
-                    .flatten()
-                    .flatten()
-                    .filter(|e| e.path().extension().map(|s| s == "jsonl").unwrap_or(false))
-                    .collect()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.file_type().is_file()
+                            && e.path().extension().map(|s| s == "jsonl").unwrap_or(false)
+                    })
+                    .map(|e| e.into_path())
+                    .collect();
+                // Sort: cwd-name subdirectory first (matches the user's
+                // current project), then everything else by mtime desc so
+                // recent activity is easy to spot.
+                let cwd_name = std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+                    .unwrap_or_default();
+                out.sort_by(|a, b| {
+                    let a_cwd = a
+                        .components()
+                        .any(|c| c.as_os_str() == cwd_name.as_str());
+                    let b_cwd = b
+                        .components()
+                        .any(|c| c.as_os_str() == cwd_name.as_str());
+                    match (a_cwd, b_cwd) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => {
+                            let a_mt = a
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                            let b_mt = b
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                            b_mt.cmp(&a_mt)
+                        }
+                    }
+                });
+                out
             }
 
             let entries = session_entries();
@@ -1215,8 +1287,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                         entries.len()
                     ));
                 }
-                let entry = &entries[idx - 1];
-                let path = entry.path();
+                let path = entries[idx - 1].clone();
                 if let Err(e) = state.session_load(path.clone()) {
                     return CommandResult::error(format!("Failed to load session: {e}"));
                 }
@@ -1258,9 +1329,10 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             // whose filename contains "claude").
             let filter = args.trim();
             let filter_lower = filter.to_lowercase();
+            const MAX_LIST: usize = 50;
             let mut lines = Vec::new();
             lines.push(format!(
-                "{} session(s) available:",
+                "{} session(s) available (showing up to {MAX_LIST}):",
                 if filter.is_empty() {
                     entries.len().to_string()
                 } else {
@@ -1268,8 +1340,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 }
             ));
             let mut displayed = 0usize;
-            for (i, entry) in entries.iter().enumerate() {
-                let path = entry.path();
+            for (i, path) in entries.iter().enumerate() {
                 let name = path
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
@@ -1278,8 +1349,14 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                     continue;
                 }
                 displayed += 1;
+                if displayed > MAX_LIST {
+                    lines.push(format!(
+                        "(refine with /resume <query> to see the rest)"
+                    ));
+                    break;
+                }
                 // Optional: surface file mtime + size for easy scanning.
-                let meta = entry
+                let meta = path
                     .metadata()
                     .ok()
                     .map(|m| {
@@ -1407,7 +1484,77 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.mode = RunMode::Quitting;
             CommandResult::quit()
         }
+        CommandId::Help => {
+            // Open the help overlay via the selector-open status flag.
+            // The overlay itself lives in the TUI runtime / selector
+            // infrastructure (F014 in the plan wires a polished version).
+            state.status = "open_selector:help".to_string();
+            CommandResult::output(vec![
+                "Type /<tab> to see all commands; F1 toggles extended hints.".to_string(),
+            ])
+        }
+        CommandId::Debug => {
+            // Toggle verbose logging. The log file path mirrors Pi's
+            // ~/.pi/agent/log location; users can `tail -f` it.
+            let new_state = !state.debug_logging;
+            state.debug_logging = new_state;
+            let label = if new_state { "on" } else { "off" };
+            CommandResult::output(vec![format!(
+                "debug logging: {label} ({} per keystroke)",
+                if new_state { "logging" } else { "stopped" }
+            )])
+        }
+        CommandId::Status => {
+            // Render a one-shot status block into the transcript. Matches
+            // Pi's `/status` semantics: a snapshot, not a live view.
+            let lines = build_status_lines(state);
+            CommandResult::output(lines)
+        }
+        CommandId::Editor => {
+            // Open the current input in $VISUAL / $EDITOR / nano.
+            // Synchronous from the dispatcher's POV; the actual spawn is
+            // handled by the runtime (which has access to the file
+            // handles). We just signal it here.
+            state.status = "open_editor:true".to_string();
+            CommandResult::output(vec![
+                "Opening editor…".to_string(),
+            ])
+        }
     }
+}
+
+/// Build the status output lines.
+fn build_status_lines(state: &AppState) -> Vec<String> {
+    let mut out = Vec::new();
+    let cwd = state
+        .cwd
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<unset>".to_string());
+    let branch = state
+        .git_branch
+        .as_deref()
+        .unwrap_or("<not a git repo>");
+    let sid = state
+        .session_id
+        .as_deref()
+        .unwrap_or("<no session>");
+    let transcript_lines = state.transcript.len();
+    let (in_tok, out_tok) = (state.tokens.input, state.tokens.output);
+    out.push(format!("session    : {sid}"));
+    out.push(format!("cwd        : {cwd}"));
+    out.push(format!("git branch : {branch}"));
+    out.push(format!("transcript : {transcript_lines} line(s)"));
+    out.push(format!("tokens     : in={in_tok} out={out_tok}"));
+    out.push(format!("cost       : ${:.4}", state.cost_usd));
+    if state.context_window > 0 {
+        let pct = (state.context_used as f64 / state.context_window as f64) * 100.0;
+        out.push(format!(
+            "context    : {:.0}% of {} (used {})",
+            pct, state.context_window, state.context_used
+        ));
+    }
+    out
 }
 
 /// Render the transcript as a minimal HTML document (used by /export).
@@ -1431,14 +1578,23 @@ fn render_transcript_html(lines: &[TranscriptLine]) -> String {
                     "<p class=\"tool\">[tool call] {name} {args}</p>\n"
                 ));
             }
-            TranscriptLine::BashExecution { cmd, output, ok, exit_code, duration_ms, .. } => {
+            TranscriptLine::BashExecution { cmd, output, stderr, ok, exit_code, duration_ms, .. } => {
                 let status = if *ok { "ok" } else { "fail" };
                 let escaped_output = output
                     .replace('&', "&amp;")
                     .replace('<', "&lt;")
                     .replace('>', "&gt;");
+                let stderr_html = if stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    let escaped_stderr = stderr
+                        .replace('&', "&amp;")
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;");
+                    format!("<pre class=\"bash-stderr\">{escaped_stderr}</pre>")
+                };
                 out.push_str(&format!(
-                    "<p class=\"bash\">! <code>{cmd}</code> [{status}{}] in {duration_ms}ms<br><pre>{escaped_output}</pre></p>\n",
+                    "<p class=\"bash\">! <code>{cmd}</code> [{status}{}] in {duration_ms}ms<br><pre>{escaped_output}</pre>{stderr_html}</p>\n",
                     exit_code.map(|c| format!(" exit={c}")).unwrap_or_default(),
                 ));
             }
@@ -1477,14 +1633,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_24_commands() {
+    fn registry_has_28_commands() {
         // Pi spec `builtin.json` declares 23 entries (count field), but
-        // nini adds `/prompt` for user-defined prompt templates (loaded
-        // from .pi/prompts/*.md), so 23 + 1 = 24.
+        // nini adds `/prompt` for user-defined prompt templates and the
+        // v0.6 UX gap fixes added `/help`, `/debug`, `/status`,
+        // `/editor`: 23 + 1 + 4 = 28.
         assert_eq!(
             REGISTRY.len(),
-            24,
-            "expected 24 commands (23 Pi builtin + 1 nini /prompt)"
+            28,
+            "expected 28 commands (23 Pi builtin + 1 nini /prompt + 4 v0.6 fixes)"
         );
     }
 
@@ -1544,9 +1701,12 @@ mod tests {
     }
 
     #[test]
-    fn complete_empty_returns_first_n() {
+    fn complete_empty_returns_all() {
+        // v0.6: empty query returns the WHOLE list (popup scrolling
+        // takes care of clipping). v0.5 capped at `limit` which hid
+        // 20 commands from autocomplete.
         let r = complete("", 3);
-        assert_eq!(r.len(), 3);
+        assert!(r.len() >= 28, "expected at least 28 commands, got {}", r.len());
         assert_eq!(r[0].name, "settings");
     }
 

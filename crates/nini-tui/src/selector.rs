@@ -87,16 +87,33 @@ impl Widget for SelectorPanel {
             return;
         }
 
-        // Outer border around the panel.
+        // Outer border around the panel. Fill the inner area with the
+        // theme's background so prior transcript text doesn't bleed
+        // through (v0.5's selector was effectively transparent).
+        let bg_style = self.theme.bg_style("tool_pending_bg");
         let block = ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::ALL)
             .border_style(self.theme.fg_style("borderMuted"))
+            .style(bg_style)
             .title(Span::styled(
                 format!(" {} ", self.title),
                 self.theme.fg_style("accent").add_modifier(Modifier::BOLD),
             ));
         let inner = block.inner(area);
         block.render(area, buf);
+
+        // Explicit Clear over the inner area: ensures the styled background
+        // is applied to every cell, preventing prior transcript content
+        // from bleeding through (visible in v0.5 as text fragments
+        // peeking out between selector rows).
+        let bg = bg_style;
+        for y in inner.y..inner.y.saturating_add(inner.height) {
+            for x in inner.x..inner.x.saturating_add(inner.width) {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_style(bg);
+                }
+            }
+        }
 
         if inner.height < 2 {
             return;

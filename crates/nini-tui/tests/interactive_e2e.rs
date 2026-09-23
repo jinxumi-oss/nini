@@ -100,6 +100,7 @@ fn fixture_driver(turns: Vec<Vec<FixtureTurn>>) -> AgentDriver {
                             sink.push(AgentEventLite::Usage(
                                 usage.input_tokens,
                                 usage.output_tokens,
+                                0.0,
                             ));
                             AgentEventLite::TurnEnd
                         }
@@ -1133,7 +1134,7 @@ async fn agent_sink_handles_all_variants() {
     sink.push(AgentEventLite::ToolResult { ok: true, content: "ok".into() , details: None});
     sink.push(AgentEventLite::TurnEnd);
     sink.push(AgentEventLite::Error("e".into()));
-    sink.push(AgentEventLite::Usage(10, 5));
+    sink.push(AgentEventLite::Usage(10, 5, 0.0));
     sink.push(AgentEventLite::PhaseChanged("Working".into()));
     // Should not have panicked. Note: pushing `Done` would reset status
     // back to "ready" — so we assert before that.

@@ -395,9 +395,13 @@ async fn main() -> Result<()> {
                                  details: None}
                             }
                             Ok(AgentEvent::TurnEnd { usage, .. }) => {
+                                // `ProviderUsage` doesn't carry cost today;
+                                // pass 0.0 so cost_usd only updates when a
+                                // future Usage variant surfaces it.
                                 sink.push(nini_tui::runtime::AgentEventLite::Usage(
                                     usage.input_tokens,
                                     usage.output_tokens,
+                                    0.0,
                                 ));
                                 nini_tui::runtime::AgentEventLite::TurnEnd
                             }
@@ -430,6 +434,22 @@ async fn main() -> Result<()> {
                         }
                         if let Some(m) = s.model {
                             state.model = m;
+                        }
+                        // Seed state.cwd / state.git_branch so the status
+                        // bar can render them (previously only declared in
+                        // AppState, never populated).
+                        state.set_status_bar_metadata(
+                            Some(dir.clone()),
+                            nini_core::git::git_branch(dir),
+                        );
+                        // Set context window from the active model so the
+                        // status bar can show ctx% from turn 1.
+                        let mj = nini_core::settings::load_models_json(dir);
+                        if !mj.providers.is_empty() {
+                            let runtime = nini_core::model_runtime::ModelRuntime::from_models_json(&mj);
+                            if let Some(m) = runtime.find_by_id(&state.model) {
+                                state.context_window = m.context_window;
+                            }
                         }
                         // Load models.json to populate the model cycle
                         // (Ctrl+P rotates through these).
@@ -465,10 +485,11 @@ async fn main() -> Result<()> {
                         let skills = load_skills(dir);
                         if !skills.skills.is_empty() {
                             let count = skills.skills.len();
-                            state.push_assistant(format!(
-                                "loaded {count} skills; type to begin, Ctrl+C to quit, F1 for help"
-                            ));
-                            state.push_divider();
+                            // Toast in the status bar instead of a
+                            // transcript banner — the banner was a
+                            // permanent eyesore (and worse, overlapped
+                            // with the selector panel).
+                            state.status = format!("loaded {count} skills — type to begin");
                         }
                     }
 

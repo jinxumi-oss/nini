@@ -42,6 +42,9 @@ impl ModelRuntime {
     pub fn from_models_value(_json: &serde_json::Value) -> Self { Self::with_defaults() }
     pub fn list(&self) -> Vec<ModelSpec> { self.models.clone() }
     pub fn all(&self) -> Vec<ModelSpec> { self.models.clone() }
+    pub fn find_by_id(&self, id: &str) -> Option<ModelSpec> {
+        self.models.iter().find(|m| m.id == id).cloned()
+    }
 }
 
 impl Default for ModelRuntime {
