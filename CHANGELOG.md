@@ -4,6 +4,76 @@ All notable changes to nini will be documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project follows [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-09-23
+
+One commit on top of v0.6.0 closing the last known P0 stub:
+the `/editor` slash command and `Ctrl+G` are now wired to a real
+external editor dance.
+
+### Added
+
+**F020 — External editor (Ctrl+G / `/editor`)**
+
+- New `crates/nini-tui/src/editor.rs` (290 lines): `resolve_editor()`
+  with `$VISUAL` → `$EDITOR` → `nano` → `vi` → `notepad` fallback
+  chain and a tiny `which()` helper; `temp_path()` for per-process
+  unique file paths; `edit_in_external_editor(initial)` writes
+  initial to a temp file with a 2-line header comment (stripped
+  on read-back), spawns the editor synchronously, reads the file
+  back, returns `Some(new_text)` / `None` (no change) / `Err`.
+- New `KeyAction::OpenExternalEditor`, bound to `Ctrl+G`
+  (readline / bash / Pi muscle memory).
+- `AppState.pending_external_editor: bool` flag that the run
+  loop polls on a dedicated 25 ms tick; the dance itself runs
+  via `handle_external_editor_dance()` which:
+  1. Snapshots the input and clears the flag.
+  2. `LeaveAlternateScreen` + `disable_raw_mode` + show cursor.
+  3. Spawns the editor synchronously (run loop is blocked but
+     the TUI is suspended so no UI updates are expected).
+  4. `enable_raw_mode` + `EnterAlternateScreen` + hide cursor.
+  5. Applies the result: `InputBuffer::replace_whole()` for
+     changes, status hint for no-changes, error line for
+     spawn failure.
+  6. `terminal.clear()` to wipe any stale editor output.
+- `InputBuffer::replace_whole(new_text)` — pushes an undo
+  snapshot before swapping, so Ctrl+Z restores the pre-edit
+  buffer. No-op when text is unchanged (avoids polluting the
+  undo stack on round-trip-no-change).
+- The previously dead `/editor` slash command now actually
+  works: it sets `state.pending_external_editor = true`
+  instead of writing a dead status string.
+
+### Test coverage
+
+- **580 tests passing** (was 569 in v0.6.0). All 14 suites green.
+- New tests in `nini-tui::editor`:
+  `temp_path_is_unique_per_call`,
+  `strip_header_drops_only_header`,
+  `strip_header_preserves_content_without_header`,
+  `strip_header_handles_empty_buffer`,
+  `which_finds_absolute_paths`,
+  `which_returns_none_for_nonexistent`,
+  `resolve_editor_finds_something`,
+  `edit_in_external_editor_spawns_and_reads_back`,
+  `replace_whole_noop_when_unchanged`,
+  `replace_whole_swaps_and_pushes_undo`.
+- New keymap test in `nini-tui::keys`:
+  `ctrl_g_opens_external_editor`.
+
+### Known gaps (intentional, for v0.7+)
+
+- Mouse support (click, double-click, wheel) — ratatui
+  `EnableMouseCapture` is enabled but `MouseEventKind` dispatch
+  is not yet wired (`F017`).
+- OSC 52 image paste path (Kitty / iTerm2). Currently
+  `arboard` only (`F018`).
+- OAuth / device-flow auth (env API keys only).
+- ~46 of ~51 Pi providers not yet wired (have 5 builtin:
+  anthropic, openai, openai-responses, openai-compat, fixture).
+- Extension stable C ABI (the v1 host invokes
+  `nini_ext_activate` but extensions register commands directly
+  through the API rather than returning a typed Rust object).
+
 ## [0.6.0] - 2026-09-23
 
 Four commits on top of 0.5.0. The headline is "users can actually
@@ -371,6 +441,7 @@ skeleton to a feature-complete Pi-compatible coding agent.
 
 Initial public release. Not announced on any external channel.
 
+[0.6.1]: https://github.com/jinxumi-oss/nini/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/jinxumi-oss/nini/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jinxumi-oss/nini/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jinxumi-oss/nini/releases/tag/v0.4.0
