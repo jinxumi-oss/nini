@@ -369,11 +369,32 @@ pub struct Agent {
     /// Current phase. Updated by the run loop and emitted via
     /// `AgentEvent::PhaseChanged`.
     phase: AgentPhase,
+    /// v0.7 (M1) hook surface. Mid-run message injection point.
+    /// Defaults to `NoopHooks` so existing callers see no behavior
+    /// change. See `agent_hooks::AgentLoopHooks` for the trait.
+    hooks: Arc<dyn crate::agent_hooks::AgentLoopHooks>,
 }
 
 impl Agent {
     /// Create a new agent.
     pub fn new(provider: Arc<dyn Provider>, tools: ToolRegistry, config: RunConfig) -> Self {
+        Self::with_hooks(
+            provider,
+            tools,
+            config,
+            Arc::new(crate::agent_hooks::NoopHooks),
+        )
+    }
+
+    /// Create a new agent with a custom hook surface. v0.7 — allows
+    /// extensions to inject steering/followup messages (M1) without
+    /// forking nini-core.
+    pub fn with_hooks(
+        provider: Arc<dyn Provider>,
+        tools: ToolRegistry,
+        config: RunConfig,
+        hooks: Arc<dyn crate::agent_hooks::AgentLoopHooks>,
+    ) -> Self {
         Self {
             provider,
             tools,
@@ -388,6 +409,7 @@ impl Agent {
             pending_next_turn_messages: Vec::new(),
             phase: AgentPhase::Idle,
             retry_attempt: 0,
+            hooks,
         }
     }
 
@@ -915,6 +937,22 @@ impl Agent {
 
                 // If no tool calls, we're done. Return to Idle.
                 if tool_calls.is_empty() {
+                    // v0.7 (M1) followup hook: let extensions inject
+                    // final messages before we exit. Defensive: a
+                    // panicking hook falls back to an empty Vec so
+                    // we never crash the run loop on extension bugs.
+                    // Snapshot the references we need OUT of self so the panic
+                    // wrapper doesn't have to claim &self is UnwindSafe
+                    // (it isn't — Agent contains Arc<dyn Trait>).
+                    let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> = self.hooks.clone();
+                    let messages_snapshot = self.messages.clone();
+                    let followup = crate::agent_hooks::catch_hook_panic(
+                        "get_followup_messages",
+                        || hooks_ref.get_followup_messages(&messages_snapshot),
+                    );
+                    for msg in followup {
+                        self.messages.push(msg);
+                    }
                     self.set_phase(AgentPhase::Idle);
                     yield AgentEvent::PhaseChanged(AgentPhase::Idle);
                     return;
@@ -948,7 +986,27 @@ impl Agent {
                         is_error: output.is_error,
                     });
                 }
-                self.messages.push(Message { role: Role::Tool, content: tool_results, timestamp: 0 });
+                self.messages.push(Message { role: Role::Tool, content: tool_results.clone(), timestamp: 0 });
+                // v0.7 (M1) steering hook: let extensions inject
+                // messages between tool execution and the next LLM
+                // call. We pass the LAST TWO messages (the assistant
+                // turn + the tool results we just appended) so the
+                // hook can see what just happened without needing to
+                // take a slice of the entire history. Defensive: a
+                // panicking hook falls back to an empty Vec.
+                let recent: Vec<Message> = if self.messages.len() >= 2 {
+                    self.messages[self.messages.len() - 2..].to_vec()
+                } else {
+                    self.messages.clone()
+                };
+                let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> = self.hooks.clone();
+                let steering = crate::agent_hooks::catch_hook_panic(
+                    "get_steering_messages",
+                    || hooks_ref.get_steering_messages(&recent),
+                );
+                for msg in steering {
+                    self.messages.push(msg);
+                }
                 // Loop again: model will see tool results.
             }
         })
@@ -1740,5 +1798,340 @@ mod llm_summary_in_compaction_entry_tests {
             }
             _ => panic!("expected Text block in first message"),
         }
+    }
+}
+
+/// v0.7 (M1) steering/followup hook integration tests.
+///
+/// The point is to verify that the hooks are wired into `Agent::run`
+/// at the right points and that the default `NoopHooks` reproduces
+/// the v0.6.1 behavior (no messages injected, run loop terminates
+/// cleanly).
+#[cfg(test)]
+mod steering_followup_hook_tests {
+    use super::*;
+    use crate::agent_hooks::{AgentLoopHooks, NoopHooks};
+    use crate::provider::{Capabilities, ContentBlock, Provider, ProviderError, Request, StreamEvent};
+    use futures_core::Stream;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Minimal stub provider that emits one TextDelta and ends the
+    /// turn with no tool calls. Used to exercise the followup hook
+    /// path.
+    struct TextOnlyProvider;
+    impl Provider for TextOnlyProvider {
+        fn name(&self) -> &'static str { "text-only" }
+        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn stream(
+            &self,
+            _req: Request,
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+            Box::pin(futures_util::stream::iter(vec![
+                Ok(StreamEvent::MessageStart {
+                    id: "msg-1".into(),
+                    model: "test".into(),
+                }),
+                Ok(StreamEvent::TextDelta { text: "hi back".into() }),
+                Ok(StreamEvent::MessageStop {
+                    stop_reason: "stop".into(),
+                    usage: Usage::default(),
+                }),
+            ]))
+        }
+    }
+
+    /// Stub provider that emits one tool call. Used to exercise the
+    /// steering hook path (which fires after tool execution).
+    struct ToolCallProvider {
+        tool_name: String,
+    }
+    impl Provider for ToolCallProvider {
+        fn name(&self) -> &'static str { "tool-call" }
+        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn stream(
+            &self,
+            _req: Request,
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+            let name = self.tool_name.clone();
+            Box::pin(futures_util::stream::iter(vec![
+                Ok(StreamEvent::MessageStart {
+                    id: "msg-1".into(),
+                    model: "test".into(),
+                }),
+                Ok(StreamEvent::ToolCallStart {
+                    id: "tc-1".into(),
+                    name: name.clone(),
+                }),
+                Ok(StreamEvent::ToolCallDelta {
+                    id: "tc-1".into(),
+                    input_json_delta: "{}".into(),
+                }),
+                Ok(StreamEvent::ToolCallStop {
+                    id: "tc-1".into(),
+                    input_json: serde_json::json!({}),
+                }),
+                Ok(StreamEvent::MessageStop {
+                    stop_reason: "tool_use".into(),
+                    usage: Usage::default(),
+                }),
+            ]))
+        }
+    }
+
+    /// Test hooks that count how often each was called and remember
+    /// the recent/all message slices they were passed.
+    struct CountingHooks {
+        steering_calls: AtomicUsize,
+        followup_calls: AtomicUsize,
+        steering_to_inject: Vec<Message>,
+        followup_to_inject: Vec<Message>,
+    }
+    impl CountingHooks {
+        fn new(steering: Vec<Message>, followup: Vec<Message>) -> Self {
+            Self {
+                steering_calls: AtomicUsize::new(0),
+                followup_calls: AtomicUsize::new(0),
+                steering_to_inject: steering,
+                followup_to_inject: followup,
+            }
+        }
+        fn steering_count(&self) -> usize {
+            self.steering_calls.load(Ordering::SeqCst)
+        }
+        fn followup_count(&self) -> usize {
+            self.followup_calls.load(Ordering::SeqCst)
+        }
+    }
+    impl AgentLoopHooks for CountingHooks {
+        fn get_steering_messages(&self, _recent: &[Message]) -> Vec<Message> {
+            self.steering_calls.fetch_add(1, Ordering::SeqCst);
+            self.steering_to_inject.clone()
+        }
+        fn get_followup_messages(&self, _all: &[Message]) -> Vec<Message> {
+            self.followup_calls.fetch_add(1, Ordering::SeqCst);
+            self.followup_to_inject.clone()
+        }
+    }
+
+    fn user_msg(text: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: text.into() }],
+            timestamp: 0,
+        }
+    }
+
+    fn agent_with_text_provider(hooks: Arc<dyn AgentLoopHooks>) -> Agent {
+        Agent::with_hooks(
+            Arc::new(TextOnlyProvider),
+            ToolRegistry::new(),
+            RunConfig::new("test-model"),
+            hooks,
+        )
+    }
+
+    /// v0.6.1 behavior: NoopHooks default is wired through `Agent::new`
+    /// and the run loop terminates cleanly with no extra messages.
+    #[tokio::test(flavor = "current_thread")]
+    async fn noop_hooks_yields_no_extra_messages() {
+        let mut agent = agent_with_text_provider(Arc::new(NoopHooks));
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            // Drain the run loop.
+            while let Some(_ev) = s.next().await {}
+        }
+        // The run pushed [user "hi"] + [assistant "hi back"] = 2
+        // messages. No followup, no steering.
+        assert_eq!(agent.messages().len(), 2);
+        let user_count = agent
+            .messages()
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .count();
+        let assistant_count = agent
+            .messages()
+            .iter()
+            .filter(|m| m.role == Role::Assistant)
+            .count();
+        assert_eq!(user_count, 1);
+        assert_eq!(assistant_count, 1);
+    }
+
+    /// The followup hook fires exactly once on run completion and
+    /// its returned messages land in the message log in order.
+    #[tokio::test(flavor = "current_thread")]
+    async fn followup_hook_injects_messages_on_run_end() {
+        let followup = vec![
+            user_msg("(followup) also do X"),
+            user_msg("(followup) and Y"),
+        ];
+        let hooks = Arc::new(CountingHooks::new(vec![], followup.clone()));
+        let mut agent = agent_with_text_provider(hooks.clone());
+
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        } // drop s here so we can borrow agent immutably
+
+        assert_eq!(hooks.followup_count(), 1, "followup fires once per run");
+        // 2 base messages + 2 followup = 4
+        assert_eq!(agent.messages().len(), 4);
+        let user_texts: Vec<&str> = agent
+            .messages()
+            .iter()
+            .filter_map(|m| {
+                if m.role != Role::User {
+                    return None;
+                }
+                m.content.iter().find_map(|c| match c {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert_eq!(
+            user_texts,
+            vec!["hi", "(followup) also do X", "(followup) and Y"]
+        );
+    }
+
+    /// The steering hook fires after every round of tool execution,
+    /// not on text-only turns.
+    #[tokio::test(flavor = "current_thread")]
+    async fn steering_hook_fires_only_after_tool_execution() {
+        // Text-only provider → no tool calls → no steering calls.
+        let hooks = Arc::new(CountingHooks::new(vec![], vec![]));
+        let mut agent = agent_with_text_provider(hooks.clone());
+
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+
+        assert_eq!(hooks.steering_count(), 0, "no tool calls → no steering");
+        assert_eq!(hooks.followup_count(), 1);
+    }
+
+    /// When the model DOES call a tool, steering fires once after
+    /// the tool result is appended (before the next LLM iteration).
+    /// The injected messages land in the message log.
+    #[tokio::test(flavor = "current_thread")]
+    async fn steering_hook_injects_after_tool_execution() {
+        // A tool-call provider that calls a tool we DON'T register,
+        // so it fails. The agent still drives through the steering
+        // hook after the (failed) tool result is appended.
+        let steering = vec![user_msg("(steering) please retry with care")];
+        let hooks = Arc::new(CountingHooks::new(steering.clone(), vec![]));
+        let mut agent = Agent::with_hooks(
+            Arc::new(ToolCallProvider {
+                tool_name: "nope".into(),
+            }),
+            ToolRegistry::new(),
+            RunConfig::new("test-model"),
+            hooks.clone(),
+        );
+
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+
+        assert!(
+            hooks.steering_count() >= 1,
+            "steering fires once per tool-execution iteration (got {})",
+            hooks.steering_count()
+        );
+        // Find the injected steering message in the log.
+        let has_steering = agent.messages().iter().any(|m| {
+            m.role == Role::User
+                && m.content.iter().any(|c| match c {
+                    ContentBlock::Text { text } => {
+                        text == "(steering) please retry with care"
+                    }
+                    _ => false,
+                })
+        });
+        assert!(has_steering, "steering message must appear in message log");
+    }
+
+    /// A panicking steering hook must NOT crash the run loop. The
+    /// agent should still complete normally (panic caught, fall
+    /// back to empty Vec).
+    #[tokio::test(flavor = "current_thread")]
+    async fn panicking_steering_hook_does_not_crash_run() {
+        struct PanicHook;
+        impl AgentLoopHooks for PanicHook {
+            fn get_steering_messages(&self, _: &[Message]) -> Vec<Message> {
+                panic!("steering hook explosion");
+            }
+        }
+        let hooks: Arc<dyn AgentLoopHooks> = Arc::new(PanicHook);
+        let mut agent = Agent::with_hooks(
+            Arc::new(ToolCallProvider {
+                tool_name: "nope".into(),
+            }),
+            ToolRegistry::new(),
+            RunConfig::new("test-model"),
+            hooks,
+        );
+
+        use futures_util::StreamExt;
+        let s = agent.run(crate::AgentMessage::user("hi"));
+        tokio::pin!(s);
+        // If the panic weren't handled, this `next().await` would
+        // either return an Err or the test would fail to complete.
+        let mut completed = false;
+        while let Some(_ev) = s.next().await {
+            completed = true;
+        }
+        assert!(completed, "agent run completed (panic swallowed)");
+    }
+
+    /// A panicking followup hook is also caught.
+    #[tokio::test(flavor = "current_thread")]
+    async fn panicking_followup_hook_does_not_crash_run() {
+        struct PanicHook;
+        impl AgentLoopHooks for PanicHook {
+            fn get_followup_messages(&self, _: &[Message]) -> Vec<Message> {
+                panic!("followup hook explosion");
+            }
+        }
+        let hooks: Arc<dyn AgentLoopHooks> = Arc::new(PanicHook);
+        let mut agent = agent_with_text_provider(hooks);
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        // If we got here without panic → contract holds.
+    }
+
+    /// `Agent::new` (the old API) still installs NoopHooks
+    /// implicitly, so existing callers see no behavior change.
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_new_installs_noop_hooks_by_default() {
+        let mut agent = Agent::new(
+            Arc::new(TextOnlyProvider),
+            ToolRegistry::new(),
+            RunConfig::new("test-model"),
+        );
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        // No followup / steering because NoopHooks returns empty.
+        assert_eq!(agent.messages().len(), 2);
     }
 }

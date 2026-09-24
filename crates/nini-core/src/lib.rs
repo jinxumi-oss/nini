@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod branch_summary;
 pub mod agent;
+pub mod agent_hooks;
 
 pub mod entries;
 pub mod git;
