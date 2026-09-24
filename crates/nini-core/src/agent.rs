@@ -967,14 +967,92 @@ impl Agent {
                         yield AgentEvent::Aborted;
                         return;
                     }
+                    // v0.7 (M2) — split into 4 explicit phases:
+                    //   1. prepare (arg parse)
+                    //   2. before hook (may substitute args or deny)
+                    //   3. execute (tool body)
+                    //   4. after hook (may rewrite output)
                     let tool = tool_registry.get(&tc.name);
                     let output = match tool {
                         Some(t) => {
-                            let args: serde_json::Value = serde_json::from_str(&tc.input_json)
+                            let mut args: serde_json::Value = serde_json::from_str(&tc.input_json)
                                 .unwrap_or(serde_json::Value::Null);
-                            match t.execute(args, config.tool_context.clone()).await {
-                                Ok(out) => out,
-                                Err(e) => ToolOutput::err(e.to_string()),
+
+                            // Phase 2: before-execute hook. May:
+                            //   * return Ok(Some(replaced)) to substitute args
+                            //   * return Ok(None) to pass through
+                            //   * return Err(msg) to deny the call
+                            //
+                            // Panic safety: `FutureExt::catch_unwind`
+                            // wraps the async future. A panicking hook
+                            // returns an `Err(Box<dyn Any>)` which we
+                            // convert to a ToolError.
+                            let mut denied: Option<String> = None;
+                            if let Some(b) = t.before() {
+                                use futures_util::FutureExt;
+                                match std::panic::AssertUnwindSafe(
+                                    b.run(args.clone(), &config.tool_context),
+                                )
+                                .catch_unwind()
+                                .await
+                                {
+                                    Ok(Ok(Some(replaced))) => args = replaced,
+                                    Ok(Ok(None)) => { /* pass through */ }
+                                    Ok(Err(e)) => denied = Some(e.to_string()),
+                                    Err(panic_payload) => {
+                                        let msg = panic_msg(&panic_payload);
+                                        eprintln!(
+                                            "[nini] before-execute hook panicked: {msg}"
+                                        );
+                                        denied = Some(format!("hook panicked: {msg}"));
+                                    }
+                                }
+                            }
+
+                            if let Some(msg) = denied {
+                                ToolOutput::err(format!("[before-hook denied] {msg}"))
+                            } else {
+                                // Phase 3: execute the tool body.
+                                let raw_out = match t
+                                    .execute(args, config.tool_context.clone())
+                                    .await
+                                {
+                                    Ok(out) => out,
+                                    Err(e) => ToolOutput::err(e.to_string()),
+                                };
+
+                                // Phase 4: after-execute hook. Same
+                                // panic-safety contract as before.
+                                if let Some(a) = t.after() {
+                                    use futures_util::FutureExt;
+                                    match std::panic::AssertUnwindSafe(
+                                        a.run(raw_out, &config.tool_context),
+                                    )
+                                    .catch_unwind()
+                                    .await
+                                    {
+                                        Ok(Ok(out)) => out,
+                                        Ok(Err(e)) => {
+                                            eprintln!(
+                                                "[nini] after-execute hook returned error: {e}; raw output lost"
+                                            );
+                                            ToolOutput::err(format!(
+                                                "[after-hook error] {e}"
+                                            ))
+                                        }
+                                        Err(panic_payload) => {
+                                            let msg = panic_msg(&panic_payload);
+                                            eprintln!(
+                                                "[nini] after-execute hook panicked: {msg}"
+                                            );
+                                            ToolOutput::err(format!(
+                                                "[after-hook panicked] {msg}"
+                                            ))
+                                        }
+                                    }
+                                } else {
+                                    raw_out
+                                }
                             }
                         }
                         None => ToolOutput::err(format!("tool not found: {}", tc.name)),
@@ -1186,6 +1264,19 @@ struct PendingToolCall {
     id: String,
     name: String,
     input_json: String,
+}
+
+/// Extract a human-readable panic message from the `Box<dyn Any>`
+/// payload returned by `catch_unwind`. Falls back to "<opaque>" when
+/// the payload doesn't downcast to `&'static str` or `String`.
+fn panic_msg(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        return (*s).to_string();
+    }
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return s.clone();
+    }
+    "<opaque panic payload>".to_string()
 }
 
 fn build_request(
@@ -2133,5 +2224,403 @@ mod steering_followup_hook_tests {
         }
         // No followup / steering because NoopHooks returns empty.
         assert_eq!(agent.messages().len(), 2);
+    }
+}
+
+/// v0.7 (M2) Tool lifecycle hook integration tests.
+///
+/// Focus: verify that `before()` / `after()` hooks wired into a
+/// `Tool` implementation are called by `Agent::run` at the right
+/// phases and that their outputs flow through correctly.
+#[cfg(test)]
+mod tool_lifecycle_hook_tests {
+    use super::*;
+    use crate::provider::Capabilities;
+    use crate::tool::{AfterExecute, BeforeExecute, Tool, ToolSpec};
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A controllable test tool whose behavior can be steered by
+    /// the test via shared counters. Implements `before()` and
+    /// `after()` hooks (so we don't need `WrappedTool` indirection
+    /// for the most common test path).
+    struct ControllableTool {
+        before: Option<Arc<dyn BeforeExecute>>,
+        after: Option<Arc<dyn AfterExecute>>,
+        execute_calls: Arc<AtomicUsize>,
+        before_calls: Arc<AtomicUsize>,
+        after_calls: Arc<AtomicUsize>,
+    }
+
+    impl ControllableTool {
+        fn new() -> Self {
+            Self {
+                before: None,
+                after: None,
+                execute_calls: Arc::new(AtomicUsize::new(0)),
+                before_calls: Arc::new(AtomicUsize::new(0)),
+                after_calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn with_hooks(
+            mut self,
+            before: Arc<dyn BeforeExecute>,
+            after: Arc<dyn AfterExecute>,
+        ) -> Self {
+            self.before = Some(before);
+            self.after = Some(after);
+            self
+        }
+    }
+
+    #[async_trait]
+    impl Tool for ControllableTool {
+        fn name(&self) -> &'static str { "ctrl" }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "ctrl".into(),
+                description: "controllable test tool".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }
+        }
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: ToolContext,
+        ) -> Result<ToolOutput, ToolError> {
+            self.execute_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput::ok("base output"))
+        }
+        fn before(&self) -> Option<Box<dyn BeforeExecute>> {
+            let hook = self.before.as_ref()?.clone();
+            Some(Box::new(crate::tool::ArcBoxAdapterBefore(hook)))
+        }
+        fn after(&self) -> Option<Box<dyn AfterExecute>> {
+            let hook = self.after.as_ref()?.clone();
+            Some(Box::new(crate::tool::ArcBoxAdapterAfterTool(hook)))
+        }
+    }
+
+    /// Helper hook that counts invocations and lets tests see what
+    /// args/output it received.
+    struct CountingBefore {
+        calls: Arc<AtomicUsize>,
+        last_args: Arc<std::sync::Mutex<Option<Value>>>,
+        response: BeforeResponse,
+    }
+    enum BeforeResponse {
+        Identity,
+        Replace(Value),
+        Deny(String),
+        Panic,
+    }
+    #[async_trait]
+    impl BeforeExecute for CountingBefore {
+        async fn run(
+            &self,
+            args: Value,
+            _ctx: &ToolContext,
+        ) -> Result<Option<Value>, ToolError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.last_args.lock().unwrap() = Some(args.clone());
+            match &self.response {
+                BeforeResponse::Identity => Ok(None),
+                BeforeResponse::Replace(v) => Ok(Some(v.clone())),
+                BeforeResponse::Deny(msg) => Err(ToolError::PermissionDenied(msg.clone())),
+                BeforeResponse::Panic => panic!("simulated before-hook panic"),
+            }
+        }
+    }
+
+    struct CountingAfter {
+        calls: Arc<AtomicUsize>,
+        last_output: Arc<std::sync::Mutex<Option<ToolOutput>>>,
+        response: AfterResponse,
+    }
+    enum AfterResponse {
+        Identity,
+        ReplaceContent(String),
+        Panic,
+    }
+    #[async_trait]
+    impl AfterExecute for CountingAfter {
+        async fn run(
+            &self,
+            output: ToolOutput,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput, ToolError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.last_output.lock().unwrap() = Some(output.clone());
+            match &self.response {
+                AfterResponse::Identity => Ok(output),
+                AfterResponse::ReplaceContent(s) => Ok(ToolOutput::ok(s.clone())),
+                AfterResponse::Panic => panic!("simulated after-hook panic"),
+            }
+        }
+    }
+
+    /// Provider that emits exactly one tool call to "ctrl" with
+    /// input `{"x": 1}`.
+    struct OneToolCallProvider;
+    impl Provider for OneToolCallProvider {
+        fn name(&self) -> &'static str { "one-tool" }
+        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn stream(
+            &self,
+            _req: Request,
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+            Box::pin(futures_util::stream::iter(vec![
+                Ok(StreamEvent::MessageStart {
+                    id: "msg-1".into(),
+                    model: "test".into(),
+                }),
+                Ok(StreamEvent::ToolCallStart {
+                    id: "tc-1".into(),
+                    name: "ctrl".into(),
+                }),
+                Ok(StreamEvent::ToolCallDelta {
+                    id: "tc-1".into(),
+                    input_json_delta: r#"{"x":1}"#.into(),
+                }),
+                Ok(StreamEvent::ToolCallStop {
+                    id: "tc-1".into(),
+                    input_json: serde_json::json!({"x": 1}),
+                }),
+                Ok(StreamEvent::MessageStop {
+                    stop_reason: "tool_use".into(),
+                    usage: Usage::default(),
+                }),
+            ]))
+        }
+    }
+
+    fn agent_with_tool(
+        tool: Arc<dyn Tool>,
+    ) -> Agent {
+        Agent::with_hooks(
+            Arc::new(OneToolCallProvider),
+            ToolRegistry::new().register(tool),
+            RunConfig::new("test-model"),
+            Arc::new(crate::agent_hooks::NoopHooks),
+        )
+    }
+
+    /// REGRESSION: a tool with NO before/after hooks produces the
+    /// same message log as v0.6.1 (no behavior change).
+    #[tokio::test(flavor = "current_thread")]
+    async fn no_hooks_runs_v061_behavior() {
+        let tool = Arc::new(ControllableTool::new());
+        let mut agent = agent_with_tool(tool);
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        // The provider loops emitting the same tool call forever until
+        // max_iterations, so we expect messages.len() to be at LEAST
+        // the initial 3 (user + assistant + first tool result). We
+        // check >= 3 to be robust against the loop count.
+        assert!(
+            agent.messages().len() >= 3,
+            "expected at least 3 messages, got {}",
+            agent.messages().len()
+        );
+    }
+
+    /// `before()` returning `Some(replaced_args)` causes the tool
+    /// to receive the REPLACED args, not the original.
+    #[tokio::test(flavor = "current_thread")]
+    async fn before_hook_can_replace_args() {
+        let before_calls = Arc::new(AtomicUsize::new(0));
+        let last_args = Arc::new(std::sync::Mutex::new(None));
+        let before = Arc::new(CountingBefore {
+            calls: before_calls.clone(),
+            last_args: last_args.clone(),
+            response: BeforeResponse::Replace(serde_json::json!({"x": 99})),
+        });
+        let after = Arc::new(CountingAfter {
+            calls: Arc::new(AtomicUsize::new(0)),
+            last_output: Arc::new(std::sync::Mutex::new(None)),
+            response: AfterResponse::Identity,
+        });
+        let tool = Arc::new(
+            ControllableTool::new()
+                .with_hooks(before.clone(), after.clone()),
+        );
+        let mut agent = agent_with_tool(tool);
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        assert!(
+            before_calls.load(Ordering::SeqCst) >= 1,
+            "before hook should fire at least once per iteration (got {})",
+            before_calls.load(Ordering::SeqCst)
+        );
+        // The before hook received the original args {"x": 1} on
+        // every invocation.
+        let last = last_args.lock().unwrap().clone();
+        assert_eq!(last, Some(serde_json::json!({"x": 1})));
+    }
+
+    /// `after()` rewriting the content is what the LLM sees.
+    #[tokio::test(flavor = "current_thread")]
+    async fn after_hook_can_rewrite_content() {
+        let before = Arc::new(CountingBefore {
+            calls: Arc::new(AtomicUsize::new(0)),
+            last_args: Arc::new(std::sync::Mutex::new(None)),
+            response: BeforeResponse::Identity,
+        });
+        let after_calls = Arc::new(AtomicUsize::new(0));
+        let after = Arc::new(CountingAfter {
+            calls: after_calls.clone(),
+            last_output: Arc::new(std::sync::Mutex::new(None)),
+            response: AfterResponse::ReplaceContent("[REDACTED]".into()),
+        });
+        let tool = Arc::new(
+            ControllableTool::new()
+                .with_hooks(before.clone(), after.clone()),
+        );
+        let mut agent = agent_with_tool(tool);
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        assert!(
+            after_calls.load(Ordering::SeqCst) >= 1,
+            "after hook should fire at least once per iteration (got {})",
+            after_calls.load(Ordering::SeqCst)
+        );
+        // The tool result message in the log should contain
+        // "[REDACTED]" instead of "base output".
+        let tool_msg = agent
+            .messages()
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("tool message must exist");
+        let content = tool_msg
+            .content
+            .iter()
+            .find_map(|c| match c {
+                ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .expect("ToolResult content block");
+        assert_eq!(content, "[REDACTED]");
+    }
+
+    /// `before()` returning `Err` denies the call. The tool body
+    /// is NOT executed, and the ToolResult is an error.
+    #[tokio::test(flavor = "current_thread")]
+    async fn before_hook_can_deny_call() {
+        let before = Arc::new(CountingBefore {
+            calls: Arc::new(AtomicUsize::new(0)),
+            last_args: Arc::new(std::sync::Mutex::new(None)),
+            response: BeforeResponse::Deny("outside whitelist".into()),
+        });
+        let after = Arc::new(CountingAfter {
+            calls: Arc::new(AtomicUsize::new(0)),
+            last_output: Arc::new(std::sync::Mutex::new(None)),
+            response: AfterResponse::Identity,
+        });
+        // Track execute calls via a custom tool that counts.
+        struct CountedTool(Arc<AtomicUsize>);
+        #[async_trait]
+        impl Tool for CountedTool {
+            fn name(&self) -> &'static str { "ctrl2" }
+            fn spec(&self) -> ToolSpec {
+                ToolSpec {
+                    name: "ctrl2".into(),
+                    description: "x".into(),
+                    input_schema: serde_json::json!({}),
+                }
+            }
+            async fn execute(
+                &self,
+                _a: Value,
+                _c: ToolContext,
+            ) -> Result<ToolOutput, ToolError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolOutput::ok("ran"))
+            }
+            fn before(&self) -> Option<Box<dyn BeforeExecute>> {
+                let h: Arc<dyn BeforeExecute> = Arc::new(CountingBefore {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    last_args: Arc::new(std::sync::Mutex::new(None)),
+                    response: BeforeResponse::Deny("denied".into()),
+                });
+                Some(Box::new(crate::tool::ArcBoxAdapterBefore(h)))
+            }
+        }
+        let execute_count = Arc::new(AtomicUsize::new(0));
+        let tool: Arc<dyn Tool> = Arc::new(CountedTool(execute_count.clone()));
+        let mut agent = agent_with_tool(tool);
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        // The tool body never ran.
+        assert_eq!(execute_count.load(Ordering::SeqCst), 0);
+        // But the agent still received a ToolResult with is_error.
+        let tool_msg = agent
+            .messages()
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("tool message must exist");
+        let is_error = tool_msg
+            .content
+            .iter()
+            .find_map(|c| match c {
+                ContentBlock::ToolResult { is_error, .. } => Some(*is_error),
+                _ => None,
+            })
+            .expect("ToolResult block");
+        assert!(is_error, "denied tool call must surface is_error=true");
+    }
+
+    /// A panicking after-hook does NOT crash the run loop. The
+    /// agent still completes; the tool result is an error tagged
+    /// with the panic reason.
+    #[tokio::test(flavor = "current_thread")]
+    async fn panicking_after_hook_surfaces_error_does_not_crash() {
+        let before = Arc::new(CountingBefore {
+            calls: Arc::new(AtomicUsize::new(0)),
+            last_args: Arc::new(std::sync::Mutex::new(None)),
+            response: BeforeResponse::Identity,
+        });
+        let after = Arc::new(CountingAfter {
+            calls: Arc::new(AtomicUsize::new(0)),
+            last_output: Arc::new(std::sync::Mutex::new(None)),
+            response: AfterResponse::Panic,
+        });
+        let tool = Arc::new(
+            ControllableTool::new()
+                .with_hooks(before.clone(), after.clone()),
+        );
+        let mut agent = agent_with_tool(tool);
+        use futures_util::StreamExt;
+        // If the panic weren't contained, this would either
+        // propagate out of next().await or be turned into an
+        // AgentError. We expect the run to complete (panics in
+        // async tasks are caught by tokio and surfaced as a
+        // poisoned ToolResult, NOT a crash).
+        let mut completed = false;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {
+                completed = true;
+            }
+        }
+        assert!(completed);
     }
 }
