@@ -144,7 +144,7 @@ fn type_str(s: &str) -> Vec<Key> {
 async fn submit_triggers_agent_and_renders_response() {
     let mut state = AppState::new("test-model");
     let shared = shared_state(state.clone());
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
 
     // Pre-fill the input as if user typed it
     for c in "echo hello".chars() {
@@ -224,7 +224,7 @@ async fn multiple_submits_accumulate_in_transcript() {
             usage: Usage::default(),
         },
     ]];
-    let sink1 = AgentSink::new(shared.clone());
+    let sink1 = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let driver1 = make_fixture_driver(turns1);
     let done1 = Arc::new(Notify::new());
     driver1("first question".into(), sink1, done1.clone());
@@ -238,7 +238,7 @@ async fn multiple_submits_accumulate_in_transcript() {
             usage: Usage::default(),
         },
     ]];
-    let sink2 = AgentSink::new(shared.clone());
+    let sink2 = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let driver2 = make_fixture_driver(turns2);
     let done2 = Arc::new(Notify::new());
     driver2("second question".into(), sink2, done2.clone());
@@ -268,7 +268,7 @@ async fn multiple_submits_accumulate_in_transcript() {
 #[tokio::test]
 async fn agent_error_is_recorded() {
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
 
     // Push an error event directly via the sink
     sink.push(AgentEventLite::Error("boom".to_string()));
@@ -286,7 +286,7 @@ async fn agent_error_is_recorded() {
 #[tokio::test]
 async fn token_usage_accumulates() {
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
 
     sink.push(AgentEventLite::Usage(100, 50, 0.0));
     sink.push(AgentEventLite::Usage(200, 100, 0.0));
@@ -309,7 +309,7 @@ async fn token_usage_accumulates() {
 #[tokio::test]
 async fn tool_call_args_are_updated_on_stop() {
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
 
     sink.push(AgentEventLite::ToolCallStart {
         name: "bash".to_string(),
@@ -348,7 +348,7 @@ async fn tool_call_args_are_updated_on_stop() {
 #[tokio::test]
 async fn running_mode_visible_while_agent_runs() {
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
 
     // Set mode to Running (simulating what submit does)
     shared.lock().unwrap().mode = nini_tui::state::RunMode::Running;
@@ -389,7 +389,7 @@ async fn running_mode_visible_while_agent_runs() {
 #[tokio::test]
 async fn multiple_tool_calls_accumulate() {
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
 
     // Three tool calls back to back (realistic for bash → read → edit)
     sink.push(AgentEventLite::ToolCallStart {
@@ -468,7 +468,7 @@ async fn full_pipeline_drive_keys_then_run_agent() {
 
     // 2. Set up shared state + driver
     let shared = shared_state(state);
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let driver: nini_tui::runtime::AgentDriver = Arc::new(make_fixture_driver(vec![
         vec![
             FixtureTurn::ToolCall {
@@ -522,7 +522,7 @@ async fn full_pipeline_drive_keys_then_run_agent() {
 async fn concurrent_sink_pushes_dont_panic() {
     use std::sync::Arc;
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
 
     let mut handles = vec![];
     for _ in 0..5 {

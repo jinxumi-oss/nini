@@ -324,7 +324,7 @@ async fn multi_turn_agent_via_sink() {
         g.push_divider();
         g.mode = RunMode::Running;
     }
-    let sink1 = AgentSink::new(shared.clone());
+    let sink1 = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let done1 = Arc::new(Notify::new());
     drop(driver("hi".into(), sink1, done1.clone()));
     done1.notified().await;
@@ -344,7 +344,7 @@ async fn multi_turn_agent_via_sink() {
         g.push_divider();
         g.mode = RunMode::Running;
     }
-    let sink2 = AgentSink::new(shared.clone());
+    let sink2 = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let done2 = Arc::new(Notify::new());
     drop(driver("use bash".into(), sink2, done2.clone()));
     done2.notified().await;
@@ -1101,7 +1101,7 @@ async fn phase_changed_event_updates_state_status() {
     use nini_tui::runtime::{AgentEventLite, AgentSink};
     let state = AppState::new("test-model");
     let shared = shared_state(state);
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     // Simulate the agent emitting phase transitions.
     sink.push(AgentEventLite::PhaseChanged("Working".into()));
     {
@@ -1126,7 +1126,7 @@ async fn agent_sink_handles_all_variants() {
     use nini_tui::runtime::{AgentEventLite, AgentSink};
     let state = AppState::new("test-model");
     let shared = shared_state(state);
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     // Fire one of every variant; none should panic.
     sink.push(AgentEventLite::TextDelta("a".into()));
     sink.push(AgentEventLite::ToolCallStart { name: "bash".into() });

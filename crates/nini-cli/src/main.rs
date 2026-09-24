@@ -449,14 +449,24 @@ async fn main() -> Result<()> {
                     let cwd = std::env::current_dir().ok();
                     if let Some(ref dir) = cwd {
                         let s = load_settings(dir);
-                        if let Some(p) = s.provider {
-                            state.model = p;
+                        // v0.7.4 (UX fix) — priority order:
+                        //   1. CLI --model flag (passed via `model` capture)
+                        //   2. settings.json `model` field
+                        //   3. settings.json `provider` field (fallback name)
+                        //   4. "test-model" (last resort)
+                        // The original v0.7.2 code read `s.provider` first,
+                        // which meant the status bar showed "openai-compat"
+                        // (the provider name) instead of the actual model.
+                        let picked = if !model.is_empty() {
+                            model.clone()
+                        } else if let Some(m) = s.model.clone() {
+                            m
+                        } else if let Some(p) = s.provider.clone() {
+                            p
                         } else {
-                            state.model = "test-model".to_string();
-                        }
-                        if let Some(m) = s.model {
-                            state.model = m;
-                        }
+                            "test-model".to_string()
+                        };
+                        state.model = picked;
                         // Seed state.cwd / state.git_branch so the status
                         // bar can render them (previously only declared in
                         // AppState, never populated).

@@ -109,6 +109,16 @@ impl Provider for OpenAiProvider {
 struct StreamState {
     tool_calls: std::collections::HashMap<u32, BuildingToolCall>,
     finish_reason: Option<String>,
+    /// v0.7.4 (UX fix) — strip `<think>...</think>` reasoning blocks
+    /// from streaming text. Some OpenAI-compat models (e.g.,
+    /// MiniMax-M3) emit reasoning inline; without this filter,
+    /// users see the model's "thinking" in the transcript.
+    think_filter: ThinkTagFilter,
+}
+
+fn build_request_body(req: &Request) -> Result<String, ProviderError> {
+    let body = OpenAiRequest::from_neutral(req)?;
+    serde_json::to_string(&body).map_err(ProviderError::from)
 }
 
 #[derive(Debug, Default)]
@@ -118,9 +128,114 @@ struct BuildingToolCall {
     input_json: String,
 }
 
-fn build_request_body(req: &Request) -> Result<String, ProviderError> {
-    let body = OpenAiRequest::from_neutral(req)?;
-    serde_json::to_string(&body).map_err(ProviderError::from)
+/// v0.7.4 (UX fix) — MiniMax-M3 and similar reasoning-capable models
+/// return the model's "thinking" in the same `delta.content` field
+/// as the actual answer, wrapped in `<think>...</think>` tags.
+/// Without stripping, the user sees the model's internal monologue
+/// before the real answer.
+///
+/// `ThinkTagFilter` is a stateful filter that walks chunks of text
+/// in order and emits only the content OUTSIDE `<think>...</think>`
+/// blocks. Tags may span chunk boundaries (e.g., chunk N ends
+/// with `<` and chunk N+1 starts with `mm:think>`), so the filter
+/// holds back text from the last `<` to the end of the chunk in
+/// case it grows into a tag on the next call.
+#[derive(Debug, Default)]
+struct ThinkTagFilter {
+    /// Whether we're currently inside a `<think>...</think>` block.
+    in_think: bool,
+    /// Text carried over from previous chunks when a tag might be
+    /// split across the boundary. Cleared once the tag resolves.
+    buffer: String,
+}
+
+impl ThinkTagFilter {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed a chunk of text and get back the portion that should be
+    /// shown (text with `<think>...</think>` removed).
+    fn push(&mut self, text: &str) -> String {
+        let mut work = std::mem::take(&mut self.buffer);
+        work.push_str(text);
+
+        let mut out = String::new();
+        let mut i = 0;
+        while i < work.len() {
+            if self.in_think {
+                // Look for closing tag.
+                if let Some(end) = find_subseq(work.as_bytes(), b"</think>", i) {
+                    i = end + b"</think>".len();
+                    self.in_think = false;
+                } else {
+                    // No closing tag in this chunk — hold back from
+                    // the last `<` (or keep up to 7 chars as a
+                    // partial-tag buffer) and return.
+                    self.buffer = hold_back(&work, i);
+                    return out;
+                }
+            } else {
+                // Look for opening tag.
+                if let Some(start) = find_subseq(work.as_bytes(), b"<think>", i) {
+                    out.push_str(&work[i..start]);
+                    i = start + b"<think>".len();
+                    self.in_think = true;
+                } else {
+                    // No opening tag — emit up to the last `<`, hold
+                    // back the rest as a potential partial tag.
+                    emit_prefix_hold_rest(&mut out, &mut self.buffer, &work, i);
+                    return out;
+                }
+            }
+        }
+        // Consumed all of work. Buffer should be empty.
+        self.buffer.clear();
+        out
+    }
+}
+
+/// Emit everything in `work[i..]` up to the last `<` (if any),
+/// and store the rest in `buffer`. If `work[i..]` has no `<`,
+/// emit everything and clear `buffer`.
+fn emit_prefix_hold_rest(out: &mut String, buffer: &mut String, work: &str, i: usize) {
+    let rest_start = match work[i..].rfind('<') {
+        Some(pos) => i + pos,
+        None => {
+            out.push_str(&work[i..]);
+            buffer.clear();
+            return;
+        }
+    };
+    out.push_str(&work[i..rest_start]);
+    *buffer = work[rest_start..].to_string();
+}
+
+/// Hold back from the last `<` (or 7 chars if no `<`) in
+/// `work[i..]`. Used when we're inside a think block and don't
+/// yet see the closing tag — we may need to keep these bytes
+/// for the next chunk.
+fn hold_back(work: &str, i: usize) -> String {
+    match work[i..].rfind('<') {
+        Some(pos) => work[i + pos..].to_string(),
+        None => {
+            let keep = 7;
+            let start = work.len().saturating_sub(keep);
+            if start >= i { work[start..].to_string() } else { String::new() }
+        }
+    }
+}
+
+fn find_subseq(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || from + needle.len() > haystack.len() {
+        return None;
+    }
+    for i in from..=haystack.len() - needle.len() {
+        if &haystack[i..i + needle.len()] == needle {
+            return Some(i);
+        }
+    }
+    None
 }
 
 fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> {
@@ -146,7 +261,10 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
             if let Some(delta) = c.delta {
                 if let Some(text) = delta.content {
                     if !text.is_empty() {
-                        return Some(StreamEvent::TextDelta { text });
+                        let filtered = state.think_filter.push(&text);
+                        if !filtered.is_empty() {
+                            return Some(StreamEvent::TextDelta { text: filtered });
+                        }
                     }
                 }
                 for tc in delta.tool_calls.unwrap_or_default() {
@@ -492,6 +610,93 @@ impl From<OpenAiUsage> for Usage {
             cache_read_tokens: 0,
             cache_write_tokens: 0,
         }
+    }
+}
+
+/// v0.7.4 (UX fix) tests for the think-tag filter.
+#[cfg(test)]
+mod think_filter_tests {
+    use super::*;
+
+    #[test]
+    fn passes_through_text_without_tags() {
+        let mut f = ThinkTagFilter::new();
+        assert_eq!(f.push("hello world"), "hello world");
+        assert_eq!(f.push(" more text"), " more text");
+    }
+
+    #[test]
+    fn strips_full_think_block() {
+        let mut f = ThinkTagFilter::new();
+        let out = f.push("before<think>reasoning text</think>after");
+        assert_eq!(out, "beforeafter");
+    }
+
+    #[test]
+    fn handles_think_block_at_start() {
+        let mut f = ThinkTagFilter::new();
+        let out = f.push("<think>hidden</think>visible");
+        assert_eq!(out, "visible");
+    }
+
+    #[test]
+    fn handles_think_block_at_end() {
+        let mut f = ThinkTagFilter::new();
+        let out = f.push("visible<think>hidden</think>");
+        assert_eq!(out, "visible");
+    }
+
+    #[test]
+    fn handles_think_block_with_newlines() {
+        let mut f = ThinkTagFilter::new();
+        let out = f.push("<think>line1\nline2\nline3</think>clean");
+        assert_eq!(out, "clean");
+    }
+
+    #[test]
+    fn handles_multiple_think_blocks() {
+        let mut f = ThinkTagFilter::new();
+        let out = f.push("<think>a</think>X<think>b</think>Y<think>c</think>");
+        assert_eq!(out, "XY");
+    }
+
+    #[test]
+    fn handles_unclosed_think_block_across_chunks() {
+        // Chunk 1 ends with "<" — that's the start of "<mm:think>".
+        // Chunk 2 begins with "mm:think>reasoning</think>clean".
+        // The filter must hold back the "<" from chunk 1, recognize
+        // the opening tag in chunk 2, then drop the reasoning.
+        let mut f = ThinkTagFilter::new();
+        assert_eq!(f.push("before<"), "before");
+        assert_eq!(f.push("think>reasoning</think>clean"), "clean");
+    }
+
+    #[test]
+    fn handles_unclosed_closing_tag_across_chunks() {
+        // Chunk 1 ends with "<think>reasoning</" (opening tag opened,
+        // closing tag not yet arrived).
+        // Chunk 2 starts with "think>clean".
+        let mut f = ThinkTagFilter::new();
+        assert_eq!(f.push("<think>reasoning</"), "");
+        assert_eq!(f.push("think>clean"), "clean");
+    }
+
+    #[test]
+    fn empty_input_yields_empty_output() {
+        let mut f = ThinkTagFilter::new();
+        assert_eq!(f.push(""), "");
+    }
+
+    #[test]
+    fn realistic_minimax_output() {
+        // Simulate the typical MiniMax-M3 streaming output.
+        let mut f = ThinkTagFilter::new();
+        let chunk1 = "<think>The user wants me to count.";
+        let chunk2 = " Let me do that now.\n</think>1, 2, 3";
+        let chunk3 = ", 4, 5";
+        assert_eq!(f.push(chunk1), "");
+        assert_eq!(f.push(chunk2), "1, 2, 3");
+        assert_eq!(f.push(chunk3), ", 4, 5");
     }
 }
 

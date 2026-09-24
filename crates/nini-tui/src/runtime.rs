@@ -68,11 +68,18 @@ pub enum AgentEventLite {
 #[derive(Clone)]
 pub struct AgentSink {
     state: SharedState,
+    /// v0.7.4 (UX test fix) — wake the runtime event loop whenever an
+    /// event arrives, so the TUI redraws between events instead of
+    /// waiting for the 50ms tick. Without this, fast agents that
+    /// complete in <50ms never show the "working" / tool-call /
+    /// text-delta intermediate states — the user only sees the final
+    /// "idle" state, which is confusing (looks like nothing happened).
+    notify: Arc<tokio::sync::Notify>,
 }
 
 impl AgentSink {
-    pub fn new(state: SharedState) -> Self {
-        Self { state }
+    pub fn new(state: SharedState, notify: Arc<tokio::sync::Notify>) -> Self {
+        Self { state, notify }
     }
 
     /// Apply an `AgentEventLite` to the state.
@@ -134,6 +141,11 @@ impl AgentSink {
                 }
             }
         }
+        // v0.7.4 (UX fix) — notify the runtime's select! so the TUI
+        // redraws immediately rather than waiting for the 50ms tick.
+        // notify_one() is sufficient — the runtime re-snapshots and
+        // renders on its next loop iteration.
+        self.notify.notify_one();
     }
 
     /// Inject a tool result into the transcript synchronously. Used by local
@@ -301,6 +313,11 @@ async fn run_loop(
 
         let done = Arc::new(Notify::new()); // per-iteration done signal
         let done_for_select = done.clone();
+        // v0.7.4 (UX fix) — cloned notify for the agent sink to wake
+        // the loop between events. Created once per loop iteration
+        // so each submit's sink has its own notification handle.
+        let sink_notify: Arc<tokio::sync::Notify> =
+            Arc::new(tokio::sync::Notify::new());
 
         // Check if submit_user_input signaled a selector-open request via
         // state.status. Run AFTER done.notify_waiters() in submit_user_input.
@@ -454,6 +471,12 @@ async fn run_loop(
             }
             _ = done_for_select.notified() => {
                 // Agent finished; loop will redraw on next iteration.
+            }
+            _ = sink_notify.notified() => {
+                // v0.7.4 (UX fix) — agent emitted an event. Redraw
+                // immediately so the TUI reflects the latest
+                // transcript / status / mode — don't wait for the
+                // 50ms tick.
             }
             // F020: external editor dance. Polled each iteration
             // because the dance is synchronous (we leave alt screen
@@ -1329,6 +1352,21 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
 /// transition the TUI to Running mode. Non-slash input goes to the agent
 /// driver as before.
 pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done: Arc<Notify>) {
+    // v0.7.4 (UX fix) — share a notify with the agent sink so the
+    // runtime's event loop wakes immediately when an agent event
+    // arrives, instead of waiting up to 50ms for the next tick.
+    submit_user_input_inner(shared, agent_driver, done, Arc::new(tokio::sync::Notify::new()))
+}
+
+/// Internal helper for `submit_user_input` — takes an additional
+/// `sink_notify` arg that is passed to the agent sink so the
+/// runtime can wake on each event arrival.
+fn submit_user_input_inner(
+    shared: &SharedState,
+    agent_driver: &AgentDriver,
+    done: Arc<Notify>,
+    sink_notify: Arc<tokio::sync::Notify>,
+) {
     let text = {
         let mut g = shared.lock().unwrap();
         if g.mode != RunMode::Editing {
@@ -1550,7 +1588,7 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
     };
 
     // Spawn the agent task with its own sink.
-    let sink = AgentSink::new(shared.clone());
+    let sink = AgentSink::new(shared.clone(), sink_notify.clone());
     let _handle = (agent_driver)(text, sink, done.clone());
     // The handle is intentionally dropped — the task continues running in
     // the background. We don't abort the agent on quit; the runtime owns
