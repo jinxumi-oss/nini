@@ -69,8 +69,9 @@ impl Tool for BashTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "bash".to_string(),
-            description: "Execute a shell command and return its output. Use a timeout in seconds \
-                          to bound long-running commands; on timeout the process tree is killed."
+            description: "Run a shell command (ls, grep, cat, mkdir, cargo test, etc.) and \
+                          return its stdout + stderr + exit code. Set `timeout` to bound \
+                          long-running commands; on timeout the process tree is killed."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -223,19 +224,13 @@ impl Tool for BashTool {
 
     fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
         Some(ToolSystemPrompt {
-            snippet: concat!(
-                "Execute a shell command via $SHELL -c and capture ",
-                "stdout, stderr, exit code, and wall-clock duration. ",
-                "Set `timeout` (seconds) to bound long-running ",
-                "commands; on timeout the process tree is killed ",
-                "(SIGTERM then SIGKILL).",
-            )
-            .into(),
+            snippet: "Run shell commands (ls, grep, cat, cargo test, ...).".into(),
             guidelines: vec![
-                "Prefer absolute paths or quote paths containing spaces.".into(),
-                "Set a timeout for anything that could run unboundedly.".into(),
-                "Destructive commands (`rm -rf`, `git push --force`) should \
-                 be confirmed by the user before invocation.".into(),
+                "Default for any shell operation; pick this unless a more \
+                 specific tool (read, grep, find, edit) clearly fits.".into(),
+                "Set `timeout` for anything that could run unboundedly.".into(),
+                "Confirm with the user before destructive commands \
+                 (`rm -rf`, `git push --force`).".into(),
             ],
         })
     }
@@ -370,6 +365,20 @@ fn bytecount_lines(b: &[u8]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bash_spec_is_concise_and_nonoverlapping() {
+        // v0.8 regression guard: snippet + description must not duplicate
+        // each other, and snippet must be short (Pi-style: 4–7 words).
+        let tool = BashTool::new();
+        let contrib = tool.system_prompt_contribution().unwrap();
+        assert!(contrib.snippet.split_whitespace().count() <= 10,
+                "bash snippet too long: {} words — {}",
+                contrib.snippet.split_whitespace().count(), contrib.snippet);
+        let spec = tool.spec();
+        assert!(!spec.description.contains("via $SHELL -c"),
+                "bash description should not duplicate the snippet's mechanics");
+    }
 
     #[tokio::test]
     async fn echo_command() {

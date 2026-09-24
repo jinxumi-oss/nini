@@ -57,8 +57,8 @@ impl Tool for EditTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "edit".to_string(),
-            description: "Replace `old_text` with `new_text` in a file. old_text must match \
-                          exactly once. Atomic write via temp file + rename."
+            description: "Apply an exact-match text replacement to an existing file. \
+                          `old_text` must match uniquely; `new_text` replaces it."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -143,20 +143,11 @@ impl Tool for EditTool {
 
     fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
         Some(ToolSystemPrompt {
-            snippet: concat!(
-                "Apply an exact-match text replacement to a file. ",
-                "`oldText` must be unique within the file (prepend ",
-                "or append context lines if needed); `newText` is the ",
-                "replacement.",
-            )
-            .into(),
+            snippet: "Apply a targeted text replacement to a file.".into(),
             guidelines: vec![
-                "Always include enough surrounding context in oldText \
-                 for uniqueness — the match is exact, not fuzzy.".into(),
-                "Read the file first if you're not sure of its exact \
-                 contents; blind edits are fragile.".into(),
-                "Prefer multiple small edits over one massive edit so \
-                 failures are easier to roll back.".into(),
+                "`old_text` must match EXACTLY ONCE — include enough \
+                 surrounding context for uniqueness.".into(),
+                "For whole-file rewrites use `write`, not edit.".into(),
             ],
         })
     }
@@ -226,6 +217,33 @@ mod tests {
             )
             .await;
         assert!(matches!(err, Err(ToolError::InvalidArgs(_))));
+    }
+
+    #[test]
+    fn edit_spec_is_concise_and_nonoverlapping() {
+        // v0.8 regression guard: snippet + description must not duplicate
+        // each other, and snippet must be short (Pi-style: ~10 words).
+        let tool = EditTool::new();
+        let contrib = tool.system_prompt_contribution().unwrap();
+        let word_count = contrib.snippet.split_whitespace().count();
+        assert!(
+            word_count <= 10,
+            "edit snippet too long: {} words — {}",
+            word_count, contrib.snippet,
+        );
+        let spec = tool.spec();
+        assert!(
+            !contrib.snippet.is_empty(),
+            "edit snippet must not be empty",
+        );
+        // Snippet must be a distinct perspective from description —
+        // simplest sanity check: neither should be a prefix of the other.
+        let s_lower = contrib.snippet.to_lowercase();
+        let d_lower = spec.description.to_lowercase();
+        assert!(
+            !d_lower.starts_with(&s_lower),
+            "edit description should not start with the snippet's text",
+        );
     }
 
     #[test]

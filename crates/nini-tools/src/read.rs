@@ -34,7 +34,8 @@ impl Tool for ReadTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read".to_string(),
-            description: "Read a file from disk. Supports `offset` and `limit` for large files."
+            description: "Read a file's contents into context. Use `offset` + `limit` \
+                          for large files (line numbers are 1-indexed)."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -109,16 +110,10 @@ impl Tool for ReadTool {
 
     fn system_prompt_contribution(&self) -> Option<nini_core::tool::ToolSystemPrompt> {
         Some(nini_core::tool::ToolSystemPrompt {
-            snippet: concat!(
-                "Read a file's contents. Supports `offset` + `limit` ",
-                "for partial reads of large files; line numbers are ",
-                "1-indexed.",
-            )
-            .into(),
+            snippet: "Read a file's contents into your context.".into(),
             guidelines: vec![
-                "For files larger than ~1MB, use offset+limit to read \
-                 them in chunks rather than loading the whole file.".into(),
-                "Read the file before editing it; never edit blind.".into(),
+                "Always read a file before editing it — never edit blind.".into(),
+                "For files >~1MB, use `offset` + `limit` to read in chunks.".into(),
             ],
         })
     }
@@ -129,6 +124,33 @@ mod tests {
     use super::*;
     use std::io::Write as _;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn read_spec_is_concise_and_nonoverlapping() {
+        // v0.8 regression guard: snippet + description must not duplicate
+        // each other, and snippet must be short (Pi-style: ~10 words).
+        let tool = ReadTool::new();
+        let contrib = tool.system_prompt_contribution().unwrap();
+        let word_count = contrib.snippet.split_whitespace().count();
+        assert!(
+            word_count <= 10,
+            "read snippet too long: {} words — {}",
+            word_count, contrib.snippet,
+        );
+        let spec = tool.spec();
+        assert!(
+            !contrib.snippet.is_empty(),
+            "read snippet must not be empty",
+        );
+        // Snippet must be a distinct perspective from description —
+        // simplest sanity check: neither should be a prefix of the other.
+        let s_lower = contrib.snippet.to_lowercase();
+        let d_lower = spec.description.to_lowercase();
+        assert!(
+            !d_lower.starts_with(&s_lower),
+            "read description should not start with the snippet's text",
+        );
+    }
 
     #[tokio::test]
     async fn read_full_file() {

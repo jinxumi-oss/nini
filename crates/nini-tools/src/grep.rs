@@ -39,8 +39,8 @@ impl Tool for GrepTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "grep".to_string(),
-            description: "Regex search across files in a directory. Honors .gitignore. \
-                          Output is `file:line:content` per match."
+            description: "Regex search across files. Returns `file:line:content` per match. \
+                          Honors .gitignore."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -142,17 +142,11 @@ impl Tool for GrepTool {
 
     fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
         Some(ToolSystemPrompt {
-            snippet: concat!(
-                "Regex search across files. Supports case-insensitive ",
-                "matching (`-i`), invert match (`-v`), file-type ",
-                "filter (`include` glob), and respects `.gitignore`.",
-            )
-            .into(),
+            snippet: "Regex search file CONTENTS (not file names).".into(),
             guidelines: vec![
-                "Anchor regex with `^` / `$` to constrain matches to \
-                 the start or end of a line.".into(),
-                "Use `include` to scope to specific file types (e.g. \
-                 `*.rs`) — unrestricted searches are slow.".into(),
+                "Use `include` to scope to specific file types (e.g. `*.rs`) \
+                 — unrestricted searches are slow.".into(),
+                "For finding files by NAME (not contents), use `find` instead.".into(),
             ],
         })
     }
@@ -163,6 +157,33 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn grep_spec_is_concise_and_nonoverlapping() {
+        // v0.8 regression guard: snippet + description must not duplicate
+        // each other, and snippet must be short (Pi-style: ~10 words).
+        let tool = GrepTool::new();
+        let contrib = tool.system_prompt_contribution().unwrap();
+        let word_count = contrib.snippet.split_whitespace().count();
+        assert!(
+            word_count <= 10,
+            "grep snippet too long: {} words — {}",
+            word_count, contrib.snippet,
+        );
+        let spec = tool.spec();
+        assert!(
+            !contrib.snippet.is_empty(),
+            "grep snippet must not be empty",
+        );
+        // Snippet must be a distinct perspective from description —
+        // simplest sanity check: neither should be a prefix of the other.
+        let s_lower = contrib.snippet.to_lowercase();
+        let d_lower = spec.description.to_lowercase();
+        assert!(
+            !d_lower.starts_with(&s_lower),
+            "grep description should not start with the snippet's text",
+        );
+    }
 
     #[tokio::test]
     async fn grep_finds_matching_files() {

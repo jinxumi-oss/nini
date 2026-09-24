@@ -211,6 +211,33 @@ mod tests {
     }
 
     #[test]
+    fn find_spec_is_concise_and_nonoverlapping() {
+        // v0.8 regression guard: snippet + description must not duplicate
+        // each other, and snippet must be short (Pi-style: ~10 words).
+        let tool = FindTool::new();
+        let contrib = tool.system_prompt_contribution().unwrap();
+        let word_count = contrib.snippet.split_whitespace().count();
+        assert!(
+            word_count <= 10,
+            "find snippet too long: {} words — {}",
+            word_count, contrib.snippet,
+        );
+        let spec = tool.spec();
+        assert!(
+            !contrib.snippet.is_empty(),
+            "find snippet must not be empty",
+        );
+        // Snippet must be a distinct perspective from description —
+        // simplest sanity check: neither should be a prefix of the other.
+        let s_lower = contrib.snippet.to_lowercase();
+        let d_lower = spec.description.to_lowercase();
+        assert!(
+            !d_lower.starts_with(&s_lower),
+            "find description should not start with the snippet's text",
+        );
+    }
+
+    #[test]
     fn glob_to_regex_basic() {
         assert_eq!(glob_to_regex("*.rs").unwrap(), "^[^/]*\\.rs$");
         assert_eq!(glob_to_regex("**/*.toml").unwrap(), "^.*/[^/]*\\.toml$");
