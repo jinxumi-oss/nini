@@ -4,6 +4,119 @@ All notable changes to nini will be documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project follows [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] - 2026-09-24
+
+One commit on top of v0.7.1. Closes Pi hook #9 — the last
+remaining Pi reference architecture piece.
+
+### Added
+
+**Hook #9 — `system_prompt_contribution`**
+
+- New `ToolSystemPrompt { snippet, guidelines }` struct in
+  `nini_core::tool`. Default = empty; convenience
+  `Self::empty()` for tools that want to opt in with no content.
+- `Tool::system_prompt_contribution(&self) -> Option<ToolSystemPrompt>`
+  trait method (default `None`).
+- `build_system_prompt_with_contributions(base, registry)` —
+  walks every tool, collects contributions, formats Pi-style
+  sections appended to the base prompt.
+- `build_system_prompt(config, registry)` chokepoint in
+  `nini-core/src/agent.rs` — the agent loop calls this once per
+  request, replacing `config.system` with the augmented
+  prompt before `build_request`.
+- The 5 built-in tools (Bash / Read / Edit / Find / Grep) each
+  contribute a snippet + 2–3 guidelines.
+
+### Test coverage
+
+- **675 tests passing** (was 665 in v0.7.1). 10 new tests
+  (9 unit + 1 integration) cover: empty base + no tools →
+  None; populated base + tools → appended; multiple tools each
+  get their own line; empty snippet / empty guidelines
+  silently skipped; default None vs explicit `Some(empty())`
+  both behave as no-op; end-to-end integration test verifies
+  the augmented system prompt reaches the request builder.
+
+### Compatibility
+
+- No public API breakage. `ToolSystemPrompt` is additive;
+  existing tools continue to compile and behave identically
+  unless they override `system_prompt_contribution`.
+
+### Reference architecture status
+
+Pi Agent Loop architecture parity: **23 / 23 = 100%**.
+
+## [0.7.1] - 2026-09-24
+
+One commit on top of v0.7.0. Closes the architectural purity
+gap identified in the v0.7 plan review: `convert_to_llm` was
+identity at the agent loop because the actual 7→3 (nini's
+10→4) conversion was duplicated in 3 crates AND had a real
+behavioral bug.
+
+### Bug fixes
+
+**ToolResult messages were DROPPED on session reload** (v0.6.1
+→ v0.7.0 regression)
+
+- The legacy read direction used `_ => None` for every
+  non-User/Assistant `entries::AgentMessage` variant, so
+  `ToolResult` messages stored in session files vanished
+  after reload. **Effect**: any agent loop that saved a
+  session and reloaded it lost all tool results — the model
+  no longer knew what its tools had returned.
+- **Fix**: introduced `nini_core::conversion` as the single
+  chokepoint for `SessionEntry::Message → provider::Message`.
+  The new chokepoint emits `Role::Tool` (preserving
+  `tool_use_id` + `is_error`) per the wiki 7→3 table.
+
+**Assistant messages were stored as `Custom("assistant")`** in
+session files
+
+- `nini_session::convert_to_pi_message` was using the wrong
+  `entries::AgentMessage` variant (`pi::Custom` with a
+  discriminator string) instead of the dedicated
+  `pi::Assistant(AssistantMessage)` variant that has existed
+  since v0.6.x.
+- **Fix**: write direction now maps `Role::Assistant →
+  pi::Assistant` and `Role::Tool → pi::ToolResult`. The
+  read direction (new chokepoint) handles the inverse
+  mapping correctly.
+
+### Added
+
+- **`nini_core::conversion`** — single chokepoint for
+  `entries::AgentMessage → provider::Message` conversion.
+  Three public functions:
+  * `session_entry_to_llm_message(&SessionEntry) -> Option<Message>`
+  * `default_session_to_llm(&[AgentMessage]) -> Vec<Message>`
+  * `session_message_to_llm(&AgentMessage) -> Option<Message>`
+- `nini_tui::commands::entry_legacy_message` and
+  `nini_cli::main::cli_entry_legacy` delegate to the
+  chokepoint (was 28 + 25 lines of per-variant match; now 9 +
+  8 lines of delegation).
+- `push_then_read_round_trip` regression test in
+  `nini-session` — any future change that breaks the
+  write→read round-trip (User / Assistant / ToolResult) fails
+  loudly.
+
+### Test coverage
+
+- **665 tests passing** (was 663 in v0.7.0). 20 new
+  conversion unit tests + 1 round-trip integration test.
+- Net additions: 1 session round-trip + 1 conversion
+  round-trip = +21 new tests across 2 crates.
+
+### Compatibility
+
+- Session files written by v0.7.0 with the wrong variants
+  (`Custom("assistant")`, `Custom("toolResult")`) still
+  round-trip — the new chokepoint handles `Custom` in the
+  read direction per the wiki (custom → user).
+- No public API surface change.
+
 ## [0.7.0] - 2026-09-23
 
 Five commits on top of v0.6.1, taking nini from "feature-complete
@@ -628,6 +741,8 @@ skeleton to a feature-complete Pi-compatible coding agent.
 
 Initial public release. Not announced on any external channel.
 
+[0.7.2]: https://github.com/jinxumi-oss/nini/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/jinxumi-oss/nini/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/jinxumi-oss/nini/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/jinxumi-oss/nini/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/jinxumi-oss/nini/compare/v0.5.0...v0.6.0
