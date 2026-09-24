@@ -410,11 +410,33 @@ async fn main() -> Result<()> {
                             }
                             Ok(AgentEvent::PhaseChanged(phase)) => {
                                 nini_tui::runtime::AgentEventLite::PhaseChanged(
-                                    format!("{phase:?}")
+                                    phase.to_string()
                                 )
                             }
-                            Err(_) => continue,
-                            _ => continue,
+                            Err(e) => {
+                                // CRITICAL: surface the error to the TUI
+                                // instead of silently dropping it. The
+                                // previous `_ => continue` swallowed every
+                                // Err (network failure, JSON parse error,
+                                // provider auth error, etc.), leaving the
+                                // user staring at an unresponsive TUI with
+                                // zero indication of what went wrong.
+                                nini_tui::runtime::AgentEventLite::Error(
+                                    format!("agent stream error: {e}")
+                                )
+                            }
+                            Ok(other) => {
+                                // Forward any AgentEvent variants we
+                                // haven't explicitly handled (AgentStart,
+                                // AgentEnd, Aborted) as a PhaseChanged
+                                // event so the user at least sees the
+                                // agent transitioned through them. Without
+                                // this, matching future event variants
+                                // becomes a silent default.
+                                nini_tui::runtime::AgentEventLite::PhaseChanged(
+                                    format!("agent: {other:?}")
+                                )
+                            }
                         };
                         sink.push(lite);
                     }

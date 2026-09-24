@@ -1148,10 +1148,6 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             }
         }
         KeyAction::Submit => {
-            eprintln!("[submit] input.text='{}' completion={} search={}",
-                state.input.text,
-                state.completion.is_some(),
-                state.search.is_some());
             // v0.6: smarter Enter behavior when the completion popup is
             // open. v0.5 always just inserted the highlighted completion
             // into the buffer, requiring a second Enter to actually
@@ -1503,7 +1499,6 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
 
         // ── Regular user message: push to transcript and spawn agent ───────
         // Pi parity: if compaction is in progress, queue the message
-        eprintln!("[submit_user_input] regular path, text='{text}'");
         // instead of spawning an agent. The queued messages are injected
         // as context alongside the next user prompt (mirrors Pi's
         // _pendingNextTurnMessages).
@@ -1555,7 +1550,6 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
     };
 
     // Spawn the agent task with its own sink.
-    eprintln!("[submit_user_input] spawning agent for text='{text}'");
     let sink = AgentSink::new(shared.clone());
     let _handle = (agent_driver)(text, sink, done.clone());
     // The handle is intentionally dropped — the task continues running in

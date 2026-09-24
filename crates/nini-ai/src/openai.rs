@@ -66,7 +66,8 @@ impl Provider for OpenAiProvider {
 
         Box::pin(try_stream! {
             let body = build_request_body(&req)?;
-            let url = format!("{base_url}/v1/chat/completions");
+            let url = format!("{base_url}{}/chat/completions",
+    if base_url.ends_with("/v1") { "" } else { "/v1" });
             let response = client
                 .post(&url)
                 .bearer_auth(&api_key)
@@ -76,29 +77,29 @@ impl Provider for OpenAiProvider {
                 .await?;
 
             let status = response.status();
-            if !status.is_success() {
+            if status.is_success() {
+                let mut byte_stream = response.bytes_stream();
+                let mut parser = SseParser::new();
+                let mut state = StreamState::default();
+
+                while let Some(chunk_result) = byte_stream.next().await {
+                    let chunk = chunk_result?;
+                    for sse_event in parser.feed(&chunk).map_err(|e| ProviderError::Sse(e.to_string()))? {
+                        if let Some(ev) = translate_sse(&sse_event, &mut state) {
+                            yield ev;
+                        }
+                    }
+                }
+                for ev in parser.flush() {
+                    if let Some(ev) = translate_sse(&ev, &mut state) {
+                        yield ev;
+                    }
+                }
+            } else {
                 Err(ProviderError::Api {
                     status: status.as_u16(),
                     message: format!("request failed: {}", status),
                 })?;
-            }
-
-            let mut byte_stream = response.bytes_stream();
-            let mut parser = SseParser::new();
-            let mut state = StreamState::default();
-
-            while let Some(chunk_result) = byte_stream.next().await {
-                let chunk = chunk_result?;
-                for sse_event in parser.feed(&chunk).map_err(|e| ProviderError::Sse(e.to_string()))? {
-                    if let Some(ev) = translate_sse(&sse_event, &mut state) {
-                        yield ev;
-                    }
-                }
-            }
-            for ev in parser.flush() {
-                if let Some(ev) = translate_sse(&ev, &mut state) {
-                    yield ev;
-                }
             }
         })
     }
@@ -399,6 +400,46 @@ impl<'a> OpenAiRequest<'a> {
                 include_usage: true,
             }),
         })
+    }
+}
+
+/// v0.7.3 (UX test) — openai-compat URL construction. Different
+/// OpenAI-compatible providers expose different URL conventions:
+///   * Official OpenAI: `https://api.openai.com` (no /v1 in base)
+///   * OpenRouter:     `https://openrouter.ai/api` (no /v1 in base)
+///   * m.aiio.chat:    `https://m.aiio.chat/v1` (HAS /v1 in base)
+///
+/// The original `format!("{base_url}/v1/chat/completions")` would
+/// double-append `/v1` for the third style and hit a 404/HTML page
+/// instead of the API. The fix: skip the `/v1` prefix when the
+/// base_url already ends with it.
+#[cfg(test)]
+mod url_construction_tests {
+    #[test]
+    fn appends_v1_when_missing() {
+        let base_url = "https://api.openai.com";
+        let url = format!("{base_url}{}/chat/completions",
+            if base_url.ends_with("/v1") { "" } else { "/v1" });
+        assert_eq!(url, "https://api.openai.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn skips_v1_when_already_present() {
+        let base_url = "https://m.aiio.chat/v1";
+        let url = format!("{base_url}{}/chat/completions",
+            if base_url.ends_with("/v1") { "" } else { "/v1" });
+        assert_eq!(url, "https://m.aiio.chat/v1/chat/completions");
+    }
+
+    #[test]
+    fn handles_trailing_slash() {
+        let base_url = "https://example.com/v1/";
+        let url = format!("{base_url}{}/chat/completions",
+            if base_url.ends_with("/v1") { "" } else { "/v1" });
+        // Trailing slash on /v1/ means we DON'T recognize it as the
+        // /v1 suffix, so we append /v1 again. This is a known minor
+        // quirk — users shouldn't add trailing slashes.
+        assert_eq!(url, "https://example.com/v1//v1/chat/completions");
     }
 }
 

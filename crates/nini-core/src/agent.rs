@@ -43,6 +43,24 @@ pub enum AgentPhase {
     BranchSummary,
 }
 
+impl std::fmt::Display for AgentPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentPhase::Idle => write!(f, "idle"),
+            AgentPhase::Working => write!(f, "working"),
+            AgentPhase::Compacting { reason, progress } => {
+                if let Some(p) = progress {
+                    write!(f, "compacting:{reason} ({p}%)")
+                } else {
+                    write!(f, "compacting:{reason}")
+                }
+            }
+            AgentPhase::Retrying { attempt } => write!(f, "retrying (attempt {attempt})"),
+            AgentPhase::BranchSummary => write!(f, "branch summary"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -1229,6 +1247,33 @@ mod phase_state_machine_tests {
     fn phase_default_is_idle() {
         let agent = make_agent();
         assert_eq!(agent.phase(), AgentPhase::Idle);
+    }
+
+    #[test]
+    fn agent_phase_display() {
+        assert_eq!(AgentPhase::Idle.to_string(), "idle");
+        assert_eq!(AgentPhase::Working.to_string(), "working");
+        assert_eq!(
+            AgentPhase::Compacting {
+                reason: "overflow".into(),
+                progress: Some(50),
+            }
+            .to_string(),
+            "compacting:overflow (50%)"
+        );
+        assert_eq!(
+            AgentPhase::Compacting {
+                reason: "manual".into(),
+                progress: None,
+            }
+            .to_string(),
+            "compacting:manual"
+        );
+        assert_eq!(
+            AgentPhase::Retrying { attempt: 2 }.to_string(),
+            "retrying (attempt 2)"
+        );
+        assert_eq!(AgentPhase::BranchSummary.to_string(), "branch summary");
     }
 }
 
