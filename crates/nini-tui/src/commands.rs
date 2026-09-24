@@ -1811,38 +1811,14 @@ pub mod state_helpers {
 
 
 fn entry_legacy_message(entry: &nini_core::SessionEntry) -> Option<nini_core::AgentMessage> {
-    use nini_core::entries::{AgentMessage as PiMsg, ContentBlock as PiContentBlock};
-    match entry {
-        nini_core::SessionEntry::Message(m) => {
-            match &m.message {
-                PiMsg::User(u) => {
-                    let blocks: Vec<nini_core::ContentBlock> = match &u.content {
-                        nini_core::entries::StringOrContentBlocks::String(s) => {
-                            vec![nini_core::ContentBlock::Text { text: s.clone() }]
-                        }
-                        nini_core::entries::StringOrContentBlocks::Blocks(bs) => bs.iter().map(|b| match b {
-                            PiContentBlock::Text { text } => nini_core::ContentBlock::Text { text: text.clone() },
-                            PiContentBlock::ToolCall { id, name, arguments } => nini_core::ContentBlock::ToolUse {
-                                id: id.clone(), name: name.clone(), input: arguments.clone(),
-                            },
-                            PiContentBlock::Image { .. } | PiContentBlock::Thinking { .. } => nini_core::ContentBlock::Text { text: String::new() },
-                        }).collect(),
-                    };
-                    Some(nini_core::AgentMessage { role: nini_core::Role::User, content: blocks, timestamp: u.timestamp })
-                }
-                PiMsg::Assistant(a) => {
-                    let blocks: Vec<nini_core::ContentBlock> = a.content.iter().map(|b| match b {
-                        PiContentBlock::Text { text } => nini_core::ContentBlock::Text { text: text.clone() },
-                        PiContentBlock::ToolCall { id, name, arguments } => nini_core::ContentBlock::ToolUse {
-                            id: id.clone(), name: name.clone(), input: arguments.clone(),
-                        },
-                        PiContentBlock::Image { .. } | PiContentBlock::Thinking { .. } => nini_core::ContentBlock::Text { text: String::new() },
-                    }).collect();
-                    Some(nini_core::AgentMessage { role: nini_core::Role::Assistant, content: blocks, timestamp: a.timestamp })
-                }
-                _ => None,
-            }
-        }
-        _ => None,
-    }
+    // v0.7.1 — delegate to the chokepoint in nini-core::conversion.
+    // The chokepoint implements the full wiki 7→3 (nini's 10→4)
+    // conversion, including the ToolResult → Role::Tool mapping that
+    // the previous local implementation was dropping via _ => None.
+    let m = nini_core::conversion::session_entry_to_llm_message(entry)?;
+    Some(nini_core::AgentMessage {
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp,
+    })
 }

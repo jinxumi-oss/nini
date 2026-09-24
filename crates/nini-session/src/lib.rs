@@ -33,33 +33,107 @@ use uuid::Uuid;
 
 
 fn convert_to_pi_message(msg: nini_core::AgentMessage) -> nini_core::entries::AgentMessage {
-    use nini_core::entries::{AgentMessage as Pi, UserMessage, StringOrContentBlocks, ContentBlock as PiContentBlock};
-    let blocks: Vec<PiContentBlock> = msg.content.into_iter().map(|b| match b {
+    use nini_core::entries::{
+        AssistantMessage, ContentBlock as PiContentBlock, StringOrContentBlocks,
+        ToolResultMessage, UserMessage,
+    };
+    // v0.7.1 — use the actual Assistant / ToolResult variants
+    // (previously this function mapped both to Pi::Custom which
+    // made Assistant messages indistinguishable from extension
+    // messages on reload).
+    match msg.role {
+        nini_core::Role::User => {
+            let blocks = provider_to_pi_blocks(msg.content);
+            nini_core::entries::AgentMessage::User(UserMessage {
+                content: StringOrContentBlocks::Blocks(blocks),
+                timestamp: msg.timestamp,
+            })
+        }
+        nini_core::Role::Assistant => {
+            let blocks = provider_to_pi_blocks(msg.content);
+            nini_core::entries::AgentMessage::Assistant(AssistantMessage {
+                content: blocks,
+                api: String::new(),
+                provider: String::new(),
+                model: String::new(),
+                usage: Default::default(),
+                stop_reason: nini_core::entries::StopReason::Stop,
+                error_message: None,
+                timestamp: msg.timestamp,
+            })
+        }
+        nini_core::Role::Tool => {
+            // Extract the tool_use_id from the FIRST ToolResult
+            // block (subsequent blocks in the same message would
+            // be unusual — the agent loop emits one block per
+            // tool call). The rest of the content goes into the
+            // entries::ToolResultMessage.content as a Vec<block>.
+            let mut tool_call_id = String::new();
+            let mut is_error = false;
+            let mut blocks: Vec<PiContentBlock> = Vec::new();
+            for b in msg.content {
+                match b {
+                    nini_core::ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error: err,
+                    } => {
+                        if tool_call_id.is_empty() {
+                            tool_call_id = tool_use_id;
+                        }
+                        is_error = err;
+                        blocks.push(PiContentBlock::Text { text: content });
+                    }
+                    other => blocks.push(provider_block_to_pi(other)),
+                }
+            }
+            nini_core::entries::AgentMessage::ToolResult(ToolResultMessage {
+                tool_call_id,
+                tool_name: String::new(),
+                content: blocks,
+                details: None,
+                usage: None,
+                is_error,
+                timestamp: msg.timestamp,
+            })
+        }
+        nini_core::Role::System => {
+            // System messages have no session-persistent
+            // representation in pi's wire format; collapse to
+            // User with display: false so the conversion is
+            // lossless at the data level.
+            let blocks = provider_to_pi_blocks(msg.content);
+            nini_core::entries::AgentMessage::Custom(nini_core::entries::CustomMessage {
+                custom_type: "system".into(),
+                content: StringOrContentBlocks::Blocks(blocks),
+                display: false,
+                details: None,
+                timestamp: msg.timestamp,
+            })
+        }
+    }
+}
+
+/// Convert provider ContentBlock list to entries ContentBlock list.
+/// Inverse of `nini_core::conversion::assistant_content_to_blocks`.
+fn provider_to_pi_blocks(blocks: Vec<nini_core::ContentBlock>) -> Vec<nini_core::entries::ContentBlock> {
+    use nini_core::entries::ContentBlock as PiContentBlock;
+    blocks.into_iter().map(provider_block_to_pi).collect()
+}
+
+/// Convert a single provider ContentBlock to entries ContentBlock.
+fn provider_block_to_pi(b: nini_core::ContentBlock) -> nini_core::entries::ContentBlock {
+    use nini_core::entries::ContentBlock as PiContentBlock;
+    match b {
         nini_core::ContentBlock::Text { text } => PiContentBlock::Text { text },
         nini_core::ContentBlock::ToolUse { id, name, input } => PiContentBlock::ToolCall {
-            id, name, arguments: input,
+            id,
+            name,
+            arguments: input,
         },
-        nini_core::ContentBlock::ToolResult { content, .. } => PiContentBlock::Text { text: content },
-    }).collect();
-    match msg.role {
-        nini_core::Role::User => Pi::User(UserMessage {
-            content: StringOrContentBlocks::Blocks(blocks),
-            timestamp: msg.timestamp,
-        }),
-        nini_core::Role::Assistant => Pi::Custom(nini_core::entries::CustomMessage {
-            custom_type: "assistant".to_string(),
-            content: StringOrContentBlocks::Blocks(blocks),
-            display: true,
-            details: None,
-            timestamp: msg.timestamp,
-        }),
-        _ => Pi::Custom(nini_core::entries::CustomMessage {
-            custom_type: "toolResult".to_string(),
-            content: StringOrContentBlocks::Blocks(blocks),
-            display: false,
-            details: None,
-            timestamp: msg.timestamp,
-        }),
+        nini_core::ContentBlock::ToolResult { content, .. } => {
+            PiContentBlock::Text { text: content }
+        }
     }
 }
 
@@ -496,5 +570,67 @@ mod tests {
         assert!(s.contains("\"type\":\"session\""), "should have type=session: {}", s);
         assert!(s.contains("\"version\":3"), "should have version=3: {}", s);
         assert!(s.contains("\"cwd\":\"/test\""), "should have cwd: {}", s);
+    }
+
+    /// v0.7.1 — round-trip test: pushing messages to a session
+    /// and re-reading them via the chokepoint must preserve the
+    /// wiki 7→3 conversion. Catches the v0.6.1 bug where
+    /// Assistant was stored as Custom("assistant") and
+    /// ToolResult was dropped on reload.
+    #[test]
+    fn push_then_read_round_trip() {
+        let mut sess = Session::new("/test");
+
+        let user_id = sess.push_message(
+            None,
+            nini_core::AgentMessage {
+                role: nini_core::Role::User,
+                content: vec![nini_core::ContentBlock::Text {
+                    text: "hello".into(),
+                }],
+                timestamp: 100,
+            },
+        );
+        let assistant_id = sess.push_message(
+            Some(user_id),
+            nini_core::AgentMessage {
+                role: nini_core::Role::Assistant,
+                content: vec![nini_core::ContentBlock::Text {
+                    text: "hi back".into(),
+                }],
+                timestamp: 200,
+            },
+        );
+        sess.push_message(
+            Some(assistant_id),
+            nini_core::AgentMessage {
+                role: nini_core::Role::Tool,
+                content: vec![nini_core::ContentBlock::ToolResult {
+                    tool_use_id: "tc-1".into(),
+                    content: "exit code 0".into(),
+                    is_error: false,
+                }],
+                timestamp: 300,
+            },
+        );
+
+        let pi_msgs: Vec<_> = sess.entries.iter().filter_map(|e| match e {
+                nini_core::SessionEntry::Message(m) => Some(m.message.clone()),
+                _ => None,
+            }).collect();
+        let msgs = nini_core::conversion::default_session_to_llm(&pi_msgs);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].role, nini_core::Role::User);
+        assert_eq!(msgs[1].role, nini_core::Role::Assistant);
+        assert_eq!(
+            msgs[2].role,
+            nini_core::Role::Tool,
+            "ToolResult must NOT be dropped — v0.6.1 bug regression guard"
+        );
+        if let nini_core::ContentBlock::ToolResult { tool_use_id, .. } = &msgs[2].content[0] {
+            assert_eq!(tool_use_id, "tc-1");
+        } else {
+            panic!("expected ToolResult");
+        }
     }
 }
