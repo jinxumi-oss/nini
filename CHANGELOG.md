@@ -4,6 +4,193 @@ All notable changes to nini will be documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project follows [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-09-23
+
+Five commits on top of v0.6.1, taking nini from "feature-complete
+but hardcoded" to "Pi-compatible hook architecture". The headline:
+**every agent-loop extension point is now a trait method with a
+default implementation, so in-process Rust extensions can shape
+agent behavior without forking nini-core**.
+
+This is the release described in `docs/plans/v0.7-hook-parity.md`.
+Every existing call site stays byte-equivalent: `Agent::new`,
+`Tool::execute`, `provider::stream`, etc. — all unchanged
+signatures, all unchanged behavior unless the caller opts into a
+custom hook.
+
+### Added
+
+**v0.7 M1 — Steering / Follow-up message queues**
+(`AgentLoopHooks` trait, 2 methods)
+
+- New `crates/nini-core/src/agent_hooks.rs` defines
+  `AgentLoopHooks` with two hook methods (default impl = v0.6.1
+  no-op behavior):
+  * `get_steering_messages(&[Message]) -> Vec<Message>` —
+ invoked
+    once per loop iteration after tool execution, before the
+    next LLM call. Pi contract: lets the user redirect the
+    agent mid-run (e.g. "actually, check X first").
+  * `get_followup_messages(&[Message]) -> Vec<Message>` —
+ invoked
+    once per `Agent::run` call when the model emits no further
+    tool calls. Pi contract: lets the user schedule work
+    after the current task (e.g. Alt+Enter "then run cargo
+    test").
+- `Agent::with_hooks(...)` constructor + `Agent::new(...)`
+  installed with `NoopHooks` by default (no behavior change
+  for existing callers).
+- `catch_hook_panic` + `catch_hook_panic_async` defensive
+  wrappers — a panicking hook never crashes the agent loop;
+  the fallback is `R::default()` + a warn to stderr.
+
+**v0.7 M2 — Tool lifecycle hooks (before / after execute)**
+
+- `Tool` trait gained two methods with default `None`:
+  * `fn before(&self) -> Option<Box<dyn BeforeExecute>>`
+  * `fn after(&self) -> Option<Box<dyn AfterExecute>>`
+- New `BeforeExecute` / `AfterExecute` traits in
+  `nini_core::tool`. `BeforeExecute::run` may substitute args
+  (`Ok(Some(replaced))`), pass through (`Ok(None)`), or deny
+  the call (`Err(permission_denied)`). `AfterExecute::run`
+  may rewrite the `ToolOutput` (for redaction / truncation /
+  extra details).
+- `WrappedTool` newtype + public `ArcBoxAdapterBefore` /
+  `ArcBoxAdapterAfterTool` adapters let extensions wrap an
+  existing tool without rewriting it.
+- `ProjectTrustStore::check(&ToolCall) -> BinaryDecision` —
+  per-cwd decision collapses the 4-state `TrustLevel` into a
+  2-state `BinaryDecision` (Allow / Deny). The `Ask` level
+  collapses to `Allow` with a warn log; interactive prompting
+  is deferred to v0.8 (needs cross-task async signaling).
+- `panic_msg` helper for extracting human-readable strings
+  from `Box<dyn Any>` payloads (used by `catch_unwind` on
+  panicking async hooks via `FutureExt::catch_unwind`).
+
+**v0.7 M3a — Internal-only message variants**
+
+- `entries::AgentMessage` gained 3 variants per the wiki's
+  7-variant model:
+  * `Notification(NotificationMessage { kind, data, timestamp })`
+  * `UiMessage(UiMessage { component, props, timestamp })`
+  * `AppMessage(AppMessage { source, payload, timestamp })`
+- Wire format matches pi JSONL v4 (`role: notification` /
+  `uiMessage` / `appMessage`).
+- `AgentMessage::is_internal_only()` predicate returns `true`
+  for these 3 variants — used by `convert_to_llm` (M3b) to
+  filter them from the LLM view.
+- `filter_internal_only_messages` skeleton in `agent_hooks.rs`
+  documents the hook point (M3a's filter lives at the
+  entries→provider boundary, not at the provider layer).
+
+**v0.7 M3b — Context hooks**
+
+- `AgentLoopHooks` trait grew from 2 to 5 methods:
+  * `transform_context(&[Message]) -> TransformResult` —
+    non-mutating view of messages for the LLM. Returns
+    `{ messages, dropped_count, reason }` for observability.
+  * `convert_to_llm(&[Message]) -> Vec<Message>` — last
+    filter before the LLM sees the messages. Default =
+    identity at the provider layer (the real filtering
+    happens at the entries→provider boundary in callers).
+  * `should_stop_after_turn(&[Message]) -> bool` — soft-stop
+    hook. Returns `true` to end the run early. Default =
+    `false`. Coexists with the hard `max_iterations` cap
+    (both fire; whichever trips first wins).
+- `TransformResult` struct + `Default` impl (for
+  panic-safety fallback).
+- All 3 hooks are wired into `Agent::run` and panic-safe via
+  `catch_hook_panic`.
+
+**v0.7 M5b — Operations traits + BashRunner cross-crate
+migration**
+
+- New `crates/nini-tools/src/operations.rs` (320 lines):
+  * `BashOperations` trait — `exec` / `which` / `kill_pg`
+  * `ReadOperations` trait — `read` / `stat_size`
+  * `ExecOutcome` struct mirrors the wire shape of the
+    previous `nini-tui::BashResult`
+  * `DefaultBashOperations` (delegates to migrated
+    `BashRunner`) + `DefaultReadOperations` (uses
+    `std::fs`)
+  * `bash_which` helper
+- `crates/nini-tui/src/bash_runner.rs` **moved** to
+  `crates/nini-tools/src/bash_runner.rs` via `git mv`. The
+  runner had no TUI dependencies, so the move is
+  pure-organization. `nini-tui::runtime.rs` updated to use
+  `nini_tools::bash_runner::BashRunner`.
+- 6 existing BashRunner tests + 11 new Operations tests
+  pass under the new location.
+
+### Compatibility
+
+- **No public API breakage.** `Agent::new`, `Tool::execute`,
+  `provider::stream`, every CLI flag, every slash command —
+  all unchanged. v0.7.0 is a pure-additive release.
+- `Tool::before` / `Tool::after` default to `None`; existing
+  tool implementations (BashTool, ReadTool, EditTool,
+  FindTool, GrepTool) compile and behave identically to
+  v0.6.1.
+- `ProjectTrustStore`'s public API (`load`, `get`, `set`,
+  `save`, `clear`, `default_path`) is unchanged; new
+  methods (`check`, `get_for_cwd`, `to_binary`) are
+  additive.
+- Session JSONL files written by v0.6.x read back unchanged
+  into v0.7.0. The 3 new variants use distinct `role`
+  tags; old variants keep their existing shape.
+
+### Test coverage
+
+- **644 tests passing** (was 580 in v0.6.1). 14 test suites,
+  all green on `cargo test --workspace`.
+- Net additions by milestone:
+  * M1: +14 (steering / followup / noop integration)
+  * M2: +14 (project_trust 9 + tool lifecycle 5)
+  * M3a: +10 (entries 8 + agent_hooks skeleton 2)
+  * M3b: +15 (agent_hooks 6 + context_hook_tests 9)
+  * M5b: +11 (operations 11)
+- All new hooks have at least one regression test
+  confirming v0.6.1 behavior is preserved when the default
+  hooks (`NoopHooks`) are used.
+
+### Known gaps (intentional, for v0.8+)
+
+- Mouse support (click, double-click, wheel) — ratatui
+  `EnableMouseCapture` is enabled but `MouseEventKind` dispatch
+  is not yet wired.
+- OSC 52 image paste path (Kitty / iTerm2). Currently
+  `arboard` only.
+- OAuth / device-flow auth (env API keys only).
+- ~46 of ~51 Pi providers not yet wired (have 5 builtin:
+  anthropic, openai, openai-responses, openai-compat, fixture).
+- Extension stable C ABI — currently nini-ext is in-process
+  Rust only.
+- TrustStore "Ask" level needs cross-task async signaling;
+  deferred to v0.8 alongside the C ABI bridge.
+- Parallel tool execution (M4 from the plan) — file-path
+  dependency detection unresolved; deferred to v0.8.
+- Concrete `before()` implementations on Bash / Read / Edit
+  that call `TrustStore::check` — blocked on `ToolContext`
+  learning to carry the trust store.
+
+### Architectural change (the headline)
+
+v0.6.1's `Agent::run` was ~333 lines with hardcoded compaction,
+retry, and tool execution. v0.7.0 keeps the same control flow
+but layers 5 new extension points on top, each backed by a
+trait method with a sensible default. The next release can
+swap any one of those defaults without touching the others —
+the textbook "open-closed principle" payoff of the Pi design
+philosophy.
+
+### Credits
+
+Reference architecture: `docs/spec-v0.85.1` (sourced from the
+wiki `concepts/pi-agent-loop-architecture.md`). Plan source:
+`docs/plans/v0.7-hook-parity.md`.
+
+## [0.6.1] - 2026-09-23
+
 ## [0.6.1] - 2026-09-23
 
 One commit on top of v0.6.0 closing the last known P0 stub:
@@ -441,6 +628,7 @@ skeleton to a feature-complete Pi-compatible coding agent.
 
 Initial public release. Not announced on any external channel.
 
+[0.7.0]: https://github.com/jinxumi-oss/nini/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/jinxumi-oss/nini/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/jinxumi-oss/nini/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jinxumi-oss/nini/compare/v0.4.0...v0.5.0

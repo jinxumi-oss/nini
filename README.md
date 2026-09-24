@@ -2,9 +2,9 @@
 
 > A Pi-compatible coding agent, rewritten in Rust.
 
-[![Status](https://img.shields.io/badge/status-v0.6--alpha-yellow)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.7--alpha-yellow)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-580%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-644%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -22,16 +22,17 @@ settings, and models.json keep working.
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
 
-## Features (v0.6.1)
+## Features (v0.7.0)
 
 | Area | What works |
 |---|---|
 | **Providers** | Anthropic, OpenAI (Chat + Responses), OpenAI-compatible (any `/v1/chat/completions`), fixture (offline test) |
 | **Tools** | `bash` (process-tree kill, timeout, SIGTERM→SIGKILL), `read`, `write` (atomic), `edit` (exact-match), `grep` (regex + .gitignore), `find` (glob + .gitignore) |
-| **TUI** | ratatui + crossterm, readline-style editing, kill ring, history recall, slash-command autocomplete dropdown |
-| **Slash commands** | All 23 Pi-compatible commands (`/help`, `/model`, `/export`, `/new`, `/quit`, …) |
+| **TUI** | ratatui + crossterm, readline-style editing, kill ring, history recall, slash-command autocomplete dropdown, command palette (Ctrl+Shift+K), transcript search (Ctrl+F), external editor (Ctrl+G) |
+| **Slash commands** | All 28 Pi-compatible commands (`/help`, `/model`, `/export`, `/new`, `/quit`, …) |
 | **Session** | JSONL v4 codec + legacy-v3 reader; reads `~/.pi/agent/skills/`, `settings.json`, `models.json` |
-| **Compaction** | Local-summary heuristic; auto-triggers on context overflow |
+| **Compaction** | LLM-backed summary with deterministic fallback; auto-triggers on context overflow |
+| **Hooks (v0.7)** | Pi-compatible 5-method `AgentLoopHooks` trait: steering / followup / transform_context / convert_to_llm / should_stop_after_turn. Tool before/after lifecycle hooks. BashOperations + ReadOperations for mockable backends. |
 
 ## Quick start
 
