@@ -16,7 +16,7 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod ansi;
-pub mod bash_runner;
+
 pub mod clipboard;
 pub mod commands;
 pub mod command_palette;

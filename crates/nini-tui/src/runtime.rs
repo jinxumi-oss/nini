@@ -1358,7 +1358,7 @@ pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done:
                 None => (false, rest.trim()),
             };
             if !cmd.is_empty() {
-                let mut cx = crate::bash_runner::BashRunner::new();
+                let mut cx = nini_tools::bash_runner::BashRunner::new();
                 let result = cx.run_blocking(cmd, &std::env::current_dir().unwrap_or_default());
                 use crate::state::TranscriptLine;
                 let id = format!("bash-{}", g.transcript_len());
