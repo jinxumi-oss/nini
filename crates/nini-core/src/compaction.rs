@@ -825,10 +825,17 @@ pub fn serialize_session_entries(entries: &[SessionEntry]) -> String {
                     ));
                 }
             }
-            EAM::Custom(_) | EAM::BranchSummary(_) | EAM::CompactionSummary(_) => {
-                // Pi skips custom messages, branch summaries, and
-                // compaction summaries in conversation serialization;
-                // each carries its own summary field.
+            EAM::Custom(_)
+            | EAM::BranchSummary(_)
+            | EAM::CompactionSummary(_)
+            | EAM::Notification(_)
+            | EAM::UiMessage(_)
+            | EAM::AppMessage(_) => {
+                // Pi skips custom messages, branch summaries,
+                // compaction summaries, and v0.7 internal-only
+                // messages (Notification / UiMessage / AppMessage)
+                // in conversation serialization; each carries its
+                // own summary field or is purely metadata.
             }
         }
     }

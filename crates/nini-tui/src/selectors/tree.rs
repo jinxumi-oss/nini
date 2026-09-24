@@ -63,6 +63,12 @@ fn label_for(entry: &SessionEntry) -> (&'static str, String) {
             nini_session::AgentMessage::BashExecution(_) => ("$", "[bash]".to_string()),
             nini_session::AgentMessage::BranchSummary(_) => ("◇", "[branch summary]".to_string()),
             nini_session::AgentMessage::CompactionSummary(_) => ("◆", "[compaction summary]".to_string()),
+            // v0.7 (M3a) internal-only variants — these never reach
+            // the LLM but they DO appear in the session log. Render
+            // them as dim metadata in the tree view.
+            nini_session::AgentMessage::Notification(_) => ("·", "[notification]".to_string()),
+            nini_session::AgentMessage::UiMessage(_) => ("·", "[ui message]".to_string()),
+            nini_session::AgentMessage::AppMessage(_) => ("·", "[app message]".to_string()),
         },
     }
 }

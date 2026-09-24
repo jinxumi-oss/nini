@@ -40,6 +40,14 @@ use crate::provider::Message;
 /// The default implementation (`NoopHooks`) is the v0.6.1 behavior —
 /// no steering, no follow-up. v0.7.x will add `convert_to_llm`,
 /// `transform_context`, `should_stop_after_turn` in M3b.
+///
+/// **Internal-only messages** (the `Notification`, `UiMessage`,
+/// `AppMessage` variants added in v0.7 M3a) are filtered out of the
+/// LLM view before reaching the model. M3b will wire this filtering
+/// into a `convert_to_llm` default impl; the predicate itself lives
+/// in `entries::AgentMessage::is_internal_only` and is exposed here
+/// as `filter_internal_only_messages` for any caller that needs to
+/// pre-strip the message list.
 pub trait AgentLoopHooks: Send + Sync {
     /// Inject messages **after** a round of tool execution, **before**
     /// the next LLM call.
@@ -77,6 +85,39 @@ pub trait AgentLoopHooks: Send + Sync {
 pub struct NoopHooks;
 
 impl AgentLoopHooks for NoopHooks {}
+
+/// v0.7 (M3a) — filter the 3 internal-only `AgentMessage` variants
+/// (Notification / UiMessage / AppMessage) out of a session message
+/// list. Returns the input list unchanged when no filtering applies.
+///
+/// This is the SKeleton filter that `convert_to_llm` (M3b) will call
+/// by default. It's exposed standalone here so:
+///   * M3a integration tests can assert the predicate works
+///   * M3b's default `convert_to_llm` impl has a single call site
+///   * Extensions can reuse it without duplicating logic
+///
+/// **NOTE on scope**: this takes `Vec<Message>` (the provider-layer
+/// 4-role type), not `Vec<entries::AgentMessage>` (the 10-variant
+/// session type). M3b will do the conversion from session → provider
+/// messages and apply this filter at the boundary. For M3a we keep
+/// the type loose so this module compiles without depending on
+/// `entries`.
+pub fn filter_internal_only_messages(
+    messages: Vec<crate::provider::Message>,
+) -> Vec<crate::provider::Message> {
+    // The provider-layer Message enum has only 4 roles
+    // (System/User/Assistant/Tool) and does NOT carry the
+    // Notification/UiMessage/AppMessage variants. So at THIS layer,
+    // nothing to filter — it's already in LLM-view shape.
+    //
+    // The actual filtering happens earlier, at the
+    // `entries::AgentMessage → provider::Message` boundary in M3b.
+    // This function exists as the documented hook point so future
+    // changes (e.g. adding more internal-only variants to the
+    // provider layer) have a clear extension point.
+    let _ = messages;
+    messages
+}
 
 /// Catch a hook's panic and convert it to the safe default value.
 ///
@@ -235,5 +276,26 @@ mod tests {
             0,
             "followup defaults to empty when not overridden"
         );
+    }
+
+    /// M3a — the filter skeleton takes provider-layer Messages and
+    /// returns them unchanged (because the provider-layer enum has
+    /// no internal-only variants). The real filtering happens at
+    /// the entries→provider boundary in M3b.
+    #[test]
+    fn filter_internal_only_skeleton_passes_through_provider_messages() {
+        let msgs = vec![
+            user_msg("a"),
+            user_msg("b"),
+        ];
+        let out = filter_internal_only_messages(msgs.clone());
+        assert_eq!(out.len(), msgs.len());
+        assert_eq!(out[0].content[0], msgs[0].content[0]);
+    }
+
+    #[test]
+    fn filter_internal_only_skeleton_preserves_empty_input() {
+        let out = filter_internal_only_messages(Vec::new());
+        assert!(out.is_empty());
     }
 }

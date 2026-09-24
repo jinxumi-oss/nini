@@ -181,6 +181,13 @@ pub enum SessionEntry {
 
 /// AgentMessage — discriminated by `role`. Re-exported as
 /// `entries::AgentMessage` for compat with pi v3 wire format.
+///
+/// v0.7 (M3a) — adds 3 internal-only variants per the wiki's
+/// 7-variant model (Notification / UiMessage / AppMessage). These
+/// are persisted to the session JSONL like any other message but
+/// are FILTERED OUT before being sent to the LLM in
+/// `convert_to_llm` (M3b). They carry metadata / UI affordances
+/// / app-level events that have no place in the model's context.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "camelCase")]
 pub enum AgentMessage {
@@ -198,6 +205,13 @@ pub enum AgentMessage {
     BranchSummary(BranchSummaryMessage),
     #[serde(rename = "compactionSummary")]
     CompactionSummary(CompactionSummaryMessage),
+    // v0.7 (M3a) — internal-only variants. Never reach the LLM.
+    #[serde(rename = "notification")]
+    Notification(NotificationMessage),
+    #[serde(rename = "uiMessage")]
+    UiMessage(UiMessage),
+    #[serde(rename = "appMessage")]
+    AppMessage(AppMessage),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -246,6 +260,42 @@ pub struct CustomMessage {
     pub content: StringOrContentBlocks,
     pub display: bool,
     pub details: Option<serde_json::Value>,
+    pub timestamp: i64,
+}
+
+/// v0.7 (M3a) — internal-only notification. Surfaces events like
+/// "compaction started", "tool blocked", "abort signal received" to
+/// the session log without polluting model context. `convert_to_llm`
+/// (M3b) drops these from the LLM request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotificationMessage {
+    /// Free-form event name, e.g. "compaction.started",
+    /// "permission.denied", "abort.received".
+    pub kind: String,
+    pub data: Option<serde_json::Value>,
+    pub timestamp: i64,
+}
+
+/// v0.7 (M3a) — internal-only UI message. Drives TUI affordances
+/// (status bar updates, progress bars, transient toasts) without
+/// involving the model. `convert_to_llm` (M3b) drops these.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiMessage {
+    /// Component name, e.g. "status-bar", "toast", "spinner".
+    pub component: String,
+    pub props: Option<serde_json::Value>,
+    pub timestamp: i64,
+}
+
+/// v0.7 (M3a) — internal-only application message. Records app
+/// lifecycle events (extension activated, skill loaded, theme
+/// changed). `convert_to_llm` (M3b) drops these.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppMessage {
+    /// Source identifier, e.g. "extension:nini-ext-foo",
+    /// "skill:my-skill", "theme:dark".
+    pub source: String,
+    pub payload: Option<serde_json::Value>,
     pub timestamp: i64,
 }
 
@@ -362,6 +412,38 @@ impl std::fmt::Display for SessionEntry {
     }
 }
 
+/// v0.7 (M3a) — predicate for the 3 internal-only `AgentMessage`
+/// variants that `convert_to_llm` (M3b) drops from the LLM request.
+/// They are persisted to the session JSONL like any other message
+/// but never appear in the model's context.
+///
+/// Pi's contract: notification / uiMessage / appMessage → []
+/// (dropped in the LLM view).
+impl AgentMessage {
+    pub fn is_internal_only(&self) -> bool {
+        matches!(
+            self,
+            Self::Notification(_) | Self::UiMessage(_) | Self::AppMessage(_)
+        )
+    }
+
+    /// Free-form variant name for logging / debug.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Self::User(_) => "user",
+            Self::Assistant(_) => "assistant",
+            Self::ToolResult(_) => "toolResult",
+            Self::Custom(_) => "custom",
+            Self::BashExecution(_) => "bashExecution",
+            Self::BranchSummary(_) => "branchSummary",
+            Self::CompactionSummary(_) => "compactionSummary",
+            Self::Notification(_) => "notification",
+            Self::UiMessage(_) => "uiMessage",
+            Self::AppMessage(_) => "appMessage",
+        }
+    }
+}
+
 
 
 // Manual PartialEq/Eq/Hash for SessionEntry based on id only
@@ -373,5 +455,152 @@ impl Eq for SessionEntry {}
 impl std::hash::Hash for SessionEntry {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.id().hash(state);
+    }
+}
+
+#[cfg(test)]
+mod m3a_message_variant_tests {
+    //! v0.7 (M3a) — tests for the 3 new internal-only variants
+    //! (Notification / UiMessage / AppMessage), their wire-format
+    //! compatibility, and the `is_internal_only` predicate that
+    //! `convert_to_llm` (M3b) uses to filter them out.
+    use super::*;
+
+    fn ts() -> i64 { 1_700_000_000_000 }
+
+    fn sample_notification() -> AgentMessage {
+        AgentMessage::Notification(NotificationMessage {
+            kind: "compaction.started".into(),
+            data: Some(serde_json::json!({"tokens_before": 12345})),
+            timestamp: ts(),
+        })
+    }
+
+    fn sample_ui_message() -> AgentMessage {
+        AgentMessage::UiMessage(UiMessage {
+            component: "status-bar".into(),
+            props: Some(serde_json::json!({"text": "compacting…"})),
+            timestamp: ts(),
+        })
+    }
+
+    fn sample_app_message() -> AgentMessage {
+        AgentMessage::AppMessage(AppMessage {
+            source: "extension:nini-ext-foo".into(),
+            payload: Some(serde_json::json!({"event": "activated"})),
+            timestamp: ts(),
+        })
+    }
+
+    #[test]
+    fn notification_serializes_with_role_tag() {
+        let json = serde_json::to_string(&sample_notification()).unwrap();
+        assert!(json.contains(r#""role":"notification""#), "got: {json}");
+        assert!(json.contains(r#""kind":"compaction.started""#));
+        assert!(json.contains(r#""data""#));
+    }
+
+    #[test]
+    fn ui_message_serializes_with_role_tag() {
+        let json = serde_json::to_string(&sample_ui_message()).unwrap();
+        assert!(json.contains(r#""role":"uiMessage""#), "got: {json}");
+        assert!(json.contains(r#""component":"status-bar""#));
+    }
+
+    #[test]
+    fn app_message_serializes_with_role_tag() {
+        let json = serde_json::to_string(&sample_app_message()).unwrap();
+        assert!(json.contains(r#""role":"appMessage""#), "got: {json}");
+        assert!(json.contains(r#""source":"extension:nini-ext-foo""#));
+    }
+
+    #[test]
+    fn all_three_variants_round_trip_through_json() {
+        // Serialize then deserialize each variant. Field integrity
+        // is the contract — the JSONL v4 wire format must round-trip
+        // so existing tools (nini-session, jq, Pi) can read these
+        // messages.
+        for msg in [
+            sample_notification(),
+            sample_ui_message(),
+            sample_app_message(),
+        ] {
+            let json = serde_json::to_string(&msg).unwrap();
+            let back: AgentMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(msg, back, "round-trip failed for {json}");
+        }
+    }
+
+    #[test]
+    fn is_internal_only_predicate() {
+        // The 3 new variants MUST return true.
+        assert!(sample_notification().is_internal_only());
+        assert!(sample_ui_message().is_internal_only());
+        assert!(sample_app_message().is_internal_only());
+
+        // All other variants MUST return false.
+        let user = AgentMessage::User(UserMessage {
+            content: StringOrContentBlocks::String("hi".into()),
+            timestamp: ts(),
+        });
+        assert!(!user.is_internal_only());
+        let custom = AgentMessage::Custom(CustomMessage {
+            custom_type: "x".into(),
+            content: StringOrContentBlocks::String("y".into()),
+            display: true,
+            details: None,
+            timestamp: ts(),
+        });
+        // Custom IS user-visible in the model view (it gets
+        // converted to a user message by `convert_to_llm`); it's
+        // not internal-only.
+        assert!(!custom.is_internal_only());
+    }
+
+    #[test]
+    fn variant_name_distinguishes_internal_from_visible() {
+        assert_eq!(sample_notification().variant_name(), "notification");
+        assert_eq!(sample_ui_message().variant_name(), "uiMessage");
+        assert_eq!(sample_app_message().variant_name(), "appMessage");
+        let user = AgentMessage::User(UserMessage {
+            content: StringOrContentBlocks::String("hi".into()),
+            timestamp: ts(),
+        });
+        assert_eq!(user.variant_name(), "user");
+    }
+
+    #[test]
+    fn v0_6_1_session_messages_still_round_trip() {
+        // REGRESSION: the 4 existing variants (User / Assistant /
+        // ToolResult / Custom) were already serialized in v0.6.1
+        // sessions. Adding new variants must not change their
+        // JSON shape (the tag is `role` and that's it).
+        let user = AgentMessage::User(UserMessage {
+            content: StringOrContentBlocks::String("hello".into()),
+            timestamp: ts(),
+        });
+        let json = serde_json::to_string(&user).unwrap();
+        // v0.6.1 shape: {"role":"user","content":"hello","timestamp":...}
+        assert!(json.starts_with(r#"{"role":"user""#), "got: {json}");
+        // Round-trip
+        let back: AgentMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(user, back);
+    }
+
+    #[test]
+    fn session_entry_message_round_trip_with_internal_variant() {
+        // A full `SessionEntry::Message` carrying a Notification
+        // must round-trip too (the wire format is JSONL v4).
+        let entry = SessionEntry::Message(SessionMessageEntry {
+            id: "e1".into(),
+            parent_id: None,
+            timestamp: "2026-09-23T00:00:00.000Z".into(),
+            message: sample_notification(),
+        });
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""type":"message""#));
+        assert!(json.contains(r#""role":"notification""#));
+        let back: SessionEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(entry, back);
     }
 }
