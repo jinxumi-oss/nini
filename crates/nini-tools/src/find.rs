@@ -34,15 +34,16 @@ impl Tool for FindTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "find".to_string(),
-            description: "Find files by glob pattern (e.g., `*.rs`, `**/*.toml`). \
-                          Honors .gitignore."
+            description: "Enumerate files matching a glob (e.g. `*.rs`, `**/*.toml`). \
+                          Honors .gitignore. NOT for listing a directory's contents — \
+                          use bash (`ls`) for that."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Glob pattern to match file names."
+                        "description": "Glob pattern to match file names (e.g. `*.rs`, `src/**/*.rs`)."
                     },
                     "path": {
                         "type": "string",
@@ -121,18 +122,11 @@ impl Tool for FindTool {
 
     fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
         Some(ToolSystemPrompt {
-            snippet: concat!(
-                "Glob-based file/directory enumeration. Patterns are ",
-                "relative to `cwd` and follow shell-glob semantics ",
-                "(** for recursive, * for single-segment). Respects ",
-                "`.gitignore`.",
-            )
-            .into(),
+            snippet: "Enumerate files matching a glob (e.g. `*.rs`).".into(),
             guidelines: vec![
-                "Anchor glob patterns with `**/` to control how \
-                 directories are matched recursively.".into(),
-                "Avoid overly-broad patterns like `**/*` over a \
-                 large tree — narrow the scope first.".into(),
+                "Use this to find which files EXIST; not to list \
+                 directory contents — use bash (`ls`) for that."
+                    .into(),
             ],
         })
     }
