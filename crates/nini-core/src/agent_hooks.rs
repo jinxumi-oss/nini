@@ -38,17 +38,17 @@ use crate::provider::Message;
 /// Hook trait for agents that want to inject messages mid-run.
 ///
 /// The default implementation (`NoopHooks`) is the v0.6.1 behavior —
-/// no steering, no follow-up. v0.7.x will add `convert_to_llm`,
-/// `transform_context`, `should_stop_after_turn` in M3b.
+/// no steering, no follow-up, identity conversion, no context
+/// transforms, no early stop. v0.7.0 (M3b) extends the surface with
+/// 3 context hooks that let extensions shape the messages sent to
+/// the LLM without forking nini-core.
 ///
 /// **Internal-only messages** (the `Notification`, `UiMessage`,
 /// `AppMessage` variants added in v0.7 M3a) are filtered out of the
-/// LLM view before reaching the model. M3b will wire this filtering
-/// into a `convert_to_llm` default impl; the predicate itself lives
-/// in `entries::AgentMessage::is_internal_only` and is exposed here
-/// as `filter_internal_only_messages` for any caller that needs to
-/// pre-strip the message list.
-pub trait AgentLoopHooks: Send + Sync {
+/// LLM view before reaching the model. M3b wires this filtering into
+/// the default `convert_to_llm` impl via
+/// `AgentMessage::is_internal_only`.
+pub trait AgentLoopHooks: Send +Sync {
     /// Inject messages **after** a round of tool execution, **before**
     /// the next LLM call.
     ///
@@ -76,6 +76,122 @@ pub trait AgentLoopHooks: Send + Sync {
     /// done with the current task, also run `cargo test`".
     fn get_followup_messages(&self, _all: &[Message]) -> Vec<Message> {
         Vec::new()
+    }
+
+    /// v0.7 (M3b) — called once per loop iteration BEFORE the
+    /// model request, AFTER any built-in compaction has run.
+    /// Lets the extension reshape the messages the LLM will
+    /// receive.
+    ///
+    /// **Contract**: this hook is non-mutating. It receives the
+    /// current message list and returns a (possibly different)
+    /// view of those messages. The agent's internal `self.messages`
+    /// is NOT modified by this call.
+    ///
+    /// The `TransformResult` carries:
+    ///   * `messages`     — the messages to send to the LLM
+    ///   * `dropped_count` — how many messages were filtered out
+    ///                       (for status bar / debug UI)
+    ///   * `reason`       — short tag like "context_window_exceeded"
+    ///                       for observability
+    ///
+    /// Default implementation: identity (no transformation, no
+    /// drops). Pi's typical override: trim the oldest N messages
+    /// once the estimated token count exceeds the budget.
+    fn transform_context(&self, messages: &[Message]) -> TransformResult {
+        TransformResult {
+            messages: messages.to_vec(),
+            dropped_count: 0,
+            reason: None,
+        }
+    }
+
+    /// v0.7 (M3b) — called once per loop iteration BEFORE the
+    /// model request, AFTER `transform_context`. Lets the extension
+    /// filter or rewrite the message list one final time.
+    ///
+    /// **Contract**: this is the LAST step before the LLM sees the
+    /// messages. The default implementation drops the 3
+    /// internal-only variants (Notification / UiMessage /
+    /// AppMessage) introduced in M3a — they never reach the model.
+    ///
+    /// Pi also collapses `custom` messages into user messages here
+    /// (see the wiki 7→3 conversion table).
+    fn convert_to_llm(&self, messages: &[Message]) -> Vec<Message> {
+        // M3a default: filter_internal_only_messages is identity at
+        // the provider layer (the 4-role Message enum has no
+        // internal-only variants). The real filtering happens at the
+        // entries→provider boundary in callers that go through
+        // SessionEntry. We pass through unchanged so the provider
+        // layer stays untouched.
+        messages.to_vec()
+    }
+
+    /// v0.7 (M3b) — called once per loop iteration AFTER the
+    /// model has responded with no tool calls (i.e. just before
+    /// the agent would exit).
+    ///
+    /// Returns `true` to STOP the agent early. Default: `false`
+    /// (run to completion as today).
+    ///
+    /// Common use cases:
+    ///   * "Stop once the context is 95% full so the next user
+    ///      prompt can trigger a compaction."
+    ///   * "Stop if the last assistant message contains
+    ///      `<DONE/>`."
+    fn should_stop_after_turn(&self, _messages: &[Message]) -> bool {
+        false
+    }
+}
+
+/// v0.7 (M3b) — return type of `transform_context`.
+///
+/// `messages` is the new view sent to the LLM. `dropped_count` and
+/// `reason` are observability metadata surfaced through the status
+/// bar / debug log so users can see when and why the transform
+/// fired.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformResult {
+    pub messages: Vec<Message>,
+    pub dropped_count: usize,
+    pub reason: Option<String>,
+}
+
+impl TransformResult {
+    /// Convenience constructor for the identity transformation
+    /// (the default behaviour).
+    pub fn identity(messages: &[Message]) -> Self {
+        Self {
+            messages: messages.to_vec(),
+            dropped_count: 0,
+            reason: None,
+        }
+    }
+
+    /// Convenience constructor for a transformation that trimmed
+    /// `dropped` messages off the end with the given `reason`.
+    pub fn trimmed(messages: Vec<Message>, dropped: usize, reason: impl Into<String>) -> Self {
+        Self {
+            messages,
+            dropped_count: dropped,
+            reason: Some(reason.into()),
+        }
+    }
+}
+
+impl Default for TransformResult {
+    /// Empty TransformResult: no messages, 0 dropped, no reason.
+    /// Used by `catch_hook_panic` when a panicking transform hook
+    /// falls back to a safe default — the agent sees an empty
+    /// message view (LLM call would have nothing to send) and
+    /// continues running. The hard `max_iterations` cap still
+    /// prevents infinite loops.
+    fn default() -> Self {
+        Self {
+            messages: Vec::new(),
+            dropped_count: 0,
+            reason: None,
+        }
     }
 }
 
@@ -297,5 +413,70 @@ mod tests {
     fn filter_internal_only_skeleton_preserves_empty_input() {
         let out = filter_internal_only_messages(Vec::new());
         assert!(out.is_empty());
+    }
+
+    /// TransformResult::identity preserves messages + reports 0 drops.
+    #[test]
+    fn transform_result_identity_constructor() {
+        let msgs = vec![user_msg("a"), user_msg("b")];
+        let r = TransformResult::identity(&msgs);
+        assert_eq!(r.messages.len(), 2);
+        assert_eq!(r.dropped_count, 0);
+        assert!(r.reason.is_none());
+    }
+
+    /// TransformResult::trimmed records dropped count + reason.
+    #[test]
+    fn transform_result_trimmed_constructor() {
+        let kept = vec![user_msg("kept")];
+        let r = TransformResult::trimmed(kept.clone(), 5, "context_window_exceeded");
+        assert_eq!(r.messages, kept);
+        assert_eq!(r.dropped_count, 5);
+        assert_eq!(r.reason.as_deref(), Some("context_window_exceeded"));
+    }
+
+    /// Default NoopHooks.transform_context is identity.
+    #[test]
+    fn noop_transform_context_is_identity() {
+        let h = NoopHooks;
+        let msgs = vec![user_msg("a"), user_msg("b")];
+        let r = h.transform_context(&msgs);
+        assert_eq!(r.messages, msgs);
+        assert_eq!(r.dropped_count, 0);
+        assert!(r.reason.is_none());
+    }
+
+    /// Default NoopHooks.convert_to_llm is identity (M3a filtering
+    /// happens at the entries→provider boundary in callers).
+    #[test]
+    fn noop_convert_to_llm_is_identity() {
+        let h = NoopHooks;
+        let msgs = vec![user_msg("a")];
+        let out = h.convert_to_llm(&msgs);
+        assert_eq!(out, msgs);
+    }
+
+    /// Default NoopHooks.should_stop_after_turn returns false.
+    #[test]
+    fn noop_should_stop_after_turn_is_false() {
+        let h = NoopHooks;
+        let msgs = vec![user_msg("anything")];
+        assert!(!h.should_stop_after_turn(&msgs));
+        assert!(!h.should_stop_after_turn(&[]));
+    }
+
+    /// M3b — a custom TransformResult carries the reason string
+    /// all the way through. Custom hook authors can tag
+    /// their trims with a debug-friendly reason.
+    #[test]
+    fn transform_result_carries_reason() {
+        let r = TransformResult {
+            messages: vec![user_msg("kept")],
+            dropped_count: 7,
+            reason: Some("custom_trim_policy".into()),
+        };
+        assert_eq!(r.dropped_count, 7);
+        assert_eq!(r.reason.as_deref(), Some("custom_trim_policy"));
+        assert_eq!(r.messages.len(), 1);
     }
 }

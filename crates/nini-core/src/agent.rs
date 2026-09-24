@@ -669,6 +669,26 @@ impl Agent {
                     return;
                 }
                 iteration += 1;
+                // v0.7 (M3b) — soft-stop hook. Extensions can ask
+                // the agent to wrap up early (e.g. when the context
+                // is near-full and the next prompt should trigger
+                // a compaction). The hook is a CLONED snapshot of
+                // self.messages so it doesn't need &mut Agent.
+                let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> =
+                    self.hooks.clone();
+                let snapshot = self.messages.clone();
+                let should_stop = crate::agent_hooks::catch_hook_panic(
+                    "should_stop_after_turn",
+                    || hooks_ref.should_stop_after_turn(&snapshot),
+                );
+                if should_stop {
+                    self.set_phase(AgentPhase::Idle);
+                    yield AgentEvent::PhaseChanged(AgentPhase::Idle);
+                    return;
+                }
+                // Hard safety net: ALWAYS preserved, regardless of
+                // whether the hook fires. A panicking hook that
+                // ignores max_iterations is still bounded by it.
                 if iteration > config.max_iterations {
                     Err(AgentError::TooManyIterations(config.max_iterations))?;
                 }
@@ -734,8 +754,28 @@ impl Agent {
                     yield AgentEvent::PhaseChanged(AgentPhase::Working);
                 }
 
-                // Build request from current history.
-                let request = build_request(&config, &self.messages, tool_specs.as_slice());
+                // v0.7 (M3b) — apply the 2 context hooks in order:
+                //   1. transform_context (trim / inject)
+                //   2. convert_to_llm (filter internal-only)
+                // Both default to identity. The hook implementations
+                // run on a snapshot of self.messages so the hook
+                // can't mutate the agent's source of truth (only the
+                // LLM sees the result).
+                let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> =
+                    self.hooks.clone();
+                let msgs_snapshot = self.messages.clone();
+                let transformed = crate::agent_hooks::catch_hook_panic(
+                    "transform_context",
+                    || hooks_ref.transform_context(&msgs_snapshot),
+                );
+                let hooks_ref2: Arc<dyn crate::agent_hooks::AgentLoopHooks> =
+                    self.hooks.clone();
+                let llm_msgs = crate::agent_hooks::catch_hook_panic(
+                    "convert_to_llm",
+                    || hooks_ref2.convert_to_llm(&transformed.messages),
+                );
+                // Build request from the transformed view.
+                let request = build_request(&config, &llm_msgs, tool_specs.as_slice());
 
                 // Stream provider response, accumulating into assistant message
                 // and tracking pending tool calls.
@@ -2622,5 +2662,336 @@ mod tool_lifecycle_hook_tests {
             }
         }
         assert!(completed);
+
+}
+}
+
+/// v0.7 (M3b) — integration tests for the 3 context hooks
+/// (`should_stop_after_turn`, `transform_context`,
+/// `convert_to_llm`). The agent-hooks unit tests cover the trait
+/// surface in isolation; here we verify the hooks are CALLED by
+/// `Agent::run` at the right points and that their effects on
+/// the message log / loop termination match the documented
+/// behavior.
+#[cfg(test)]
+mod context_hook_tests {
+    use super::*;
+    use crate::agent_hooks::{AgentLoopHooks, NoopHooks, TransformResult};
+    use crate::provider::{Capabilities, ContentBlock, Provider, ProviderError, Request, StreamEvent};
+    use futures_core::Stream;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Minimal text-only provider. Same as M1's tests.
+    struct TextOnlyProvider;
+    impl Provider for TextOnlyProvider {
+        fn name(&self) -> &'static str { "text-only-m3b" }
+        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn stream(
+            &self,
+            _req: Request,
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+            Box::pin(futures_util::stream::iter(vec![
+                Ok(StreamEvent::MessageStart {
+                    id: "msg-1".into(),
+                    model: "test".into(),
+                }),
+                Ok(StreamEvent::TextDelta { text: "hi back".into() }),
+                Ok(StreamEvent::MessageStop {
+                    stop_reason: "stop".into(),
+                    usage: Usage::default(),
+                }),
+            ]))
+        }
+    }
+
+    /// Repeating-tool provider that triggers max_iterations.
+    struct RepeatingToolProvider;
+    impl Provider for RepeatingToolProvider {
+        fn name(&self) -> &'static str { "repeat-tool" }
+        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn stream(
+            &self,
+            _req: Request,
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+            Box::pin(futures_util::stream::iter(vec![
+                Ok(StreamEvent::MessageStart {
+                    id: "msg-1".into(),
+                    model: "test".into(),
+                }),
+                Ok(StreamEvent::ToolCallStart {
+                    id: "tc-1".into(),
+                    name: "nope".into(),
+                }),
+                Ok(StreamEvent::ToolCallDelta {
+                    id: "tc-1".into(),
+                    input_json_delta: "{}".into(),
+                }),
+                Ok(StreamEvent::ToolCallStop {
+                    id: "tc-1".into(),
+                    input_json: serde_json::json!({}),
+                }),
+                Ok(StreamEvent::MessageStop {
+                    stop_reason: "tool_use".into(),
+                    usage: Usage::default(),
+                }),
+            ]))
+        }
+    }
+
+    fn user_msg(text: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: text.into() }],
+            timestamp: 0,
+        }
+    }
+
+    fn agent_with(
+        provider: Arc<dyn Provider>,
+        hooks: Arc<dyn AgentLoopHooks>,
+    ) -> Agent {
+        Agent::with_hooks(
+            provider,
+            ToolRegistry::new(),
+            RunConfig::new("test-model"),
+            hooks,
+        )
+    }
+
+    /// M3b — `should_stop_after_turn` is a SOFT stop. Fires
+    /// before the hard cap. Returns true immediately → no LLM
+    /// call, no assistant message.
+    #[tokio::test(flavor = "current_thread")]
+    async fn should_stop_after_turn_ends_run_immediately() {
+        struct AlwaysStop;
+        impl AgentLoopHooks for AlwaysStop {
+            fn should_stop_after_turn(&self, _: &[Message]) -> bool {
+                true
+            }
+        }
+        let mut agent = agent_with(
+            Arc::new(TextOnlyProvider),
+            Arc::new(AlwaysStop),
+        );
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        assert_eq!(agent.messages().len(), 1);
+        assert_eq!(agent.messages()[0].role, Role::User);
+    }
+
+    /// M3b — `should_stop_after_turn` returning false does NOT
+    /// interfere with the hard `max_iterations` cap. The cap
+    /// eventually trips via TooManyIterations.
+    #[tokio::test(flavor = "current_thread")]
+    async fn should_stop_after_turn_false_lets_max_iterations_trip() {
+        struct NeverStop;
+        impl AgentLoopHooks for NeverStop {
+            fn should_stop_after_turn(&self, _: &[Message]) -> bool {
+                false
+            }
+        }
+        let mut agent = agent_with(
+            Arc::new(RepeatingToolProvider),
+            Arc::new(NeverStop),
+        );
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        // Many iterations of (assistant + tool-result) messages.
+        assert!(agent.messages().len() > 1);
+    }
+
+    /// M3b — a panicking `should_stop_after_turn` falls through
+    /// to false. The agent keeps running until max_iterations
+    /// trips. Run completes normally (no panic propagates).
+    #[tokio::test(flavor = "current_thread")]
+    async fn panicking_should_stop_after_turn_does_not_crash() {
+        struct PanicStop;
+        impl AgentLoopHooks for PanicStop {
+            fn should_stop_after_turn(&self, _: &[Message]) -> bool {
+                panic!("stop hook explosion");
+            }
+        }
+        let mut agent = agent_with(
+            Arc::new(RepeatingToolProvider),
+            Arc::new(PanicStop),
+        );
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        // The run terminated via the hard cap; agent.messages()
+        // has accumulated iterations.
+        assert!(agent.messages().len() > 1);
+    }
+
+    /// M3b — `transform_context` is non-mutating. The hook can
+    /// return a different view for the LLM, but `self.messages`
+    /// (the agent's source of truth) is preserved.
+    #[tokio::test(flavor = "current_thread")]
+    async fn transform_context_is_non_mutating() {
+        struct TrimToFirst;
+        impl AgentLoopHooks for TrimToFirst {
+            fn transform_context(&self, msgs: &[Message]) -> TransformResult {
+                TransformResult::trimmed(
+                    msgs.first().cloned().into_iter().collect(),
+                    msgs.len().saturating_sub(1),
+                    "test_trim",
+                )
+            }
+        }
+        let mut agent = agent_with(
+            Arc::new(TextOnlyProvider),
+            Arc::new(TrimToFirst),
+        );
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        // user + assistant = 2 messages regardless of what the
+        // hook pretended to trim.
+        assert_eq!(agent.messages().len(), 2);
+    }
+
+    /// M3b — `convert_to_llm` is non-mutating. Even if the hook
+    /// filters everything, the agent's internal message log is
+    /// preserved.
+    #[tokio::test(flavor = "current_thread")]
+    async fn convert_to_llm_is_non_mutating() {
+        struct FilterAll;
+        impl AgentLoopHooks for FilterAll {
+            fn convert_to_llm(&self, _: &[Message]) -> Vec<Message> {
+                Vec::new()
+            }
+        }
+        let mut agent = agent_with(
+            Arc::new(TextOnlyProvider),
+            Arc::new(FilterAll),
+        );
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        // The LLM ran (got an empty context) and returned an
+        // assistant message. Both messages still in the log.
+        assert_eq!(agent.messages().len(), 2);
+    }
+
+    /// M3b — NoopHooks doesn't shrink the message list; it just
+    /// passes the user prompt and the assistant response
+    /// through to the LLM.
+    #[tokio::test(flavor = "current_thread")]
+    async fn noop_hooks_identity_throughout() {
+        let mut agent = agent_with(
+            Arc::new(TextOnlyProvider),
+            Arc::new(NoopHooks),
+        );
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        assert_eq!(agent.messages().len(), 2);
+    }
+
+    /// M3b — a panicking `transform_context` falls back to the
+    /// default (empty) TransformResult via `catch_unwind`. The
+    /// agent keeps running; the LLM gets an empty message view.
+    #[tokio::test(flavor = "current_thread")]
+    async fn panicking_transform_context_does_not_crash() {
+        struct PanicTransform;
+        impl AgentLoopHooks for PanicTransform {
+            fn transform_context(
+                &self,
+                _: &[Message],
+            ) -> TransformResult {
+                panic!("transform hook explosion");
+            }
+        }
+        let mut agent = agent_with(
+            Arc::new(TextOnlyProvider),
+            Arc::new(PanicTransform),
+        );
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        // The LLM still got called (with an empty context) and
+        // responded; the agent's messages log is unchanged.
+        assert_eq!(agent.messages().len(), 2);
+    }
+
+    /// M3b — a panicking `convert_to_llm` falls back to the
+    /// default (empty Vec) via `catch_unwind`. The LLM gets an
+    /// empty message view, the agent's log is preserved.
+    #[tokio::test(flavor = "current_thread")]
+    async fn panicking_convert_to_llm_does_not_crash() {
+        struct PanicConvert;
+        impl AgentLoopHooks for PanicConvert {
+            fn convert_to_llm(&self, _: &[Message]) -> Vec<Message> {
+                panic!("convert hook explosion");
+            }
+        }
+        let mut agent = agent_with(
+            Arc::new(TextOnlyProvider),
+            Arc::new(PanicConvert),
+        );
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        assert_eq!(agent.messages().len(), 2);
+    }
+
+    /// M3b — `should_stop_after_turn` sees the messages at the
+    /// START of the iteration (before the LLM is called for
+    /// that turn). A hook can implement "stop after the LLM
+    /// produces N turns" by counting assistant messages.
+    #[tokio::test(flavor = "current_thread")]
+    async fn should_stop_after_turn_sees_messages_at_iteration_start() {
+        struct StopAfterFirst;
+        impl AgentLoopHooks for StopAfterFirst {
+            fn should_stop_after_turn(&self, msgs: &[Message]) -> bool {
+                msgs.iter()
+                    .any(|m| m.role == Role::Assistant)
+            }
+        }
+        let mut agent = agent_with(
+            Arc::new(RepeatingToolProvider),
+            Arc::new(StopAfterFirst),
+        );
+        use futures_util::StreamExt;
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+        // The hook stops as soon as ANY assistant message exists
+        // → exactly one assistant turn in the log.
+        let assistant_count = agent
+            .messages()
+            .iter()
+            .filter(|m| m.role == Role::Assistant)
+            .count();
+        assert_eq!(assistant_count, 1);
     }
 }
