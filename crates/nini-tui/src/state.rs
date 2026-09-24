@@ -641,6 +641,11 @@ pub struct AppState {
     pub transcript: Vec<TranscriptLine>,
     pub mode: RunMode,
     pub model: String,
+    /// Provider name (e.g. "anthropic", "openai", "minimax"). Set
+    /// at bootstrap from the `--provider` flag or `NINI_PROVIDER` env.
+    /// Rendered in the status bar (Pi-style `(provider) model`)
+    /// so users can tell at a glance which backend they're on.
+    pub provider: Option<String>,
     /// Current thinking level (e.g. "off", "medium", "high"). Updated
     /// by cycle_thinking and the /thinking command. Used as a
     /// cycle_thinking source of truth so we don't have to parse it
@@ -808,6 +813,7 @@ impl AppState {
             models_cycle: self.models_cycle.clone(),
             models_cycle_idx: self.models_cycle_idx,
             settings_path: self.settings_path.clone(),
+            provider: self.provider.clone(),
             settings_snapshot: self.settings_snapshot.clone(),
             thinking_level: self.thinking_level.clone(),
             pending_next_turn_messages: self.pending_next_turn_messages.clone(),
@@ -895,6 +901,7 @@ impl AppState {
             models_cycle: Vec::new(),
             models_cycle_idx: None,
             settings_path: None,
+            provider: None,
             thinking_level: None,
             abort_signal: None,
             pending_next_turn_messages: Vec::new(),

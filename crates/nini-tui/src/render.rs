@@ -132,7 +132,7 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
         phase.label().to_string()
     };
 
-    // Model segment: " nini [model] |"
+    // Model segment: " nini (provider) model | thinking • level |"
     let mut spans: Vec<Span<'static>> = vec![
         Span::styled(
             " nini ".to_string(),
@@ -141,8 +141,23 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!(" {} | ", state.model)),
     ];
+    // v0.8: Pi-style "(provider) model" so users can tell at a glance
+    // which backend they're on (anthropic vs openai vs minimax).
+    if let Some(provider) = state.provider.as_ref().filter(|p| !p.is_empty()) {
+        spans.push(Span::styled(
+            format!("({provider}) "),
+            theme.fg_style("dim"),
+        ));
+    }
+    spans.push(Span::raw(format!("{} | ", state.model)));
+    // v0.8: surface thinking level. Pi-style "• medium".
+    if let Some(level) = state.thinking_level.as_ref().filter(|l| !l.is_empty()) {
+        spans.push(Span::styled(
+            format!("• {level} | "),
+            theme.fg_style("dim"),
+        ));
+    }
 
     // Working-directory segment (with tilde-expansion).
     if let Some(cwd) = &state.cwd {
@@ -746,5 +761,38 @@ mod status_tests {
         // No [theme] pill when theme_name is None.
         assert!(!text.contains("[light]") && !text.contains("[dark]"),
             "unexpected theme pill: {text}");
+    }
+
+    #[test]
+    fn status_bar_shows_provider_when_set() {
+        use crate::state::AppState;
+        let mut state = AppState::new("MiniMax-M3");
+        state.provider = Some("anthropic".to_string());
+        let text = status_text(&state);
+        // v0.8: Pi-style (provider) prefix in the status bar.
+        assert!(text.contains("(anthropic)"),
+                "expected (anthropic) prefix, got: {text}");
+        assert!(text.contains("MiniMax-M3"));
+    }
+
+    #[test]
+    fn status_bar_hides_provider_when_unset() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        let text = status_text(&state);
+        // No (provider) prefix when state.provider is None.
+        assert!(!text.contains("(anthropic)") && !text.contains("(openai)"),
+                "unexpected provider prefix: {text}");
+    }
+
+    #[test]
+    fn status_bar_shows_thinking_level_when_set() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        state.thinking_level = Some("medium".to_string());
+        let text = status_text(&state);
+        // v0.8: Pi-style '• level' in the status bar.
+        assert!(text.contains("• medium"),
+                "expected '• medium' indicator, got: {text}");
     }
 }

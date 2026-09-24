@@ -467,6 +467,13 @@ async fn main() -> Result<()> {
                             "test-model".to_string()
                         };
                         state.model = picked;
+                        // v0.8: surface the provider name in the status bar
+                        // (Pi-style `(provider) model`). Helps users
+                        // disambiguate `MiniMax-M3` from gateway vs local,
+                        // or `gpt-4o` from openai vs openai-compat.
+                        if !provider.is_empty() {
+                            state.provider = Some(provider.clone());
+                        }
                         // Seed state.cwd / state.git_branch so the status
                         // bar can render them (previously only declared in
                         // AppState, never populated).
