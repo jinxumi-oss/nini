@@ -1386,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "nini-ai"
-version = "0.7.2"
+version = "0.7.4"
 dependencies = [
  "assert_matches",
  "async-stream",
@@ -1410,7 +1410,7 @@ dependencies = [
 
 [[package]]
 name = "nini-cli"
-version = "0.7.2"
+version = "0.7.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1431,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "nini-core"
-version = "0.7.2"
+version = "0.7.4"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "nini-ext"
-version = "0.7.2"
+version = "0.7.4"
 dependencies = [
  "async-trait",
  "libloading",
@@ -1465,7 +1465,7 @@ dependencies = [
 
 [[package]]
 name = "nini-session"
-version = "0.7.2"
+version = "0.7.4"
 dependencies = [
  "chrono",
  "nini-core",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "nini-tools"
-version = "0.7.2"
+version = "0.7.4"
 dependencies = [
  "assert_matches",
  "async-trait",
@@ -1497,7 +1497,7 @@ dependencies = [
 
 [[package]]
 name = "nini-tui"
-version = "0.7.2"
+version = "0.7.4"
 dependencies = [
  "anyhow",
  "arboard",

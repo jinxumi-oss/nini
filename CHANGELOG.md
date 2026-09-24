@@ -4,6 +4,138 @@ All notable changes to nini will be documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project follows [Semantic Versioning](https://semver.org/).
 
+## [0.7.4] - 2026-09-24
+
+One commit on top of v0.7.3. Closes the 3 remaining medium
+follow-up issues from the end-to-end UX test documented at
+`docs/ux-reports/v0.7.2-end-to-end.md`.
+
+### Bug fixes
+
+**TUI didn't redraw between agent events**
+
+- Symptom: status bar always showed `idle` even when the agent
+  was actively streaming. Cause: the runtime loop only redraws
+  on the 50ms tick, on user input, or on agent-finished. Fast
+  agents that completed in <50ms never showed `working` or
+  `Working` — user only saw the final state.
+- Fix: `AgentSink` now carries an `Arc<Notify>`. Every `push`
+  call notifies the runtime's `select!` loop, which falls through
+  to re-snapshot and re-render. New `_ = sink_notify.notified()`
+  branch added in `tokio::select!`.
+
+**`<think>...</think>` reasoning blocks leaked to transcript**
+
+- Symptom: MiniMax-M3 and similar reasoning-capable models emit
+  their `thinking` inside the same `delta.content` as the
+  answer, wrapped in `<think>...</think>` tags. Without
+  stripping, the user sees the model's internal monologue
+  before the real answer.
+- Fix: `ThinkTagFilter` (new struct in `nini-ai/src/openai.rs`)
+  walks text chunks in order and emits only the content OUTSIDE
+  `<think>...</think>` blocks. Tags may span chunk boundaries
+  (e.g., chunk N ends with `<` and chunk N+1 starts with
+  `mm:think>`), so the filter holds back text from the last `<`
+  to the end of the chunk as a potential partial-tag buffer.
+- 10 new unit tests cover: pass-through, full block stripping,
+  tag at start/end, newlines inside tag, multiple blocks,
+  unclosed tag across chunks (both opening and closing), empty
+  input, and a realistic MiniMax-M3-shaped stream.
+
+**Status bar always showed `test-model` even when `--model` was set**
+
+- Symptom: `nini test-model | ~/nini | ...` regardless of CLI flag
+  or `settings.json` content.
+- Cause: the bootstrap function in `nini-cli/src/main.rs` had a
+  logic bug — it read `s.provider` first and assigned it to
+  `state.model`, then read `s.model`. The intended order is:
+  1. CLI `--model` flag
+  2. `settings.json` model field
+  3. `settings.json` provider field (fallback)
+  4. `"test-model"` (last resort)
+- Fix: reordered the bootstrap priority list to match the
+  intended order.
+
+### Test coverage
+
+- **689 tests passing** (was 679 in v0.7.3). +10 from
+  `ThinkTagFilter` tests.
+- All 689 tests green across 14 suites.
+
+### Compatibility
+
+- No public API breakage.
+- Tests in `crates/nini-tui/tests/agent_wire_e2e.rs` and
+  `crates/nini-tui/tests/interactive_e2e.rs` updated to pass the
+  new notify arg to `AgentSink::new` (10 occurrences).
+
+## [0.7.3] - 2026-09-24
+
+One commit on top of v0.7.2. Closes the architectural purity
+gap identified in the v0.7 plan review: `convert_to_llm` was
+identity at the agent loop because the actual 7→3 (nini's
+10→4) conversion was duplicated in 3 crates AND had a real
+behavioral bug.
+
+### Bug fixes
+
+**ToolResult messages were DROPPED on session reload** (v0.6.1
+→ v0.7.0 regression)
+
+- The legacy read direction used `_ => None` for every
+  non-User/Assistant `entries::AgentMessage` variant, so
+  `ToolResult` messages stored in session files vanished
+  after reload. **Effect**: any agent loop that saved a
+  session and reloaded it lost all tool results — the model
+  no longer knew what its tools had returned.
+- **Fix**: introduced `nini_core::conversion` as the single
+  chokepoint for `SessionEntry::Message → provider::Message`.
+  The new chokepoint emits `Role::Tool` (preserving
+  `tool_use_id` + `is_error`) per the wiki 7→3 table.
+
+**Assistant messages were stored as `Custom("assistant")`** in
+session files
+
+- `nini_session::convert_to_pi_message` was using the wrong
+  `entries::AgentMessage` variant (`pi::Custom` with a
+  discriminator string) instead of the dedicated
+  `pi::Assistant(AssistantMessage)` variant that has existed
+  since v0.6.x.
+- **Fix**: write direction now maps `Role::Assistant →
+  pi::Assistant` and `Role::Tool → pi::ToolResult`. The
+  read direction (new chokepoint) handles the inverse
+  mapping correctly.
+
+### Added
+
+- **`nini_core::conversion`** — single chokepoint for
+  `entries::AgentMessage → provider::Message` conversion.
+  Three public functions:
+  - `session_entry_to_llm_message(&SessionEntry) -> Option<Message>`
+  - `default_session_to_llm(&[AgentMessage]) -> Vec<Message>`
+  - `session_message_to_llm(&AgentMessage) -> Option<Message>`
+- `nini_tui::commands::entry_legacy_message` and
+  `nini_cli::main::cli_entry_legacy` delegate to the
+  chokepoint (was 28 + 25 lines of per-variant match; now 9 +
+  8 lines of delegation).
+- `push_then_read_round_trip` regression test in
+  `nini-session` — any future change that breaks the
+  write→read round-trip (User / Assistant / ToolResult) fails
+  loudly.
+
+### Test coverage
+
+- **665 tests passing** (was 663 in v0.7.0). 20 new
+  conversion unit tests + 1 round-trip integration test.
+
+### Compatibility
+
+- Session files written by v0.7.0 with the wrong variants
+  (`Custom("assistant")`, `Custom("toolResult")`) still
+  round-trip — the new chokepoint handles `Custom` in the
+  read direction per the wiki (custom → user).
+- No public API surface change.
+
 ## [0.7.2] - 2026-09-24
 
 One commit on top of v0.7.1. Closes Pi hook #9 — the last
@@ -741,6 +873,8 @@ skeleton to a feature-complete Pi-compatible coding agent.
 
 Initial public release. Not announced on any external channel.
 
+[0.7.4]: https://github.com/jinxumi-oss/nini/compare/v0.7.3...v0.7.4
+[0.7.3]: https://github.com/jinxumi-oss/nini/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/jinxumi-oss/nini/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/jinxumi-oss/nini/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/jinxumi-oss/nini/compare/v0.6.1...v0.7.0
