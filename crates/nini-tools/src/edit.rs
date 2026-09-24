@@ -6,7 +6,7 @@
 //! - Atomic write via temp file + rename
 
 use async_trait::async_trait;
-use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
+use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec, ToolSystemPrompt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -138,6 +138,26 @@ impl Tool for EditTool {
                 "deletions": dels,
                 "diff": diff_text,
             })),
+        })
+    }
+
+    fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
+        Some(ToolSystemPrompt {
+            snippet: concat!(
+                "Apply an exact-match text replacement to a file. ",
+                "`oldText` must be unique within the file (prepend ",
+                "or append context lines if needed); `newText` is the ",
+                "replacement.",
+            )
+            .into(),
+            guidelines: vec![
+                "Always include enough surrounding context in oldText \
+                 for uniqueness — the match is exact, not fuzzy.".into(),
+                "Read the file first if you're not sure of its exact \
+                 contents; blind edits are fragile.".into(),
+                "Prefer multiple small edits over one massive edit so \
+                 failures are easier to roll back.".into(),
+            ],
         })
     }
 }

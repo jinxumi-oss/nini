@@ -9,7 +9,7 @@
 #![allow(dead_code)] // Forward-compat fields for future features
 
 use async_trait::async_trait;
-use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
+use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec, ToolSystemPrompt};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
@@ -218,6 +218,25 @@ impl Tool for BashTool {
             content,
             is_error,
             details: Some(serde_json::to_value(&details).unwrap()),
+        })
+    }
+
+    fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
+        Some(ToolSystemPrompt {
+            snippet: concat!(
+                "Execute a shell command via $SHELL -c and capture ",
+                "stdout, stderr, exit code, and wall-clock duration. ",
+                "Set `timeout` (seconds) to bound long-running ",
+                "commands; on timeout the process tree is killed ",
+                "(SIGTERM then SIGKILL).",
+            )
+            .into(),
+            guidelines: vec![
+                "Prefer absolute paths or quote paths containing spaces.".into(),
+                "Set a timeout for anything that could run unboundedly.".into(),
+                "Destructive commands (`rm -rf`, `git push --force`) should \
+                 be confirmed by the user before invocation.".into(),
+            ],
         })
     }
 }

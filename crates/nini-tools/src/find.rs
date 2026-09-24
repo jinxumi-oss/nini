@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use ignore::WalkBuilder;
-use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
+use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec, ToolSystemPrompt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -116,6 +116,24 @@ impl Tool for FindTool {
                 "matches": results.len(),
                 "pattern": parsed.pattern,
             })),
+        })
+    }
+
+    fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
+        Some(ToolSystemPrompt {
+            snippet: concat!(
+                "Glob-based file/directory enumeration. Patterns are ",
+                "relative to `cwd` and follow shell-glob semantics ",
+                "(** for recursive, * for single-segment). Respects ",
+                "`.gitignore`.",
+            )
+            .into(),
+            guidelines: vec![
+                "Anchor glob patterns with `**/` to control how \
+                 directories are matched recursively.".into(),
+                "Avoid overly-broad patterns like `**/*` over a \
+                 large tree — narrow the scope first.".into(),
+            ],
         })
     }
 }

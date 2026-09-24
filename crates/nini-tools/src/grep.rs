@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
-use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
+use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec, ToolSystemPrompt};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -137,6 +137,23 @@ impl Tool for GrepTool {
                 "files_scanned": files_scanned,
                 "matches": results.len(),
             })),
+        })
+    }
+
+    fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
+        Some(ToolSystemPrompt {
+            snippet: concat!(
+                "Regex search across files. Supports case-insensitive ",
+                "matching (`-i`), invert match (`-v`), file-type ",
+                "filter (`include` glob), and respects `.gitignore`.",
+            )
+            .into(),
+            guidelines: vec![
+                "Anchor regex with `^` / `$` to constrain matches to \
+                 the start or end of a line.".into(),
+                "Use `include` to scope to specific file types (e.g. \
+                 `*.rs`) — unrestricted searches are slow.".into(),
+            ],
         })
     }
 }

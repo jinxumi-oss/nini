@@ -106,6 +106,22 @@ impl Tool for ReadTool {
             details: Some(details),
         })
     }
+
+    fn system_prompt_contribution(&self) -> Option<nini_core::tool::ToolSystemPrompt> {
+        Some(nini_core::tool::ToolSystemPrompt {
+            snippet: concat!(
+                "Read a file's contents. Supports `offset` + `limit` ",
+                "for partial reads of large files; line numbers are ",
+                "1-indexed.",
+            )
+            .into(),
+            guidelines: vec![
+                "For files larger than ~1MB, use offset+limit to read \
+                 them in chunks rather than loading the whole file.".into(),
+                "Read the file before editing it; never edit blind.".into(),
+            ],
+        })
+    }
 }
 
 #[cfg(test)]

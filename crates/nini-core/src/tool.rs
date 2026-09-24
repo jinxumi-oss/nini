@@ -17,6 +17,43 @@ pub struct ToolSpec {
     pub input_schema: Value,
 }
 
+/// v0.7.1 (Pi hook #9) — a tool's contribution to the system prompt.
+///
+/// Each tool can provide a short `snippet` (model-facing intro) and a
+/// list of `guidelines` (usage rules). The agent loop gathers these
+/// from all registered tools at request-build time and appends them
+/// to the user's `RunConfig.system` prompt.
+///
+/// Different from `ToolSpec.description`:
+///   * `ToolSpec.description` is the LONG documentation the model
+///     sees in the tool schema at every turn.
+///   * `ToolSystemPrompt.snippet` is the SHORT blurb that appears in
+///     the system prompt ONCE at conversation start.
+///   * `ToolSystemPrompt.guidelines` are per-tool usage rules that
+///     appear in the system prompt and are NOT repeated in every
+///     tool schema call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ToolSystemPrompt {
+    /// Short description (~1-2 sentences) for the system prompt.
+    /// Example: "Execute shell commands via $SHELL -c, return
+    /// captured stdout+stderr, support timeout."
+    #[serde(default)]
+    pub snippet: String,
+    /// Usage guidelines ("Be careful with destructive ops", "Use
+    /// absolute paths"). Empty Vec means no guidelines.
+    #[serde(default)]
+    pub guidelines: Vec<String>,
+}
+
+impl ToolSystemPrompt {
+    /// Convenience: empty (default) contribution. Tools that opt
+    /// out of hook #9 can return `Some(Self::empty())` to force
+    /// "no contribution" without returning `None`.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+}
+
 /// Result of a tool invocation, returned to the agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolOutput {
@@ -132,9 +169,36 @@ pub trait Tool: Send + Sync {
     /// `content` (e.g. for redaction), flip `is_error`, or attach
     /// extra `details`.
     ///
-    /// NOTE: hooks only fire on the success path. A tool that
+    /// NOTE: hooks only fire on the success path. Coll a tool that
     /// returns `Err` from `execute()` is surfaced as-is.
     fn after(&self) -> Option<Box<dyn AfterExecute>> {
+        None
+    }
+
+    /// v0.7.1 (Pi hook #9) — return this tool's contribution to
+    /// the system prompt: a short `snippet` + a list of usage
+    /// `guidelines`. The agent loop gathers contributions from
+    /// all registered tools and appends them to
+    /// `RunConfig.system` at request-build time.
+    ///
+    /// Default: no contribution (Pi parity behavior for tools that
+    /// don't opt in).
+    ///
+    /// Pi contract: each tool can have its own self-description.
+    /// The full system prompt then reads like:
+    ///
+    /// ```text
+    /// <user's system prompt>
+    ///
+    /// ## Tool self-descriptions
+    /// - bash: Execute shell commands...
+    /// - read: Read a file's contents...
+    ///
+    /// ## Tool usage guidelines
+    /// - bash: Use absolute paths
+    /// - edit: Always provide unique oldText
+    /// ```
+    fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
         None
     }
 }
@@ -330,5 +394,308 @@ impl AfterExecute for ArcBoxAdapterAfterTool {
         ctx: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
         self.0.run(output, ctx).await
+    }
+}
+
+/// v0.7.1 — aggregate `system_prompt_contribution()` calls from
+/// every tool in `registry` and append them to `base`. Returns
+/// `None` if no tool provides a contribution AND `base` is
+/// `None`; otherwise returns the assembled string.
+///
+/// Format (Pi-style):
+///
+/// ```text
+/// <base prompt>
+///
+/// ## Tool self-descriptions
+/// - bash: Execute shell commands...
+/// - read: Read a file's contents...
+///
+/// ## Tool usage guidelines
+/// - bash: Use absolute paths
+/// - edit: Always provide unique oldText
+/// ```
+///
+/// Snippets are emitted in the order `ToolRegistry::tools()`
+/// yields them (currently insertion order — the registry uses a
+/// `HashMap` but `register` is monotonic). Empty `snippet`s
+/// and empty `guideline`s are skipped.
+pub fn build_system_prompt_with_contributions(
+    base: Option<&str>,
+    registry: &ToolRegistry,
+) -> Option<String> {
+    let mut snippets: Vec<(String, String)> = Vec::new();
+    let mut guidelines: Vec<(String, String)> = Vec::new();
+    for tool in registry.tools() {
+        if let Some(contrib) = tool.system_prompt_contribution() {
+            if !contrib.snippet.trim().is_empty() {
+                snippets.push((tool.name().to_string(), contrib.snippet));
+            }
+            for g in contrib.guidelines {
+                if !g.trim().is_empty() {
+                    guidelines.push((tool.name().to_string(), g));
+                }
+            }
+        }
+    }
+    if snippets.is_empty() && guidelines.is_empty() {
+        return base.map(String::from);
+    }
+    let mut out = base.unwrap_or("").to_string();
+    if !snippets.is_empty() {
+        out.push_str("\n\n## Tool self-descriptions\n");
+        for (name, snippet) in &snippets {
+            out.push_str(&format!("- {name}: {snippet}\n"));
+        }
+    }
+    if !guidelines.is_empty() {
+        out.push_str("\n## Tool usage guidelines\n");
+        for (name, g) in &guidelines {
+            out.push_str(&format!("- {name}: {g}\n"));
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod system_prompt_tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    /// Test tool with controllable contribution.
+    struct ContribTool {
+        name: &'static str,
+        contrib: Option<ToolSystemPrompt>,
+    }
+    #[async_trait]
+    impl Tool for ContribTool {
+        fn name(&self) -> &'static str { self.name }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: self.name.into(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            }
+        }
+        async fn execute(
+            &self,
+            _a: Value,
+            _c: ToolContext,
+        ) -> Result<ToolOutput, ToolError> {
+            unreachable!("test tool not executed")
+        }
+        fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
+            self.contrib.clone()
+        }
+    }
+
+    fn reg_with(tools: Vec<Arc<dyn Tool>>) -> ToolRegistry {
+        let mut r = ToolRegistry::new();
+        for t in tools {
+            r.register_mut(t);
+        }
+        r
+    }
+
+    #[test]
+    fn no_tools_returns_base_unchanged() {
+        let reg = ToolRegistry::new();
+        assert_eq!(
+            build_system_prompt_with_contributions(Some("hello"), &reg),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn no_base_and_no_tools_returns_none() {
+        let reg = ToolRegistry::new();
+        assert_eq!(build_system_prompt_with_contributions(None, &reg), None);
+    }
+
+    #[test]
+    fn tools_with_contribution_get_appended() {
+        let reg = reg_with(vec![Arc::new(ContribTool {
+            name: "bash",
+            contrib: Some(ToolSystemPrompt {
+                snippet: "Run shell commands".into(),
+                guidelines: vec!["Use absolute paths".into()],
+            }),
+        })]);
+        let out = build_system_prompt_with_contributions(Some("base"), &reg).unwrap();
+        assert!(out.starts_with("base"));
+        assert!(out.contains("## Tool self-descriptions"));
+        assert!(out.contains("- bash: Run shell commands"));
+        assert!(out.contains("## Tool usage guidelines"));
+        assert!(out.contains("- bash: Use absolute paths"));
+    }
+
+    #[test]
+    fn no_base_with_contribution_starts_with_header() {
+        let reg = reg_with(vec![Arc::new(ContribTool {
+            name: "read",
+            contrib: Some(ToolSystemPrompt {
+                snippet: "Read files".into(),
+                guidelines: vec![],
+            }),
+        })]);
+        let out = build_system_prompt_with_contributions(None, &reg).unwrap();
+        assert!(out.starts_with("\n\n## Tool self-descriptions"));
+        assert!(out.contains("- read: Read files"));
+        assert!(!out.contains("## Tool usage guidelines"));
+    }
+
+    #[test]
+    fn multiple_tools_each_get_their_own_line() {
+        let reg = reg_with(vec![
+            Arc::new(ContribTool {
+                name: "bash",
+                contrib: Some(ToolSystemPrompt {
+                    snippet: "run cmds".into(),
+                    guidelines: vec!["use paths".into()],
+                }),
+            }),
+            Arc::new(ContribTool {
+                name: "read",
+                contrib: Some(ToolSystemPrompt {
+                    snippet: "read files".into(),
+                    guidelines: vec!["use limit".into()],
+                }),
+            }),
+        ]);
+        let out = build_system_prompt_with_contributions(Some("X"), &reg).unwrap();
+        assert!(out.contains("- bash: run cmds"));
+        assert!(out.contains("- read: read files"));
+        assert!(out.contains("- bash: use paths"));
+        assert!(out.contains("- read: use limit"));
+    }
+
+    #[test]
+    fn empty_snippet_skipped() {
+        let reg = reg_with(vec![Arc::new(ContribTool {
+            name: "x",
+            contrib: Some(ToolSystemPrompt {
+                snippet: String::new(),
+                guidelines: vec!["a guideline".into()],
+            }),
+        })]);
+        let out = build_system_prompt_with_contributions(Some("base"), &reg).unwrap();
+        assert!(!out.contains("## Tool self-descriptions"));
+        assert!(out.contains("## Tool usage guidelines"));
+        assert!(out.contains("- x: a guideline"));
+    }
+
+    #[test]
+    fn empty_guidelines_skipped() {
+        let reg = reg_with(vec![Arc::new(ContribTool {
+            name: "x",
+            contrib: Some(ToolSystemPrompt {
+                snippet: "intro".into(),
+                guidelines: vec![],
+            }),
+        })]);
+        let out = build_system_prompt_with_contributions(Some("base"), &reg).unwrap();
+        assert!(out.contains("## Tool self-descriptions"));
+        assert!(!out.contains("## Tool usage guidelines"));
+    }
+
+    #[test]
+    fn tool_returning_none_default_is_no_contribution() {
+        // Tools that don't implement system_prompt_contribution
+        // (default = None) contribute nothing.
+        struct Plain;
+        #[async_trait]
+        impl Tool for Plain {
+            fn name(&self) -> &'static str { "plain" }
+            fn spec(&self) -> ToolSpec {
+                ToolSpec {
+                    name: "plain".into(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({}),
+                }
+            }
+            async fn execute(
+                &self,
+                _a: Value,
+                _c: ToolContext,
+            ) -> Result<ToolOutput, ToolError> {
+                unreachable!()
+            }
+        }
+        let reg = reg_with(vec![Arc::new(Plain)]);
+        assert_eq!(
+            build_system_prompt_with_contributions(Some("base"), &reg),
+            Some("base".to_string()),
+            "tool with default None contribution must not affect output"
+        );
+    }
+
+    #[test]
+    fn tool_returning_some_empty_skipped() {
+        // A tool returning Some(ToolSystemPrompt::empty())
+        // explicitly opts into "no content" — same effect as None.
+        let reg = reg_with(vec![Arc::new(ContribTool {
+            name: "x",
+            contrib: Some(ToolSystemPrompt::empty()),
+        })]);
+        assert_eq!(
+            build_system_prompt_with_contributions(Some("base"), &reg),
+            Some("base".to_string())
+        );
+    }
+}
+
+/// Stub tool used by the integration test below. Defined BEFORE
+/// the test module so the test can reference it via `super`.
+#[cfg(test)]
+mod tool_under_test {
+    use super::*;
+    use async_trait::async_trait;
+
+    pub struct BashStub;
+    #[async_trait]
+    impl Tool for BashStub {
+        fn name(&self) -> &'static str { "bash" }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "bash".into(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            }
+        }
+        async fn execute(
+            &self,
+            _a: Value,
+            _c: ToolContext,
+        ) -> Result<ToolOutput, ToolError> {
+            unreachable!()
+        }
+        fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
+            Some(ToolSystemPrompt {
+                snippet: "test-stub-snippet".into(),
+                guidelines: vec!["test-stub-guideline".into()],
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod system_prompt_integration_tests {
+    use super::*;
+
+    /// Integration: a stub tool's contribution lands in the
+    /// augmented system prompt. This is the end-to-end smoke
+    /// test for Pi hook #9.
+    #[test]
+    fn bash_tool_contribution_lands_in_system_prompt() {
+        let mut reg = ToolRegistry::new();
+        reg.register_mut(Arc::new(tool_under_test::BashStub));
+        let out = build_system_prompt_with_contributions(Some("BASE"), &reg).unwrap();
+        assert!(out.starts_with("BASE"));
+        // The stub tool provides a recognizable snippet.
+        assert!(
+            out.contains("test-stub-snippet"),
+            "expected stub snippet in: {out}"
+        );
+        assert!(out.contains("test-stub-guideline"));
     }
 }

@@ -774,8 +774,16 @@ impl Agent {
                     "convert_to_llm",
                     || hooks_ref2.convert_to_llm(&transformed.messages),
                 );
+                // v0.7.1 (Pi hook #9) — aggregate tool
+                // system_prompt_contributions into the request
+                // system prompt before building the request.
+                // `config` was captured by the provider.stream
+                // closure above; build a local copy with the
+                // augmented system prompt.
+                let mut req_config = config.clone();
+                req_config.system = build_system_prompt(&req_config, &tool_registry);
                 // Build request from the transformed view.
-                let request = build_request(&config, &llm_msgs, tool_specs.as_slice());
+                let request = build_request(&req_config, &llm_msgs, tool_specs.as_slice());
 
                 // Stream provider response, accumulating into assistant message
                 // and tracking pending tool calls.
@@ -1330,8 +1338,26 @@ fn build_request(
         tools: tools.to_vec(),
         max_tokens: config.max_tokens,
         temperature: config.temperature,
+        // system is filled in by the agent loop at call sites via
+        // build_system_prompt() — we never read it from
+        // config.system here. Keeping this field as-is preserves
+        // the wire shape.
         system: config.system.clone(),
     }
+}
+
+/// v0.7.1 — build the final system prompt by appending the
+/// aggregated tool `system_prompt_contribution`s to the user's
+/// `RunConfig.system` base. Centralized so the loop has a
+/// single chokepoint for system-prompt construction (Pi hook #9).
+fn build_system_prompt(
+    config: &RunConfig,
+    registry: &ToolRegistry,
+) -> Option<String> {
+    crate::tool::build_system_prompt_with_contributions(
+        config.system.as_deref(),
+        registry,
+    )
 }
 
 /// Convert an `nini_core::AgentMessage` (which has `timestamp`) to the
