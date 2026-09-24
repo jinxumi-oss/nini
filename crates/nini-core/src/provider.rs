@@ -178,7 +178,7 @@ where
 }
 
 /// Provider error type.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ProviderError {
     #[error("http error: {0}")]
     Http(String),
