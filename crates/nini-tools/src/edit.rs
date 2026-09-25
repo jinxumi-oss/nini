@@ -138,6 +138,7 @@ impl Tool for EditTool {
                 "deletions": dels,
                 "diff": diff_text,
             })),
+            duration_ms: 0,
         })
     }
 

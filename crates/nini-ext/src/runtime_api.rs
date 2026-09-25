@@ -155,7 +155,7 @@ mod tests {
             }
         }
         async fn execute(&self, _input: serde_json::Value, _ctx: ToolContext) -> Result<ToolOutput, nini_core::tool::ToolError> {
-            Ok(ToolOutput { content: String::new(), is_error: false, details: None })
+            Ok(ToolOutput { content: String::new(), is_error: false, details: None, duration_ms: 0 })
         }
     }
 

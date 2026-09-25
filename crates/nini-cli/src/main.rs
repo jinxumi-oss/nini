@@ -392,7 +392,9 @@ async fn main() -> Result<()> {
                                 nini_tui::runtime::AgentEventLite::ToolResult {
                                     ok: !output.is_error,
                                     content: output.content,
-                                 details: None}
+                                    details: None,
+                                    duration_ms: output.duration_ms,
+                                }
                             }
                             Ok(AgentEvent::TurnEnd { usage, .. }) => {
                                 // `ProviderUsage` doesn't carry cost today;

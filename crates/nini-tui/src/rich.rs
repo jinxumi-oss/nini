@@ -124,7 +124,12 @@ pub fn render_diff(diff: &str, theme: &Theme) -> Vec<RLine<'static>> {
     out
 }
 
-pub fn render_tool_result(ok: bool, content: &str, theme: &Theme) -> Vec<RLine<'static>> {
+pub fn render_tool_result(
+    ok: bool,
+    content: &str,
+    duration_ms: Option<u64>,
+    theme: &Theme,
+) -> Vec<RLine<'static>> {
     let prefix_color = if ok { "toolSuccessBg" } else { "error" };
     let label = if ok { "[tool result] " } else { "[tool error] " };
 
@@ -134,7 +139,24 @@ pub fn render_tool_result(ok: bool, content: &str, theme: &Theme) -> Vec<RLine<'
     let linked = crate::hyperlink::auto_link(&clean);
     let lines: Vec<&str> = linked.lines().collect();
     let mut out: Vec<RLine<'static>> = Vec::new();
-    out.push(RLine::from(Span::styled(label.to_string(), theme.fg_style(prefix_color))));
+    // First line: prefix label + optional duration pill (Pi-style).
+    let mut first_spans: Vec<Span<'static>> = vec![Span::styled(
+        label.to_string(),
+        theme.fg_style(prefix_color),
+    )];
+    if let Some(ms) = duration_ms {
+        // Render as "Took 1.2s" / "Took 850ms" depending on size.
+        let label = if ms >= 1000 {
+            format!("Took {:.2}s ", ms as f64 / 1000.0)
+        } else {
+            format!("Took {ms}ms ")
+        };
+        first_spans.push(Span::styled(
+            label,
+            theme.fg_style("dim"),
+        ));
+    }
+    out.push(RLine::from(first_spans));
 
     // If the content references a pasted image path, surface it
     // prominently.
@@ -389,14 +411,14 @@ mod tests {
 
     #[test]
     fn render_tool_result_success_color() {
-        let lines = render_tool_result(true, "ok output", &theme());
+        let lines = render_tool_result(true, "ok output", None, &theme());
         assert!(!lines.is_empty());
         assert!(lines[0].spans.iter().any(|s| s.content.contains("[tool result]")));
     }
 
     #[test]
     fn render_tool_result_error_label() {
-        let lines = render_tool_result(false, "fail", &theme());
+        let lines = render_tool_result(false, "fail", None, &theme());
         assert!(lines[0]
             .spans
             .iter()
@@ -404,9 +426,39 @@ mod tests {
     }
 
     #[test]
+    fn render_tool_result_shows_duration_pill_when_set() {
+        // v0.8: Pi-style "Took 1.23s" / "Took 850ms" pill on the
+        // first line of the tool result.
+        let lines = render_tool_result(true, "ok", Some(1230), &theme());
+        assert!(
+            lines[0].spans.iter().any(|s| s.content.contains("Took 1.23s")),
+            "expected 'Took 1.23s' pill, got: {:?}",
+            lines[0].spans,
+        );
+        let lines_ms = render_tool_result(true, "ok", Some(850), &theme());
+        assert!(
+            lines_ms[0].spans.iter().any(|s| s.content.contains("Took 850ms")),
+            "expected 'Took 850ms' pill, got: {:?}",
+            lines_ms[0].spans,
+        );
+    }
+
+    #[test]
+    fn render_tool_result_omits_duration_pill_when_none() {
+        // v0.8: when the tool doesn't measure its own duration
+        // (duration_ms = None), no "Took ..." pill appears.
+        let lines = render_tool_result(true, "ok", None, &theme());
+        assert!(
+            !lines[0].spans.iter().any(|s| s.content.starts_with("Took ")),
+            "unexpected duration pill, got: {:?}",
+            lines[0].spans,
+        );
+    }
+
+    #[test]
     fn render_tool_result_image_path_promoted() {
         let content = "[pasted image: /tmp/abc.png]\nsome more text";
-        let lines = render_tool_result(true, content, &theme());
+        let lines = render_tool_result(true, content, None, &theme());
         // Image line should appear prominently (accent color).
         assert!(lines.iter().any(|l| {
             l.spans.iter().any(|s| s.content.contains("pasted image"))
@@ -416,7 +468,7 @@ mod tests {
     #[test]
     fn render_tool_result_truncates_long_content() {
         let content = "line\n".repeat(100);
-        let lines = render_tool_result(true, &content, &theme());
+        let lines = render_tool_result(true, &content, None, &theme());
         // Should not render 100 lines.
         assert!(lines.len() < 15, "got {} lines", lines.len());
         // Should have a "more lines" marker.

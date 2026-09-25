@@ -137,6 +137,7 @@ impl Tool for GrepTool {
                 "files_scanned": files_scanned,
                 "matches": results.len(),
             })),
+            duration_ms: 0,
         })
     }
 

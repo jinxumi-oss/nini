@@ -63,6 +63,12 @@ pub struct ToolOutput {
     pub is_error: bool,
     /// Optional structured details (exit code, duration, etc.).
     pub details: Option<Value>,
+    /// Wall-clock duration of the tool execution in milliseconds.
+    /// Surfaced in the TUI transcript as `Took N.Ns` (Pi-style)
+    /// so the user can see how long each tool took. `0` when the
+    /// tool does not measure its own duration (e.g. read of a
+    /// cached file).
+    pub duration_ms: u64,
 }
 
 impl ToolOutput {
@@ -72,6 +78,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: false,
             details: None,
+            duration_ms: 0,
         }
     }
 
@@ -81,6 +88,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: true,
             details: None,
+            duration_ms: 0,
         }
     }
 }

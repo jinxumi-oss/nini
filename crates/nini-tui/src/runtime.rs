@@ -52,6 +52,10 @@ pub enum AgentEventLite {
         ok: bool,
         content: String,
         details: Option<serde_json::Value>,
+        /// Wall-clock duration of the tool execution in milliseconds.
+        /// Surfaced in the transcript as `Took N.Ns` (Pi-style) so
+        /// the user can see how long each tool took.
+        duration_ms: u64,
     },
     TurnEnd,
     Error(String),
@@ -102,7 +106,7 @@ impl AgentSink {
                         s.push_tool_call(id, args);
                     }
                 }
-                AgentEventLite::ToolResult { ok, content, details } => {
+                AgentEventLite::ToolResult { ok, content, details, duration_ms } => {
                     // Capture edit-tool diff stats for the status bar pill.
                     if let Some(d) = &details {
                         if let (Some(adds), Some(dels)) =
@@ -112,7 +116,7 @@ impl AgentSink {
                             s.last_diff = Some((adds as usize, dels as usize));
                         }
                     }
-                    s.push_tool_result_raw(ok, content);
+                    s.push_tool_result_raw(ok, content, Some(duration_ms));
                 }
                 AgentEventLite::TurnEnd => {
                     s.push_divider();
@@ -153,7 +157,7 @@ impl AgentSink {
     /// to the same turn's transcript without spawning an async task.
     pub fn inject_tool_result(&self, ok: bool, content: String) {
         if let Ok(mut s) = self.state.lock() {
-            s.push_tool_result(ok, content);
+            s.push_tool_result(ok, content, None);
         }
     }
 }

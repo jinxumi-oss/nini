@@ -93,6 +93,7 @@ impl Tool for WriteTool {
                 "path": path.display().to_string(),
                 "bytes": parsed.content.len(),
             })),
+            duration_ms: 0,
         })
     }
 }

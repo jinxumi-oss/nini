@@ -33,6 +33,10 @@ pub enum TranscriptLine {
         /// When true the body of the result is hidden — only a one-line
         /// summary is shown. Ctrl+O toggles.
         collapsed: bool,
+        /// Wall-clock duration in milliseconds. Rendered as
+        /// `Took N.Ns` (Pi-style) on the result line. `None` when
+        /// the tool didn't measure its own duration.
+        duration_ms: Option<u64>,
     },
     /// System-injected divider (turn boundary).
     Divider,
@@ -991,18 +995,29 @@ impl AppState {
         });
     }
 
-    pub fn push_tool_result(&mut self, ok: bool, content: impl Into<String>) {
-        self.push_tool_result_raw(ok, content);
+    pub fn push_tool_result(
+        &mut self,
+        ok: bool,
+        content: impl Into<String>,
+        duration_ms: Option<u64>,
+    ) {
+        self.push_tool_result_raw(ok, content, duration_ms);
         // Tool results are part of the turn — session_append is handled on TurnEnd
         // by the session flush, so we do NOT append here to avoid double-logging.
     }
 
     /// Internal: push to transcript without session logging.
-    pub fn push_tool_result_raw(&mut self, ok: bool, content: impl Into<String>) {
+    pub fn push_tool_result_raw(
+        &mut self,
+        ok: bool,
+        content: impl Into<String>,
+        duration_ms: Option<u64>,
+    ) {
         self.transcript.push(TranscriptLine::ToolResult {
             ok,
             content: content.into(),
             collapsed: false,
+            duration_ms,
         });
     }
 
@@ -1483,7 +1498,7 @@ mod tests {
         s.push_user("hi");
         s.push_assistant("hello");
         s.push_tool_call("bash", "{}");
-        s.push_tool_result(true, "ok");
+        s.push_tool_result(true, "ok", None);
         s.push_divider();
         assert_eq!(s.transcript_len(), 5);
     }
@@ -1512,7 +1527,7 @@ mod tests {
     #[test]
     fn toggle_collapsed_flips_tool_result_and_bash() {
         let mut s = AppState::new("test");
-        s.push_tool_result(true, "ok");
+        s.push_tool_result(true, "ok", None);
         s.push_tool_call("read", "{}");
         // Append a bash via the underlying TranscriptLine constructor
         // since we don't have a public push_bash helper yet.
@@ -1567,7 +1582,7 @@ mod tests {
         let mut s = AppState::new("m");
         s.push_user("hello");   // 5 chars -> 2 tokens
         s.push_assistant("world this is longer");  // 21 -> 6 tokens
-        s.push_tool_result(true, "out");
+        s.push_tool_result(true, "out", None);
         // total chars / 4 rounded up
         assert!(s.estimate_transcript_tokens() > 0);
     }
@@ -1632,7 +1647,7 @@ mod tests {
     fn collapse_all_folds_every_collapsible_line() {
         let mut s = AppState::new("test");
         s.push_tool_call("bash", "{}");
-        s.push_tool_result(true, "ok");
+        s.push_tool_result(true, "ok", None);
         s.push_divider();
         s.push_user("hi");
         s.push_assistant("hello");

@@ -105,6 +105,7 @@ impl Tool for ReadTool {
             content: selected,
             is_error: false,
             details: Some(details),
+            duration_ms: 0,
         })
     }
 

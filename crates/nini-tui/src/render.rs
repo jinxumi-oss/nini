@@ -387,8 +387,8 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 }
                 out
             }
-            TranscriptLine::ToolResult { ok, content, collapsed } => {
-                let lines = render_tool_result(*ok, content, theme);
+            TranscriptLine::ToolResult { ok, content, collapsed, duration_ms } => {
+                let lines = render_tool_result(*ok, content, *duration_ms, theme);
                 let mut out: Vec<ListItem> = lines
                     .into_iter()
                     .map(ListItem::new)
