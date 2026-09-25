@@ -1,0 +1,50 @@
+flowchart TB
+    subgraph AgentLoop["Agent::run() loop iteration"]
+        S0[Start] --> S1[Loop init<br/>build request]
+        S1 --> S2[hooks.before_turn?]
+        S2 --> S3[provider.stream req]
+        S3 --> S4[parse SSE<br/>yield AgentEvent]
+        S4 -->|TextDelta| S5[accumulate assistant_text]
+        S4 -->|ToolCall| S6[tools.execute]
+        S6 --> S7[hooks.after_tool_call?]
+        S7 --> S8[hooks.get_steering_messages?]
+        S8 --> S9[append tool result to messages]
+        S9 --> S10[hooks.before_request?]
+        S10 --> S3
+        S5 --> S11[hooks.should_stop_after_turn?]
+        S11 -->|true| S12[hooks.get_followup_messages?]
+        S11 -->|false| S3
+        S12 --> S13[hooks.after_turn?]
+        S13 --> S14[hooks.convert_to_llm?]
+        S14 --> S15[Emit TurnEnd]
+        S15 --> S16[End]
+    end
+
+    subgraph HookTrait["AgentLoopHooks trait (agent_hooks.rs)"]
+        H0["get_steering_messages(&recent)<br/>inject mid-run"]
+        H1["get_followup_messages(&all)<br/>queue for after done"]
+        H2["transform_context(&msgs) → TransformResult<br/>v0.7.1 chokepoint"]
+        H3["convert_to_llm(&msgs) → Vec&lt;Message&gt;<br/>v0.7.1 chokepoint"]
+        H4["should_stop_after_turn(&msgs) → bool<br/>v0.7.2 hook #9"]
+        H5["before_request / before_turn /<br/>after_tool_call / after_turn<br/>observability hooks"]
+    end
+
+    S2 -.calls.-> H5
+    S7 -.calls.-> H5
+    S8 -.calls.-> H0
+    S10 -.calls.-> H5
+    S11 -.calls.-> H4
+    S12 -.calls.-> H1
+    S13 -.calls.-> H5
+    S14 -.calls.-> H3
+
+    H2 -.reads msgs.-> AgentLoop
+    H3 -.reads msgs.-> AgentLoop
+
+    classDef loop fill:#dbeafe,stroke:#2563eb,color:#000
+    classDef hook fill:#fed7aa,stroke:#ea580c,color:#000
+    classDef chokepoint fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#000
+
+    class S0,S1,S2,S3,S4,S5,S6,S7,S8,S9,S10,S11,S12,S13,S14,S15,S16 loop
+    class H0,H1,H5 hook
+    class H2,H3,H4 chokepoint

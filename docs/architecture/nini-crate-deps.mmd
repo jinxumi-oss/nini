@@ -1,0 +1,32 @@
+flowchart LR
+    CLI["nini-cli<br/>binary, 1636 LOC"]
+    TUI["nini-tui<br/>16,604 LOC<br/>36 modules"]
+    CORE["nini-core<br/>9,674 LOC<br/>17 modules<br/>★ engine"]
+    AI["nini-ai<br/>3,054 LOC<br/>11 providers"]
+    TOOLS["nini-tools<br/>2,659 LOC<br/>6 tools"]
+    SESSION["nini-session<br/>648 LOC<br/>JSONL persist"]
+    EXT["nini-ext<br/>474 LOC<br/>FFI loader"]
+
+    CLI --> TUI
+    CLI --> AI
+    CLI --> TOOLS
+    CLI --> CORE
+    CLI --> SESSION
+
+    TUI --> AI
+    TUI --> TOOLS
+    TUI --> CORE
+    TUI --> SESSION
+
+    AI --> CORE
+    TOOLS --> CORE
+    SESSION --> CORE
+    EXT --> CORE
+
+    classDef root fill:#fef3c7,stroke:#d97706,stroke-width:3px,color:#000
+    classDef leaf fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#000
+    classDef hub fill:#d1fae5,stroke:#059669,stroke-width:3px,color:#000
+
+    class CLI root
+    class TUI,AI,TOOLS,SESSION,EXT leaf
+    class CORE hub

@@ -1,0 +1,37 @@
+sequenceDiagram
+    participant U as User
+    participant TUI as nini-tui<br/>(runtime.rs)
+    participant DRV as AgentDriver<br/>(closure in CLI main.rs)
+    participant A as nini_core::Agent
+    participant P as nini_ai::Provider
+    participant TL as nini_tools::Tool
+
+    U->>TUI: types message + Enter
+    TUI->>TUI: state.input → state.transcript<br/>push_user() + push_divider()
+    TUI->>DRV: invokes agent_driver(user_msg, sink, done)
+    DRV->>A: Agent::new(provider, tools, cfg)<br/>agent.run(msg)
+    A->>P: provider.stream(request)
+    P-->>A: StreamEvent::MessageStart
+    P-->>A: StreamEvent::TextDelta("hi")
+    A-->>DRV: AgentEvent::TextDelta { text }
+    DRV-->>TUI: AgentEventLite::TextDelta(text)<br/>via sink.push()
+    TUI->>TUI: state.push_assistant_raw(text)
+    P-->>A: StreamEvent::ToolCallStart { name: "bash" }
+    A-->>DRV: AgentEvent::ToolCallStart
+    DRV-->>TUI: AgentEventLite::ToolCallStart
+    TUI->>TUI: state.push_tool_call(name, "")
+    P-->>A: StreamEvent::ToolCallStop { input_json }
+    A-->>DRV: AgentEvent::ToolCallStop
+    A->>A: tools.execute(name, args)
+    A->>TL: BashTool::execute(args, ctx)
+    TL-->>A: ToolOutput { content, duration_ms, is_error }
+    A-->>DRV: AgentEvent::ToolResult { output }
+    DRV-->>TUI: AgentEventLite::ToolResult { ok, content, duration_ms }
+    TUI->>TUI: state.push_tool_result(...) — renders "Took 4ms"
+    A->>P: provider.stream(next_request)
+    P-->>A: StreamEvent::MessageStop
+    A-->>DRV: AgentEvent::TurnEnd { usage }
+    DRV-->>TUI: AgentEventLite::Usage(input, output)
+    TUI->>TUI: state.tokens.input += input
+    DRV-->>TUI: AgentEventLite::Done
+    TUI->>TUI: state.mode = Editing<br/>render redraws with [Took 4ms] + transcript

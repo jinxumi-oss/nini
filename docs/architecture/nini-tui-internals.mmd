@@ -1,0 +1,70 @@
+flowchart TB
+    subgraph TUI["nini-tui (16,604 LOC, 36 modules)"]
+        direction TB
+        LIB["lib.rs (50)<br/>─ re-exports<br/>─ nini_tui::run"]
+
+        subgraph BIG["Big files (>1000 LOC)"]
+            RUNTIME["runtime.rs (1854)<br/>★ event loop, raw mode<br/>★ AgentEvent → AgentEventLite"]
+            STATE["state.rs (1853)<br/>★ AppState hub<br/>★ 70 pub methods<br/>★ 13 importers"]
+            COMMANDS["commands.rs (1833)<br/>★ /slash registry<br/>★ HTML export"]
+        end
+
+        subgraph MID["Mid-size (300–800)"]
+            RENDER["render.rs (805)<br/>render_frame, status"]
+            RICH["rich.rs (628)<br/>render_tool_result"]
+            KEYS["keys.rs (561)<br/>KeyAction enum"]
+            MARKDOWN["markdown.rs (532)"]
+            THEME["theme.rs (442)<br/>7 importers"]
+            SELECTOR["selector.rs (399)<br/>11 importers"]
+            KB_MGR["keybindings_manager.rs (399)"]
+            FILECOMP["file_completion.rs (365)"]
+            IMGPASTE["image_paste.rs (333)"]
+            EDITOR["editor.rs (325)"]
+            HELP["help_overlay.rs (172)"]
+            SETTINGS["settings.rs (225)"]
+        end
+
+        subgraph SMALL["Small (<200)"]
+            SELECTORS["selectors/ mod (8 submodules)"]
+            COMPPAL["command_palette.rs (115)"]
+            BRSUM["branch_summary"]
+            CPAL["command_palette.rs"]
+            WATCHER["theme_watcher.rs (15)"]
+            SIG["signals.rs (3)<br/>SIGINT handler"]
+            HYPER["hyperlink.rs (6)"]
+            ANSI["ansi.rs (36)"]
+            CLIP["clipboard.rs (3)"]
+            EVB["event_bus.rs (19)"]
+        end
+    end
+
+    %% Import edges (representative)
+    RUNTIME --> STATE
+    RUNTIME --> KEYS
+    RUNTIME --> RENDER
+    RUNTIME --> SELECTOR
+    RUNTIME --> SIG
+    RENDER --> RICH
+    RENDER --> STATE
+    RENDER --> THEME
+    RICH --> MARKDOWN
+    RICH --> THEME
+    COMMANDS --> STATE
+    COMMANDS --> SETTINGS
+    SELECTOR --> THEME
+    HELP --> COMMANDS
+    HELP --> SELECTOR
+    KB_MGR --> KEYS
+    LIB --> RUNTIME
+    LIB --> STATE
+    LIB --> KEYS
+
+    classDef hub stroke-dasharray:5 5,stroke-width:3px
+    classDef big fill:#e9d5ff,stroke:#7c3aed,color:#000
+    classDef mid fill:#ddd6fe,stroke:#7c3aed,color:#000
+    classDef small fill:#f5f3ff,stroke:#a78bfa,color:#000
+
+    class STATE hub
+    class RUNTIME,COMMANDS big
+    class RENDER,RICH,KEYS,MARKDOWN,THEME,SELECTOR,KB_MGR,FILECOMP,IMGPASTE,EDITOR,HELP,SETTINGS mid
+    class SELECTORS,COMPPAL,BRSUM,CPAL,WATCHER,SIG,HYPER,ANSI,CLIP,EVB,LIB small
