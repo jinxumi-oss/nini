@@ -1,3 +1,47 @@
+## v0.8.0-pre1 — Pi-parity TUI improvements (2026-09-25)
+
+**Tool selection (the user-reported bug)**
+
+The model used to pick `find` for "list files" prompts because
+nini's `find` description read "Find files by glob pattern" —
+matching the word "find" too well. Fixed by:
+
+  * `find` description now says **"NOT for listing a directory's
+    contents — use bash (`ls`) for that."** (Pi-style cross-ref).
+  * 5 tool snippets shortened to 4–10 words (was 24-word
+    paragraphs describing mechanics).
+  * Each tool's `system_prompt_contribution.guidelines` now
+    cross-references its sibling tools ("For finding files by
+    NAME use find", "For whole-file rewrites use write").
+  * Regression suite: 4 tests lock in bash/grep/find/tokens.
+
+**TUI status bar (Pi parity)**
+
+  * `(provider) model` prefix — `(anthropic) MiniMax-M3`.
+    Lets users tell at a glance which backend is active.
+  * `• thinking-level` indicator (when set).
+  * Tool calls show **`Took 1.23s`** / **`Took 850ms`** pill
+    on the result line. New `duration_ms` field plumbed
+    through `ToolOutput` → `AgentEvent` → `AgentEventLite`
+    → transcript.
+
+**Reasoning display**
+
+`<think>...</think>` content is no longer stripped (the
+v0.7.4 choice). It now renders with a 💭 prefix and
+dim/italic style so users can follow the model's reasoning
+without it dominating the transcript. Stored in the
+transcript but NOT in the session log — replays don't
+re-emit reasoning. Pi-style.
+
+**Tests**: 714 pass / 0 fail (was 698).
+
+**End-to-end verified** with real MiniMax-M3 LLM:
+  * "List files in src/" → model picks `bash` (was `find`)
+  * "Find files containing TODO" → `grep`
+  * "List all .rs files" → `find`
+  * "Search 'provider' in *.rs" → `grep` with `include`
+
 # Changelog
 
 All notable changes to nini will be documented here. The format is
