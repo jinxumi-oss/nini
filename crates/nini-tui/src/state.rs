@@ -18,6 +18,9 @@ use unicode_segmentation::UnicodeSegmentation;
 pub enum TranscriptLine {
     User(String),
     AssistantText(String),
+    /// v0.8: model reasoning (inside `<think>...</think>`).
+    /// Rendered with dim/italic style (Pi-style).
+    ThinkingText(String),
     /// Tool invocation. `args` is rendered as a one-line JSON preview.
     ToolCall {
         name: String,
@@ -987,6 +990,14 @@ impl AppState {
             .push(TranscriptLine::AssistantText(text.into()));
     }
 
+    /// v0.8: push reasoning content. Rendered dim/italic.
+    pub fn push_thinking_raw(&mut self, text: impl Into<String>) {
+        // Don't store in session log — thinking is ephemeral, only
+        // the final answer is part of the conversation history.
+        self.transcript
+            .push(TranscriptLine::ThinkingText(text.into()));
+    }
+
     pub fn push_tool_call(&mut self, name: impl Into<String>, args: impl Into<String>) {
         self.transcript.push(TranscriptLine::ToolCall {
             name: name.into(),
@@ -1060,6 +1071,10 @@ impl AppState {
             match line {
                 TranscriptLine::User(s) => total += chars_to_tokens(s),
                 TranscriptLine::AssistantText(s) => total += chars_to_tokens(s),
+                // v0.8: thinking content counts toward context
+                // because the model sees its own reasoning on the
+                // next turn (it's in the conversation history).
+                TranscriptLine::ThinkingText(s) => total += chars_to_tokens(s),
                 TranscriptLine::ToolCall { name, args, .. } => {
                     total += chars_to_tokens(name) + chars_to_tokens(args);
                 }
@@ -1329,6 +1344,7 @@ pub(crate) fn line_summary_text_impl(line: &crate::state::TranscriptLine) -> Str
             format!("[bash] {cmd} -> {}", truncate(output, 40))
         }
         TranscriptLine::Divider => "[divider]".to_string(),
+        TranscriptLine::ThinkingText(s) => format!("[thinking] {}", truncate(s, 60)),
     }
 }
 

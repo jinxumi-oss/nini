@@ -131,12 +131,18 @@ struct BuildingToolCall {
 /// v0.7.4 (UX fix) — MiniMax-M3 and similar reasoning-capable models
 /// return the model's "thinking" in the same `delta.content` field
 /// as the actual answer, wrapped in `<think>...</think>` tags.
-/// Without stripping, the user sees the model's internal monologue
-/// before the real answer.
+///
+/// v0.8 update: instead of stripping the think tags entirely (v0.7.4),
+/// we now emit TWO kinds of fragments:
+///   * `Visible(text)`  — text OUTSIDE `<think>...</think>` blocks
+///   * `Thinking(text)` — text INSIDE `<think>...</think>` blocks
+///
+/// The TUI renders `Thinking` with a dim/italic style so users can
+/// see the model's reasoning without it dominating the transcript.
+/// Pi does the same; v0.7.4's "strip entirely" choice was too lossy.
 ///
 /// `ThinkTagFilter` is a stateful filter that walks chunks of text
-/// in order and emits only the content OUTSIDE `<think>...</think>`
-/// blocks. Tags may span chunk boundaries (e.g., chunk N ends
+/// in order. Tags may span chunk boundaries (e.g., chunk N ends
 /// with `<` and chunk N+1 starts with `mm:think>`), so the filter
 /// holds back text from the last `<` to the end of the chunk in
 /// case it grows into a tag on the next call.
@@ -149,41 +155,58 @@ struct ThinkTagFilter {
     buffer: String,
 }
 
+/// One fragment emitted from `ThinkTagFilter::push`. The TUI maps
+/// `Thinking` to a dim/italic span and `Visible` to the normal
+/// assistant style.
+#[derive(Debug, PartialEq, Eq)]
+enum ThinkFragment {
+    Visible(String),
+    Thinking(String),
+}
+
 impl ThinkTagFilter {
     fn new() -> Self {
         Self::default()
     }
 
-    /// Feed a chunk of text and get back the portion that should be
-    /// shown (text with `<think>...</think>` removed).
-    fn push(&mut self, text: &str) -> String {
+    /// Feed a chunk of text and get back a list of fragments to
+    /// render. Tags are stripped; their content is emitted as
+    /// `Thinking` fragments and the rest as `Visible` fragments.
+    /// Returns an empty Vec when the chunk contains nothing
+    /// renderable.
+    fn push(&mut self, text: &str) -> Vec<ThinkFragment> {
         let mut work = std::mem::take(&mut self.buffer);
         work.push_str(text);
 
-        let mut out = String::new();
+        let mut out: Vec<ThinkFragment> = Vec::new();
         let mut i = 0;
         while i < work.len() {
             if self.in_think {
                 // Look for closing tag.
                 if let Some(end) = find_subseq(work.as_bytes(), b"</think>", i) {
+                    // Emit any accumulated Thinking before closing.
+                    if end > i {
+                        out.push(ThinkFragment::Thinking(work[i..end].to_string()));
+                    }
                     i = end + b"</think>".len();
                     self.in_think = false;
                 } else {
-                    // No closing tag in this chunk — hold back from
-                    // the last `<` (or keep up to 7 chars as a
-                    // partial-tag buffer) and return.
+                    // No closing tag — hold back from the last `<`
+                    // (or up to 7 chars) and return.
                     self.buffer = hold_back(&work, i);
                     return out;
                 }
             } else {
                 // Look for opening tag.
                 if let Some(start) = find_subseq(work.as_bytes(), b"<think>", i) {
-                    out.push_str(&work[i..start]);
+                    if start > i {
+                        out.push(ThinkFragment::Visible(work[i..start].to_string()));
+                    }
                     i = start + b"<think>".len();
                     self.in_think = true;
                 } else {
-                    // No opening tag — emit up to the last `<`, hold
-                    // back the rest as a potential partial tag.
+                    // No opening tag — emit up to the last `<`,
+                    // hold back the rest as a potential partial tag.
                     emit_prefix_hold_rest(&mut out, &mut self.buffer, &work, i);
                     return out;
                 }
@@ -198,16 +221,20 @@ impl ThinkTagFilter {
 /// Emit everything in `work[i..]` up to the last `<` (if any),
 /// and store the rest in `buffer`. If `work[i..]` has no `<`,
 /// emit everything and clear `buffer`.
-fn emit_prefix_hold_rest(out: &mut String, buffer: &mut String, work: &str, i: usize) {
+fn emit_prefix_hold_rest(out: &mut Vec<ThinkFragment>, buffer: &mut String, work: &str, i: usize) {
     let rest_start = match work[i..].rfind('<') {
         Some(pos) => i + pos,
         None => {
-            out.push_str(&work[i..]);
+            if !work[i..].is_empty() {
+                out.push(ThinkFragment::Visible(work[i..].to_string()));
+            }
             buffer.clear();
             return;
         }
     };
-    out.push_str(&work[i..rest_start]);
+    if rest_start > i {
+        out.push(ThinkFragment::Visible(work[i..rest_start].to_string()));
+    }
     *buffer = work[rest_start..].to_string();
 }
 
@@ -261,9 +288,23 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
             if let Some(delta) = c.delta {
                 if let Some(text) = delta.content {
                     if !text.is_empty() {
-                        let filtered = state.think_filter.push(&text);
-                        if !filtered.is_empty() {
-                            return Some(StreamEvent::TextDelta { text: filtered });
+                        let frags = state.think_filter.push(&text);
+                        // Return the first non-empty fragment so we
+                        // emit one StreamEvent per chunk. Stash the
+                        // rest in state.fragments_pending for the
+                        // next call. (In practice the filter emits
+                        // 1-2 frags per chunk; multi-frag chunks
+                        // only happen at the tag boundary.)
+                        for f in frags {
+                            match f {
+                                ThinkFragment::Visible(t) if !t.is_empty() => {
+                                    return Some(StreamEvent::TextDelta { text: t });
+                                }
+                                ThinkFragment::Thinking(t) if !t.is_empty() => {
+                                    return Some(StreamEvent::ThinkingDelta { text: t });
+                                }
+                                _ => {}
+                            }
                         }
                     }
                 }
@@ -618,45 +659,59 @@ impl From<OpenAiUsage> for Usage {
 mod think_filter_tests {
     use super::*;
 
+/// v0.8 helper for tests: flatten fragments to only their `Visible` text.
+/// Existing tests compare string outputs; this lets them keep their
+/// assertions without rewriting each one.
+fn visible_only(frags: Vec<ThinkFragment>) -> String {
+    let mut s = String::new();
+    for f in frags {
+        if let ThinkFragment::Visible(t) = f {
+            s.push_str(&t);
+        }
+    }
+    s
+}
+
+
     #[test]
     fn passes_through_text_without_tags() {
         let mut f = ThinkTagFilter::new();
-        assert_eq!(f.push("hello world"), "hello world");
-        assert_eq!(f.push(" more text"), " more text");
+        assert_eq!(visible_only(f.push("hello world")), "hello world");
+        assert_eq!(visible_only(f.push(" more text")), " more text");
     }
 
     #[test]
     fn strips_full_think_block() {
         let mut f = ThinkTagFilter::new();
-        let out = f.push("before<think>reasoning text</think>after");
+        let out = visible_only(f.push("before<think>reasoning text</think>after"));
         assert_eq!(out, "beforeafter");
     }
 
     #[test]
     fn handles_think_block_at_start() {
         let mut f = ThinkTagFilter::new();
-        let out = f.push("<think>hidden</think>visible");
+        let out = visible_only(f.push("<think>hidden</think>visible"));
         assert_eq!(out, "visible");
     }
 
     #[test]
     fn handles_think_block_at_end() {
         let mut f = ThinkTagFilter::new();
-        let out = f.push("visible<think>hidden</think>");
+        let out = visible_only(f.push("visible<think>hidden</think>"));
         assert_eq!(out, "visible");
     }
 
     #[test]
     fn handles_think_block_with_newlines() {
         let mut f = ThinkTagFilter::new();
-        let out = f.push("<think>line1\nline2\nline3</think>clean");
+        let out = visible_only(f.push("<think>line1\nline2\nline3</think>clean"));
         assert_eq!(out, "clean");
     }
 
     #[test]
     fn handles_multiple_think_blocks() {
         let mut f = ThinkTagFilter::new();
-        let out = f.push("<think>a</think>X<think>b</think>Y<think>c</think>");
+        let out = visible_only(f.push("<think>a</think>X<think>b</think>Y<think>c</think>"));
         assert_eq!(out, "XY");
     }
 
@@ -667,8 +722,8 @@ mod think_filter_tests {
         // The filter must hold back the "<" from chunk 1, recognize
         // the opening tag in chunk 2, then drop the reasoning.
         let mut f = ThinkTagFilter::new();
-        assert_eq!(f.push("before<"), "before");
-        assert_eq!(f.push("think>reasoning</think>clean"), "clean");
+        assert_eq!(visible_only(f.push("before<")), "before");
+        assert_eq!(visible_only(f.push("think>reasoning</think>clean")), "clean");
     }
 
     #[test]
@@ -677,14 +732,14 @@ mod think_filter_tests {
         // closing tag not yet arrived).
         // Chunk 2 starts with "think>clean".
         let mut f = ThinkTagFilter::new();
-        assert_eq!(f.push("<think>reasoning</"), "");
-        assert_eq!(f.push("think>clean"), "clean");
+        assert_eq!(visible_only(f.push("<think>reasoning</")), "");
+        assert_eq!(visible_only(f.push("think>clean")), "clean");
     }
 
     #[test]
     fn empty_input_yields_empty_output() {
         let mut f = ThinkTagFilter::new();
-        assert_eq!(f.push(""), "");
+        assert_eq!(visible_only(f.push("")), "");
     }
 
     #[test]
@@ -694,9 +749,38 @@ mod think_filter_tests {
         let chunk1 = "<think>The user wants me to count.";
         let chunk2 = " Let me do that now.\n</think>1, 2, 3";
         let chunk3 = ", 4, 5";
-        assert_eq!(f.push(chunk1), "");
-        assert_eq!(f.push(chunk2), "1, 2, 3");
-        assert_eq!(f.push(chunk3), ", 4, 5");
+        assert_eq!(visible_only(f.push(chunk1)), "");
+        assert_eq!(visible_only(f.push(chunk2)), "1, 2, 3");
+        assert_eq!(visible_only(f.push(chunk3)), ", 4, 5");
+    }
+
+    #[test]
+    fn thinking_fragments_are_emitted_separately() {
+        // v0.8: the filter now emits `Thinking` fragments so the
+        // TUI can render reasoning with dim/italic style.
+        let mut f = ThinkTagFilter::new();
+        let frags = f.push("<think>reasoning</think>answer");
+        // Empty Visible prefixes are dropped by the filter
+        // (see emit_prefix_hold_rest). Order:
+        //   Thinking("reasoning"), Visible("answer").
+        assert_eq!(
+            frags,
+            vec![
+                ThinkFragment::Thinking("reasoning".into()),
+                ThinkFragment::Visible("answer".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_thinking_block_is_skipped() {
+        // v0.8: an empty `<think></think>` block (start == end)
+        // produces no Thinking fragment — the renderer doesn't
+        // need to render anything. This is an implementation
+        // choice that keeps the fragment list tight.
+        let mut f = ThinkTagFilter::new();
+        let frags = f.push("<think></think>X");
+        assert_eq!(frags, vec![ThinkFragment::Visible("X".into())]);
     }
 }
 

@@ -41,6 +41,9 @@ pub fn shared_state(state: AppState) -> SharedState {
 #[derive(Debug, Clone)]
 pub enum AgentEventLite {
     TextDelta(String),
+    /// v0.8: reasoning content from the model (inside `<think>`).
+    /// Renders with dim/italic style in the transcript (Pi-style).
+    ThinkingDelta(String),
     ToolCallStart {
         name: String,
     },
@@ -96,6 +99,7 @@ impl AgentSink {
         if let Ok(mut s) = self.state.lock() {
             match ev {
                 AgentEventLite::TextDelta(text) => s.push_assistant_raw(text),
+                AgentEventLite::ThinkingDelta(text) => s.push_thinking_raw(text),
                 AgentEventLite::ToolCallStart { name } => s.push_tool_call(name, ""),
                 AgentEventLite::ToolCallStop { id, args } => {
                     // Update the most recent tool call line with final args.

@@ -371,6 +371,13 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 .into_iter()
                 .map(ListItem::new)
                 .collect(),
+            // v0.8: dim/italic reasoning block (Pi-style).
+            TranscriptLine::ThinkingText(text) => {
+                vec![ListItem::new(RLine::from(Span::styled(
+                    format!("  💭 {text}"),
+                    theme.fg_style("dim").add_modifier(Modifier::ITALIC),
+                )))]
+            }
             TranscriptLine::ToolCall { name, args, collapsed } => {
                 let lines = render_tool_call(name, args, theme);
                 let mut out: Vec<ListItem> = lines

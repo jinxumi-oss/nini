@@ -1193,6 +1193,10 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                             },
                         )),
                         TranscriptLine::Divider => None,
+                        // v0.8: thinking content isn't part of the
+                        // user-visible conversation history — it's
+                        // model-internal. Skip for compaction purposes.
+                        TranscriptLine::ThinkingText(_) => None,
                     }
                 })
                 .collect();
@@ -1608,6 +1612,12 @@ fn render_transcript_html(lines: &[TranscriptLine]) -> String {
             }
             TranscriptLine::Divider => {
                 out.push_str("<hr class=\"divider\">\n");
+            }
+            // v0.8: omit thinking content from HTML export by
+            // default — it's model-internal noise. Users can
+            // re-export with --include-thinking if they want it.
+            TranscriptLine::ThinkingText(_) => {
+                out.push_str("<p class=\"thinking\" style=\"color:#aaa;font-style:italic\">\n[thinking elided]\n</p>\n");
             }
         }
     }

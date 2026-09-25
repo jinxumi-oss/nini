@@ -75,6 +75,11 @@ pub enum AgentEvent {
     PhaseChanged(AgentPhase),
     /// Incremental text delta from the model.
     TextDelta { text: String },
+    /// v0.8: incremental reasoning delta (inside `<think>`).
+    /// The TUI renders this with dim/italic style so users can
+    /// follow the model's reasoning without it dominating the
+    /// transcript (Pi-style).
+    ThinkingDelta { text: String },
     /// A tool call started, ended, or emitted a delta.
     ToolCallStart { id: String, name: String },
     ToolCallDelta {
@@ -830,6 +835,13 @@ impl Agent {
                             Some(Ok(StreamEvent::TextDelta { text })) => {
                                 assistant_text.push_str(&text);
                                 yield AgentEvent::TextDelta { text };
+                            }
+                            Some(Ok(StreamEvent::ThinkingDelta { text })) => {
+                                // v0.8: surface reasoning to the TUI
+                                // without appending to assistant_text
+                                // (which becomes the user-visible
+                                // message in the next turn).
+                                yield AgentEvent::ThinkingDelta { text };
                             }
                             Some(Ok(StreamEvent::ToolCallStart { id, name })) => {
                                 if let Some(c) = current_call.take() {

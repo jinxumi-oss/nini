@@ -99,6 +99,9 @@ pub enum StreamEvent {
     MessageStart { id: String, model: String },
     /// A chunk of text content arrived.
     TextDelta { text: String },
+    /// v0.8: model emitted reasoning content (inside `<think>...</think>`).
+    /// Renders with dim/italic style in the TUI (Pi-style).
+    ThinkingDelta { text: String },
     /// Model invoked a tool (JSON input may still be partial).
     ToolCallStart { id: String, name: String },
     ToolCallDelta {
