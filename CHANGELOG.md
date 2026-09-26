@@ -1,3 +1,34 @@
+## v0.8.3 — commands.rs拆分计划 (2026-09-25)
+
+`crates/nini-tui/src/commands.rs` (1833 LOC, 含1个1200 LOC的`dispatch()`
+函数处理28个slash命令) 拆为7个子模块:
+
+  * **mod.rs** (25 LOC) — pub use facade (保留外部API)
+  * **registry.rs** (351 LOC) — CommandId + REGISTRY (28 entries) + by_name + complete
+  * **result.rs** (98 LOC) — CommandOutcome + CommandResult
+  * **parse.rs** (64 LOC) — parse() input → (CommandId, String)
+  * **status_lines.rs** (71 LOC) — build_status_lines() (for /status)
+  * **html_export.rs** (110 LOC) — render_transcript_html() (for /export)
+  * **dispatch.rs** (1237 LOC) — dispatch() + entry_legacy_message
+
+外部API不变 — lib.rs的`pub use commands::{...}` 通过新mod.rs facade 重导出。
+
+**附带修复**:
+
+  * 为 CommandOutcome + CommandResult 添加 `PartialEq` (之前缺失, 阻塞了下游测试)
+  * `html_escape()` 现在用于 User / Assistant / ToolCall 文本
+    (之前是 /export 的轻度 XSS 隐患)
+  * REGISTRY 顺序: ScopedModels 移到 Status 之前 (恢复 v0.8 之前的顺序, slash_command_e2e 测试依赖此顺序)
+
+测试: **739 → 760** (+21 净增).
+  * registry: 8 tests
+  * result: 4 tests
+  * parse: 6 tests
+  * status_lines: 3 tests
+  * html_export: 3 tests
+
+**v0.8.4 候选**: dispatch.rs 拆 28 match arm 为 cmd_xxx fn (per-command 单测).
+
 ## v0.8.2 — main.rs拆分计划 (2026-09-25)
 
 main.rs (1230 LOC的"上帝函数")按职责拆分为6个子模块:

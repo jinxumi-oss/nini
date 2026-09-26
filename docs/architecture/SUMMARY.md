@@ -152,6 +152,8 @@ pub fn catch_hook_panic<F, R>(label: &'static str, f: F) -> R
 | Extension 系统 | TS + Rust | Rust only | ⚠️ |
 | Setting UI | in-TUI selector | in-TUI selector | ✅ |
 
+**v0.8.3 完成**：commands.rs (1833 LOC, 28 个 slash 命令 + 1 个 1200 LOC dispatch() 函数) 拆为 7 个子模块（registry/result/parse/status_lines/html_export/dispatch/mod）。测试 739 → 760 (+21)。
+
 **最大的架构差距**：nini 没有 Pi 的 **prompt template** 概念。Pi 有 `/implement`、`/scout-and-plan` 这种**带技能的 prompt 模板**，nini 只有 `/help` `/quit` 这种**纯命令**。
 
 ## 下一步建议（按 ROI 排序）

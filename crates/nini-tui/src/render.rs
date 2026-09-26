@@ -62,7 +62,7 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // status bar
+            Constraint::Length(2), // footer (Pi-style 2-row: pwd line + stats/model line)
             Constraint::Length(if state.ui_state.search.is_some() { 1 } else { 0 }), // search bar (only when active)
             Constraint::Min(3),    // transcript
             Constraint::Length(if popup_height > 0 { popup_height } else { 3 }), // prompt OR popup
@@ -70,7 +70,7 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
         ])
         .split(area);
 
-    render_status(f, state, theme, chunks[0]);
+    render_footer(f, state, theme, chunks[0]);
     // F019: when transcript search is active, render a search bar
     // row (the Layout reserves 1 line for it above the transcript).
     //
@@ -114,14 +114,90 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     }
 }
 
-fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+fn render_footer(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     use crate::rich::{spinner_frame, AgentPhase};
 
-    // 5-state agent phase indicator. Map RunMode → AgentPhase:
-    //   Editing   → Idle
-    //   Running   → Working (with spinner)
-    //   Aborted   → Idle (status string already says "aborted")
-    //   Quitting  → Idle (shutting down)
+    // v0.8: Pi-style 2-line footer.
+    //   Line 1: cwd ⎇ branch • [session_id]                (env context, dim)
+    //   Line 2: " nini " badge • phase • diff • ctx% • tokens • cost  ...............  (provider) model • thinking • [theme]
+    //                                                                   ^^^ right-aligned padding ^^^
+    //
+    // Mirrors `FooterComponent` in pi-coding-agent/.../components/footer.js: a
+    // dedicated env line + a stats line with right-aligned model identity.
+    if area.height < 2 {
+        // Fallback: very small area — collapse to a single stats-only line.
+        let mut tmp = area;
+        tmp.height = 1;
+        render_stats_line(f, state, theme, tmp);
+        return;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+    render_pwd_line(f, state, theme, rows[0]);
+    render_stats_line(f, state, theme, rows[1]);
+}
+
+/// Line 1 of the footer: cwd + git branch + session id, all dim except branch
+/// (which uses success green). Mirrors Pi's `FooterComponent` pwd line.
+fn render_pwd_line(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut pushed = 0;
+
+    if let Some(cwd) = &state.session_state.cwd {
+        spans.push(Span::styled(
+            shorten_home(cwd),
+            theme.fg_style("dim"),
+        ));
+        pushed += 1;
+    }
+    if let Some(branch) = &state.session_state.git_branch {
+        if pushed > 0 {
+            spans.push(Span::styled("  ", theme.fg_style("dim")));
+        }
+        spans.push(Span::styled(
+            format!("\u{2387} {branch}"),
+            theme.fg_style("success"),
+        ));
+        pushed += 1;
+    }
+    // Session id (truncated to 8 chars). Pi-style "[abc12345]" pill.
+    let session_disp = state
+        .session_state
+        .session_id
+        .as_deref()
+        .map(|s| &s[..s.len().min(8)])
+        .unwrap_or("no session");
+    if pushed > 0 {
+        spans.push(Span::styled("  \u{2022}  ", theme.fg_style("dim")));
+    }
+    spans.push(Span::styled(
+        format!("[{session_disp}]"),
+        theme.fg_style("dim"),
+    ));
+
+    f.render_widget(Paragraph::new(RLine::from(spans)), area);
+}
+
+/// Line 2 of the footer: brand badge + stats (left) ............ (provider) model + thinking + [theme] (right).
+///
+/// Right-side model identity is right-aligned within `area.width` using
+/// raw-space padding between the two halves (mirrors pi-tui's
+/// `truncateToWidth(statsLeft + " ".repeat(...) + rightSide, width)`).
+fn render_stats_line(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    use crate::rich::{spinner_frame, AgentPhase};
+
+    // ---- LEFT half: brand + phase + status + diff + ctx% + tokens + cost ----
+    let mut left: Vec<Span<'static>> = vec![Span::styled(
+        " nini ".to_string(),
+        theme
+            .bg_style("accent")
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )];
+
+    // Phase indicator: 5-state map with spinner when running.
     let phase = match state.run_state.mode {
         RunMode::Running => AgentPhase::Working,
         _ => AgentPhase::Idle,
@@ -131,85 +207,35 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     } else {
         phase.label().to_string()
     };
-
-    // Model segment: " nini (provider) model | thinking • level |"
-    let mut spans: Vec<Span<'static>> = vec![
-        Span::styled(
-            " nini ".to_string(),
-            theme
-                .bg_style("accent")
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-    // v0.8: Pi-style "(provider) model" so users can tell at a glance
-    // which backend they're on (anthropic vs openai vs minimax).
-    if let Some(provider) = state.model_state.provider.as_ref().filter(|p| !p.is_empty()) {
-        spans.push(Span::styled(
-            format!("({provider}) "),
-            theme.fg_style("dim"),
-        ));
-    }
-    spans.push(Span::raw(format!("{} | ", state.model_state.model)));
-    // v0.8: surface thinking level. Pi-style "• medium".
-    if let Some(level) = state.model_state.thinking_level.as_ref().filter(|l| !l.is_empty()) {
-        spans.push(Span::styled(
-            format!("• {level} | "),
-            theme.fg_style("dim"),
-        ));
-    }
-
-    // Working-directory segment (with tilde-expansion).
-    if let Some(cwd) = &state.session_state.cwd {
-        let display = shorten_home(cwd);
-        spans.push(Span::styled(
-            format!("{display} | "),
-            theme.fg_style("dim"),
-        ));
-    }
-
-    // Git-branch segment.
-    if let Some(branch) = &state.session_state.git_branch {
-        spans.push(Span::styled(
-            format!("\u{2387} {branch} | "),
-            theme.fg_style("success"),
-        ));
-    }
-
-    // Phase segment (5-state indicator).
-    spans.push(Span::styled(
-        phase_label.clone(),
+    left.push(Span::raw("  "));
+    left.push(Span::styled(
+        phase_label,
         theme.fg_style(phase.color_name()),
     ));
+
     // Status override (set by runtime for "aborted", "compacting", etc.).
     if !state.run_state.status.is_empty() && state.run_state.status != "ready" {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
+        left.push(Span::styled("  \u{2022}  ", theme.fg_style("dim")));
+        left.push(Span::styled(
             state.run_state.status.clone(),
             theme.fg_style("warning"),
         ));
     }
-    spans.push(Span::raw(" | "));
 
-    // Last edit-tool diff summary: "[edit +N -M]" pill. Cleared when
-    // the user runs any new command (the runtime resets it).
+    // Last edit-tool diff summary: "[edit +N -M]" pill.
     if let Some((adds, dels)) = state.ui_state.last_diff {
-        spans.push(Span::styled("[edit ", theme.fg_style("muted")));
-        spans.push(Span::styled(
-            format!("+{adds}"),
-            theme.fg_style("success"),
-        ));
-        spans.push(Span::styled(
-            format!(" -{dels}"),
-            theme.fg_style("error"),
-        ));
-        spans.push(Span::styled("] ", theme.fg_style("muted")));
-        spans.push(Span::raw("| "));
+        left.push(Span::styled("  ", theme.fg_style("dim")));
+        left.push(Span::styled("[edit ", theme.fg_style("muted")));
+        left.push(Span::styled(format!("+{adds}"), theme.fg_style("success")));
+        left.push(Span::styled(format!(" -{dels}"), theme.fg_style("error")));
+        left.push(Span::styled("]", theme.fg_style("muted")));
     }
 
     // Context-window segment (Pi-style: "ctx 42% [████░░░░]").
     if state.run_state.context_window > 0 {
-        let pct = (state.run_state.context_used as f64 / state.run_state.context_window as f64) * 100.0;
+        let pct = (state.run_state.context_used as f64
+            / state.run_state.context_window as f64)
+            * 100.0;
         let bar = context_bar(pct);
         let color_name = if pct > 90.0 {
             "error"
@@ -218,21 +244,22 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
         } else {
             "success"
         };
-        spans.push(Span::styled(
+        left.push(Span::styled("  \u{2022}  ", theme.fg_style("dim")));
+        left.push(Span::styled(
             format!("ctx {:>3.0}% ", pct),
             theme.fg_style(color_name),
         ));
-        spans.push(Span::styled(bar, theme.fg_style(color_name)));
-        spans.push(Span::raw(" | "));
+        left.push(Span::styled(bar, theme.fg_style(color_name)));
     }
 
     // Token-count segment (compact).
     if state.run_state.tokens.input > 0 || state.run_state.tokens.output > 0 {
-        spans.push(Span::styled(
+        left.push(Span::styled("  \u{2022}  ", theme.fg_style("dim")));
+        left.push(Span::styled(
             format!(
-                "in {} out {} | ",
+                "in {} out {}",
                 fmt_thousands(state.run_state.tokens.input),
-                fmt_thousands(state.run_state.tokens.output)
+                fmt_thousands(state.run_state.tokens.output),
             ),
             theme.fg_style("dim"),
         ));
@@ -240,32 +267,71 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
 
     // Cost segment (only when > $0).
     if state.run_state.cost_usd > 0.0 {
-        spans.push(Span::styled(
+        left.push(Span::styled("  \u{2022}  ", theme.fg_style("dim")));
+        left.push(Span::styled(
             format!("${:.4}", state.run_state.cost_usd),
             theme.fg_style("success"),
         ));
-        spans.push(Span::raw(" "));
     }
 
-    // Theme name segment. Empty when default theme is in use.
-    if let Some(name) = state.ui_state.theme_name.as_ref().filter(|n| !n.is_empty()) {
-        spans.push(Span::styled(
+    // ---- RIGHT half: provider + model + thinking + [theme] ----
+    let mut right: Vec<Span<'static>> = Vec::new();
+    if let Some(provider) = state
+        .model_state
+        .provider
+        .as_ref()
+        .filter(|p| !p.is_empty())
+    {
+        right.push(Span::styled(
+            format!("({provider}) "),
+            theme.fg_style("dim"),
+        ));
+    }
+    right.push(Span::raw(state.model_state.model.clone()));
+    if let Some(level) = state
+        .model_state
+        .thinking_level
+        .as_ref()
+        .filter(|l| !l.is_empty())
+    {
+        right.push(Span::styled(
+            format!(" \u{2022} {level}"),
+            theme.fg_style("dim"),
+        ));
+    }
+    if let Some(name) = state
+        .ui_state
+        .theme_name
+        .as_ref()
+        .filter(|n| !n.is_empty())
+    {
+        right.push(Span::raw("  "));
+        right.push(Span::styled(
             format!("[{name}]"),
             theme.fg_style("accent"),
         ));
-        spans.push(Span::raw(" "));
     }
 
-    // Session id (truncated to 8 chars).
-    let session_disp = state.session_state.session_id
-        
-        .as_deref()
-        .map(|s| &s[..s.len().min(8)])
-        .unwrap_or("(no session)");
-    spans.push(Span::styled(
-        format!("[{session_disp}]"),
-        theme.fg_style("dim"),
-    ));
+    // ---- Compose with right-alignment ----
+    let left_width: usize = left
+        .iter()
+        .map(|s| s.content.as_ref().chars().count())
+        .sum();
+    let right_width: usize = right
+        .iter()
+        .map(|s| s.content.as_ref().chars().count())
+        .sum();
+    let width = area.width as usize;
+    let min_gap = 2;
+
+    let mut spans = left;
+    if left_width + right_width + min_gap <= width {
+        spans.push(Span::raw(" ".repeat(width - left_width - right_width)));
+    } else {
+        // Not enough room: still keep a min gap so the two halves don't collide.
+        spans.push(Span::raw(" ".repeat(min_gap)));
+    }
+    spans.extend(right);
 
     f.render_widget(Paragraph::new(RLine::from(spans)), area);
 }
@@ -731,24 +797,39 @@ mod footer_tests {
 mod status_tests {
     use super::*;
 
-    /// Render the status bar to a text snapshot via TestBackend.
-    fn status_text(state: &crate::state::AppState) -> String {
+    /// Render the 2-line footer to a text snapshot via TestBackend.
+    /// Returns both rows joined with '\n' so substring assertions still work
+    /// regardless of which line the content lives on.
+    fn footer_text(state: &crate::state::AppState) -> String {
         use crate::theme::Theme;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
-        let backend = TestBackend::new(200, 1);
+        let backend = TestBackend::new(200, 2);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render_status(f, state, &Theme::default(), f.area()))
+            .draw(|f| render_footer(f, state, &Theme::default(), f.area()))
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         let mut out = String::new();
-        for x in 0..buf.area.width {
-            if let Some(c) = buf.cell((x, 0)) {
-                out.push_str(c.symbol());
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if let Some(c) = buf.cell((x, y)) {
+                    out.push_str(c.symbol());
+                }
             }
+            out.push('\n');
         }
         out
+    }
+
+    /// Return just row 1 (cwd/branch/session line).
+    fn pwd_line_text(state: &crate::state::AppState) -> String {
+        footer_text(state).lines().next().unwrap_or("").to_string()
+    }
+
+    /// Return just row 2 (stats/model line).
+    fn stats_line_text(state: &crate::state::AppState) -> String {
+        footer_text(state).lines().nth(1).unwrap_or("").to_string()
     }
 
     #[test]
@@ -756,7 +837,7 @@ mod status_tests {
         use crate::state::AppState;
         let mut state = AppState::new("m");
         state.ui_state.theme_name = Some("light".to_string());
-        let text = status_text(&state);
+        let text = footer_text(&state);
         assert!(text.contains("[light]"), "expected [light] pill, got: {text}");
     }
 
@@ -764,7 +845,7 @@ mod status_tests {
     fn status_bar_hides_theme_pill_when_default() {
         use crate::state::AppState;
         let mut state = AppState::new("m");
-        let text = status_text(&state);
+        let text = footer_text(&state);
         // No [theme] pill when theme_name is None.
         assert!(!text.contains("[light]") && !text.contains("[dark]"),
             "unexpected theme pill: {text}");
@@ -775,8 +856,8 @@ mod status_tests {
         use crate::state::AppState;
         let mut state = AppState::new("MiniMax-M3");
         state.model_state.provider = Some("anthropic".to_string());
-        let text = status_text(&state);
-        // v0.8: Pi-style (provider) prefix in the status bar.
+        let text = footer_text(&state);
+        // v0.8: Pi-style (provider) prefix on the stats line.
         assert!(text.contains("(anthropic)"),
                 "expected (anthropic) prefix, got: {text}");
         assert!(text.contains("MiniMax-M3"));
@@ -786,7 +867,7 @@ mod status_tests {
     fn status_bar_hides_provider_when_unset() {
         use crate::state::AppState;
         let mut state = AppState::new("m");
-        let text = status_text(&state);
+        let text = footer_text(&state);
         // No (provider) prefix when state.model_state.provider is None.
         assert!(!text.contains("(anthropic)") && !text.contains("(openai)"),
                 "unexpected provider prefix: {text}");
@@ -797,9 +878,114 @@ mod status_tests {
         use crate::state::AppState;
         let mut state = AppState::new("m");
         state.model_state.thinking_level = Some("medium".to_string());
-        let text = status_text(&state);
-        // v0.8: Pi-style '• level' in the status bar.
+        let text = footer_text(&state);
+        // v0.8: Pi-style '• level' on the stats line.
         assert!(text.contains("• medium"),
                 "expected '• medium' indicator, got: {text}");
+    }
+
+    // ---- new Pi-style 2-line layout assertions ----
+
+    #[test]
+    fn footer_pwd_line_shows_cwd_and_branch() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        state.session_state.cwd = Some(std::path::PathBuf::from("/home/jin/nini"));
+        state.session_state.git_branch = Some("main".into());
+        state.session_state.session_id = Some("a1b2c3d4e5f6".into());
+        let line = pwd_line_text(&state);
+        assert!(line.contains("~/nini"), "expected tilde-path, got: {line}");
+        assert!(line.contains("⎇ main"), "expected git branch, got: {line}");
+        assert!(line.contains("[a1b2c3d4]"), "expected session id pill, got: {line}");
+    }
+
+    #[test]
+    fn footer_pwd_line_omits_branch_when_unset() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        state.session_state.cwd = Some(std::path::PathBuf::from("/tmp"));
+        let line = pwd_line_text(&state);
+        // /tmp isn't under $HOME so shorten_home returns it as-is.
+        assert!(line.contains("/tmp"), "expected cwd, got: {line}");
+        assert!(!line.contains("⎇"), "branch should be hidden, got: {line}");
+    }
+
+    #[test]
+    fn footer_pwd_line_shows_no_session_when_unset() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        state.session_state.cwd = Some(std::path::PathBuf::from("/tmp"));
+        let line = pwd_line_text(&state);
+        assert!(line.contains("no session"),
+                "expected placeholder, got: {line}");
+    }
+
+    #[test]
+    fn footer_stats_line_right_aligns_model_when_space() {
+        use crate::state::AppState;
+        let mut state = AppState::new("MiniMax-M3");
+        state.model_state.provider = Some("anthropic".into());
+        state.model_state.thinking_level = Some("medium".into());
+        let line = stats_line_text(&state);
+        // The " nini " badge is leftmost; the model is rightmost.
+        let nini_pos = line.find(" nini ").expect("brand badge missing");
+        let model_pos = line.rfind("MiniMax-M3").expect("model missing");
+        assert!(model_pos > nini_pos,
+                "model should appear to the right of the badge, got: {line}");
+        // Provider + model + thinking should all appear on the stats line.
+        assert!(line.contains("(anthropic)"));
+        assert!(line.contains("• medium"));
+    }
+
+    #[test]
+    fn footer_stats_line_omits_cost_when_zero() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        let line = stats_line_text(&state);
+        assert!(!line.contains('$'),
+                "cost should be hidden when cost_usd == 0, got: {line}");
+    }
+
+    #[test]
+    fn footer_stats_line_shows_tokens_when_set() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        state.run_state.tokens.input = 100;
+        state.run_state.tokens.output = 50;
+        let line = stats_line_text(&state);
+        assert!(line.contains("in 100"), "got: {line}");
+        assert!(line.contains("out 50"), "got: {line}");
+    }
+
+    #[test]
+    fn footer_stats_line_shows_phase_when_running() {
+        use crate::state::AppState;
+        use crate::state::RunMode;
+        let mut state = AppState::new("m");
+        state.run_state.mode = RunMode::Running;
+        let text = footer_text(&state);
+        assert!(text.contains("working"),
+                "running mode should show 'working' phase, got: {text}");
+    }
+
+    #[test]
+    fn footer_stats_line_shows_diff_pill_when_set() {
+        use crate::state::AppState;
+        let mut state = AppState::new("m");
+        state.ui_state.last_diff = Some((3, 1));
+        let line = stats_line_text(&state);
+        assert!(line.contains("[edit +3 -1]"),
+                "expected edit diff pill, got: {line}");
+    }
+
+    #[test]
+    fn footer_two_lines_sum_to_two_rows() {
+        use crate::state::AppState;
+        let state = AppState::new("m");
+        let text = footer_text(&state);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2,
+                  "footer must render exactly 2 rows, got {}: {:?}",
+                  lines.len(), lines);
     }
 }

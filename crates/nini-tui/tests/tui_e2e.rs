@@ -510,21 +510,36 @@ fn empty_state_pixel_layout_regression() {
     let line_count = frame.lines().count();
     assert_eq!(line_count, 24, "expected 24 lines, got {line_count}");
 
-    // Status bar should be on line 0 (index 0)
-    let first_line = frame.lines().next().unwrap();
+    // v0.8: Pi-style 2-line footer.
+    //   Line 0: pwd/branch/session (env context line)
+    //   Line 1: brand badge + phase + ... + right-aligned model
+    //   Line 23 (last): key hints
+    let pwd_line = frame.lines().next().unwrap();
+    // With no cwd/session set, the pwd line should still render the
+    // 'no session' placeholder (line 0 is reserved for env context).
     assert!(
-        first_line.contains("nini"),
-        "line 0 should contain 'nini' status bar, got: {first_line:?}"
+        !pwd_line.contains(" nini "),
+        "line 0 is the pwd line (no badge), got: {pwd_line:?}"
+    );
+
+    let stats_line = frame.lines().nth(1).unwrap();
+    assert!(
+        stats_line.contains(" nini "),
+        "line 1 should contain ' nini ' brand badge, got: {stats_line:?}"
     );
     assert!(
-        first_line.contains("idle") || first_line.contains("[ready]"),
-        "line 0 should show idle/[ready] mode, got: {first_line:?}"
+        stats_line.contains("test-model"),
+        "line 1 should show model name, got: {stats_line:?}"
+    );
+    assert!(
+        stats_line.contains("idle"),
+        "line 1 should show 'idle' phase, got: {stats_line:?}"
     );
 
     // Prompt block ("input" border) should be in the bottom region.
-    // Layout: status(1) + transcript(min 3) + prompt(3) + hints(1) = 24
-    // prompt top border is at row 1+transcript_height. Since transcript is min(3)
-    // and area is 24, prompt starts at row 24 - 3 - 1 = 20.
+    // Layout: footer(2) + transcript(min 3) + prompt(3) + hints(1) = 9 rows minimum,
+    // leaving 15 rows for transcript on a 24-row screen.
+    // Prompt top border sits at row 2 + transcript_height = 20.
     let prompt_line_idx = 20;
     let prompt_line = frame.lines().nth(prompt_line_idx).unwrap();
     assert!(
