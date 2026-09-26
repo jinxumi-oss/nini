@@ -12,6 +12,16 @@ use futures_util::StreamExt;
 
 pub mod startup_ui;
 
+// v0.8.2: split from main.rs into focused submodules. The order of
+// `mod` declarations matters because some types cross-reference
+// (`provider_factory` uses `tool_registry`, `app` uses everything).
+pub(crate) mod prompt_setup;
+pub(crate) mod provider_factory;
+pub(crate) mod tool_registry;
+pub(crate) mod info;
+pub(crate) mod demo;
+pub(crate) mod app;
+
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::{Provider, Usage};
 use nini_core::settings::load_settings;
@@ -359,11 +369,11 @@ async fn main() -> Result<()> {
             let cfg_model = if !model.is_empty() {
                 model.clone()
             } else {
-                model_for_cfg(&settings)
+                prompt_setup::model_for_cfg(&settings)
             };
             let shared_cfg = RunConfig {
                 model: cfg_model.clone(),
-                system: Some(settings_to_system_prompt(&settings, "")),
+                system: Some(prompt_setup::settings_to_system_prompt(&settings, "")),
                 ..RunConfig::new(cfg_model)
             };
             let agent_driver: AgentDriver = std::sync::Arc::new(move |user_msg, sink, done| {
@@ -876,35 +886,6 @@ fn filter_tools(
     out
 }
 
-fn model_for_cfg(s: &nini_core::settings::Settings) -> String {
-    s.model
-        .clone()
-        .or_else(|| s.provider.clone())
-        .unwrap_or_else(|| "test-model".to_string())
-}
-
-fn settings_to_system_prompt(
-    settings: &nini_core::settings::Settings,
-    skills_prompt: &str,
-) -> String {
-    let mut s = String::from("You are nini, a Pi-compatible Rust coding agent.\n");
-    if let Some(p) = &settings.provider {
-        s.push_str(&format!("Default provider: {p}\n"));
-    }
-    if let Some(m) = &settings.model {
-        s.push_str(&format!("Default model: {m}\n"));
-    }
-    if let Some(t) = &settings.thinking_level {
-        s.push_str(&format!("Thinking level: {t}\n"));
-    }
-    s.push_str(
-        "\nAvailable tools: bash, read, write, edit, grep, find. \
-         Use them to complete complex multi-step tasks.",
-    );
-    s.push_str(skills_prompt);
-    s
-}
-
 async fn run_print(
     user_input: &str,
     provider: &str,
@@ -937,7 +918,7 @@ async fn run_print(
         ],
     ];
     let provider_impl = build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
-    let system = settings_to_system_prompt(&settings, &skills_prompt);
+    let system = prompt_setup::settings_to_system_prompt(&settings, &skills_prompt);
     let tools = build_tools();
     let config = RunConfig {
         model: model.to_string(),
@@ -996,7 +977,7 @@ async fn run_demo(
         demo_simple_turns(task)
     };
     let provider_impl = build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
-    let system = settings_to_system_prompt(&settings, &skills_prompt);
+    let system = prompt_setup::settings_to_system_prompt(&settings, &skills_prompt);
     let tools = build_tools();
     let config = RunConfig {
         model: model.to_string(),
