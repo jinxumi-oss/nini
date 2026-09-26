@@ -1,3 +1,33 @@
+## v0.8.2 — main.rs拆分计划 (2026-09-25)
+
+main.rs (1230 LOC的"上帝函数")按职责拆分为6个子模块:
+
+  * **prompt_setup.rs** (99 LOC) — model_for_cfg + system prompt
+  * **provider_factory.rs** (276 LOC) — build_provider + parse_scripted_turns
+  * **tool_registry.rs** (133 LOC) — build_tools + filter_tools
+  * **info.rs** (50 LOC) — `nini info` 子命令
+  * **demo.rs** (279 LOC) — run_demo + run_print + fixtures
+  * **app.rs** (220 LOC) — AppConfig + run_tui + AgentDriver闭包
+
+main() body: **314 → 87 LOC** (72% reduction).
+
+**新增单元测试** (10个):
+
+  * prompt_setup: model_for_cfg 3 paths + system_prompt 内容 (6 tests)
+  * provider_factory: parse_scripted_turns 5 个 variants (6 tests)
+  * tool_registry: filter_tools 6 个组合 (6 tests)
+  * demo: find_first_file_with_todo (2 tests)
+  * info: smoke test (1 test)
+
+main.rs 从0测试覆盖 → 现在每个sub-module可独立单元测试。
+
+**Fix**: v0.8.2附带修复demo_fix_todos_turns()fixture bug——
+原single-turn fixture导致agent循环50次 (ProgrammedProvider
+循环队列)。改为2-turn fixture后正常退出。
+
+总测试: **723 → 739** (+16).
+外部API不变: `nini -p`、`nini demo`、`nini info`、`nini` (TUI)
+行为完全相同。
 ## v0.8.1 — AppState split into 5 sub-structs (2026-09-25)
 
 Internal refactor. **No external API change** — all method calls
