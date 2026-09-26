@@ -22,14 +22,13 @@ pub(crate) mod info;
 pub(crate) mod demo;
 pub(crate) mod app;
 
-use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
+// FixtureTurn + ProgrammedProvider moved to demo.rs + provider_factory.rs
 use nini_core::provider::{Provider, Usage};
 use nini_core::settings::load_settings;
 use nini_core::skills::{format_skills_for_prompt, load_skills};
 use nini_core::tool::Tool;
 use nini_core::{Agent, AgentEvent, RunConfig};
 use nini_core::tool::ToolRegistry;
-use nini_tools::{BashTool, EditTool, FindTool, GrepTool, ReadTool, WriteTool};
 use nini_tui::run as run_tui;
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -262,9 +261,9 @@ async fn main() -> Result<()> {
     match cmd {
         Some(Cmd::Demo { task }) => {
             let task = task.unwrap_or_else(|| "find TODOs and fix them".to_string());
-            run_demo(&task, &provider, &model, &fallback_keys, &fallback_base_urls).await
+            demo::run_demo(&task, &provider, &model, &fallback_keys, &fallback_base_urls).await
         }
-        Some(Cmd::Info) => run_info().await,
+        Some(Cmd::Info) => info::run_info().await,
         _ if list_models.is_some() => {
             // Build runtime from models.json or fall back to defaults.
             let cwd = std::env::current_dir().unwrap_or_default();
@@ -281,7 +280,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         None if print.is_some() => {
-            run_print(
+            demo::run_print(
                 print.as_deref().unwrap(),
                 &provider,
                 &model,
@@ -357,8 +356,8 @@ async fn main() -> Result<()> {
                             .unwrap_or_default(),
                     )) as Arc<dyn Provider>
                 });
-            let shared_tools = filter_tools(
-                build_tools(),
+            let shared_tools = tool_registry::filter_tools(
+                tool_registry::build_tools(),
                 &tools,
                 &exclude_tools,
                 no_tools,
@@ -598,7 +597,7 @@ async fn main() -> Result<()> {
                             if let Some(arc) = session_arc {
                                 if let Ok(guard) = arc.try_lock() {
                                     for entry in &guard.entries {
-                                        if let Some(msg) = cli_entry_legacy(entry) {
+                                        if let Some(msg) = demo::cli_entry_legacy(entry) {
                                             for block in &msg.content {
                                                 if let nini_core::ContentBlock::Text { text } = block {
                                                     match msg.role {
@@ -642,417 +641,10 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn run_info() -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    println!("nini info (cwd: {})", cwd.display());
-    println!();
-    let settings = load_settings(&cwd);
-    println!("Settings (loaded):");
-    println!("  provider:       {:?}", settings.provider);
-    println!("  model:          {:?}", settings.model);
-    println!("  thinking_level: {:?}", settings.thinking_level);
-    println!();
-    let skills_result = load_skills(&cwd);
-    println!(
-        "Skills ({} loaded, {} errors):",
-        skills_result.skills.len(),
-        skills_result.errors.len()
-    );
-    for s in &skills_result.skills {
-        println!("  - {} ({}) -- {}", s.name, s.source.label(), s.description);
-    }
-    for e in &skills_result.errors {
-        println!("  ! error: {e}");
-    }
-    Ok(())
-}
 
 
 
-/// Parse scripted turns from `NINI_TUI_FIXTURE_TURNS`.
-///
-/// Format: a JSON array of arrays of objects. Each inner array is one
-/// agent turn's events. Each object has a `kind` field:
-///   - `{"kind":"text","text":"..."}`                 → FixtureTurn::Text
-///   - `{"kind":"tool","name":"bash","args":{...}}`   → FixtureTurn::ToolCall
-///   - `{"kind":"stop","stop_reason":"end_turn"}`     → FixtureTurn::Stop
-/// Any other shape fails the parse and the env var is ignored.
-
-fn build_tools() -> ToolRegistry {
-    let bash: Arc<dyn Tool> = Arc::new(BashTool::new());
-    let read: Arc<dyn Tool> = Arc::new(ReadTool::new());
-    let write: Arc<dyn Tool> = Arc::new(WriteTool::new());
-    let edit: Arc<dyn Tool> = Arc::new(EditTool::new());
-    let grep: Arc<dyn Tool> = Arc::new(GrepTool::new());
-    let find: Arc<dyn Tool> = Arc::new(FindTool::new());
-    let mut reg = ToolRegistry::new();
-    reg.register_mut(bash);
-    reg.register_mut(read);
-    reg.register_mut(write);
-    reg.register_mut(edit);
-    reg.register_mut(grep);
-    reg.register_mut(find);
-    reg
-}
-
-/// Apply CLI tool filtering (`--tools`, `--exclude-tools`, `--no-tools`,
-/// `--no-builtin-tools`) to a registry.
-fn filter_tools(
-    registry: ToolRegistry,
-    allow: &[String],
-    deny: &[String],
-    no_tools: bool,
-    no_builtin: bool,
-) -> ToolRegistry {
-    let builtin = ["bash", "read", "write", "edit", "grep", "find"];
-    let tools: Vec<(String, Arc<dyn Tool>)> = registry
-        .tools()
-        .map(|t| (t.name().to_string(), t))
-        .collect();
-    let mut kept: Vec<Arc<dyn Tool>> = Vec::new();
-    for (name, tool) in tools {
-        if no_tools {
-            continue;
-        }
-        if no_builtin && builtin.contains(&name.as_str()) {
-            continue;
-        }
-        if !allow.is_empty() && !allow.iter().any(|a| a == &name) {
-            continue;
-        }
-        if deny.iter().any(|d| d == &name) {
-            continue;
-        }
-        kept.push(tool);
-    }
-    let mut out = ToolRegistry::new();
-    for tool in kept {
-        out.register_mut(tool);
-    }
-    out
-}
-
-async fn run_print(
-    user_input: &str,
-    provider: &str,
-    model: &str,
-    fallback_keys: &[String],
-    fallback_base_urls: &[String],
-) -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    let settings = load_settings(&cwd);
-    let skills = load_skills(&cwd);
-    let skills_prompt = format_skills_for_prompt(&skills.skills);
-    let cmd = format!("echo {user_input}");
-    let turns = vec![
-        vec![
-            FixtureTurn::ToolCall {
-                name: "bash".to_string(),
-                args: serde_json::json!({"command": cmd}),
-            },
-            FixtureTurn::Stop {
-                stop_reason: "tool_use".to_string(),
-                usage: Usage::default(),
-            },
-        ],
-        vec![
-            FixtureTurn::Text(user_input.to_string()),
-            FixtureTurn::Stop {
-                stop_reason: "end_turn".to_string(),
-                usage: Usage::default(),
-            },
-        ],
-    ];
-    let provider_impl = provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
-    let system = prompt_setup::settings_to_system_prompt(&settings, &skills_prompt);
-    let tools = build_tools();
-    let config = RunConfig {
-        model: model.to_string(),
-        system: Some(system),
-        ..RunConfig::new(model.to_string())
-    };
-    let mut agent = Agent::new(provider_impl, tools, config);
-    let mut stream = std::pin::pin!(agent.run(nini_core::AgentMessage::user(user_input)));
-    let mut stdout_text = String::new();
-    let mut any_error = false;
-    while let Some(ev) = stream.next().await {
-        match ev {
-            Ok(AgentEvent::TextDelta { text }) => stdout_text.push_str(&text),
-            Ok(AgentEvent::Error { message }) => {
-                eprintln!("[agent error] {message}");
-                any_error = true;
-            }
-            Ok(AgentEvent::ToolResult { output, .. }) => {
-                if output.is_error {
-                    eprintln!("[tool stderr]\n{}", output.content);
-                    any_error = true;
-                }
-            }
-            Err(e) => {
-                eprintln!("[error] {e}");
-                any_error = true;
-            }
-            _ => {}
-        }
-    }
-    print!("{stdout_text}");
-    if any_error {
-        std::process::exit(1);
-    }
-    Ok(())
-}
-
-async fn run_demo(
-    task: &str,
-    provider: &str,
-    model: &str,
-    fallback_keys: &[String],
-    fallback_base_urls: &[String],
-) -> Result<()> {
-    eprintln!("[demo] task: {task}");
-    eprintln!("[demo] provider: {provider} | model: {model}");
-    eprintln!();
-    let cwd = std::env::current_dir()?;
-    let settings = load_settings(&cwd);
-    let skills = load_skills(&cwd);
-    let skills_prompt = format_skills_for_prompt(&skills.skills);
-    let task_lower = task.to_lowercase();
-    let turns = if task_lower.contains("todo") {
-        demo_fix_todos_turns(&cwd)
-    } else {
-        demo_simple_turns(task)
-    };
-    let provider_impl = provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
-    let system = prompt_setup::settings_to_system_prompt(&settings, &skills_prompt);
-    let tools = build_tools();
-    let config = RunConfig {
-        model: model.to_string(),
-        system: Some(system),
-        ..RunConfig::new(model.to_string())
-    };
-    let mut agent = Agent::new(provider_impl, tools, config);
-    let mut stream = std::pin::pin!(agent.run(nini_core::AgentMessage::user(task)));
-    let mut stdout_text = String::new();
-    let mut tool_count = 0;
-    let mut any_error = false;
-    while let Some(ev) = stream.next().await {
-        match ev {
-            Ok(AgentEvent::TextDelta { text }) => stdout_text.push_str(&text),
-            Ok(AgentEvent::ToolCallStart { name, .. }) => {
-                eprintln!("[demo] -> tool call: {name}");
-            }
-            Ok(AgentEvent::ToolResult { output, .. }) => {
-                tool_count += 1;
-                let preview = output
-                    .content
-                    .lines()
-                    .take(3)
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                eprintln!(
-                    "[demo] <- tool result ({} bytes): {preview}",
-                    output.content.len()
-                );
-            }
-            Ok(AgentEvent::TurnEnd { .. }) => {
-                eprintln!("[demo] -- turn end");
-            }
-            Ok(AgentEvent::Error { message }) => {
-                eprintln!("[demo] !! error: {message}");
-                any_error = true;
-            }
-            Err(e) => {
-                eprintln!("[demo] !! agent error: {e}");
-                any_error = true;
-            }
-            _ => {}
-        }
-    }
-    eprintln!();
-    eprintln!("[demo] === summary ===");
-    eprintln!("[demo] tool calls executed: {tool_count}");
-    eprintln!("[demo] assistant text: {stdout_text}");
-    if any_error {
-        std::process::exit(1);
-    }
-    Ok(())
-}
-
-fn demo_fix_todos_turns(cwd: &std::path::Path) -> Vec<Vec<FixtureTurn>> {
-    let target = find_first_file_with_todo(cwd).unwrap_or_else(|| "src/main.rs".to_string());
-    vec![
-        vec![
-            FixtureTurn::ToolCall {
-                name: "grep".to_string(),
-                args: serde_json::json!({"pattern": "TODO", "path": "."}),
-            },
-            FixtureTurn::Stop {
-                stop_reason: "tool_use".to_string(),
-                usage: Usage::default(),
-            },
-        ],
-        vec![
-            FixtureTurn::ToolCall {
-                name: "read".to_string(),
-                args: serde_json::json!({"path": target.clone()}),
-            },
-            FixtureTurn::Stop {
-                stop_reason: "tool_use".to_string(),
-                usage: Usage::default(),
-            },
-        ],
-        vec![
-            FixtureTurn::ToolCall {
-                name: "edit".to_string(),
-                args: serde_json::json!({
-                    "path": target, "old_text": "// DONE: ", "new_text": "// DONE: "
-                }),
-            },
-            FixtureTurn::Stop {
-                stop_reason: "tool_use".to_string(),
-                usage: Usage::default(),
-            },
-        ],
-        vec![
-            FixtureTurn::ToolCall {
-                name: "bash".to_string(),
-                args: serde_json::json!({"command": "echo verified"}),
-            },
-            FixtureTurn::Stop {
-                stop_reason: "tool_use".to_string(),
-                usage: Usage::default(),
-            },
-        ],
-        vec![
-            FixtureTurn::Text("Found and fixed TODOs in the codebase.".to_string()),
-            FixtureTurn::Stop {
-                stop_reason: "end_turn".to_string(),
-                usage: Usage::default(),
-            },
-        ],
-    ]
-}
-
-fn demo_simple_turns(task: &str) -> Vec<Vec<FixtureTurn>> {
-    vec![
-        vec![
-            FixtureTurn::ToolCall {
-                name: "bash".to_string(),
-                args: serde_json::json!({"command": format!("echo {task}")}),
-            },
-            FixtureTurn::Stop {
-                stop_reason: "tool_use".to_string(),
-                usage: Usage::default(),
-            },
-        ],
-        vec![
-            FixtureTurn::Text(task.to_string()),
-            FixtureTurn::Stop {
-                stop_reason: "end_turn".to_string(),
-                usage: Usage::default(),
-            },
-        ],
-    ]
-}
-
-fn find_first_file_with_todo(cwd: &std::path::Path) -> Option<String> {
-    fn walk(dir: &std::path::Path) -> Option<String> {
-        let entries = std::fs::read_dir(dir).ok()?;
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                if let Some(found) = walk(&p) {
-                    return Some(found);
-                }
-            } else if p.extension().and_then(|s| s.to_str()) == Some("rs") {
-                if let Ok(content) = std::fs::read_to_string(&p) {
-                    if content.to_lowercase().contains("todo") {
-                        return Some(p.display().to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
-    let start = if cwd.join("src").is_dir() {
-        cwd.join("src")
-    } else {
-        cwd.to_path_buf()
-    };
-    walk(&start)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_fake_registry() -> ToolRegistry {
-        use nini_core::tool::Tool;
-        // Build a tiny registry with two fake tools for filter testing.
-        // We use real BashTool (so names are realistic) and a placeholder.
-        let mut reg = ToolRegistry::new();
-        reg.register_mut(Arc::new(BashTool::new()) as Arc<dyn Tool>);
-        // ReadTool as a second builtin to verify builtin detection.
-        reg.register_mut(Arc::new(ReadTool::new()) as Arc<dyn Tool>);
-        reg
-    }
-
-    #[test]
-    fn filter_tools_no_tools_flag_disables_all() {
-        let reg = make_fake_registry();
-        let filtered = filter_tools(reg, &[], &[], true, false);
-        assert_eq!(filtered.names().len(), 0);
-    }
-
-    #[test]
-    fn filter_tools_no_builtin_disables_only_builtins() {
-        let reg = make_fake_registry();
-        let filtered = filter_tools(reg, &[], &[], false, true);
-        // bash + read are both builtins, so filtered is empty.
-        assert_eq!(filtered.names().len(), 0);
-    }
-
-    #[test]
-    fn filter_tools_allowlist_keeps_only_listed() {
-        let reg = make_fake_registry();
-        let filtered = filter_tools(reg, &["bash".to_string()], &[], false, false);
-        let names = filtered.names();
-        assert_eq!(names, vec!["bash".to_string()]);
-    }
-
-    #[test]
-    fn filter_tools_denylist_removes_listed() {
-        let reg = make_fake_registry();
-        let filtered = filter_tools(reg, &[], &["bash".to_string()], false, false);
-        let names = filtered.names();
-        assert_eq!(names, vec!["read".to_string()]);
-    }
-
-    #[test]
-    fn filter_tools_no_filters_keeps_all() {
-        let reg = make_fake_registry();
-        let filtered = filter_tools(reg, &[], &[], false, false);
-        assert_eq!(filtered.names().len(), 2);
-    }
-
-    #[test]
-    fn filter_tools_allowlist_and_denylist_combined() {
-        let reg = make_fake_registry();
-        // Allow only "bash", but also deny "bash" → result is empty.
-        let filtered = filter_tools(reg, &["bash".to_string()], &["bash".to_string()], false, false);
-        assert_eq!(filtered.names().len(), 0);
-    }
-}
 
 
-fn cli_entry_legacy(entry: &nini_core::SessionEntry) -> Option<nini_core::AgentMessage> {
-    // v0.7.1 — delegate to the chokepoint in nini-core::conversion.
-    // See crates/nini-tui/src/commands.rs::entry_legacy_message for
-    // the parallel refactor.
-    let m = nini_core::conversion::session_entry_to_llm_message(entry)?;
-    Some(nini_core::AgentMessage {
-        role: m.role,
-        content: m.content,
-        timestamp: m.timestamp,
-    })
-}
+
+
