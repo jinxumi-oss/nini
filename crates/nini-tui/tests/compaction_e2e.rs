@@ -258,7 +258,7 @@ fn slash_compact_command_dispatches() {
         _ => panic!("expected Output"),
     }
     // Empty transcript — no compaction happened, transcript unchanged.
-    assert!(state.transcript.is_empty());
+    assert!(state.transcript_state.lines.is_empty());
 }
 
 #[test]
@@ -270,7 +270,7 @@ fn slash_compact_command_dispatches_with_long_transcript() {
         state.push_user(format!("user {i}"));
         state.push_assistant(format!("assistant {i}"));
     }
-    let before = state.transcript.len();
+    let before = state.transcript_state.lines.len();
     let r = dispatch(&mut state, &mut settings, CommandId::Compact, "");
     match r.outcome {
         CommandOutcome::Output(lines) => {
@@ -281,10 +281,10 @@ fn slash_compact_command_dispatches_with_long_transcript() {
         }
         _ => panic!("expected Output"),
     }
-    assert!(state.transcript.len() <= before);
+    assert!(state.transcript_state.lines.len() <= before);
     assert!(
         state
-            .transcript
+            .transcript_state.lines
             .first()
             .and_then(|l| l.as_assistant_text())
             .map(|s| s.contains("[CONTEXT SUMMARY]"))

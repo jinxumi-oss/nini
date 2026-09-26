@@ -90,7 +90,7 @@ fn help_command_renders_keybindings() {
 }
 
 // =====================================================================
-// Test 3: /model <provider/model> updates state.model
+// Test 3: /model <provider/model> updates state.model_state.model
 // =====================================================================
 #[test]
 fn model_command_updates_state() {
@@ -98,10 +98,10 @@ fn model_command_updates_state() {
     let mut settings = SettingsManager::default();
     let r = dispatch(&mut state, &mut settings, CommandId::Model, "anthropic/claude-opus-4-7");
     assert!(matches!(r.outcome, CommandOutcome::Output(_)));
-    assert_eq!(state.model, "anthropic/claude-opus-4-7");
+    assert_eq!(state.model_state.model, "anthropic/claude-opus-4-7");
     // Transcript should mention the model change
     let last_text = state
-        .transcript
+        .transcript_state.lines
         .iter()
         .rev()
         .find_map(|l| l.as_assistant_text());
@@ -124,7 +124,7 @@ fn model_command_no_args_returns_usage() {
         _ => panic!("expected Output"),
     }
     // State.model unchanged on usage error
-    assert_eq!(state.model, "test-model");
+    assert_eq!(state.model_state.model, "test-model");
 }
 
 // =====================================================================
@@ -161,15 +161,15 @@ fn new_command_clears_transcript_keeps_model() {
     state.push_user("old question".to_string());
     state.push_assistant("old answer".to_string());
     state.push_divider();
-    assert!(state.transcript.len() >= 3);
+    assert!(state.transcript_state.lines.len() >= 3);
 
     let r = dispatch(&mut state, &mut settings, CommandId::New, "");
     assert!(matches!(r.outcome, CommandOutcome::Output(_)));
-    assert_eq!(state.model, "test-model"); // unchanged
+    assert_eq!(state.model_state.model, "test-model"); // unchanged
 
     // Transcript has "(started new session)" + divider
     assert!(
-        state.transcript[0]
+        state.transcript_state.lines[0]
             .as_assistant_text()
             .map(|t| t.contains("started new session"))
             .unwrap_or(false)
@@ -185,7 +185,7 @@ fn quit_command_signals_exit() {
     let mut settings = SettingsManager::default();
     let r = dispatch(&mut state, &mut settings, CommandId::Quit, "");
     assert_eq!(r.outcome, CommandOutcome::Quit);
-    assert_eq!(state.mode, RunMode::Quitting);
+    assert_eq!(state.run_state.mode, RunMode::Quitting);
 }
 
 // =====================================================================
@@ -285,7 +285,7 @@ fn name_command_sets_status() {
     let mut state = AppState::new("test");
     let mut settings = SettingsManager::default();
     let _ = dispatch(&mut state, &mut settings, CommandId::Name, "My Cool Session");
-    assert!(state.status.contains("My Cool Session"));
+    assert!(state.run_state.status.contains("My Cool Session"));
 }
 
 // =====================================================================
@@ -297,8 +297,8 @@ fn session_command_shows_stats() {
     let mut settings = SettingsManager::default();
     state.push_user("hi".to_string());
     state.push_assistant("hello".to_string());
-    state.tokens.input = 42;
-    state.tokens.output = 17;
+    state.run_state.tokens.input = 42;
+    state.run_state.tokens.output = 17;
 
     let r = dispatch(&mut state, &mut settings, CommandId::Session, "");
     match r.outcome {
@@ -372,7 +372,7 @@ fn copy_finds_last_assistant_message() {
             // "second reply" should be the most recent assistant message
             // (we don't capture the printed output here, but verify transcript)
             let last_assistant = state
-                .transcript
+                .transcript_state.lines
                 .iter()
                 .rev()
                 .find_map(|l| l.as_assistant_text());
@@ -416,8 +416,8 @@ fn multiple_commands_in_sequence() {
     dispatch(&mut state, &mut settings, CommandId::Name, "Test Run");
     dispatch(&mut state, &mut settings, CommandId::Session, "");
 
-    assert_eq!(state.model, "anthropic/claude");
-    assert!(state.status.contains("Test Run"));
+    assert_eq!(state.model_state.model, "anthropic/claude");
+    assert!(state.run_state.status.contains("Test Run"));
 }
 
 // =====================================================================
@@ -510,9 +510,9 @@ fn new_command_creates_session() {
         _ => panic!("expected Output"),
     }
     // A session should have been created.
-    assert!(state.session.is_some(), "/new should create a session");
-    assert!(state.session_id.is_some(), "/new should set session_id");
-    assert!(state.session_path.is_some(), "/new should set session_path");
+    assert!(state.session_state.session.is_some(), "/new should create a session");
+    assert!(state.session_state.session_id.is_some(), "/new should set session_id");
+    assert!(state.session_state.session_path.is_some(), "/new should set session_path");
 }
 
 // =====================================================================
@@ -563,7 +563,7 @@ fn changelog_command_renders_release_notes() {
         _ => panic!("expected Output, got {:?}", r.outcome),
     }
     // Transcript should contain a [changelog] annotation
-    assert!(state.transcript.iter().any(|l| {
+    assert!(state.transcript_state.lines.iter().any(|l| {
         matches!(l, TranscriptLine::AssistantText(s) if s.contains("[changelog]"))
     }));
 }
@@ -574,7 +574,7 @@ fn compact_command_short_transcript_returns_early() {
     let mut settings = SettingsManager::default();
     state.push_user("hi".to_string());
     state.push_assistant("hello".to_string());
-    let before = state.transcript.len();
+    let before = state.transcript_state.lines.len();
     let r = dispatch(&mut state, &mut settings, CommandId::Compact, "");
     match r.outcome {
         CommandOutcome::Output(lines) => {
@@ -588,7 +588,7 @@ fn compact_command_short_transcript_returns_early() {
     // When short transcript returns early, the command does NOT push
     // any echo line — state should be untouched.
     assert_eq!(
-        state.transcript.len(),
+        state.transcript_state.lines.len(),
         before,
         "short transcript should not be mutated"
     );
@@ -605,19 +605,19 @@ fn compact_command_long_transcript_replaces_prefix_with_summary() {
             "answer {i}: use sqlx, not diesel; t_ prefix on tables."
         ));
     }
-    let before = state.transcript.len();
+    let before = state.transcript_state.lines.len();
     let r = dispatch(&mut state, &mut settings, CommandId::Compact, "");
     assert!(matches!(r.outcome, CommandOutcome::Output(_)));
     // Transcript should now have a [CONTEXT SUMMARY] line at the front.
     assert!(
-        state.transcript[0]
+        state.transcript_state.lines[0]
             .as_assistant_text()
             .map(|s| s.contains("[CONTEXT SUMMARY]"))
             .unwrap_or(false),
         "expected [CONTEXT SUMMARY] header after compaction"
     );
     // The transcript should be smaller (or equal).
-    assert!(state.transcript.len() <= before);
+    assert!(state.transcript_state.lines.len() <= before);
 }
 
 #[test]
@@ -649,22 +649,22 @@ fn scoped_models_add_and_list() {
         }
         _ => panic!("expected Output"),
     }
-    assert!(state.models_cycle.contains(&"anthropic/claude-opus-4-7".to_string()));
+    assert!(state.model_state.models_cycle.contains(&"anthropic/claude-opus-4-7".to_string()));
 
     // Add a duplicate (should be no-op).
-    let before = state.models_cycle.len();
+    let before = state.model_state.models_cycle.len();
     dispatch(
         &mut state,
         &mut settings,
         CommandId::ScopedModels,
         "add anthropic/claude-opus-4-7",
     );
-    assert_eq!(state.models_cycle.len(), before);
+    assert_eq!(state.model_state.models_cycle.len(), before);
 
     // Clear.
     let r = dispatch(&mut state, &mut settings, CommandId::ScopedModels, "clear");
     assert!(matches!(r.outcome, CommandOutcome::Output(_)));
-    assert!(state.models_cycle.is_empty());
+    assert!(state.model_state.models_cycle.is_empty());
 }
 
 #[test]
@@ -741,7 +741,7 @@ fn clone_command_with_session_duplicates_file() {
         let mut f = std::fs::File::create(&session_path).unwrap();
         writeln!(f, "{{\"type\":\"session\"}}").unwrap();
     }
-    state.session_path = Some(session_path.clone());
+    state.session_state.session_path = Some(session_path.clone());
 
     let r = dispatch(&mut state, &mut settings, CommandId::Clone, "");
     match r.outcome {
@@ -850,7 +850,7 @@ fn fork_command_with_valid_index_cuts_transcript() {
     state.push_assistant("a2".to_string());
     state.push_user("third".to_string());
     state.push_assistant("a3".to_string());
-    let before = state.transcript.len();
+    let before = state.transcript_state.lines.len();
     let r = dispatch(&mut state, &mut settings, CommandId::Fork, "2");
     match r.outcome {
         CommandOutcome::Output(lines) => {
@@ -862,7 +862,7 @@ fn fork_command_with_valid_index_cuts_transcript() {
         _ => panic!("expected Output"),
     }
     // Transcript grows by 2 (the echo + divider).
-    assert_eq!(state.transcript.len(), before + 2);
+    assert_eq!(state.transcript_state.lines.len(), before + 2);
 }
 
 #[test]
@@ -1042,13 +1042,13 @@ fn import_command_with_valid_jsonl_replaces_transcript() {
     // got exactly the 2 imported user messages, not 3 (which would
     // include the garbage) or 0.
     let user_count = state
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter(|l| matches!(l, TranscriptLine::User(_)))
         .count();
     assert_eq!(user_count, 2, "expected 2 user messages from import, got {user_count}");
     // Verify session_id set
-    assert_eq!(state.session_id.as_deref(), Some("abc123"));
+    assert_eq!(state.session_state.session_id.as_deref(), Some("abc123"));
 }
 
 
@@ -1120,7 +1120,7 @@ fn prompt_command_renders_substituted_template() {
     if let Some(orig) = orig_cwd {
         let _ = std::env::set_current_dir(&orig);
     }
-    let has_user_world = state.transcript.iter().any(|l| match l {
+    let has_user_world = state.transcript_state.lines.iter().any(|l| match l {
         nini_tui::state::TranscriptLine::User(s) => s == "Hello World",
         _ => false,
     });
@@ -1128,7 +1128,7 @@ fn prompt_command_renders_substituted_template() {
         has_user_world,
         "expected 'Hello World' in transcript, got: {:?}",
         state
-            .transcript
+            .transcript_state.lines
             .iter()
             .filter_map(|l| match l {
                 nini_tui::state::TranscriptLine::User(s) => Some(s.as_str()),
@@ -1161,7 +1161,7 @@ fn prompt_command_quoted_args_preserve_whitespace() {
     if let Some(orig) = orig_cwd {
         let _ = std::env::set_current_dir(&orig);
     }
-    let has = state.transcript.iter().any(|l| match l {
+    let has = state.transcript_state.lines.iter().any(|l| match l {
         nini_tui::state::TranscriptLine::User(s) => s == "Hello hello world",
         _ => false,
     });
@@ -1169,7 +1169,7 @@ fn prompt_command_quoted_args_preserve_whitespace() {
         has,
         "expected 'Hello hello world' (with the space from the quoted arg), got: {:?}",
         state
-            .transcript
+            .transcript_state.lines
             .iter()
             .filter_map(|l| match l {
                 nini_tui::state::TranscriptLine::User(s) => Some(s.as_str()),

@@ -172,20 +172,20 @@ fn slash_command_through_full_state_machine() {
     assert_eq!(state.input.text, "/hotkeys");
     // Dismiss popup so Submit dispatches the command (not completes it)
     drive_key(&mut state, Key::esc());
-    assert!(state.completion.is_none());
+    assert!(state.ui_state.completion.is_none());
 
     // 2. Submit: dispatches the slash command
     drive_key(&mut state, Key::enter());
 
     // 3. After dispatch, the assistant transcript line should contain
     //    the help text
-    eprintln!("DEBUG transcript lines: {}", state.transcript.len());
-    for l in &state.transcript {
+    eprintln!("DEBUG transcript lines: {}", state.transcript_state.lines.len());
+    for l in &state.transcript_state.lines {
         eprintln!("DEBUG: {l:?}");
     }
     // All assistant lines from the hotkeys dispatch should be present.
     let assistant_lines: Vec<&str> = state
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter_map(|l| l.as_assistant_text())
         .collect();
@@ -224,7 +224,7 @@ fn autocomplete_through_key_presses() {
         drive_key(&mut state, Key::char(c));
     }
     let popup = state
-        .completion
+        .ui_state.completion
         .as_ref()
         .expect("popup should be visible after /mo");
     // "model" (prefix match) + "scoped-models" (substring match "mo")
@@ -236,7 +236,7 @@ fn autocomplete_through_key_presses() {
     // Type another 'd' → "/mod" → still model + scoped-models match
     drive_key(&mut state, Key::char('d'));
     let popup = state
-        .completion
+        .ui_state.completion
         .as_ref()
         .expect("popup should be visible after /mod");
     assert!(popup.items.iter().any(|i| i.name == "model"));
@@ -259,7 +259,7 @@ fn tab_completes_command() {
     // simulate Tab handler
     state.apply_completion();
     assert_eq!(state.input.text, "/model ");
-    assert!(state.completion.is_none());
+    assert!(state.ui_state.completion.is_none());
 }
 
 // =====================================================================
@@ -271,11 +271,11 @@ fn esc_clears_popup_preserves_input() {
     for c in "/hotkeys".chars() {
         drive_key(&mut state, Key::char(c));
     }
-    assert!(state.completion.is_some());
+    assert!(state.ui_state.completion.is_some());
     // Esc handled in runtime: clear popup, preserve input. We simulate:
-    state.completion = None;
+    state.ui_state.completion = None;
     assert_eq!(state.input.text, "/hotkeys");
-    assert!(state.completion.is_none());
+    assert!(state.ui_state.completion.is_none());
 }
 
 // =====================================================================
@@ -322,7 +322,7 @@ async fn multi_turn_agent_via_sink() {
         let mut g = shared.lock().unwrap();
         g.push_user("hi".to_string());
         g.push_divider();
-        g.mode = RunMode::Running;
+        g.run_state.mode = RunMode::Running;
     }
     let sink1 = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let done1 = Arc::new(Notify::new());
@@ -332,7 +332,7 @@ async fn multi_turn_agent_via_sink() {
     // (plus the original 2 = 2 + 2 = 4)
     let snap = shared.lock().unwrap().clone();
     assert!(
-        snap.transcript
+        snap.transcript_state.lines
             .iter()
             .any(|l| matches!(l, TranscriptLine::AssistantText(t) if t == "first reply"))
     );
@@ -342,26 +342,26 @@ async fn multi_turn_agent_via_sink() {
         let mut g = shared.lock().unwrap();
         g.push_user("use bash".to_string());
         g.push_divider();
-        g.mode = RunMode::Running;
+        g.run_state.mode = RunMode::Running;
     }
     let sink2 = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let done2 = Arc::new(Notify::new());
     drop(driver("use bash".into(), sink2, done2.clone()));
     done2.notified().await;
-    shared.lock().unwrap().mode = RunMode::Editing;
+    shared.lock().unwrap().run_state.mode = RunMode::Editing;
     let snap2 = shared.lock().unwrap().clone();
     assert!(
         snap2
-            .transcript
+            .transcript_state.lines
             .iter()
             .any(|l| matches!(l, TranscriptLine::ToolCall { name, .. } if name == "bash"))
     );
-    assert!(snap2.transcript.iter().any(
+    assert!(snap2.transcript_state.lines.iter().any(
         |l| matches!(l, TranscriptLine::ToolResult { content, .. } if content.contains("hi"))
     ));
     assert!(
         snap2
-            .transcript
+            .transcript_state.lines
             .iter()
             .any(|l| matches!(l, TranscriptLine::AssistantText(t) if t == "after tool"))
     );
@@ -401,8 +401,8 @@ async fn compaction_visible_in_tui() {
 #[test]
 fn token_accumulation_in_status_bar() {
     let mut state = AppState::new("test-model");
-    state.tokens.input = 100;
-    state.tokens.output = 50;
+    state.run_state.tokens.input = 100;
+    state.run_state.tokens.output = 50;
     let frame = frame_text(&state, 100, 24);
     // New status-bar format: 'in 100 | out 50'
     assert!(frame.contains("in 100"));
@@ -415,25 +415,25 @@ fn token_accumulation_in_status_bar() {
 #[test]
 fn status_bar_reflects_mode() {
     let mut state = AppState::new("test");
-    state.mode = RunMode::Running;
-    state.status = "running...".to_string();
+    state.run_state.mode = RunMode::Running;
+    state.run_state.status = "running...".to_string();
     let frame = frame_text(&state, 80, 24);
     // New 5-state status bar shows 'working…' label when RunMode is Running.
     assert!(frame.contains("working"));
     assert!(frame.contains("running...")); // status override still shown
 
-    state.mode = RunMode::Aborted;
+    state.run_state.mode = RunMode::Aborted;
     let frame = frame_text(&state, 80, 24);
     // Aborted is Idle phase (no label), with the 'running...' status string still shown.
 
-    state.mode = RunMode::Quitting;
+    state.run_state.mode = RunMode::Quitting;
     let frame = frame_text(&state, 80, 24);
     // Quitting is Idle phase; the status string set by runtime
     // distinguishes Quitting in real use. We just verify the
     // frame renders without panic and has the nini banner.
     assert!(frame.contains("nini"));
 
-    state.mode = RunMode::Editing;
+    state.run_state.mode = RunMode::Editing;
     let frame = frame_text(&state, 80, 24);
     assert!(frame.contains("idle") || frame.contains("[ready]"));
 }
@@ -457,10 +457,10 @@ fn input_history_and_submit() {
 
     // 2 user lines + 2 dividers
     assert_eq!(
-        state.transcript.len(),
+        state.transcript_state.lines.len(),
         4,
         "expected 2 user + 2 divider, got {}",
-        state.transcript.len()
+        state.transcript_state.lines.len()
     );
     assert!(state.input.history.contains(&"first".to_string()));
     assert!(state.input.history.contains(&"second".to_string()));
@@ -534,11 +534,11 @@ async fn full_pipeline_drive_keys_then_run_agent() {
     // 4. Inspect the resulting state
     let snapshot = shared.lock().unwrap().clone();
     assert_eq!(
-        snapshot.mode,
+        snapshot.run_state.mode,
         RunMode::Editing,
         "should return to Editing after Done"
     );
-    assert!(snapshot.transcript.iter().any(|l| {
+    assert!(snapshot.transcript_state.lines.iter().any(|l| {
         l.as_assistant_text()
             .map(|t| t == "hello back")
             .unwrap_or(false)
@@ -589,9 +589,9 @@ async fn slash_quit_via_submit_user_input() {
     submit_user_input(&shared, &noop_driver(), done.clone());
 
     let snap = shared.lock().unwrap().clone();
-    assert_eq!(snap.mode, RunMode::Quitting, "/quit should set Quitting mode");
+    assert_eq!(snap.run_state.mode, RunMode::Quitting, "/quit should set Quitting mode");
     // Transcript should be unchanged (no user message pushed for slash commands).
-    assert_eq!(snap.transcript.len(), 0, "/quit should not push to transcript");
+    assert_eq!(snap.transcript_state.lines.len(), 0, "/quit should not push to transcript");
 
     // done must NOT be notified (no agent task was spawned).
     let notified = timeout(Duration::from_millis(50), done.notified())
@@ -620,11 +620,11 @@ async fn slash_hotkeys_via_submit_user_input() {
     submit_user_input(&shared, &noop_driver(), done.clone());
 
     let snap = shared.lock().unwrap().clone();
-    assert_eq!(snap.mode, RunMode::Editing, "/hotkeys should keep Editing mode");
+    assert_eq!(snap.run_state.mode, RunMode::Editing, "/hotkeys should keep Editing mode");
 
     // /hotkeys should push one assistant block with keybinding lines.
     let assistant_lines: Vec<_> = snap
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter_map(|l| l.as_assistant_text())
         .collect();
@@ -644,7 +644,7 @@ async fn slash_hotkeys_via_submit_user_input() {
     );
 }
 
-/// REGRESSION: /model through submit_user_input updates state.model.
+/// REGRESSION: /model through submit_user_input updates state.model_state.model.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slash_model_via_submit_user_input() {
     use nini_tui::runtime::submit_user_input;
@@ -663,10 +663,10 @@ async fn slash_model_via_submit_user_input() {
 
     let snap = shared.lock().unwrap().clone();
     assert_eq!(
-        snap.model, "anthropic/claude-sonnet-4",
-        "/model should update state.model"
+        snap.model_state.model, "anthropic/claude-sonnet-4",
+        "/model should update state.model_state.model"
     );
-    assert_eq!(snap.mode, RunMode::Editing);
+    assert_eq!(snap.run_state.mode, RunMode::Editing);
 
     let notified = timeout(Duration::from_millis(50), done.notified())
         .await;
@@ -696,11 +696,11 @@ async fn slash_export_via_submit_user_input() {
 
     submit_user_input(&shared, &noop_driver(), done.clone());
     let snap = shared.lock().unwrap().clone();
-    assert_eq!(snap.mode, RunMode::Editing);
+    assert_eq!(snap.run_state.mode, RunMode::Editing);
 
     // One assistant line should mention the export path.
     let paths: Vec<_> = snap
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter_map(|l| l.as_assistant_text())
         .filter(|t| t.contains("export →"))
@@ -754,11 +754,11 @@ async fn regular_input_via_submit_user_input_still_spawns_agent() {
         .expect("agent should complete within 2s");
 
     let snap = shared.lock().unwrap().clone();
-    assert_eq!(snap.mode, RunMode::Editing);
+    assert_eq!(snap.run_state.mode, RunMode::Editing);
     // User message should be in transcript (pushed before spawning agent).
-    assert!(snap.transcript.iter().any(|l| matches!(l, TranscriptLine::User(_))));
+    assert!(snap.transcript_state.lines.iter().any(|l| matches!(l, TranscriptLine::User(_))));
     // Assistant response should be in transcript.
-    assert!(snap.transcript.iter().any(|l| {
+    assert!(snap.transcript_state.lines.iter().any(|l| {
         l.as_assistant_text().map(|t| t == "hello").unwrap_or(false)
     }));
 }
@@ -780,11 +780,11 @@ async fn bang_cmd_passthrough_executes_locally() {
     submit_user_input(&shared, &noop_driver(), done.clone());
 
     let snap = shared.lock().unwrap().clone();
-    assert_eq!(snap.mode, RunMode::Editing);
+    assert_eq!(snap.run_state.mode, RunMode::Editing);
 
     // Transcript should contain a BashExecution line.
     let bash_count = snap
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter(|l| matches!(l, nini_tui::state::TranscriptLine::BashExecution { .. }))
         .count();
@@ -812,9 +812,9 @@ async fn double_bang_cmd_passthrough() {
     submit_user_input(&shared, &noop_driver(), done.clone());
 
     let snap = shared.lock().unwrap().clone();
-    assert_eq!(snap.mode, RunMode::Editing);
+    assert_eq!(snap.run_state.mode, RunMode::Editing);
     let bash_count = snap
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter(|l| matches!(l, nini_tui::state::TranscriptLine::BashExecution { .. }))
         .count();
@@ -839,11 +839,11 @@ async fn slash_model_no_args_signals_selector_open() {
 
     let snap = shared.lock().unwrap().clone();
     assert!(
-        snap.status.starts_with("open_selector:"),
+        snap.run_state.status.starts_with("open_selector:"),
         "status should signal selector open, got: {}",
-        snap.status
+        snap.run_state.status
     );
-    assert_eq!(snap.model, "test-model", "model shouldn't change from empty /model");
+    assert_eq!(snap.model_state.model, "test-model", "model shouldn't change from empty /model");
 }
 
 /// REGRESSION: /thinking with NO args signals the runtime to open the selector.
@@ -864,9 +864,9 @@ async fn slash_thinking_no_args_signals_selector_open() {
 
     let snap = shared.lock().unwrap().clone();
     assert!(
-        snap.status.starts_with("open_selector:"),
+        snap.run_state.status.starts_with("open_selector:"),
         "status should signal selector open, got: {}",
-        snap.status
+        snap.run_state.status
     );
 }
 
@@ -888,9 +888,9 @@ async fn slash_session_no_args_signals_selector_open() {
 
     let snap = shared.lock().unwrap().clone();
     assert!(
-        snap.status.starts_with("open_selector:"),
+        snap.run_state.status.starts_with("open_selector:"),
         "status should signal selector open, got: {}",
-        snap.status
+        snap.run_state.status
     );
 }
 
@@ -912,9 +912,9 @@ async fn slash_tree_no_args_signals_selector_open() {
 
     let snap = shared.lock().unwrap().clone();
     assert!(
-        snap.status.starts_with("open_selector:"),
+        snap.run_state.status.starts_with("open_selector:"),
         "status should signal selector open, got: {}",
-        snap.status
+        snap.run_state.status
     );
 }
 
@@ -936,9 +936,9 @@ async fn slash_trust_no_args_signals_selector_open() {
 
     let snap = shared.lock().unwrap().clone();
     assert!(
-        snap.status.starts_with("open_selector:"),
+        snap.run_state.status.starts_with("open_selector:"),
         "status should signal selector open, got: {}",
-        snap.status
+        snap.run_state.status
     );
 }
 
@@ -946,78 +946,78 @@ async fn slash_trust_no_args_signals_selector_open() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cycle_model_advances_through_models_cycle() {
     let mut state = AppState::new("anthropic/claude-sonnet-4-5");
-    state.models_cycle = vec![
+    state.model_state.models_cycle = vec![
         "anthropic/claude-sonnet-4-5".into(),
         "anthropic/claude-haiku-4-5".into(),
         "anthropic/claude-opus-4-7".into(),
     ];
-    state.models_cycle_idx = Some(0);
+    state.model_state.models_cycle_idx = Some(0);
 
     nini_tui::runtime::apply_action(&mut state, Key::new(
         crossterm::event::KeyCode::Char('p'),
         nini_tui::KeyModifiers::CTRL,
     ));
-    assert_eq!(state.model, "anthropic/claude-haiku-4-5");
-    assert_eq!(state.models_cycle_idx, Some(1));
+    assert_eq!(state.model_state.model, "anthropic/claude-haiku-4-5");
+    assert_eq!(state.model_state.models_cycle_idx, Some(1));
 
     nini_tui::runtime::apply_action(&mut state, Key::new(
         crossterm::event::KeyCode::Char('p'),
         nini_tui::KeyModifiers::CTRL,
     ));
-    assert_eq!(state.model, "anthropic/claude-opus-4-7");
-    assert_eq!(state.models_cycle_idx, Some(2));
+    assert_eq!(state.model_state.model, "anthropic/claude-opus-4-7");
+    assert_eq!(state.model_state.models_cycle_idx, Some(2));
 
     nini_tui::runtime::apply_action(&mut state, Key::new(
         crossterm::event::KeyCode::Char('p'),
         nini_tui::KeyModifiers::CTRL,
     ));
-    assert_eq!(state.model, "anthropic/claude-sonnet-4-5");
-    assert_eq!(state.models_cycle_idx, Some(0));
+    assert_eq!(state.model_state.model, "anthropic/claude-sonnet-4-5");
+    assert_eq!(state.model_state.models_cycle_idx, Some(0));
 }
 
 /// REGRESSION: cycle_model_prev wraps backward.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cycle_model_prev_wraps_backward() {
     let mut state = AppState::new("anthropic/claude-sonnet-4-5");
-    state.models_cycle = vec![
+    state.model_state.models_cycle = vec![
         "anthropic/claude-sonnet-4-5".into(),
         "anthropic/claude-haiku-4-5".into(),
     ];
-    state.models_cycle_idx = Some(0);
+    state.model_state.models_cycle_idx = Some(0);
     nini_tui::runtime::apply_action(&mut state, Key::new(
         crossterm::event::KeyCode::Char('p'),
         nini_tui::KeyModifiers::CTRL | nini_tui::KeyModifiers::SHIFT,
     ));
-    assert_eq!(state.model, "anthropic/claude-haiku-4-5");
+    assert_eq!(state.model_state.model, "anthropic/claude-haiku-4-5");
 }
 
 /// REGRESSION: cycle_thinking advances through levels.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cycle_thinking_advances_through_levels() {
     let mut state = AppState::new("test");
-    state.status = "thinking: medium".to_string();
+    state.run_state.status = "thinking: medium".to_string();
     nini_tui::runtime::apply_action(&mut state, Key::new(
         crossterm::event::KeyCode::Char('t'),
         nini_tui::KeyModifiers::CTRL,
     ));
-    assert_eq!(state.status, "thinking: high");
+    assert_eq!(state.run_state.status, "thinking: high");
     nini_tui::runtime::apply_action(&mut state, Key::new(
         crossterm::event::KeyCode::Char('t'),
         nini_tui::KeyModifiers::CTRL,
     ));
-    assert_eq!(state.status, "thinking: xhigh");
+    assert_eq!(state.run_state.status, "thinking: xhigh");
 }
 
 /// REGRESSION: cycle_model with empty cycle shows hint.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cycle_model_empty_cycle_shows_hint() {
     let mut state = AppState::new("test");
-    state.models_cycle = Vec::new();
+    state.model_state.models_cycle = Vec::new();
     nini_tui::runtime::apply_action(&mut state, Key::new(
         crossterm::event::KeyCode::Char('p'),
         nini_tui::KeyModifiers::CTRL,
     ));
-    assert!(state.status.contains("no model cycle"));
+    assert!(state.run_state.status.contains("no model cycle"));
 }
 
 /// REGRESSION: /settings with NO args signals the runtime to open the selector.
@@ -1038,9 +1038,9 @@ async fn slash_settings_no_args_signals_selector_open() {
 
     let snap = shared.lock().unwrap().clone();
     assert!(
-        snap.status.starts_with("open_selector:"),
+        snap.run_state.status.starts_with("open_selector:"),
         "status should signal selector open, got: {}",
-        snap.status
+        snap.run_state.status
     );
 }
 
@@ -1056,7 +1056,7 @@ async fn submit_during_compaction_queues_message() {
     // are collected during compaction).
     {
         let mut s = shared.lock().unwrap();
-        s.is_compacting = true;
+        s.run_state.is_compacting = true;
         s.input.text = "queued message".to_string();
         s.input.cursor = 14;
     }
@@ -1065,12 +1065,12 @@ async fn submit_during_compaction_queues_message() {
 
     // The message should be queued, NOT sent to the agent.
     let snap = shared.lock().unwrap().clone();
-    assert_eq!(snap.pending_next_turn_messages, vec!["queued message".to_string()]);
+    assert_eq!(snap.run_state.pending_next_turn_messages, vec!["queued message".to_string()]);
     // Agent must NOT have been spawned.
     let notified = timeout(Duration::from_millis(50), done.notified()).await;
     assert!(notified.is_err(), "agent driver must not have been called during compaction");
     // Mode should not be Running (we didn't spawn).
-    assert_ne!(snap.mode, RunMode::Running);
+    assert_ne!(snap.run_state.mode, RunMode::Running);
 }
 
 /// REGRESSION: pending_next_turn_messages drained correctly after compaction.
@@ -1078,24 +1078,24 @@ async fn submit_during_compaction_queues_message() {
 async fn queue_is_drained_after_compaction_completes() {
     use nini_tui::state::TranscriptLine;
     let mut state = AppState::new("test-model");
-    state.pending_next_turn_messages.push("queued 1".into());
-    state.pending_next_turn_messages.push("queued 2".into());
+    state.run_state.pending_next_turn_messages.push("queued 1".into());
+    state.run_state.pending_next_turn_messages.push("queued 2".into());
     // Drain the queue into a local Vec (avoids borrow conflict with
     // push_user which mutably borrows state).
-    let drained: Vec<String> = state.pending_next_turn_messages.drain(..).collect();
+    let drained: Vec<String> = state.run_state.pending_next_turn_messages.drain(..).collect();
     for msg in drained {
         state.push_user(msg);
     }
-    assert!(state.pending_next_turn_messages.is_empty());
+    assert!(state.run_state.pending_next_turn_messages.is_empty());
     let user_count = state
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter(|l| matches!(l, TranscriptLine::User(_)))
         .count();
     assert_eq!(user_count, 2);
 }
 
-/// REGRESSION: AgentSink maps PhaseChanged payload to state.status.
+/// REGRESSION: AgentSink maps PhaseChanged payload to state.run_state.status.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn phase_changed_event_updates_state_status() {
     use nini_tui::runtime::{AgentEventLite, AgentSink};
@@ -1106,17 +1106,17 @@ async fn phase_changed_event_updates_state_status() {
     sink.push(AgentEventLite::PhaseChanged("Working".into()));
     {
         let s = shared.lock().unwrap();
-        assert_eq!(s.status, "Working");
+        assert_eq!(s.run_state.status, "Working");
     }
     sink.push(AgentEventLite::PhaseChanged("Compacting".into()));
     {
         let s = shared.lock().unwrap();
-        assert_eq!(s.status, "Compacting");
+        assert_eq!(s.run_state.status, "Compacting");
     }
     sink.push(AgentEventLite::PhaseChanged("Idle".into()));
     {
         let s = shared.lock().unwrap();
-        assert_eq!(s.status, "Idle");
+        assert_eq!(s.run_state.status, "Idle");
     }
 }
 
@@ -1139,7 +1139,7 @@ async fn agent_sink_handles_all_variants() {
     // Should not have panicked. Note: pushing `Done` would reset status
     // back to "ready" — so we assert before that.
     let s = shared.lock().unwrap();
-    assert_eq!(s.status, "Working");
+    assert_eq!(s.run_state.status, "Working");
     drop(s); // release lock before pushing Done (sink.push needs the lock)
     sink.push(AgentEventLite::Done);
 }
@@ -1166,7 +1166,7 @@ async fn tree_pick_queues_branch_summary_for_next_turn() {
     session.push_message(Some("msg_1".into()), nini_core::AgentMessage::user("second"));
 
     let mut state = AppState::new("test-model");
-    state.session = Some(Arc::new(Mutex::new(session)));
+    state.session_state.session = Some(Arc::new(Mutex::new(session)));
 
     let shared = shared_state(state);
     let done = Arc::new(Notify::new());
@@ -1182,16 +1182,16 @@ async fn tree_pick_queues_branch_summary_for_next_turn() {
     // Simulate pick by calling apply_selector_result directly.
     {
         let mut g = shared.lock().unwrap();
-        g.selector = Some(Box::new(
+        g.ui_state.selector = Some(Box::new(
             nini_tui::selectors::TreeSelector::from_entries(&[]),
         ));
     }
     // Force a summary to be computed.
     {
         let mut g = shared.lock().unwrap();
-        if let Some(_sel) = g.selector.as_mut() {
+        if let Some(_sel) = g.ui_state.selector.as_mut() {
             // Pull entries from session directly.
-            if let Some(arc) = g.session.clone() {
+            if let Some(arc) = g.session_state.session.clone() {
                 if let Ok(_guard) = arc.try_lock() {
                     // Branch summary API surface lives in
                     // nini_core::branch_summary; the runtime-side
@@ -1201,7 +1201,7 @@ async fn tree_pick_queues_branch_summary_for_next_turn() {
             }
         }
         // Drain pending_next_turn_messages and check the summary landed.
-        let queued = std::mem::take(&mut g.pending_next_turn_messages);
+        let queued = std::mem::take(&mut g.run_state.pending_next_turn_messages);
         assert!(
             queued.iter().any(|m| m.contains("[BRANCH SUMMARY]")),
             "branch summary should be queued for next turn; got: {queued:?}"
@@ -1237,7 +1237,7 @@ async fn tool_selection_picks_bash_for_list_files() {
         let mut g = shared.lock().unwrap();
         g.push_user("List files in src/, just first 5".to_string());
         g.push_divider();
-        g.mode = RunMode::Running;
+        g.run_state.mode = RunMode::Running;
     }
     let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let done = Arc::new(Notify::new());
@@ -1246,7 +1246,7 @@ async fn tool_selection_picks_bash_for_list_files() {
     let snap = shared.lock().unwrap().clone();
     // Must contain a ToolCall line whose name is "bash", NOT "find".
     let calls: Vec<&str> = snap
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter_map(|l| match l {
             TranscriptLine::ToolCall { name, .. } => Some(name.as_str()),
@@ -1277,7 +1277,7 @@ async fn tool_selection_picks_grep_for_file_content_search() {
         let mut g = shared.lock().unwrap();
         g.push_user("Find files containing TODO".to_string());
         g.push_divider();
-        g.mode = RunMode::Running;
+        g.run_state.mode = RunMode::Running;
     }
     let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let done = Arc::new(Notify::new());
@@ -1285,7 +1285,7 @@ async fn tool_selection_picks_grep_for_file_content_search() {
     done.notified().await;
     let snap = shared.lock().unwrap().clone();
     let calls: Vec<&str> = snap
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter_map(|l| match l {
             TranscriptLine::ToolCall { name, .. } => Some(name.as_str()),
@@ -1316,7 +1316,7 @@ async fn tool_selection_picks_find_for_file_name_enumeration() {
         let mut g = shared.lock().unwrap();
         g.push_user("List all .rs files in the workspace".to_string());
         g.push_divider();
-        g.mode = RunMode::Running;
+        g.run_state.mode = RunMode::Running;
     }
     let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let done = Arc::new(Notify::new());
@@ -1324,7 +1324,7 @@ async fn tool_selection_picks_find_for_file_name_enumeration() {
     done.notified().await;
     let snap = shared.lock().unwrap().clone();
     let calls: Vec<&str> = snap
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter_map(|l| match l {
             TranscriptLine::ToolCall { name, .. } => Some(name.as_str()),
@@ -1362,7 +1362,7 @@ async fn token_counts_accumulate_after_turn() {
         let mut g = shared.lock().unwrap();
         g.push_user("hello".to_string());
         g.push_divider();
-        g.mode = RunMode::Running;
+        g.run_state.mode = RunMode::Running;
     }
     let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
     let done = Arc::new(Notify::new());
@@ -1374,9 +1374,9 @@ async fn token_counts_accumulate_after_turn() {
     // We don't assert exact values because they depend on
     // fixture details; we just verify they accumulated.
     assert!(
-        snap.tokens.input + snap.tokens.output > 0,
+        snap.run_state.tokens.input + snap.run_state.tokens.output > 0,
         "expected token counts to accumulate after a turn; input={}, output={}",
-        snap.tokens.input,
-        snap.tokens.output,
+        snap.run_state.tokens.input,
+        snap.run_state.tokens.output,
     );
 }

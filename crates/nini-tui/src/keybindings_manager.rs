@@ -368,7 +368,7 @@ mod tests {
         // path forward is to thread it through `run()` and pass to handle_key.
         let mgr = KeybindingsManager::new();
         let _ = mgr.effective_keymap();
-        let _ = state.model; // suppress unused warning
+        let _ = state.model_state.model; // suppress unused warning
     }
 }
 /// Read and parse the user keybindings.json file.

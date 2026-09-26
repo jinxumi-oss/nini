@@ -94,7 +94,7 @@ fn refresh_completion_on_partial_input() {
     s.input.insert_char('m');
     s.input.insert_char('o');
     s.refresh_completion();
-    let popup = s.completion.as_ref().expect("popup should be set");
+    let popup = s.ui_state.completion.as_ref().expect("popup should be set");
     assert!(!popup.items.is_empty());
     assert_eq!(popup.items[0].name, "model");
 }
@@ -106,7 +106,7 @@ fn refresh_completion_empty_when_no_match() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    assert!(s.completion.is_none());
+    assert!(s.ui_state.completion.is_none());
 }
 
 #[test]
@@ -116,12 +116,12 @@ fn refresh_completion_clears_when_input_leaves_slash() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    assert!(s.completion.is_some());
+    assert!(s.ui_state.completion.is_some());
     // Replace with non-slash input
     s.input.clear();
     s.input.insert_char('h');
     s.refresh_completion();
-    assert!(s.completion.is_none());
+    assert!(s.ui_state.completion.is_none());
 }
 
 // =====================================================================
@@ -134,7 +134,7 @@ fn refresh_preserves_selection_when_item_still_present() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    let popup = s.completion.as_mut().unwrap();
+    let popup = s.ui_state.completion.as_mut().unwrap();
     // Move to "thinking" (index 1 if first is "tree", etc.) — let's just move down once.
     popup.select_down();
     let prev = popup.selected;
@@ -142,7 +142,7 @@ fn refresh_preserves_selection_when_item_still_present() {
     // Add a character that still matches one of the items.
     s.input.insert_char('h');
     s.refresh_completion();
-    let popup2 = s.completion.as_ref().unwrap();
+    let popup2 = s.ui_state.completion.as_ref().unwrap();
     assert!(popup2.selected <= popup2.items.len());
     // The selection may have changed if "thinking" was filtered out,
     // but at least selection is valid.
@@ -157,7 +157,7 @@ fn refresh_resets_selection_when_item_filtered_out() {
     }
     s.refresh_completion();
     // Select "resume" (assume index 1)
-    if let Some(p) = s.completion.as_mut() {
+    if let Some(p) = s.ui_state.completion.as_mut() {
         if p.items.len() >= 2 {
             p.selected = 1;
         }
@@ -168,7 +168,7 @@ fn refresh_resets_selection_when_item_filtered_out() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    let popup = s.completion.as_ref().unwrap();
+    let popup = s.ui_state.completion.as_ref().unwrap();
     assert!(popup.items.iter().any(|i| i.name == "reload"));
     assert_eq!(
         popup.selected, 0,
@@ -202,7 +202,7 @@ fn apply_completion_for_command_without_args() {
     assert_eq!(s.input.text, "/quit");
     // No trailing space (no argument hint)
     assert_eq!(s.input.cursor, 5);
-    assert!(s.completion.is_none());
+    assert!(s.ui_state.completion.is_none());
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn frame_does_not_show_popup_when_input_not_slash() {
     let mut s = AppState::new("test");
     s.input.insert_char('h');
     s.refresh_completion();
-    assert!(s.completion.is_none());
+    assert!(s.ui_state.completion.is_none());
     let frame = frame_text(&s, 100, 24);
     // No popup title.
     assert!(!frame.contains("commands"), "popup should not appear");
@@ -313,7 +313,7 @@ fn popup_highlights_selected_item() {
     }
     s.refresh_completion();
     // Move down once to select second item.
-    if let Some(p) = s.completion.as_mut() {
+    if let Some(p) = s.ui_state.completion.as_mut() {
         p.select_down();
     }
     let frame = frame_text(&s, 100, 30);
@@ -332,11 +332,11 @@ fn tab_completes_when_popup_visible() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    assert!(s.completion.is_some());
+    assert!(s.ui_state.completion.is_some());
     // Simulate Tab handler in runtime (apply_completion)
     s.apply_completion();
     assert_eq!(s.input.text, "/model ");
-    assert!(s.completion.is_none());
+    assert!(s.ui_state.completion.is_none());
 }
 
 #[test]
@@ -346,9 +346,9 @@ fn esc_clears_popup_keeps_input() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    assert!(s.completion.is_some());
+    assert!(s.ui_state.completion.is_some());
     // Simulate Esc handler
-    s.completion = None;
+    s.ui_state.completion = None;
     // Input is preserved (popup just dismisses)
     assert_eq!(s.input.text, "/mo");
 }
@@ -360,7 +360,7 @@ fn enter_with_popup_applies_selection() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    assert!(s.completion.is_some());
+    assert!(s.ui_state.completion.is_some());
     // Simulate Enter with popup → apply_completion
     s.apply_completion();
     assert_eq!(s.input.text, "/model ");
@@ -375,7 +375,7 @@ fn enter_without_popup_submits() {
     // No popup — Enter would submit. Submit is handled in runtime via
     // submit_user_input; here we just verify the popup logic doesn't fire.
     s.refresh_completion();
-    assert!(s.completion.is_none());
+    assert!(s.ui_state.completion.is_none());
 }
 
 // =====================================================================
@@ -388,7 +388,7 @@ fn popup_open_keeps_editing_mode() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    assert_eq!(s.mode, RunMode::Editing);
+    assert_eq!(s.run_state.mode, RunMode::Editing);
 }
 
 // =====================================================================
@@ -432,7 +432,7 @@ fn popup_caps_at_8_items() {
     let mut s = AppState::new("test");
     s.input.insert_char('/');
     s.refresh_completion();
-    let popup = s.completion.as_ref().unwrap();
+    let popup = s.ui_state.completion.as_ref().unwrap();
     // v0.6: empty prefix returns the whole registry; the viewport scrolls.
     assert!(
         popup.items.len() >= 28,
@@ -453,11 +453,11 @@ fn backspace_updates_popup() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    let popup_before = s.completion.as_ref().unwrap();
+    let popup_before = s.ui_state.completion.as_ref().unwrap();
     assert!(popup_before.items.iter().any(|i| i.name == "model"));
     s.input.backspace();
     s.refresh_completion();
-    let popup_after = s.completion.as_ref().unwrap();
+    let popup_after = s.ui_state.completion.as_ref().unwrap();
     // After backspace input is "/m" — same model still matches
     assert!(popup_after.items.iter().any(|i| i.name == "model"));
 }
@@ -469,12 +469,12 @@ fn backspace_to_empty_clears_popup() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    assert!(s.completion.is_some());
+    assert!(s.ui_state.completion.is_some());
     s.input.backspace(); // /m
     s.input.backspace(); // /
     s.input.backspace(); // empty
     s.refresh_completion();
-    assert!(s.completion.is_none());
+    assert!(s.ui_state.completion.is_none());
 }
 
 // =====================================================================
@@ -490,7 +490,7 @@ fn delete_updates_popup() {
     s.input.cursor = 1; // position before 'm'
     s.input.delete(); // remove 'm', input becomes "/odel"
     s.refresh_completion();
-    let popup = s.completion.as_ref();
+    let popup = s.ui_state.completion.as_ref();
     // "/odel" doesn't match anything starting with "model"; check.
     if let Some(p) = popup {
         // May be empty or contain non-prefix matches.
@@ -507,7 +507,7 @@ fn tab_without_popup_inserts_tab() {
     let mut s = AppState::new("test");
     s.input.insert_char('h');
     s.refresh_completion();
-    assert!(s.completion.is_none());
+    assert!(s.ui_state.completion.is_none());
     // In runtime, Tab is intercepted before refresh. We simulate that here:
     s.input.insert_char('\t');
     assert!(s.input.text.contains('\t'));
@@ -522,7 +522,7 @@ fn rapid_typing_updates_popup_progressively() {
     s.input.insert_char('/');
     s.refresh_completion();
     // v0.6: empty prefix returns whole registry; viewport is 8.
-    let popup = s.completion.as_ref().unwrap();
+    let popup = s.ui_state.completion.as_ref().unwrap();
     assert!(popup.items.len() >= 28);
     assert_eq!(popup.max_visible, 8);
 
@@ -532,7 +532,7 @@ fn rapid_typing_updates_popup_progressively() {
         s.refresh_completion();
     }
     // After "/model", "model" matches as prefix and "scoped-models" as substring.
-    let popup = s.completion.as_ref().unwrap();
+    let popup = s.ui_state.completion.as_ref().unwrap();
     assert_eq!(popup.items.len(), 2);
     assert_eq!(popup.items[0].name, "model");
     assert_eq!(popup.items[1].name, "scoped-models");
@@ -548,7 +548,7 @@ fn completion_item_has_name_description_hint() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    let popup = s.completion.as_ref().unwrap();
+    let popup = s.ui_state.completion.as_ref().unwrap();
     let item = popup.items.iter().find(|i| i.name == "thinking").unwrap();
     assert_eq!(item.description, "Set thinking level");
     assert_eq!(item.argument_hint, Some("<level>".to_string()));
@@ -561,7 +561,7 @@ fn completion_item_without_arg_has_no_hint() {
         s.input.insert_char(c);
     }
     s.refresh_completion();
-    let popup = s.completion.as_ref().unwrap();
+    let popup = s.ui_state.completion.as_ref().unwrap();
     let item = popup.items.iter().find(|i| i.name == "quit").unwrap();
     assert_eq!(item.argument_hint, None);
 }
@@ -612,14 +612,14 @@ fn typing_and_navigating_refreshes_selection() {
     }
     s.refresh_completion();
     // Default selection: 0 (first item, "settings")
-    assert_eq!(s.completion.as_ref().unwrap().selected, 0);
-    s.completion.as_mut().unwrap().select_down();
-    assert_eq!(s.completion.as_ref().unwrap().selected, 1);
+    assert_eq!(s.ui_state.completion.as_ref().unwrap().selected, 0);
+    s.ui_state.completion.as_mut().unwrap().select_down();
+    assert_eq!(s.ui_state.completion.as_ref().unwrap().selected, 1);
     // Type 'h' — items become ['hotkeys', ...]
     s.input.insert_char('h');
     s.refresh_completion();
     // "hotkeys" is now the only thing starting with '/h'. Selection resets.
-    let popup = s.completion.as_ref().unwrap();
+    let popup = s.ui_state.completion.as_ref().unwrap();
     assert!(popup.items.iter().any(|i| i.name == "hotkeys"));
 }
 
@@ -635,12 +635,12 @@ fn popup_dismissed_on_mode_change() {
     }
     s.refresh_completion();
     assert!(
-        s.completion.is_some(),
+        s.ui_state.completion.is_some(),
         "completion should be set after refresh"
     );
     // Simulate submit → mode change to Running
-    s.mode = RunMode::Running;
+    s.run_state.mode = RunMode::Running;
     // The render layer doesn't auto-clear; verify popup survives (caller
     // is responsible for clearing it on submit).
-    assert!(s.completion.is_some());
+    assert!(s.ui_state.completion.is_some());
 }

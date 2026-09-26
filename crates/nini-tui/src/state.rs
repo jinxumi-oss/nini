@@ -638,15 +638,113 @@ impl Default for CompletionPopup {
 
 /// Top-level app state. Render is a pure function of this.
 ///
-/// `Clone` is hand-rolled because the `selector` field holds a
-/// `Box<dyn SelectorState>`, which is not `Clone`. The default
-/// clone (used by render snapshots, tests, etc.) drops the selector —
-/// callers that need it must reconstruct it from current state.
+/// v0.8.1 — AppState split into 5 sub-structs (transcript / run /
+/// model / session / ui). The public API surface is preserved via
+/// forwarding methods, but field accesses are prefixed:
+///
+///   * `state.input`               — InputBuffer (edit buffer)
+///   * `state.transcript_state`    — TranscriptState (chat history + scroll)
+///   * `state.run_state`           — RunState (state machine + stats)
+///   * `state.model_state`         — ModelState (LLM config)
+///   * `state.session_state`       — SessionState (persistence + cwd)
+///   * `state.ui_state`            — UiState (overlays + theme + debug)
+///
+/// Rationale: AppState grew to 38 pub fields / 70 pub methods in
+/// v0.8.0-pre1. Adding any new field required touching 6+ files
+/// (state.rs + main.rs + render.rs + 3+ tests). Splitting by
+/// concern reduces future surface area for additive changes.
 #[derive(Debug)]
 pub struct AppState {
     pub input: InputBuffer,
-    pub transcript: Vec<TranscriptLine>,
+    pub transcript_state: TranscriptState,
+    pub run_state: RunState,
+    pub model_state: ModelState,
+    pub session_state: SessionState,
+    pub ui_state: UiState,
+}
+
+// =================================================================
+// TranscriptState — chat history + scroll state.
+// =================================================================
+
+/// Transcript (chat history) + display state. Owns the Vec of
+/// TranscriptLine that the renderer walks, plus autoscroll +
+/// scroll_offset for the viewport.
+#[derive(Debug)]
+pub struct TranscriptState {
+    /// Chat history — Vec of TranscriptLine.
+    pub lines: Vec<TranscriptLine>,
+    /// Auto-scroll transcript to the bottom on new lines.
+    pub autoscroll: bool,
+    /// Number of lines scrolled up from the bottom (0 = at bottom).
+    /// Increases when user presses PageUp; decreases on PageDown;
+    /// resets to 0 when user is back at bottom and `autoscroll` is true.
+    pub scroll_offset: usize,
+}
+
+// =================================================================
+// RunState — agent loop state machine + token statistics.
+// =================================================================
+
+/// Agent run state. Owns mode (Editing/Running/Aborted/Quitting),
+/// status string, abort signaling, compaction flags, and token stats.
+#[derive(Debug)]
+pub struct RunState {
+    /// Agent mode. Drives the input box's enabled state.
     pub mode: RunMode,
+    /// User-visible status (e.g., "running...", "ready").
+    pub status: String,
+    /// When `Some`, the user pressed Ctrl+D and we're awaiting a
+    /// second press within `QUIT_CONFIRM_WINDOW_MS` before actually
+    /// quitting. Prevents accidental data loss.
+    pub pending_quit: Option<std::time::Instant>,
+    /// F020: When `true`, the user pressed Ctrl+G (or `/editor`)
+    /// and the run loop should suspend the TUI and spawn the
+    /// external editor on the current input buffer. The loop
+    /// resets the flag once the editor dance completes (or
+    /// errors out). Lives outside the key-event handler because
+    /// the actual suspend/resume work needs `&mut Terminal`,
+    /// which only the run loop holds.
+    pub pending_external_editor: bool,
+    /// Abort signal: notify_waiters() aborts the currently running agent.
+    /// Set by the AgentDriver when starting a turn, cleared on completion.
+    /// v1: This is a coarse-grained abort (kills the agent task). For
+    /// tool-level abort, use the AbortHandle from `nini_core::agent`.
+    pub abort_signal: Option<Arc<tokio::sync::Notify>>,
+    /// True while a manual compaction is in progress. When true,
+    /// /model /model/<arg> still works but the next prompt gets queued.
+    pub is_compacting: bool,
+    /// True while auto-compaction is in progress. When true,
+    /// /model /model/<arg> still works but the next prompt gets queued.
+    pub is_auto_compacting: bool,
+    /// Messages queued for the next turn (Pi "nextTurn" parity).
+    /// These are user inputs received during compaction that should be
+    /// injected as context alongside the next user prompt.
+    pub pending_next_turn_messages: Vec<String>,
+    /// Provider's context-window size (tokens). Used to compute
+    /// `context_percent` shown in the status bar. Mirrors Pi's
+    /// `getContextUsage()` percent.
+    pub context_window: u32,
+    /// Last API-reported `usage.input` token count. Combined with
+    /// `cache_read_tokens` and `context_window` to display a progress
+    /// bar in the status bar.
+    pub context_used: u32,
+    /// Total estimated cost (USD) for the session, surfaced in the
+    /// status bar when non-zero. Mirrors Pi's footer.
+    pub cost_usd: f64,
+    /// Cumulative token usage for the session.
+    pub tokens: TokenStats,
+}
+
+// =================================================================
+// ModelState — LLM configuration.
+// =================================================================
+
+/// LLM configuration: which model, which provider, which thinking
+/// level, what cycling models are available, where settings live.
+#[derive(Debug)]
+pub struct ModelState {
+    /// Current model ID (e.g., "MiniMax-M3").
     pub model: String,
     /// Provider name (e.g. "anthropic", "openai", "minimax"). Set
     /// at bootstrap from the `--provider` flag or `NINI_PROVIDER` env.
@@ -674,58 +772,47 @@ pub struct AppState {
     /// Settings are loaded from `~/.pi/agent/settings.json` if present;
     /// otherwise we use `Settings::default()`.
     pub settings_snapshot: crate::settings::Settings,
+}
+
+// =================================================================
+// SessionState — persistence + working-directory metadata.
+// =================================================================
+
+/// Active session + cwd/git-branch metadata shown in the status bar.
+#[derive(Debug)]
+pub struct SessionState {
     pub session_id: Option<String>,
-    pub tokens: TokenStats,
-    /// Auto-scroll transcript to the bottom on new lines.
-    pub autoscroll: bool,
-    /// Number of lines scrolled up from the bottom (0 = at bottom).
-    /// Increases when user presses PageUp; decreases on PageDown; resets
-    /// to 0 when user is back at bottom and `autoscroll` is true.
-    pub scroll_offset: usize,
-    /// User-visible status (e.g., "running...", "ready").
-    pub status: String,
+    /// Active session for persistence. When None, no session is active
+    /// (e.g., --no-session mode). Arc+Mutex allows AgentSink (tokio task)
+    /// to flush entries while the render loop holds a read handle.
+    pub session: Option<Arc<Mutex<nini_session::Session>>>,
+    /// Path to the session file on disk. Used for atomic write.
+    pub session_path: Option<PathBuf>,
     /// Current working directory for the status bar (e.g., "~/nini").
     /// `None` until the runtime populates it.
     pub cwd: Option<PathBuf>,
     /// Current git branch name, if any. `None` outside a git repo or
     /// before the runtime populates it. Mirrors Pi's footer.
     pub git_branch: Option<String>,
+}
+
+// =================================================================
+// UiState — overlays, theme, debug.
+// =================================================================
+
+/// UI-specific state: floating panels, theme, edit-diff indicator,
+/// debug logging toggle. Mostly read by the renderer.
+#[derive(Debug)]
+pub struct UiState {
+    /// Currently-loaded theme name. Mirrors settings.theme but kept
+    /// here so the status bar can render the name without holding
+    /// the settings lock. `None` means default (dark) theme.
+    pub theme_name: Option<String>,
     /// Last edit-tool diff: (additions, deletions) in lines. Surfaced
     /// briefly in the status bar after each edit. `None` when no
     /// edit has been run yet, or when the user explicitly clears
     /// the indicator. Mirrors Pi's `[edit +N -M]` status pill.
     pub last_diff: Option<(usize, usize)>,
-    /// Currently-loaded theme name. Mirrors settings.theme but kept
-    /// here so the status bar can render the name without holding
-    /// the settings lock. `None` means default (dark) theme.
-    pub theme_name: Option<String>,
-    /// Total estimated cost (USD) for the session, surfaced in the
-    /// status bar when non-zero. Mirrors Pi's footer.
-    pub cost_usd: f64,
-    /// Provider's context-window size (tokens). Used to compute
-    /// `context_percent` shown in the status bar. Mirrors Pi's
-    /// `getContextUsage()` percent.
-    pub context_window: u32,
-    /// Last API-reported `usage.input` token count. Combined with
-    /// `cache_read_tokens` and `context_window` to display a progress
-    /// bar in the status bar.
-    pub context_used: u32,
-    /// Whether verbose debug logging is on (toggled by `/debug`). When
-    /// true, the runtime appends per-keystroke lines to
-    /// `~/.nini/state.log` so users can `tail -f` it.
-    pub debug_logging: bool,
-    /// When `Some`, the user pressed Ctrl+D and we're awaiting a
-    /// second press within `QUIT_CONFIRM_WINDOW_MS` before actually
-    /// quitting. Prevents accidental data loss.
-    pub pending_quit: Option<std::time::Instant>,
-    /// F020: When `true`, the user pressed Ctrl+G (or `/editor`)
-    /// and the run loop should suspend the TUI and spawn the
-    /// external editor on the current input buffer. The loop
-    /// resets the flag once the editor dance completes (or
-    /// errors out). Lives outside the key-event handler because
-    /// the actual suspend/resume work needs `&mut Terminal`,
-    /// which only the run loop holds.
-    pub pending_external_editor: bool,
     /// Whether the F1 key was toggled on. The renderer swaps the bottom
     /// footer between a short hint set and an extended hint set so the
     /// user can see ALL key bindings without scrolling.
@@ -741,30 +828,186 @@ pub struct AppState {
     /// When `Some`, the runtime emits selector UI events on top of the
     /// transcript. Mirrors pi's selector stack.
     pub selector: Option<Box<dyn crate::selector::SelectorState + Send>>,
-    /// Messages queued for the next turn (Pi "nextTurn" parity).
-    /// These are user inputs received during compaction that should be
-    /// injected as context alongside the next user prompt.
-    /// Mirrors Pi's `_pendingNextTurnMessages`.
-    pub pending_next_turn_messages: Vec<String>,
-    /// True while auto-compaction is in progress. When true, /model
-    /// /model/<arg> still works but the next prompt gets queued.
-    pub is_compacting: bool,
-    /// Abort signal: notify_waiters() aborts the currently running agent.
-    /// Set by the AgentDriver when starting a turn, cleared on completion.
-    /// v1: This is a coarse-grained abort (kills the agent task). For
-    /// tool-level abort, use the AbortHandle from `nini_core::agent`.
-    pub abort_signal: Option<Arc<tokio::sync::Notify>>,
-    /// True while auto-compaction is in progress. When true, /model
-    /// /model/<arg> still works but the next prompt gets queued.
-    pub is_auto_compacting: bool,
     /// Optional completion popup (slash commands; extensible to `@file`).
     pub completion: Option<CompletionPopup>,
-    /// Active session for persistence. When None, no session is active
-    /// (e.g., --no-session mode). Arc+Mutex allows AgentSink (tokio task)
-    /// to flush entries while the render loop holds a read handle.
-    pub session: Option<Arc<Mutex<nini_session::Session>>>,
-    /// Path to the session file on disk. Used for atomic write.
-    pub session_path: Option<PathBuf>,
+    /// Whether verbose debug logging is on (toggled by `/debug`). When
+    /// true, the runtime appends per-keystroke lines to
+    /// `~/.nini/state.log` so users can `tail -f` it.
+    pub debug_logging: bool,
+}
+
+// =================================================================
+// Clone / Default impls (hand-written due to Box<dyn SelectorState>)
+// =================================================================
+
+// v0.8.1 review fix: `#[derive(Clone)]` on a struct containing
+// `Option<Box<dyn SelectorState>>` fails to compile (verified with
+// rustc: E0277 "the trait bound `dyn SelectorState: Clone` is not
+// satisfied"). So all 5 sub-structs + AppState need manual Clone
+// impls. UiState's selector is reset to None, mirroring the v0.8.0
+// behavior of clone_for_render.
+
+impl Clone for TranscriptState {
+    fn clone(&self) -> Self {
+        Self {
+            lines: self.lines.clone(),
+            autoscroll: self.autoscroll,
+            scroll_offset: self.scroll_offset,
+        }
+    }
+}
+
+impl Default for TranscriptState {
+    fn default() -> Self {
+        Self { lines: Vec::new(), autoscroll: true, scroll_offset: 0 }
+    }
+}
+
+impl Clone for RunState {
+    fn clone(&self) -> Self {
+        Self {
+            mode: self.mode,
+            status: self.status.clone(),
+            pending_quit: self.pending_quit,
+            pending_external_editor: self.pending_external_editor,
+            abort_signal: self.abort_signal.clone(),
+            is_compacting: self.is_compacting,
+            is_auto_compacting: self.is_auto_compacting,
+            pending_next_turn_messages: self.pending_next_turn_messages.clone(),
+            context_window: self.context_window,
+            context_used: self.context_used,
+            cost_usd: self.cost_usd,
+            tokens: self.tokens.clone(),
+        }
+    }
+}
+
+impl Default for RunState {
+    fn default() -> Self {
+        Self {
+            mode: RunMode::Editing,
+            status: "ready".to_string(),
+            pending_quit: None,
+            pending_external_editor: false,
+            abort_signal: None,
+            is_compacting: false,
+            is_auto_compacting: false,
+            pending_next_turn_messages: Vec::new(),
+            context_window: 0,
+            context_used: 0,
+            cost_usd: 0.0,
+            tokens: TokenStats::default(),
+        }
+    }
+}
+
+impl Clone for ModelState {
+    fn clone(&self) -> Self {
+        Self {
+            model: self.model.clone(),
+            provider: self.provider.clone(),
+            thinking_level: self.thinking_level.clone(),
+            models_cycle: self.models_cycle.clone(),
+            models_cycle_idx: self.models_cycle_idx,
+            settings_path: self.settings_path.clone(),
+            settings_snapshot: self.settings_snapshot.clone(),
+        }
+    }
+}
+
+impl Default for ModelState {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            provider: None,
+            thinking_level: None,
+            models_cycle: Vec::new(),
+            models_cycle_idx: None,
+            settings_path: None,
+            settings_snapshot: crate::settings::Settings::default(),
+        }
+    }
+}
+
+impl Clone for SessionState {
+    fn clone(&self) -> Self {
+        Self {
+            session_id: self.session_id.clone(),
+            session: self.session.clone(),
+            session_path: self.session_path.clone(),
+            cwd: self.cwd.clone(),
+            git_branch: self.git_branch.clone(),
+        }
+    }
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self {
+            session_id: None,
+            session: None,
+            session_path: None,
+            cwd: None,
+            git_branch: None,
+        }
+    }
+}
+
+impl Clone for UiState {
+    fn clone(&self) -> Self {
+        Self {
+            theme_name: self.theme_name.clone(),
+            last_diff: self.last_diff,
+            help_extended: self.help_extended,
+            close_help: self.close_help,
+            search: self.search.clone(),
+            // Box<dyn> is not Clone — drop selector (mirrors v0.8.0 clone_for_render)
+            selector: None,
+            completion: self.completion.clone(),
+            debug_logging: self.debug_logging,
+        }
+    }
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            theme_name: None,
+            last_diff: None,
+            help_extended: false,
+            close_help: false,
+            search: None,
+            selector: None,
+            completion: None,
+            debug_logging: false,
+        }
+    }
+}
+
+impl Clone for AppState {
+    fn clone(&self) -> Self {
+        Self {
+            input: self.input.clone(),
+            transcript_state: self.transcript_state.clone(),
+            run_state: self.run_state.clone(),
+            model_state: self.model_state.clone(),
+            session_state: self.session_state.clone(),
+            ui_state: self.ui_state.clone(),
+        }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            input: InputBuffer::new(),
+            transcript_state: TranscriptState::default(),
+            run_state: RunState::default(),
+            model_state: ModelState::default(),
+            session_state: SessionState::default(),
+            ui_state: UiState::default(),
+        }
+    }
 }
 
 /// Transcript full-text search.
@@ -790,8 +1033,8 @@ impl AppState {
         cwd: Option<PathBuf>,
         git_branch: Option<String>,
     ) {
-        self.cwd = cwd;
-        self.git_branch = git_branch;
+        self.session_state.cwd = cwd;
+        self.session_state.git_branch = git_branch;
     }
 
     /// Update cost + context usage shown in the status bar.
@@ -801,70 +1044,31 @@ impl AppState {
         context_window: u32,
         context_used: u32,
     ) {
-        self.cost_usd = cost_usd;
-        self.context_window = context_window;
-        self.context_used = context_used;
+        self.run_state.cost_usd = cost_usd;
+        self.run_state.context_window = context_window;
+        self.run_state.context_used = context_used;
     }
 
     /// Cheap clone for the render loop. Skips the `selector` field
     /// (Box<dyn SelectorState> doesn't implement Clone).
+    /// Cheap clone for the render loop. Drops `ui_state.selector`
+    /// (Box<dyn SelectorState> doesn't implement Clone). After the
+    /// v0.8.1 split, this is essentially `.clone()`, but we keep
+    /// the explicit method as a documentation marker.
     pub fn clone_for_render(&self) -> Self {
-        Self {
-            input: self.input.clone(),
-            transcript: self.transcript.clone(),
-            mode: self.mode,
-            model: self.model.clone(),
-            session_id: self.session_id.clone(),
-            status: self.status.clone(),
-            tokens: self.tokens.clone(),
-            models_cycle: self.models_cycle.clone(),
-            models_cycle_idx: self.models_cycle_idx,
-            settings_path: self.settings_path.clone(),
-            provider: self.provider.clone(),
-            settings_snapshot: self.settings_snapshot.clone(),
-            thinking_level: self.thinking_level.clone(),
-            pending_next_turn_messages: self.pending_next_turn_messages.clone(),
-            is_auto_compacting: self.is_auto_compacting,
-            abort_signal: self.abort_signal.clone(),
-            scroll_offset: self.scroll_offset,
-            is_compacting: self.is_compacting,
-            cwd: self.cwd.clone(),
-            git_branch: self.git_branch.clone(),
-            last_diff: self.last_diff,
-            cost_usd: self.cost_usd,
-            context_window: self.context_window,
-            theme_name: self.theme_name.clone(),
-            context_used: self.context_used,
-            debug_logging: self.debug_logging,
-            pending_quit: self.pending_quit,
-            pending_external_editor: self.pending_external_editor,
-            help_extended: self.help_extended,
-            close_help: self.close_help,
-            search: self.search.clone(),
-            autoscroll: self.autoscroll,
-            completion: self.completion.clone(),
-            session: self.session.clone(),
-            session_path: self.session_path.clone(),
-            selector: None,
-        }
+        self.clone()
     }
 
     /// Deep clone. Excludes the `selector` field (Box<dyn> not Clone).
     /// Use `clone_for_render` for the common render path.
     pub fn clone_full(&self) -> Self {
-        self.clone_for_render()
-    }
-
-    /// Hand-rolled `Clone` impl matching `clone_for_render`. Use this
-    /// from generic code that calls `.clone()` on `AppState`.
-    /// The selector panel is dropped (active selectors live on the
-    /// runtime loop, not on cloned snapshots).
-    pub fn clone(&self) -> Self {
-        self.clone_for_render()
+        self.clone()
     }
 
     pub fn new(model: impl Into<String>) -> Self {
-        Self::with_context_window(model.into(), 0)
+        let mut s = Self::default();
+        s.model_state.model = model.into();
+        s
     }
 
     /// Construct with an explicit context-window size. The runtime
@@ -878,44 +1082,11 @@ impl AppState {
     /// the user-editable settings. The auto-compaction trigger reads
     /// `reserve_tokens` from the snapshot.
     pub fn with_settings(model: String, context_window: u32, settings: crate::settings::Settings) -> Self {
-        Self {
-            input: InputBuffer::new(),
-            transcript: Vec::new(),
-            mode: RunMode::Editing,
-            model,
-            session_id: None,
-            tokens: TokenStats::default(),
-            autoscroll: true,
-            scroll_offset: 0,
-            status: "ready".to_string(),
-            cwd: None,
-            git_branch: None,
-            last_diff: None,
-            cost_usd: 0.0,
-            context_window,
-            context_used: 0,
-            debug_logging: false,
-            pending_quit: None,
-            pending_external_editor: false,
-            help_extended: false,
-            close_help: false,
-            search: None,
-            settings_snapshot: settings,
-            completion: None,
-            theme_name: None,
-            session: None,
-            session_path: None,
-            models_cycle: Vec::new(),
-            models_cycle_idx: None,
-            settings_path: None,
-            provider: None,
-            thinking_level: None,
-            abort_signal: None,
-            pending_next_turn_messages: Vec::new(),
-            selector: None,
-            is_compacting: false,
-            is_auto_compacting: false,
-        }
+        let mut s = Self::default();
+        s.model_state.model = model;
+        s.model_state.settings_snapshot = settings;
+        s.run_state.context_window = context_window;
+        s
     }
 
     /// Initialize a new session for this working directory. Creates the session
@@ -926,15 +1097,15 @@ impl AppState {
             .unwrap_or_default();
         let id = uuid::Uuid::now_v7().to_string();
         let session = nini_session::Session::new(cwd);
-        self.session_id = Some(id);
-        self.session = Some(Arc::new(Mutex::new(session)));
-        self.session_path = Some(path);
+        self.session_state.session_id = Some(id);
+        self.session_state.session = Some(Arc::new(Mutex::new(session)));
+        self.session_state.session_path = Some(path);
     }
 
     /// Append a user or assistant message to the session. Call this BEFORE
     /// pushing to the transcript so the entry and transcript stay in sync.
     pub fn session_append(&mut self, parent_id: Option<String>, role: nini_core::Role, content: String) {
-        let Some(ref arc) = self.session else { return };
+        let Some(ref arc) = self.session_state.session else { return };
         let msg = nini_core::AgentMessage {
             role,
             content: vec![nini_core::ContentBlock::Text { text: content }],
@@ -948,7 +1119,7 @@ impl AppState {
     /// Flush pending entries to disk (atomic: temp file + rename).
     /// Logs errors but does not propagate — IO failures must not break the TUI.
     pub fn session_flush(&self) {
-        let (path, session) = match (&self.session_path, &self.session) {
+        let (path, session) = match (&self.session_state.session_path, &self.session_state.session) {
             (Some(p), Some(s)) => (p.clone(), s.clone()),
             _ => return,
         };
@@ -965,15 +1136,15 @@ impl AppState {
     /// Load a session from disk and replace the current session.
     pub fn session_load(&mut self, path: PathBuf) -> Result<(), nini_session::SessionError> {
         let session = nini_session::Session::read_from_file(&path)?;
-        self.session_id = Some(session.header.id.clone());
-        self.session = Some(Arc::new(Mutex::new(session)));
-        self.session_path = Some(path);
+        self.session_state.session_id = Some(session.header.id.clone());
+        self.session_state.session = Some(Arc::new(Mutex::new(session)));
+        self.session_state.session_path = Some(path);
         Ok(())
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) {
         let s = text.into();
-        self.transcript.push(TranscriptLine::User(s.clone()));
+        self.transcript_state.lines.push(TranscriptLine::User(s.clone()));
         self.session_append(None, nini_core::Role::User, s);
     }
 
@@ -986,7 +1157,7 @@ impl AppState {
     /// Internal: push to transcript without session logging. Used by AgentSink
     /// (which handles its own session flush on TurnEnd).
     pub fn push_assistant_raw(&mut self, text: impl Into<String>) {
-        self.transcript
+        self.transcript_state.lines
             .push(TranscriptLine::AssistantText(text.into()));
     }
 
@@ -994,12 +1165,12 @@ impl AppState {
     pub fn push_thinking_raw(&mut self, text: impl Into<String>) {
         // Don't store in session log — thinking is ephemeral, only
         // the final answer is part of the conversation history.
-        self.transcript
+        self.transcript_state.lines
             .push(TranscriptLine::ThinkingText(text.into()));
     }
 
     pub fn push_tool_call(&mut self, name: impl Into<String>, args: impl Into<String>) {
-        self.transcript.push(TranscriptLine::ToolCall {
+        self.transcript_state.lines.push(TranscriptLine::ToolCall {
             name: name.into(),
             args: args.into(),
             collapsed: false,
@@ -1024,7 +1195,7 @@ impl AppState {
         content: impl Into<String>,
         duration_ms: Option<u64>,
     ) {
-        self.transcript.push(TranscriptLine::ToolResult {
+        self.transcript_state.lines.push(TranscriptLine::ToolResult {
             ok,
             content: content.into(),
             collapsed: false,
@@ -1033,11 +1204,11 @@ impl AppState {
     }
 
     pub fn push_divider(&mut self) {
-        self.transcript.push(TranscriptLine::Divider);
+        self.transcript_state.lines.push(TranscriptLine::Divider);
     }
 
     pub fn transcript_len(&self) -> usize {
-        self.transcript.len()
+        self.transcript_state.lines.len()
     }
 
 
@@ -1052,11 +1223,11 @@ impl AppState {
     ///
     /// Returns `true` when estimated > `context_window - reserve_tokens`.
     pub fn should_auto_compact(&self, settings: &crate::settings::Settings) -> bool {
-        if self.context_window == 0 {
+        if self.run_state.context_window == 0 {
             return false;
         }
-        let budget = self
-            .context_window
+        let budget = self.run_state.context_window
+            
             .saturating_sub(settings.reserve_tokens);
         let estimated = self.estimate_transcript_tokens();
         estimated > budget
@@ -1066,7 +1237,7 @@ impl AppState {
     /// Used by [`should_auto_compact`] and shown in the status bar.
     pub fn estimate_transcript_tokens(&self) -> u32 {
         let mut total: u32 = 0;
-        for line in &self.transcript {
+        for line in &self.transcript_state.lines {
             use crate::state::TranscriptLine;
             match line {
                 TranscriptLine::User(s) => total += chars_to_tokens(s),
@@ -1098,12 +1269,12 @@ impl AppState {
     /// provider cannot be reached (or when running in `--no-llm` mode).
     pub fn auto_compact_local(&mut self) -> usize {
         use crate::state::TranscriptLine;
-        let total = self.transcript.len();
+        let total = self.transcript_state.lines.len();
         if total < 4 {
             return 0;
         }
         let cut_at = total / 2;
-        let prefix_lines: Vec<TranscriptLine> = self.transcript.drain(..cut_at).collect();
+        let prefix_lines: Vec<TranscriptLine> = self.transcript_state.lines.drain(..cut_at).collect();
         // Build a short textual summary from the prefix. We don't have
         // direct access to `nini_core::Entry` from the prefix, but
         // `generate_local_summary` works on `Vec<Entry>` — so we
@@ -1115,7 +1286,7 @@ impl AppState {
         }
         summary.push_str(&format!("\n({} entries folded into this summary.)\n", prefix_lines.len()));
         // Replace prefix with a single AssistantText.
-        self.transcript
+        self.transcript_state.lines
             .insert(0, TranscriptLine::AssistantText(format!(
                 "[CONTEXT SUMMARY]\n\n{summary}"
             )));
@@ -1127,7 +1298,7 @@ impl AppState {
     /// that line is collapsible (ToolCall / ToolResult / BashExecution).
     /// Returns true if the toggle changed the line's state.
     pub fn toggle_collapsed(&mut self, index: usize) -> bool {
-        if let Some(line) = self.transcript.get_mut(index) {
+        if let Some(line) = self.transcript_state.lines.get_mut(index) {
             match line {
                 TranscriptLine::ToolCall { collapsed, .. }
                 | TranscriptLine::ToolResult { collapsed, .. }
@@ -1147,7 +1318,7 @@ impl AppState {
     /// Returns the number of lines collapsed.
     pub fn collapse_all(&mut self) -> usize {
         let mut n = 0;
-        for line in self.transcript.iter_mut() {
+        for line in self.transcript_state.lines.iter_mut() {
             if let TranscriptLine::ToolCall { collapsed, .. }
             | TranscriptLine::ToolResult { collapsed, .. }
             | TranscriptLine::BashExecution { collapsed, .. } = line
@@ -1176,11 +1347,11 @@ impl AppState {
                 })
                 .collect();
             if items.is_empty() {
-                self.completion = None;
+                self.ui_state.completion = None;
             } else {
                 let new_names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
                 let prev_selected_name = self
-                    .completion
+                    .ui_state.completion
                     .as_ref()
                     .and_then(|p| p.current())
                     .map(|i| i.name.clone());
@@ -1188,7 +1359,7 @@ impl AppState {
                     .as_ref()
                     .and_then(|n| new_names.iter().position(|m| m == n))
                     .unwrap_or(0);
-                self.completion = Some(CompletionPopup {
+                self.ui_state.completion = Some(CompletionPopup {
                     items,
                     selected: new_selection,
                     scroll_offset: 0,
@@ -1205,7 +1376,7 @@ impl AppState {
             let cwd = std::env::current_dir().unwrap_or_default();
             let files = crate::file_completion::search_files_as_struct(&cwd, &path_prefix);
             if files.is_empty() {
-                self.completion = None;
+                self.ui_state.completion = None;
                 return;
             }
             let items: Vec<CompletionItem> = files
@@ -1226,7 +1397,7 @@ impl AppState {
                     }
                 })
                 .collect();
-            self.completion = Some(CompletionPopup {
+            self.ui_state.completion = Some(CompletionPopup {
                 items,
                 selected: 0,
                 scroll_offset: 0,
@@ -1234,13 +1405,13 @@ impl AppState {
             });
             return;
         }
-        self.completion = None;
+        self.ui_state.completion = None;
     }
 
     /// Apply the currently-selected completion to the input buffer.
     /// Replaces the partial command name with the full one.
     pub fn apply_completion(&mut self) {
-        let Some(popup) = &self.completion else {
+        let Some(popup) = &self.ui_state.completion else {
             return;
         };
         let Some(item) = popup.current() else {
@@ -1255,13 +1426,13 @@ impl AppState {
             self.input.text.push(' ');
             self.input.cursor += 1;
         }
-        self.completion = None;
+        self.ui_state.completion = None;
     }
 
     /// Begin a transcript search. Called when the user presses `/` in
     /// editing mode (with no slash-command popup showing).
     pub fn begin_search(&mut self) {
-        self.search = Some(SearchState {
+        self.ui_state.search = Some(SearchState {
             query: String::new(),
             matches: Vec::new(),
             current: 0,
@@ -1271,11 +1442,11 @@ impl AppState {
     /// Update the search query and recompute matches against the
     /// current transcript. Case-insensitive substring match.
     pub fn update_search_query(&mut self, q: String) {
-        let Some(s) = self.search.as_mut() else { return };
+        let Some(s) = self.ui_state.search.as_mut() else { return };
         s.query = q.clone();
         let q_lower = q.to_lowercase();
         let mut new_matches: Vec<usize> = Vec::new();
-        for (i, line) in self.transcript.iter().enumerate() {
+        for (i, line) in self.transcript_state.lines.iter().enumerate() {
             let text = line.summary_text().to_lowercase();
             if !q_lower.is_empty() && text.contains(&q_lower) {
                 new_matches.push(i);
@@ -1291,7 +1462,7 @@ impl AppState {
 
     /// Advance to the next match (wraps at the end).
     pub fn search_next(&mut self) {
-        if let Some(s) = self.search.as_mut() {
+        if let Some(s) = self.ui_state.search.as_mut() {
             if !s.matches.is_empty() {
                 s.current = (s.current + 1) % s.matches.len();
             }
@@ -1300,7 +1471,7 @@ impl AppState {
 
     /// Advance to the previous match (wraps at the start).
     pub fn search_prev(&mut self) {
-        if let Some(s) = self.search.as_mut() {
+        if let Some(s) = self.ui_state.search.as_mut() {
             if !s.matches.is_empty() {
                 s.current = if s.current == 0 {
                     s.matches.len() - 1
@@ -1313,7 +1484,7 @@ impl AppState {
 
     /// Close the search overlay and clear highlights.
     pub fn end_search(&mut self) {
-        self.search = None;
+        self.ui_state.search = None;
     }
 }
 
@@ -1528,13 +1699,13 @@ mod tests {
         // Verify the line is now collapsed by re-pushing another line
         // and reading back the transcript — collapsed flag persists.
         s.push_divider();
-        match &s.transcript[0] {
+        match &s.transcript_state.lines[0] {
             TranscriptLine::ToolCall { collapsed, .. } => assert!(*collapsed),
             other => panic!("expected ToolCall, got {other:?}"),
         }
         // Toggle back to expanded.
         assert!(s.toggle_collapsed(0));
-        match &s.transcript[0] {
+        match &s.transcript_state.lines[0] {
             TranscriptLine::ToolCall { collapsed, .. } => assert!(!(*collapsed)),
             other => panic!("expected ToolCall, got {other:?}"),
         }
@@ -1547,7 +1718,7 @@ mod tests {
         s.push_tool_call("read", "{}");
         // Append a bash via the underlying TranscriptLine constructor
         // since we don't have a public push_bash helper yet.
-        s.transcript.push(TranscriptLine::BashExecution {
+        s.transcript_state.lines.push(TranscriptLine::BashExecution {
             id: "b1".to_string(),
             cmd: "ls".to_string(),
             output: "file1\nfile2".to_string(),
@@ -1561,15 +1732,15 @@ mod tests {
         assert!(s.toggle_collapsed(0));
         assert!(s.toggle_collapsed(1));
         assert!(s.toggle_collapsed(2));
-        match &s.transcript[0] {
+        match &s.transcript_state.lines[0] {
             TranscriptLine::ToolResult { collapsed, .. } => assert!(*collapsed),
             _ => panic!(),
         }
-        match &s.transcript[1] {
+        match &s.transcript_state.lines[1] {
             TranscriptLine::ToolCall { collapsed, .. } => assert!(*collapsed),
             _ => panic!(),
         }
-        match &s.transcript[2] {
+        match &s.transcript_state.lines[2] {
             TranscriptLine::BashExecution { collapsed, .. } => assert!(*collapsed),
             _ => panic!(),
         }
@@ -1608,7 +1779,7 @@ mod tests {
         // No context_window set: never auto-compact (user hasn't
         // configured a model size yet).
         let mut s = AppState::new("m");
-        s.context_window = 0;
+        s.run_state.context_window = 0;
         s.push_user("a".repeat(10_000));
         let settings = crate::settings::Settings::default();
         assert!(!s.should_auto_compact(&settings));
@@ -1639,12 +1810,12 @@ mod tests {
         for i in 0..8 {
             s.push_user(format!("user message {i}"));
         }
-        let before = s.transcript.len();
+        let before = s.transcript_state.lines.len();
         let folded = s.auto_compact_local();
         assert!(folded >= 4, "should fold at least half");
-        assert!(s.transcript.len() < before, "transcript should shrink");
+        assert!(s.transcript_state.lines.len() < before, "transcript should shrink");
         // The new head should be a CONTEXT SUMMARY line.
-        match &s.transcript[0] {
+        match &s.transcript_state.lines[0] {
             TranscriptLine::AssistantText(t) => assert!(t.starts_with("[CONTEXT SUMMARY]")),
             other => panic!("expected AssistantText head, got {other:?}"),
         }
@@ -1656,7 +1827,7 @@ mod tests {
         s.push_user("hi");
         let folded = s.auto_compact_local();
         assert_eq!(folded, 0);
-        assert_eq!(s.transcript.len(), 1);
+        assert_eq!(s.transcript_state.lines.len(), 1);
     }
 
     #[test]
@@ -1668,7 +1839,7 @@ mod tests {
         s.push_user("hi");
         s.push_assistant("hello");
         // Index 5: a bash via direct TranscriptLine.
-        s.transcript.push(TranscriptLine::BashExecution {
+        s.transcript_state.lines.push(TranscriptLine::BashExecution {
             id: "b2".to_string(),
             cmd: "ls".to_string(),
             output: "out".to_string(),
@@ -1682,7 +1853,7 @@ mod tests {
         // 3 collapsible lines were folded.
         assert_eq!(folded, 3);
         // After collapse_all, all collapsibles are collapsed.
-        for (i, line) in s.transcript.iter().enumerate() {
+        for (i, line) in s.transcript_state.lines.iter().enumerate() {
             match line {
                 TranscriptLine::ToolCall { collapsed, .. }
                 | TranscriptLine::ToolResult { collapsed, .. }
@@ -1707,7 +1878,7 @@ mod tests {
         s.push_user("goodbye");
         s.begin_search();
         s.update_search_query("world".to_string());
-        let search = s.search.as_ref().expect("search active");
+        let search = s.ui_state.search.as_ref().expect("search active");
         // Two lines mention "world" (case-insensitive).
         assert_eq!(search.matches.len(), 2);
     }
@@ -1720,7 +1891,7 @@ mod tests {
         // Empty query matches nothing (matches is a snapshot of "what
         // does the user want highlighted"; nothing).
         s.update_search_query(String::new());
-        assert!(s.search.as_ref().unwrap().matches.is_empty());
+        assert!(s.ui_state.search.as_ref().unwrap().matches.is_empty());
     }
 
     #[test]
@@ -1731,14 +1902,14 @@ mod tests {
         }
         s.begin_search();
         s.update_search_query("match".to_string());
-        assert_eq!(s.search.as_ref().unwrap().matches.len(), 3);
+        assert_eq!(s.ui_state.search.as_ref().unwrap().matches.len(), 3);
         // Initially at index 0; search_next → 1 → 2 → wraps to 0.
         s.search_next();
-        assert_eq!(s.search.as_ref().unwrap().current, 1);
+        assert_eq!(s.ui_state.search.as_ref().unwrap().current, 1);
         s.search_next();
-        assert_eq!(s.search.as_ref().unwrap().current, 2);
+        assert_eq!(s.ui_state.search.as_ref().unwrap().current, 2);
         s.search_next();
-        assert_eq!(s.search.as_ref().unwrap().current, 0);
+        assert_eq!(s.ui_state.search.as_ref().unwrap().current, 0);
     }
 
     #[test]
@@ -1751,7 +1922,7 @@ mod tests {
         s.update_search_query("hit".to_string());
         // current=0; search_prev wraps to last.
         s.search_prev();
-        assert_eq!(s.search.as_ref().unwrap().current, 2);
+        assert_eq!(s.ui_state.search.as_ref().unwrap().current, 2);
     }
 
     #[test]
@@ -1761,7 +1932,7 @@ mod tests {
         s.begin_search();
         s.update_search_query("hello".to_string());
         s.end_search();
-        assert!(s.search.is_none());
+        assert!(s.ui_state.search.is_none());
     }
 
     // ============================================================
