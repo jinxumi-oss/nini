@@ -90,7 +90,7 @@ runtime.rs ← 0 importers (only via lib.rs::run)
 `runtime.rs` 是事件循环的"权威"，但 `state.rs` 是**唯一被改的**——`runtime.rs` 几乎从不独立变化。
 **建议**：把 `runtime.rs` 中**纯函数式**的部分（输入处理、键映射）拆到 `input.rs`，留下真正异步的部分。
 
-**3. `nini-cli/main.rs` 是单文件 1636 LOC 的"上帝函数"**
+**3. `nini-cli/main.rs` ~~是单文件 1636 LOC 的"上帝函数"~~ (v0.8.2 已拆分)**
 
 `main()` 里塞了：
 - CLI 解析（`-p`、`demo`、`info`、`-h`）
