@@ -341,9 +341,9 @@ async fn main() -> Result<()> {
             let _skills = load_skills(&cwd);
             let scripted_turns = std::env::var("NINI_TUI_FIXTURE_TURNS")
                 .ok()
-                .and_then(|raw| parse_scripted_turns(&raw))
+                .and_then(|raw| provider_factory::parse_scripted_turns(&raw))
                 .unwrap_or_default();
-            let shared_provider: Arc<dyn Provider> = build_provider(
+            let shared_provider: Arc<dyn Provider> = provider_factory::build_provider(
                 &provider_name,
                 scripted_turns,
                 &fallback_keys,
@@ -353,7 +353,7 @@ async fn main() -> Result<()> {
                     std::sync::Arc::new(nini_ai::fixture::ProgrammedProvider::from_turns(
                         std::env::var("NINI_TUI_FIXTURE_TURNS")
                             .ok()
-                            .and_then(|raw| parse_scripted_turns(&raw))
+                            .and_then(|raw| provider_factory::parse_scripted_turns(&raw))
                             .unwrap_or_default(),
                     )) as Arc<dyn Provider>
                 });
@@ -667,126 +667,7 @@ async fn run_info() -> Result<()> {
     Ok(())
 }
 
-fn make_anthropic(key: &str, base: Option<&str>) -> nini_ai::anthropic::AnthropicProvider {
-    let mut p = nini_ai::anthropic::AnthropicProvider::new(key);
-    if let Some(b) = base {
-        if !b.trim().is_empty() {
-            p = p.with_base_url(b);
-        }
-    }
-    p
-}
 
-fn build_provider(
-    provider: &str,
-    turns: Vec<Vec<FixtureTurn>>,
-    fallback_keys: &[String],
-    fallback_base_urls: &[String],
-) -> Result<Arc<dyn Provider>> {
-    match provider {
-        "fixture" => Ok(Arc::new(ProgrammedProvider::from_turns(turns))),
-        "anthropic" => {
-            let key = std::env::var("ANTHROPIC_API_KEY")
-                .context("ANTHROPIC_API_KEY required for anthropic")?;
-            // Honor ANTHROPIC_BASE_URL so the same provider can target
-            // Anthropic-compat gateways (e.g., https://m.aiio.chat).
-            let base = std::env::var("ANTHROPIC_BASE_URL").ok();
-            // Per-fallback-key base URLs (positional, aligned with
-            // fallback_keys). Empty entries reuse the primary base URL.
-            let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
-            providers.push(Arc::new(make_anthropic(&key, base.as_deref())));
-            for (i, fk) in fallback_keys.iter().enumerate() {
-                let trimmed = fk.trim();
-                if trimmed.is_empty() || trimmed == key {
-                    continue;
-                }
-                let fbase = fallback_base_urls
-                    .get(i)
-                    .map(|s| s.as_str())
-                    .filter(|s| !s.is_empty())
-                    .or(base.as_deref());
-                providers.push(Arc::new(make_anthropic(trimmed, fbase)));
-            }
-            if providers.len() == 1 {
-                Ok(providers.remove(0))
-            } else {
-                Ok(Arc::new(nini_ai::fallback::FallbackProvider::new(providers)))
-            }
-        }
-        "openai" => {
-            let key =
-                std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY required for openai")?;
-            Ok(Arc::new(nini_ai::openai::OpenAiProvider::new(key)))
-        }
-        "openai-responses" => {
-            let key = std::env::var("OPENAI_API_KEY")
-                .context("OPENAI_API_KEY required for openai-responses")?;
-            Ok(Arc::new(
-                nini_ai::openai_responses::OpenAiResponsesProvider::new(key),
-            ))
-        }
-        "openai-compat" => {
-            let key = std::env::var("OPENAI_API_KEY")
-                .context("OPENAI_API_KEY required for openai-compat")?;
-            let base = std::env::var("OPENAI_BASE_URL")
-                .context("OPENAI_BASE_URL required for openai-compat")?;
-            Ok(Arc::new(nini_ai::openai_compat::OpenAiCompatProvider::new(
-                base, key,
-            )))
-        }
-        "google" => {
-            // Auto-detect from GOOGLE_API_KEY or GEMINI_API_KEY.
-            let key = std::env::var("GOOGLE_API_KEY")
-                .or_else(|_| std::env::var("GEMINI_API_KEY"))
-                .context("GOOGLE_API_KEY (or GEMINI_API_KEY) required for google")?;
-            let base = std::env::var("GOOGLE_BASE_URL").ok();
-            Ok(Arc::new(match base {
-                Some(b) => nini_ai::google::GoogleProvider::with_base_url(b, key),
-                None => nini_ai::google::GoogleProvider::new(key),
-            }))
-        }
-        "deepseek" => {
-            let key = std::env::var("DEEPSEEK_API_KEY")
-                .context("DEEPSEEK_API_KEY required for deepseek")?;
-            let base = std::env::var("DEEPSEEK_BASE_URL").ok();
-            Ok(Arc::new(match base {
-                Some(b) => nini_ai::deepseek::DeepSeekProvider::with_base_url(b, key),
-                None => nini_ai::deepseek::DeepSeekProvider::new(key),
-            }))
-        }
-        "groq" => {
-            let key = std::env::var("GROQ_API_KEY")
-                .context("GROQ_API_KEY required for groq")?;
-            let base = std::env::var("GROQ_BASE_URL").ok();
-            Ok(Arc::new(match base {
-                Some(b) => nini_ai::groq::GroqProvider::with_base_url(b, key),
-                None => nini_ai::groq::GroqProvider::new(key),
-            }))
-        }
-        "mistral" => {
-            let key = std::env::var("MISTRAL_API_KEY")
-                .context("MISTRAL_API_KEY required for mistral")?;
-            let base = std::env::var("MISTRAL_BASE_URL").ok();
-            Ok(Arc::new(match base {
-                Some(b) => nini_ai::mistral::MistralProvider::with_base_url(b, key),
-                None => nini_ai::mistral::MistralProvider::new(key),
-            }))
-        }
-        "cohere" => {
-            let key = std::env::var("COHERE_API_KEY")
-                .context("COHERE_API_KEY required for cohere")?;
-            let base = std::env::var("COHERE_BASE_URL").ok();
-            Ok(Arc::new(match base {
-                Some(b) => nini_ai::cohere::CohereProvider::with_base_url(b, key),
-                None => nini_ai::cohere::CohereProvider::new(key),
-            }))
-        }
-        other => {
-            eprintln!("nini: unknown provider: {other}");
-            std::process::exit(2);
-        }
-    }
-}
 
 /// Parse scripted turns from `NINI_TUI_FIXTURE_TURNS`.
 ///
@@ -796,41 +677,6 @@ fn build_provider(
 ///   - `{"kind":"tool","name":"bash","args":{...}}`   → FixtureTurn::ToolCall
 ///   - `{"kind":"stop","stop_reason":"end_turn"}`     → FixtureTurn::Stop
 /// Any other shape fails the parse and the env var is ignored.
-fn parse_scripted_turns(raw: &str) -> Option<Vec<Vec<FixtureTurn>>> {
-    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let arr = parsed.as_array()?;
-    let mut out: Vec<Vec<FixtureTurn>> = Vec::with_capacity(arr.len());
-    for turn_value in arr {
-        let turn_arr = turn_value.as_array()?;
-        let mut turn: Vec<FixtureTurn> = Vec::with_capacity(turn_arr.len());
-        for item in turn_arr {
-            let obj = item.as_object()?;
-            let kind = obj.get("kind")?.as_str()?;
-            match kind {
-                "text" => turn.push(FixtureTurn::Text(obj.get("text")?.as_str()?.to_string())),
-                "tool" => {
-                    let name = obj.get("name")?.as_str()?.to_string();
-                    let args = obj.get("args").cloned().unwrap_or(serde_json::Value::Null);
-                    turn.push(FixtureTurn::ToolCall { name, args });
-                }
-                "stop" => {
-                    let stop_reason = obj
-                        .get("stop_reason")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("end_turn")
-                        .to_string();
-                    turn.push(FixtureTurn::Stop {
-                        stop_reason,
-                        usage: Usage::default(),
-                    });
-                }
-                _ => return None,
-            }
-        }
-        out.push(turn);
-    }
-    Some(out)
-}
 
 fn build_tools() -> ToolRegistry {
     let bash: Arc<dyn Tool> = Arc::new(BashTool::new());
@@ -917,7 +763,7 @@ async fn run_print(
             },
         ],
     ];
-    let provider_impl = build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
+    let provider_impl = provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
     let system = prompt_setup::settings_to_system_prompt(&settings, &skills_prompt);
     let tools = build_tools();
     let config = RunConfig {
@@ -976,7 +822,7 @@ async fn run_demo(
     } else {
         demo_simple_turns(task)
     };
-    let provider_impl = build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
+    let provider_impl = provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
     let system = prompt_setup::settings_to_system_prompt(&settings, &skills_prompt);
     let tools = build_tools();
     let config = RunConfig {
