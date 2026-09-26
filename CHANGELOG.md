@@ -1,3 +1,36 @@
+## v0.8.1 — AppState split into 5 sub-structs (2026-09-25)
+
+Internal refactor. **No external API change** — all method calls
+(`state.push_user`, etc.) work unchanged. Only field-access
+syntax changed (e.g., `state.tokens.input` →
+`state.run_state.tokens.input`).
+
+**Why**: AppState grew to 38 pub fields, 70 pub methods in
+v0.8.0-pre1. Adding any new field required touching 6+ files.
+Splitting by concern reduces future surface area.
+
+**New layout** (6 fields, down from 38):
+  * `state.input`               — InputBuffer (edit buffer)
+  * `state.transcript_state`    — TranscriptState (lines + scroll)
+  * `state.run_state`           — RunState (mode + stats + abort)
+  * `state.model_state`         — ModelState (LLM config)
+  * `state.session_state`       — SessionState (persistence + cwd)
+  * `state.ui_state`            — UiState (overlays + theme + debug)
+
+**Migration**: ~315 field-access sites across 11 files.
+Pure sed pipeline was too brittle (chained multi-line patterns,
+multiple local names, cascading substitutions, same field names
+on different types). Final implementation: ~10 sed rounds +
+targeted Python scripts.
+
+**Tests**: 723 pass / 0 fail (was 714). Added 9 sub-struct unit
+tests proving each sub-struct can be tested independently.
+
+**Out of scope** (next iterations):
+  * Lock-free reads (would require changing SharedState type)
+  * Splitting main.rs (separate refactor)
+  * Splitting commands.rs (lower priority)
+
 ## v0.8.0-pre1 — Pi-parity TUI improvements (2026-09-25)
 
 **Tool selection (the user-reported bug)**
