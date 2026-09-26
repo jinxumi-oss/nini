@@ -44,14 +44,14 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     // When a completion popup is showing, we steal one row from the
     // transcript area so the popup floats above the prompt.
     let popup_height = if state
-        .completion
+        .ui_state.completion
         .as_ref()
         .map(|p| !p.is_empty())
         .unwrap_or(false)
     {
         // Up to 8 lines + 2 (border)
         let n = state
-            .completion
+            .ui_state.completion
             .as_ref()
             .map(|p| p.items.len())
             .unwrap_or(0);
@@ -63,7 +63,7 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // status bar
-            Constraint::Length(if state.search.is_some() { 1 } else { 0 }), // search bar (only when active)
+            Constraint::Length(if state.ui_state.search.is_some() { 1 } else { 0 }), // search bar (only when active)
             Constraint::Min(3),    // transcript
             Constraint::Length(if popup_height > 0 { popup_height } else { 3 }), // prompt OR popup
             Constraint::Length(1), // key hints
@@ -81,7 +81,7 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     // transcript render into an empty area and pushed the prompt
     // up to row 1. v0.6 fix: always use the chunks[] indices in
     // their Layout order regardless of search state.
-    let (transcript_chunk, prompt_chunk, footer_chunk) = if state.search.is_some() {
+    let (transcript_chunk, prompt_chunk, footer_chunk) = if state.ui_state.search.is_some() {
         // status=0, search=1, transcript=2, prompt=3, footer=4
         render_search_bar(f, state, theme, chunks[1]);
         (chunks[2], chunks[3], chunks[4])
@@ -96,7 +96,7 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     };
     render_transcript(f, state, theme, transcript_chunk);
     if state
-        .completion
+        .ui_state.completion
         .as_ref()
         .map(|p| !p.is_empty())
         .unwrap_or(false)
@@ -107,7 +107,7 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     }
     render_key_hints(f, state, theme, footer_chunk);
 
-    if state.mode == RunMode::Running {
+    if state.run_state.mode == RunMode::Running {
         // Running spinner replaces the transcript pane (already
         // computed above as `transcript_chunk`).
         render_running_indicator(f, theme, transcript_chunk);
@@ -122,11 +122,11 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     //   Running   → Working (with spinner)
     //   Aborted   → Idle (status string already says "aborted")
     //   Quitting  → Idle (shutting down)
-    let phase = match state.mode {
+    let phase = match state.run_state.mode {
         RunMode::Running => AgentPhase::Working,
         _ => AgentPhase::Idle,
     };
-    let phase_label = if matches!(state.mode, RunMode::Running) {
+    let phase_label = if matches!(state.run_state.mode, RunMode::Running) {
         format!("{} {}", spinner_frame(), phase.label())
     } else {
         phase.label().to_string()
@@ -144,15 +144,15 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     ];
     // v0.8: Pi-style "(provider) model" so users can tell at a glance
     // which backend they're on (anthropic vs openai vs minimax).
-    if let Some(provider) = state.provider.as_ref().filter(|p| !p.is_empty()) {
+    if let Some(provider) = state.model_state.provider.as_ref().filter(|p| !p.is_empty()) {
         spans.push(Span::styled(
             format!("({provider}) "),
             theme.fg_style("dim"),
         ));
     }
-    spans.push(Span::raw(format!("{} | ", state.model)));
+    spans.push(Span::raw(format!("{} | ", state.model_state.model)));
     // v0.8: surface thinking level. Pi-style "• medium".
-    if let Some(level) = state.thinking_level.as_ref().filter(|l| !l.is_empty()) {
+    if let Some(level) = state.model_state.thinking_level.as_ref().filter(|l| !l.is_empty()) {
         spans.push(Span::styled(
             format!("• {level} | "),
             theme.fg_style("dim"),
@@ -160,7 +160,7 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     }
 
     // Working-directory segment (with tilde-expansion).
-    if let Some(cwd) = &state.cwd {
+    if let Some(cwd) = &state.session_state.cwd {
         let display = shorten_home(cwd);
         spans.push(Span::styled(
             format!("{display} | "),
@@ -169,7 +169,7 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     }
 
     // Git-branch segment.
-    if let Some(branch) = &state.git_branch {
+    if let Some(branch) = &state.session_state.git_branch {
         spans.push(Span::styled(
             format!("\u{2387} {branch} | "),
             theme.fg_style("success"),
@@ -182,10 +182,10 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
         theme.fg_style(phase.color_name()),
     ));
     // Status override (set by runtime for "aborted", "compacting", etc.).
-    if !state.status.is_empty() && state.status != "ready" {
+    if !state.run_state.status.is_empty() && state.run_state.status != "ready" {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            state.status.clone(),
+            state.run_state.status.clone(),
             theme.fg_style("warning"),
         ));
     }
@@ -193,7 +193,7 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
 
     // Last edit-tool diff summary: "[edit +N -M]" pill. Cleared when
     // the user runs any new command (the runtime resets it).
-    if let Some((adds, dels)) = state.last_diff {
+    if let Some((adds, dels)) = state.ui_state.last_diff {
         spans.push(Span::styled("[edit ", theme.fg_style("muted")));
         spans.push(Span::styled(
             format!("+{adds}"),
@@ -208,8 +208,8 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     }
 
     // Context-window segment (Pi-style: "ctx 42% [████░░░░]").
-    if state.context_window > 0 {
-        let pct = (state.context_used as f64 / state.context_window as f64) * 100.0;
+    if state.run_state.context_window > 0 {
+        let pct = (state.run_state.context_used as f64 / state.run_state.context_window as f64) * 100.0;
         let bar = context_bar(pct);
         let color_name = if pct > 90.0 {
             "error"
@@ -227,28 +227,28 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     }
 
     // Token-count segment (compact).
-    if state.tokens.input > 0 || state.tokens.output > 0 {
+    if state.run_state.tokens.input > 0 || state.run_state.tokens.output > 0 {
         spans.push(Span::styled(
             format!(
                 "in {} out {} | ",
-                fmt_thousands(state.tokens.input),
-                fmt_thousands(state.tokens.output)
+                fmt_thousands(state.run_state.tokens.input),
+                fmt_thousands(state.run_state.tokens.output)
             ),
             theme.fg_style("dim"),
         ));
     }
 
     // Cost segment (only when > $0).
-    if state.cost_usd > 0.0 {
+    if state.run_state.cost_usd > 0.0 {
         spans.push(Span::styled(
-            format!("${:.4}", state.cost_usd),
+            format!("${:.4}", state.run_state.cost_usd),
             theme.fg_style("success"),
         ));
         spans.push(Span::raw(" "));
     }
 
     // Theme name segment. Empty when default theme is in use.
-    if let Some(name) = state.theme_name.as_ref().filter(|n| !n.is_empty()) {
+    if let Some(name) = state.ui_state.theme_name.as_ref().filter(|n| !n.is_empty()) {
         spans.push(Span::styled(
             format!("[{name}]"),
             theme.fg_style("accent"),
@@ -257,8 +257,8 @@ fn render_status(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     }
 
     // Session id (truncated to 8 chars).
-    let session_disp = state
-        .session_id
+    let session_disp = state.session_state.session_id
+        
         .as_deref()
         .map(|s| &s[..s.len().min(8)])
         .unwrap_or("(no session)");
@@ -306,7 +306,7 @@ fn shorten_home(path: &std::path::Path) -> String {
 fn render_search_bar(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     use ratatui::style::Modifier;
     use ratatui::text::{Line, Span};
-    let Some(search) = &state.search else { return };
+    let Some(search) = &state.ui_state.search else { return };
     let total = search.matches.len();
     let current = if total == 0 { 0 } else { search.current + 1 };
     let counter = if total == 0 {
@@ -339,14 +339,14 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // Apply scroll: when scroll_offset > 0, show the slice ending at
     // (total - scroll_offset). When autoscroll is on or scroll_offset is
     // 0, show the entire transcript (capped by area.height).
-    let total = state.transcript.len();
+    let total = state.transcript_state.lines.len();
     let visible_height = area.height as usize;
-    let (start, end) = if state.scroll_offset == 0 || total == 0 {
+    let (start, end) = if state.transcript_state.scroll_offset == 0 || total == 0 {
         let end = total.min(visible_height);
         (0, end)
     } else {
         // Show the last (visible_height) lines ending at (total - scroll_offset).
-        let end = total.saturating_sub(state.scroll_offset);
+        let end = total.saturating_sub(state.transcript_state.scroll_offset);
         let start = end.saturating_sub(visible_height);
         (start, end)
     };
@@ -361,7 +361,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // multiple items for a single TranscriptLine. Then truncate to
     // `visible_height` based on the cumulative tail.
     let mut items: Vec<ListItem> = Vec::new();
-    for line in state.transcript.iter().skip(start).take(end.saturating_sub(start)) {
+    for line in state.transcript_state.lines.iter().skip(start).take(end.saturating_sub(start)) {
         let new_items: Vec<ListItem> = match line {
             TranscriptLine::User(text) => render_user_message(text, theme)
                 .into_iter()
@@ -450,7 +450,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
 }
 
 fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    let prompt_symbol = if state.mode == RunMode::Running {
+    let prompt_symbol = if state.run_state.mode == RunMode::Running {
         "⏵"
     } else {
         "❯"
@@ -488,7 +488,7 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     f.render_widget(para, area);
 
     // Render cursor
-    if state.mode != RunMode::Running && area.height >= 2 && area.width >= 2 {
+    if state.run_state.mode != RunMode::Running && area.height >= 2 && area.width >= 2 {
         let cursor_x = area.x + 2 + (cursor_char as u16 % area.width.saturating_sub(2));
         let line_idx = (cursor_char as u16) / area.width.saturating_sub(2);
         let cursor_y = area.y + 1 + line_idx.min(area.height.saturating_sub(2) - 1);
@@ -501,12 +501,12 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
     // Pi shows different hints when editing vs running vs selecting —
     // we mirror that with a small segment list.
     //
-    // v0.6: F1 toggles `state.help_extended`, which switches the
+    // v0.6: F1 toggles `state.ui_state.help_extended`, which switches the
     // editing-mode footer between a compact 5-row line and an
     // exhaustive keymap dump. The old code pushed a transcript line
     // on F1 instead, which clashed with the rest of the layout.
-    let hints: Vec<(&str, &str)> = match state.mode {
-        RunMode::Editing if state.help_extended => vec![
+    let hints: Vec<(&str, &str)> = match state.run_state.mode {
+        RunMode::Editing if state.ui_state.help_extended => vec![
             (" F1 ", "short "),
             (" Enter ", "send "),
             (" Shift+Enter ", "newline "),
@@ -559,7 +559,7 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
 
 /// Render the slash-command completion popup above the prompt.
 fn render_completion_popup(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    let Some(popup) = &state.completion else {
+    let Some(popup) = &state.ui_state.completion else {
         return;
     };
     if popup.items.is_empty() {
@@ -702,7 +702,7 @@ mod footer_tests {
     #[test]
     fn footer_running_mode_shows_abort() {
         let mut state = AppState::new("m");
-        state.mode = RunMode::Running;
+        state.run_state.mode = RunMode::Running;
         let text = footer_text(&state);
         assert!(text.contains("Esc"));
         assert!(text.contains("abort"));
@@ -713,7 +713,7 @@ mod footer_tests {
     #[test]
     fn footer_aborted_mode_shows_retry() {
         let mut state = AppState::new("m");
-        state.mode = RunMode::Aborted;
+        state.run_state.mode = RunMode::Aborted;
         let text = footer_text(&state);
         assert!(text.contains("retry"));
     }
@@ -721,7 +721,7 @@ mod footer_tests {
     #[test]
     fn footer_quitting_mode_shows_force_quit() {
         let mut state = AppState::new("m");
-        state.mode = RunMode::Quitting;
+        state.run_state.mode = RunMode::Quitting;
         let text = footer_text(&state);
         assert!(text.contains("force-quit"));
     }
@@ -755,7 +755,7 @@ mod status_tests {
     fn status_bar_shows_theme_name_when_set() {
         use crate::state::AppState;
         let mut state = AppState::new("m");
-        state.theme_name = Some("light".to_string());
+        state.ui_state.theme_name = Some("light".to_string());
         let text = status_text(&state);
         assert!(text.contains("[light]"), "expected [light] pill, got: {text}");
     }
@@ -774,7 +774,7 @@ mod status_tests {
     fn status_bar_shows_provider_when_set() {
         use crate::state::AppState;
         let mut state = AppState::new("MiniMax-M3");
-        state.provider = Some("anthropic".to_string());
+        state.model_state.provider = Some("anthropic".to_string());
         let text = status_text(&state);
         // v0.8: Pi-style (provider) prefix in the status bar.
         assert!(text.contains("(anthropic)"),
@@ -787,7 +787,7 @@ mod status_tests {
         use crate::state::AppState;
         let mut state = AppState::new("m");
         let text = status_text(&state);
-        // No (provider) prefix when state.provider is None.
+        // No (provider) prefix when state.model_state.provider is None.
         assert!(!text.contains("(anthropic)") && !text.contains("(openai)"),
                 "unexpected provider prefix: {text}");
     }
@@ -796,7 +796,7 @@ mod status_tests {
     fn status_bar_shows_thinking_level_when_set() {
         use crate::state::AppState;
         let mut state = AppState::new("m");
-        state.thinking_level = Some("medium".to_string());
+        state.model_state.thinking_level = Some("medium".to_string());
         let text = status_text(&state);
         // v0.8: Pi-style '• level' in the status bar.
         assert!(text.contains("• medium"),

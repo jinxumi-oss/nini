@@ -337,12 +337,12 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             // Display current settings (mock until real settings UI is wired).
             let lines = vec![
                 "Settings (read-only)".to_string(),
-                format!("  model:     {}", state.model),
+                format!("  model:     {}", state.model_state.model),
                 format!(
                     "  session:   {}",
-                    state.session_id.as_deref().unwrap_or("(none)")
+                    state.session_state.session_id.as_deref().unwrap_or("(none)")
                 ),
-                format!("  status:    {:?}", state.mode),
+                format!("  status:    {:?}", state.run_state.mode),
             ];
             CommandResult::output(lines)
         }
@@ -351,10 +351,10 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             if args.is_empty() {
                 return CommandResult::output(vec![
                     "Usage: /model <provider/model>".to_string(),
-                    format!("Current model: {}", state.model),
+                    format!("Current model: {}", state.model_state.model),
                 ]);
             }
-            state.model = args.to_string();
+            state.model_state.model = args.to_string();
             settings.set_default_model(args);
             state.push_assistant(format!("(model set to {})", args));
             state.push_divider();
@@ -372,7 +372,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             // from its entries. Fall back to an empty tree if there's
             // no session yet.
             let entries: Vec<nini_core::entries::SessionEntry> =
-                if let Some(path) = &state.session_path {
+                if let Some(path) = &state.session_state.session_path {
                     let raw = std::fs::read_to_string(path).unwrap_or_default();
                     raw.lines()
                         .filter_map(|l| serde_json::from_str(l).ok())
@@ -440,32 +440,32 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             // /scoped-models [add|remove <model>|list|clear]
             // Mirrors Pi's per-model scoped-models config. Lets the user
             // curate which models are eligible for Ctrl+P cycling. The
-            // cycle list lives in `state.models_cycle`.
+            // cycle list lives in `state.model_state.models_cycle`.
             let parts: Vec<&str> = args.split_whitespace().collect();
             let sub = parts.first().copied().unwrap_or("list");
             match sub {
                 "add" if parts.len() >= 2 => {
                     let m = parts[1].to_string();
-                    if !state.models_cycle.iter().any(|x| x == &m) {
-                        state.models_cycle.push(m.clone());
+                    if !state.model_state.models_cycle.iter().any(|x| x == &m) {
+                        state.model_state.models_cycle.push(m.clone());
                     }
                     let _ = settings.flush(); // persist after cycle change
                     state.push_assistant(format!("[scoped-models] added {m}"));
                     state.push_divider();
                     let mut out = vec![
                         format!("added {m} to cycle"),
-                        format!("cycle ({} models):", state.models_cycle.len()),
+                        format!("cycle ({} models):", state.model_state.models_cycle.len()),
                     ];
-                    for cm in &state.models_cycle {
+                    for cm in &state.model_state.models_cycle {
                         out.push(format!("  - {cm}"));
                     }
                     CommandResult::output(out)
                 }
                 "remove" if parts.len() >= 2 => {
                     let m = parts[1];
-                    let before = state.models_cycle.len();
-                    state.models_cycle.retain(|x| x != m);
-                    let removed = before - state.models_cycle.len();
+                    let before = state.model_state.models_cycle.len();
+                    state.model_state.models_cycle.retain(|x| x != m);
+                    let removed = before - state.model_state.models_cycle.len();
                     let _ = settings.flush();
                     state.push_assistant(format!(
                         "[scoped-models] removed {} model(s)",
@@ -477,8 +477,8 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                     )])
                 }
                 "clear" => {
-                    state.models_cycle.clear();
-                    state.models_cycle_idx = None;
+                    state.model_state.models_cycle.clear();
+                    state.model_state.models_cycle_idx = None;
                     let _ = settings.flush();
                     state.push_assistant("[scoped-models] cleared all".to_string());
                     state.push_divider();
@@ -489,11 +489,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                     let mut out: Vec<String> = vec![
                         format!(
                             "Ctrl+P cycling scope ({} models)",
-                            state.models_cycle.len()
+                            state.model_state.models_cycle.len()
                         ),
                         "".to_string(),
                     ];
-                    if state.models_cycle.is_empty() {
+                    if state.model_state.models_cycle.is_empty() {
                         out.push("(empty — use `/scoped-models add <model>`)".to_string());
                         out.push(String::new());
                         out.push("Examples:".to_string());
@@ -501,8 +501,8 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                         out.push("  /scoped-models add openai/gpt-5".to_string());
                         out.push("  /scoped-models clear".to_string());
                     } else {
-                        for (i, m) in state.models_cycle.iter().enumerate() {
-                            let marker = if Some(i) == state.models_cycle_idx {
+                        for (i, m) in state.model_state.models_cycle.iter().enumerate() {
+                            let marker = if Some(i) == state.model_state.models_cycle_idx {
                                 "→ "
                             } else {
                                 "  "
@@ -516,7 +516,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
         }
         CommandId::Export => {
             // v1: write a minimal HTML snapshot of the transcript to ~/.pi/agent/exports/.
-            let html = render_transcript_html(&state.transcript);
+            let html = render_transcript_html(&state.transcript_state.lines);
             let dir = std::env::var("HOME").ok().map(|h| {
                 std::path::PathBuf::from(h)
                     .join(".pi")
@@ -603,7 +603,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 SE::SessionInfo(i) => Some(i),
                 _ => None,
             }) {
-                state.session_id = Some(info.id.clone());
+                state.session_state.session_id = Some(info.id.clone());
                 out.push(format!("session name: {}", info.name));
             }
             // Populate transcript from message entries.
@@ -648,8 +648,8 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 }
             }
             let imported_count = new_transcript.len();
-            state.transcript = new_transcript;
-            state.tokens = Default::default();
+            state.transcript_state.lines = new_transcript;
+            state.run_state.tokens = Default::default();
             state.push_assistant(format!(
                 "[import] {} transcript entries ({} skipped)",
                 imported_count,
@@ -665,7 +665,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
         CommandId::Copy => {
             // Copy the last assistant message to the system clipboard.
             // Falls back to stdout (for headless) if clipboard unavailable.
-            let last_assistant = state.transcript.iter().rev().find_map(|l| match l {
+            let last_assistant = state.transcript_state.lines.iter().rev().find_map(|l| match l {
                 TranscriptLine::AssistantText(s) => Some(s.clone()),
                 _ => None,
             });
@@ -693,7 +693,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 return CommandResult::output(vec!["Usage: /name <session name>".to_string()]);
             }
             // v1: store in status. Real impl persists via session metadata.
-            state.status = format!("name: {args}");
+            state.run_state.status = format!("name: {args}");
             state.push_assistant(format!("(session name: {args})"));
             state.push_divider();
             CommandResult::output(vec![format!("name → {args}")])
@@ -702,14 +702,14 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             let lines = vec![
                 format!(
                     "session_id: {}",
-                    state.session_id.as_deref().unwrap_or("(none)")
+                    state.session_state.session_id.as_deref().unwrap_or("(none)")
                 ),
-                format!("model:      {}", state.model),
-                format!("mode:       {:?}", state.mode),
-                format!("transcript: {} lines", state.transcript.len()),
+                format!("model:      {}", state.model_state.model),
+                format!("mode:       {:?}", state.run_state.mode),
+                format!("transcript: {} lines", state.transcript_state.lines.len()),
                 format!(
                     "tokens:     in={} out={}",
-                    state.tokens.input, state.tokens.output
+                    state.run_state.tokens.input, state.run_state.tokens.output
                 ),
             ];
             CommandResult::output(lines)
@@ -786,7 +786,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             // Pi's /fork opens a MessageSelector picker; nini v1 takes
             // a numeric index for now (interactive picker is future work).
             let user_indices: Vec<usize> = state
-                .transcript
+                .transcript_state.lines
                 .iter()
                 .enumerate()
                 .filter_map(|(i, l)| {
@@ -804,7 +804,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 user_indices.len()
             ));
             for (n, idx) in user_indices.iter().enumerate() {
-                let preview = match &state.transcript[*idx] {
+                let preview = match &state.transcript_state.lines[*idx] {
                     TranscriptLine::User(s) => s.chars().take(60).collect::<String>(),
                     _ => String::new(),
                 };
@@ -819,7 +819,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                     ));
                 } else {
                     let cut_at = user_indices[n - 1];
-                    let mut branch = state.transcript[..cut_at].to_vec();
+                    let mut branch = state.transcript_state.lines[..cut_at].to_vec();
                     // Append a fork marker so the branch session is
                     // identifiable when loaded.
                     branch.push(TranscriptLine::AssistantText(format!(
@@ -841,7 +841,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                         "fork: cut at user msg #{} ({} entries kept, {} dropped)",
                         n,
                         branch.len(),
-                        state.transcript.len().saturating_sub(branch.len())
+                        state.transcript_state.lines.len().saturating_sub(branch.len())
                     ));
                 }
             } else if !args.trim().is_empty() {
@@ -858,7 +858,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             // /clone — duplicate the current session's JSONL to a new file
             // with a fresh timestamp. The current in-memory transcript
             // keeps editing the original; the clone is a side artifact.
-            let Some(path) = &state.session_path else {
+            let Some(path) = &state.session_state.session_path else {
                 return CommandResult::output(vec![
                     "(clone: no active session — start one with /new first)".to_string(),
                 ]);
@@ -1086,9 +1086,9 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
         }
         CommandId::New => {
             // Clear the transcript and create a fresh session.
-            let prev_len = state.transcript.len();
-            state.transcript.clear();
-            state.tokens = Default::default();
+            let prev_len = state.transcript_state.lines.len();
+            state.transcript_state.lines.clear();
+            state.run_state.tokens = Default::default();
 
             // Derive a session file path: ~/.pi/agent/sessions/<project>/<timestamp>.jsonl
             let home = std::env::var("HOME").ok();
@@ -1113,7 +1113,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             CommandResult::output(vec![format!(
                 "new: cleared {} lines, session {}",
                 prev_len,
-                state.session_id.as_deref().unwrap_or("?")
+                state.session_state.session_id.as_deref().unwrap_or("?")
             )])
         }
         CommandId::Compact => {
@@ -1128,7 +1128,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             // cut point is `transcript.len() / 2` for manual compaction
             // (auto-compaction uses the same find_cut_point algorithm).
             use nini_core::Entry;
-            let total = state.transcript.len();
+            let total = state.transcript_state.lines.len();
             if total < 4 {
                 // Short transcript: don't mutate, just return a one-line
                 // status. (Tests verify transcript is unchanged.)
@@ -1138,7 +1138,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             }
             let cut_at = total / 2;
             // Drain prefix out, convert TranscriptLine → legacy Entry.
-            let prefix_lines: Vec<_> = state.transcript.drain(..cut_at).collect();
+            let prefix_lines: Vec<_> = state.transcript_state.lines.drain(..cut_at).collect();
             let prefix_entries: Vec<Entry> = prefix_lines
                 .iter()
                 .enumerate()
@@ -1204,7 +1204,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             let summary_len = prefix_lines.len();
             // Replace the prefix with a single summary message.
             state
-                .transcript
+                .transcript_state.lines
                 .insert(0, TranscriptLine::AssistantText(format!(
                     "[CONTEXT SUMMARY]\n\n{summary}"
                 )));
@@ -1214,7 +1214,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.push_divider();
             CommandResult::output(vec![
                 format!("compacted: {summary_len} entries → summary"),
-                format!("new transcript size: {}", state.transcript.len()),
+                format!("new transcript size: {}", state.transcript_state.lines.len()),
             ])
         }
         CommandId::Resume => {
@@ -1296,11 +1296,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                     return CommandResult::error(format!("Failed to load session: {e}"));
                 }
                 // Rebuild transcript from session entries.
-                state.transcript.clear();
-                let session_id = state.session_id.clone().unwrap_or_default();
+                state.transcript_state.lines.clear();
+                let session_id = state.session_state.session_id.clone().unwrap_or_default();
                 // Take ownership of the session Arc so we can lock it without
                 // keeping a borrow of state.
-                let session_arc = state.session.take();
+                let session_arc = state.session_state.session.take();
                 if let Some(arc) = session_arc {
                     if let Ok(guard) = arc.try_lock() {
                         for entry in &guard.entries {
@@ -1318,7 +1318,7 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                         }
                     }
                     // Restore the Arc.
-                    state.session = Some(arc);
+                    state.session_state.session = Some(arc);
                 }
                 state.push_assistant(format!("(loaded session {session_id})"));
                 state.push_divider();
@@ -1485,14 +1485,14 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             CommandResult::output(vec![format!("reload: {new_count} skills")])
         }
         CommandId::Quit => {
-            state.mode = RunMode::Quitting;
+            state.run_state.mode = RunMode::Quitting;
             CommandResult::quit()
         }
         CommandId::Help => {
             // Open the help overlay via the selector-open status flag.
             // The overlay itself lives in the TUI runtime / selector
             // infrastructure (F014 in the plan wires a polished version).
-            state.status = "open_selector:help".to_string();
+            state.run_state.status = "open_selector:help".to_string();
             CommandResult::output(vec![
                 "Type /<tab> to see all commands; F1 toggles extended hints.".to_string(),
             ])
@@ -1500,8 +1500,8 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
         CommandId::Debug => {
             // Toggle verbose logging. The log file path mirrors Pi's
             // ~/.pi/agent/log location; users can `tail -f` it.
-            let new_state = !state.debug_logging;
-            state.debug_logging = new_state;
+            let new_state = !state.ui_state.debug_logging;
+            state.ui_state.debug_logging = new_state;
             let label = if new_state { "on" } else { "off" };
             CommandResult::output(vec![format!(
                 "debug logging: {label} ({} per keystroke)",
@@ -1519,10 +1519,10 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             // Synchronous from the dispatcher's POV; the actual spawn is
             // handled by the runtime (which has access to the file
             // handles). We just signal it here via the dedicated flag
-            // (not via state.status, which is a transient message
+            // (not via state.run_state.status, which is a transient message
             // surface that gets cleared after each frame).
-            state.pending_external_editor = true;
-            state.status = "Opening editor…".to_string();
+            state.run_state.pending_external_editor = true;
+            state.run_state.status = "Opening editor…".to_string();
             CommandResult::output(vec![
                 "Opening editor…".to_string(),
             ])
@@ -1533,32 +1533,32 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
 /// Build the status output lines.
 fn build_status_lines(state: &AppState) -> Vec<String> {
     let mut out = Vec::new();
-    let cwd = state
-        .cwd
+    let cwd = state.session_state.cwd
+        
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "<unset>".to_string());
-    let branch = state
-        .git_branch
+    let branch = state.session_state.git_branch
+        
         .as_deref()
         .unwrap_or("<not a git repo>");
-    let sid = state
-        .session_id
+    let sid = state.session_state.session_id
+        
         .as_deref()
         .unwrap_or("<no session>");
-    let transcript_lines = state.transcript.len();
-    let (in_tok, out_tok) = (state.tokens.input, state.tokens.output);
+    let transcript_lines = state.transcript_state.lines.len();
+    let (in_tok, out_tok) = (state.run_state.tokens.input, state.run_state.tokens.output);
     out.push(format!("session    : {sid}"));
     out.push(format!("cwd        : {cwd}"));
     out.push(format!("git branch : {branch}"));
     out.push(format!("transcript : {transcript_lines} line(s)"));
     out.push(format!("tokens     : in={in_tok} out={out_tok}"));
-    out.push(format!("cost       : ${:.4}", state.cost_usd));
-    if state.context_window > 0 {
-        let pct = (state.context_used as f64 / state.context_window as f64) * 100.0;
+    out.push(format!("cost       : ${:.4}", state.run_state.cost_usd));
+    if state.run_state.context_window > 0 {
+        let pct = (state.run_state.context_used as f64 / state.run_state.context_window as f64) * 100.0;
         out.push(format!(
             "context    : {:.0}% of {} (used {})",
-            pct, state.context_window, state.context_used
+            pct, state.run_state.context_window, state.run_state.context_used
         ));
     }
     out
@@ -1740,7 +1740,7 @@ mod tests {
             }
             _ => panic!("expected Output"),
         }
-        assert_eq!(state.model, "anthropic/claude-opus-4-7");
+        assert_eq!(state.model_state.model, "anthropic/claude-opus-4-7");
     }
 
     #[test]
@@ -1761,7 +1761,7 @@ mod tests {
         let mut settings = SettingsManager::default();
         let r = dispatch(&mut state, &mut settings, CommandId::Quit, "");
         assert_eq!(r.outcome, CommandOutcome::Quit);
-        assert_eq!(state.mode, RunMode::Quitting);
+        assert_eq!(state.run_state.mode, RunMode::Quitting);
     }
 
     #[test]
@@ -1769,13 +1769,13 @@ mod tests {
         let mut state = AppState::new("test");
         state.push_user("hello".to_string());
         state.push_divider();
-        assert_eq!(state.transcript.len(), 2);
+        assert_eq!(state.transcript_state.lines.len(), 2);
         let mut settings = SettingsManager::default();
         let _ = dispatch(&mut state, &mut settings, CommandId::New, "");
         // Transcript should be cleared + a "(started new session)" line added
-        assert!(!state.transcript.is_empty());
+        assert!(!state.transcript_state.lines.is_empty());
         assert!(
-            state.transcript[0]
+            state.transcript_state.lines[0]
                 .as_assistant_text()
                 .map(|t| t.contains("started new session"))
                 .unwrap_or(false)
@@ -1802,7 +1802,7 @@ mod tests {
         let mut state = AppState::new("test");
         state.push_user("hello".to_string());
         state.push_assistant("hi back".to_string());
-        let html = render_transcript_html(&state.transcript);
+        let html = render_transcript_html(&state.transcript_state.lines);
         assert!(html.contains("<!DOCTYPE html>"));
         // User line is rendered with "&gt;" prefix
         assert!(html.contains("&gt;") || html.contains("> hello"));

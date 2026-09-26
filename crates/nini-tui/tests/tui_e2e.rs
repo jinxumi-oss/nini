@@ -56,12 +56,12 @@ fn drive(state: &mut AppState, key: Key) {
     let action = resolve(&default_keymap(), key);
     match action {
         KeyAction::Insert(c) => {
-            if state.mode == RunMode::Editing {
+            if state.run_state.mode == RunMode::Editing {
                 state.input.insert_char(c);
             }
         }
         KeyAction::Newline => {
-            if state.mode == RunMode::Editing {
+            if state.run_state.mode == RunMode::Editing {
                 state.input.insert_char('\n');
             }
         }
@@ -80,7 +80,7 @@ fn drive(state: &mut AppState, key: Key) {
         KeyAction::KillWordBackward => state.input.kill_word_backward(),
         KeyAction::ClearInput => state.input.clear(),
         KeyAction::Submit => {
-            if state.mode == RunMode::Editing {
+            if state.run_state.mode == RunMode::Editing {
                 let text = state.input.submit();
                 if !text.trim().is_empty() {
                     state.push_user(text);
@@ -89,13 +89,13 @@ fn drive(state: &mut AppState, key: Key) {
             }
         }
         KeyAction::Abort => {
-            if state.mode == RunMode::Running {
-                state.mode = RunMode::Aborted;
+            if state.run_state.mode == RunMode::Running {
+                state.run_state.mode = RunMode::Aborted;
             } else {
                 state.input.clear();
             }
         }
-        KeyAction::Quit => state.mode = RunMode::Quitting,
+        KeyAction::Quit => state.run_state.mode = RunMode::Quitting,
         KeyAction::SwitchModel
         | KeyAction::CycleModelNext
         | KeyAction::CycleModelPrev
@@ -207,9 +207,9 @@ fn enter_submits_and_pushes_user_message() {
     drive(&mut state, Key::enter());
 
     assert_eq!(state.input.text, "", "input should be cleared after submit");
-    assert_eq!(state.transcript.len(), 2, "should have user line + divider");
-    assert!(matches!(&state.transcript[0], TranscriptLine::User(s) if s == "hello"));
-    assert!(matches!(&state.transcript[1], TranscriptLine::Divider));
+    assert_eq!(state.transcript_state.lines.len(), 2, "should have user line + divider");
+    assert!(matches!(&state.transcript_state.lines[0], TranscriptLine::User(s) if s == "hello"));
+    assert!(matches!(&state.transcript_state.lines[1], TranscriptLine::Divider));
 
     let frame = render_to_text(&state, 80, 24);
     assert!(
@@ -366,7 +366,7 @@ fn ctrl_d_qui_tui() {
         &mut state,
         Key::new(crossterm::event::KeyCode::Char('d'), KeyModifiers::CTRL),
     );
-    assert_eq!(state.mode, RunMode::Quitting);
+    assert_eq!(state.run_state.mode, RunMode::Quitting);
 }
 
 // ====================================================================
@@ -455,7 +455,7 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
             }
             Ok(AgentEvent::ToolCallStop { id, input_json }) => {
                 // Update the last tool call line with the final args
-                if let Some(TranscriptLine::ToolCall { args, .. }) = state.transcript.last_mut() {
+                if let Some(TranscriptLine::ToolCall { args, .. }) = state.transcript_state.lines.last_mut() {
                     *args = input_json.to_string();
                 } else {
                     state.push_tool_call(id, input_json.to_string());
@@ -466,8 +466,8 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
             }
             Ok(AgentEvent::TurnEnd { usage, .. }) => {
                 total_tokens += usage.input_tokens + usage.output_tokens;
-                state.tokens.input += usage.input_tokens as u64;
-                state.tokens.output += usage.output_tokens as u64;
+                state.run_state.tokens.input += usage.input_tokens as u64;
+                state.run_state.tokens.output += usage.output_tokens as u64;
                 state.push_divider();
             }
             Ok(AgentEvent::Error { message }) => state.push_assistant(format!("error: {message}")),
@@ -569,7 +569,7 @@ fn narrow_terminal_handles_long_text() {
 #[test]
 fn running_mode_status_bar() {
     let mut state = AppState::new("test-model");
-    state.mode = RunMode::Running;
+    state.run_state.mode = RunMode::Running;
     let frame = render_to_text(&state, 80, 24);
     // New 5-state status bar shows 'working…' label + spinner.
     assert!(
@@ -584,9 +584,9 @@ fn running_mode_status_bar() {
 #[test]
 fn aborted_mode_status_bar() {
     let mut state = AppState::new("test-model");
-    state.mode = RunMode::Aborted;
+    state.run_state.mode = RunMode::Aborted;
     // Set the runtime status string to indicate abort.
-    state.status = "aborted".to_string();
+    state.run_state.status = "aborted".to_string();
     let frame = render_to_text(&state, 80, 24);
     // Aborted is Idle phase; the status string carries the abort label.
     assert!(
@@ -624,7 +624,7 @@ fn whitespace_only_submit_is_silent() {
     drive(&mut state, Key::enter());
     // No transcript lines added
     assert!(
-        state.transcript.is_empty(),
+        state.transcript_state.lines.is_empty(),
         "whitespace submit should not add to transcript"
     );
 }
@@ -693,7 +693,7 @@ async fn full_demo_pipeline_through_tui_state() {
         } else if let Ok(AgentEvent::ToolCallStart { name, .. }) = ev {
             state.push_tool_call(name, "");
         } else if let Ok(AgentEvent::ToolCallStop { input_json, .. }) = ev {
-            if let Some(TranscriptLine::ToolCall { args, .. }) = state.transcript.last_mut() {
+            if let Some(TranscriptLine::ToolCall { args, .. }) = state.transcript_state.lines.last_mut() {
                 *args = input_json.to_string();
             }
         } else if let Ok(AgentEvent::ToolResult { output, .. }) = ev {
@@ -724,8 +724,8 @@ async fn full_demo_pipeline_through_tui_state() {
     );
 
     // Token totals still 0 from fixture (real providers would populate)
-    assert_eq!(state.tokens.input, 0);
-    assert_eq!(state.tokens.output, 0);
+    assert_eq!(state.run_state.tokens.input, 0);
+    assert_eq!(state.run_state.tokens.output, 0);
 
     // Just to silence unused warnings on `cwd`
     let _ = cwd;
@@ -797,7 +797,7 @@ fn scroll_offset_clips_to_last_n_lines() {
         state.push_user(format!("line {i}"));
     }
     // Set scroll_offset to 20 → show only last 30 lines.
-    state.scroll_offset = 20;
+    state.transcript_state.scroll_offset = 20;
     let backend = ratatui::backend::TestBackend::new(80, 10);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
@@ -815,7 +815,7 @@ fn scroll_offset_zero_shows_from_beginning() {
     let mut state = AppState::new("test");
     state.push_user("first");
     state.push_user("second");
-    state.scroll_offset = 0;
+    state.transcript_state.scroll_offset = 0;
     let backend = ratatui::backend::TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal

@@ -93,7 +93,7 @@ impl AgentSink {
     pub fn push(&self, ev: AgentEventLite) {
         if let Ok(mut s) = self.state.lock() {
             if let AgentEventLite::PhaseChanged(phase) = &ev {
-                s.status = phase.clone();
+                s.run_state.status = phase.clone();
             }
         }
         if let Ok(mut s) = self.state.lock() {
@@ -103,7 +103,7 @@ impl AgentSink {
                 AgentEventLite::ToolCallStart { name } => s.push_tool_call(name, ""),
                 AgentEventLite::ToolCallStop { id, args } => {
                     // Update the most recent tool call line with final args.
-                    if let Some(TranscriptLine::ToolCall { args: a, .. }) = s.transcript.last_mut()
+                    if let Some(TranscriptLine::ToolCall { args: a, .. }) = s.transcript_state.lines.last_mut()
                     {
                         *a = args;
                     } else {
@@ -117,7 +117,7 @@ impl AgentSink {
                             (d.get("additions").and_then(|v| v.as_u64()),
                              d.get("deletions").and_then(|v| v.as_u64()))
                         {
-                            s.last_diff = Some((adds as usize, dels as usize));
+                            s.ui_state.last_diff = Some((adds as usize, dels as usize));
                         }
                     }
                     s.push_tool_result_raw(ok, content, Some(duration_ms));
@@ -132,20 +132,20 @@ impl AgentSink {
                     s.push_assistant_raw(format!("[error] {message}"));
                 }
                 AgentEventLite::Usage(input, output, cost) => {
-                    s.tokens.input += input as u64;
-                    s.tokens.output += output as u64;
+                    s.run_state.tokens.input += input as u64;
+                    s.run_state.tokens.output += output as u64;
                     // Cost is denominated in USD; add to running total.
                     if cost > 0.0 {
-                        s.cost_usd += cost;
+                        s.run_state.cost_usd += cost;
                     }
                 }
                 AgentEventLite::PhaseChanged(_) => {
-                    // Already handled above (set s.status).
+                    // Already handled above (set s.run_state.status).
                 }
                 AgentEventLite::Done => {
-                    s.mode = RunMode::Editing;
-                    s.status = "ready".to_string();
-                    s.abort_signal = None; // clear stale abort signal
+                    s.run_state.mode = RunMode::Editing;
+                    s.run_state.status = "ready".to_string();
+                    s.run_state.abort_signal = None; // clear stale abort signal
                 }
             }
         }
@@ -236,7 +236,7 @@ async fn run_loop(
         let name = settings.theme_name();
         // Mirror the theme name into AppState so the status bar can
         // render it without holding the settings lock.
-        shared.lock().unwrap().theme_name = name.clone();
+        shared.lock().unwrap().ui_state.theme_name = name.clone();
         settings.theme()
     };
 
@@ -251,15 +251,15 @@ async fn run_loop(
             let g = shared.lock().unwrap();
             g.clone()
         };
-        // v0.6: F1 sets `state.close_help` to ask the runtime to drop
+        // v0.6: F1 sets `state.ui_state.close_help` to ask the runtime to drop
         // any active help selector. Pick up that signal here so the
         // overlay actually disappears when the user toggles F1 again.
-        if snapshot.close_help {
+        if snapshot.ui_state.close_help {
             active_selector = None;
             selector_query.clear();
             selector_visible.clear();
             let mut g = shared.lock().unwrap();
-            g.close_help = false;
+            g.ui_state.close_help = false;
             drop(g);
         }
         // Compute selector visible indices (for rendering).
@@ -328,11 +328,11 @@ async fn run_loop(
             Arc::new(tokio::sync::Notify::new());
 
         // Check if submit_user_input signaled a selector-open request via
-        // state.status. Run AFTER done.notify_waiters() in submit_user_input.
+        // state.run_state.status. Run AFTER done.notify_waiters() in submit_user_input.
         if active_selector.is_none() {
-            let status = shared.lock().unwrap().status.clone();
+            let status = shared.lock().unwrap().run_state.status.clone();
             if let Some(kind) = status.strip_prefix("open_selector:") {
-                let current_model = shared.lock().unwrap().model.clone();
+                let current_model = shared.lock().unwrap().model_state.model.clone();
                 match kind {
                     "model" => {
                         let sel = Box::new(crate::selectors::ModelSelector::new(Some(&current_model)));
@@ -371,7 +371,7 @@ async fn run_loop(
                     }
                     "tree" => {
                         // Open tree selector against the active session's entries.
-                        let session_arc = shared.lock().unwrap().session.clone();
+                        let session_arc = shared.lock().unwrap().session_state.session.clone();
                         let entries: Vec<nini_core::SessionEntry> = if let Some(arc) = session_arc {
                             if let Ok(guard) = arc.try_lock() {
                                 guard.entries.clone()
@@ -427,7 +427,7 @@ async fn run_loop(
                     _ => {}
                 }
                 // Clear the status flag so it doesn't re-trigger.
-                shared.lock().unwrap().status = "ready".to_string();
+                shared.lock().unwrap().run_state.status = "ready".to_string();
             }
         }
 
@@ -453,7 +453,7 @@ async fn run_loop(
                                     None
                                 };
                                 if let Some(new_model) = model_update {
-                                    shared.lock().unwrap().model = new_model;
+                                    shared.lock().unwrap().model_state.model = new_model;
                                 }
                                 // Selector closed: reset any residual
                                 // open_selector:* flag so the status bar
@@ -462,8 +462,8 @@ async fn run_loop(
                                 // has navigated away.
                                 clear_status_after_selector(&shared);
                                 if let Ok(mut g) = shared.lock() {
-                                    if g.status.is_empty() || g.status.starts_with("open_selector:") {
-                                        g.status = "ready".to_string();
+                                    if g.run_state.status.is_empty() || g.run_state.status.starts_with("open_selector:") {
+                                        g.run_state.status = "ready".to_string();
                                     }
                                 }
                             }
@@ -492,7 +492,7 @@ async fn run_loop(
             // until after we'd already resumed anyway. We just
             // check the flag cheaply here.
             _ = editor_poll_tick.tick() => {
-                if shared.lock().unwrap().pending_external_editor {
+                if shared.lock().unwrap().run_state.pending_external_editor {
                     handle_external_editor_dance(terminal, &shared);
                 }
             }
@@ -506,7 +506,7 @@ async fn run_loop(
                     ThemeEvent::Changed(path) | ThemeEvent::Removed(path) => {
                         let mut settings = crate::settings::SettingsManager::default();
                         let name = settings.theme_name();
-                        shared.lock().unwrap().theme_name = name.clone();
+                        shared.lock().unwrap().ui_state.theme_name = name.clone();
                         theme = settings.theme();
                         let _ = bus.emit(crate::event_bus::AppEvent::ThemeChanged(
                             name.unwrap_or_default(),
@@ -520,7 +520,7 @@ async fn run_loop(
             }
         }
 
-        let mode = shared.lock().unwrap().mode;
+        let mode = shared.lock().unwrap().run_state.mode;
         if mode == RunMode::Quitting {
             return Ok(());
         }
@@ -710,9 +710,9 @@ fn apply_selector_result(
         // (b) queue the full summary into pending_next_turn_messages so
         //     the next user turn has it as context (Pi parity — mirrors
         //     _pendingNextTurnMessages).
-        let session_arc = shared.lock().unwrap().session.clone();
-        let prev_status = shared.lock().unwrap().status.clone();
-        shared.lock().unwrap().status = "branch summary: computing…".into();
+        let session_arc = shared.lock().unwrap().session_state.session.clone();
+        let prev_status = shared.lock().unwrap().run_state.status.clone();
+        shared.lock().unwrap().run_state.status = "branch summary: computing…".into();
         if let Some(arc) = session_arc {
             if let Ok(guard) = arc.try_lock() {
                 let entries = guard.entries.clone();
@@ -735,12 +735,12 @@ fn apply_selector_result(
                     ));
                     g.push_divider();
                     // (b) Queue full summary for next turn.
-                    g.pending_next_turn_messages.push(format!(
+                    g.run_state.pending_next_turn_messages.push(format!(
                         "[BRANCH SUMMARY]\n\n{}",
                         s,
                     ));
                 }
-                shared.lock().unwrap().status = prev_status;
+                shared.lock().unwrap().run_state.status = prev_status;
             }
         }
         return None;
@@ -802,7 +802,7 @@ fn apply_selector_result(
                                 g2.push_divider();
                             }
                             crate::commands::CommandOutcome::Quit => {
-                                g2.mode = crate::state::RunMode::Quitting;
+                                g2.run_state.mode = crate::state::RunMode::Quitting;
                             }
                             crate::commands::CommandOutcome::PromptArgument { prompt, next: _ } => {
                                 g2.push_assistant(format!("(prompt: {prompt})"));
@@ -813,12 +813,12 @@ fn apply_selector_result(
                 }
                 "action:clear" => {
                     let mut g = shared.lock().unwrap();
-                    g.transcript.clear();
+                    g.transcript_state.lines.clear();
                     g.push_divider();
                 }
                 "action:exit" => {
                     let mut g = shared.lock().unwrap();
-                    g.mode = RunMode::Quitting;
+                    g.run_state.mode = RunMode::Quitting;
                 }
                 _ => {
                     let mut g = shared.lock().unwrap();
@@ -838,15 +838,15 @@ fn apply_selector_result(
 }
 
 // Status-string cleanup: every selector branch above eventually falls
-// through to here; we reset state.status to "ready" so that stale
+// through to here; we reset state.run_state.status to "ready" so that stale
 // strings like "switch model (not yet implemented)" or
 // "open_selector:model" don't linger after the selector closes.
 fn clear_status_after_selector(shared: &SharedState) {
     if let Ok(mut g) = shared.lock() {
-        if g.status.starts_with("open_selector:")
-            || g.status == "switch model (not yet implemented)"
+        if g.run_state.status.starts_with("open_selector:")
+            || g.run_state.status == "switch model (not yet implemented)"
         {
-            g.status = "ready".to_string();
+            g.run_state.status = "ready".to_string();
 
         }
     }
@@ -875,7 +875,7 @@ fn handle_external_editor_dance(
     // 1. Snapshot input and clear the flag.
     let (initial_text, initial_cursor) = {
         let mut g = shared.lock().unwrap();
-        g.pending_external_editor = false;
+        g.run_state.pending_external_editor = false;
         (g.input.text.clone(), g.input.cursor)
     };
 
@@ -918,18 +918,18 @@ fn handle_external_editor_dance(
             // Replace the entire input buffer + push an undo snapshot
             // so Ctrl+Z restores the pre-edit version.
             g.input.replace_whole(new_text.clone());
-            g.status = format!("editor: {} chars", new_text.chars().count());
+            g.run_state.status = format!("editor: {} chars", new_text.chars().count());
         }
         Ok(None) => {
             // No change.
             let mut g = shared.lock().unwrap();
-            g.status = "editor: no changes".to_string();
+            g.run_state.status = "editor: no changes".to_string();
             // Suppress the unused warning on initial_cursor.
             let _ = initial_cursor;
         }
         Err(e) => {
             let mut g = shared.lock().unwrap();
-            g.status = format!("editor error: {e}");
+            g.run_state.status = format!("editor error: {e}");
             g.push_assistant(format!("[editor error] {e}"));
             g.push_divider();
         }
@@ -940,20 +940,20 @@ fn handle_external_editor_dance(
     let _ = terminal.clear();
 }
 
-/// Cycle to the next/previous model in `state.models_cycle`.
-/// Updates `state.model`, persists to settings.json, and updates status.
+/// Cycle to the next/previous model in `state.model_state.models_cycle`.
+/// Updates `state.model_state.model`, persists to settings.json, and updates status.
 fn cycle_model(state: &mut crate::state::AppState, direction: i32) {
-    if state.models_cycle.is_empty() {
-        state.status = "(no model cycle configured; use /model)".to_string();
+    if state.model_state.models_cycle.is_empty() {
+        state.run_state.status = "(no model cycle configured; use /model)".to_string();
         return;
     }
     // Find current model in cycle; advance by `direction`.
     let current_pos = state
-        .models_cycle
+        .model_state.models_cycle
         .iter()
-        .position(|m| m == &state.model)
+        .position(|m| m == &state.model_state.model)
         .unwrap_or(0);
-    let n = state.models_cycle.len() as i32;
+    let n = state.model_state.models_cycle.len() as i32;
     let mut new_pos = current_pos as i32 + direction;
     if new_pos < 0 {
         new_pos += n;
@@ -961,16 +961,16 @@ fn cycle_model(state: &mut crate::state::AppState, direction: i32) {
         new_pos -= n;
     }
     let new_pos = new_pos as usize;
-    state.models_cycle_idx = Some(new_pos);
-    let new_model = state.models_cycle[new_pos].clone();
-    state.model = new_model.clone();
+    state.model_state.models_cycle_idx = Some(new_pos);
+    let new_model = state.model_state.models_cycle[new_pos].clone();
+    state.model_state.model = new_model.clone();
     // Persist to settings.json if the runtime wired in a real path.
-    let mut settings = match state.settings_path.clone() {
+    let mut settings = match state.model_state.settings_path.clone() {
         Some(p) => crate::settings::SettingsManager::load_from_disk(p),
         None => crate::settings::SettingsManager::default(),
     };
     settings.set_default_model(&new_model);
-    state.status = format!("model: {new_model}");
+    state.run_state.status = format!("model: {new_model}");
 }
 
 /// Cycle thinking level through the standard set.
@@ -980,8 +980,8 @@ fn cycle_thinking(state: &mut crate::state::AppState, direction: i32) {
     ];
     // Read current level from dedicated state field; fall back to "medium"
     // if never set.
-    let current = state
-        .thinking_level
+    let current = state.model_state.thinking_level
+        
         .as_deref()
         .unwrap_or("medium");
     let current_pos = LEVELS.iter().position(|l| *l == current).unwrap_or(3);
@@ -993,21 +993,21 @@ fn cycle_thinking(state: &mut crate::state::AppState, direction: i32) {
         new_pos -= n;
     }
     let new_level = LEVELS[new_pos as usize];
-    let mut settings = match &state.settings_path {
+    let mut settings = match &state.model_state.settings_path {
         Some(p) => crate::settings::SettingsManager::load_from_disk(p.clone()),
         None => crate::settings::SettingsManager::default(),
     };
     // If a model is selected and the user has a per-model override, write
     // to the override; otherwise update the default.
-    let model = state.model.clone();
+    let model = state.model_state.model.clone();
     if !model.is_empty() {
         settings.set_model_thinking_level(&model, new_level);
     } else {
         settings.set_default_thinking_level(new_level);
     }
     // Also update live state so the selector stays in sync.
-    state.thinking_level = Some(new_level.to_string());
-    state.status = format!("thinking: {new_level}");
+    state.model_state.thinking_level = Some(new_level.to_string());
+    state.run_state.status = format!("thinking: {new_level}");
 }
 
 fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, done: Arc<Notify>) {
@@ -1019,7 +1019,7 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
     match action {
         KeyAction::Insert(c) => {
             // F019: search-mode special keys (n/N) jump matches.
-            if state.search.is_some() {
+            if state.ui_state.search.is_some() {
                 if c == 'n' {
                     state.search_next();
                     return;
@@ -1028,14 +1028,14 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
                     return;
                 }
                 // Otherwise treat as query char.
-                if let Some(search) = state.search.as_mut() {
+                if let Some(search) = state.ui_state.search.as_mut() {
                     search.query.push(c);
                 }
-                let q = state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
+                let q = state.ui_state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
                 state.update_search_query(q);
                 return;
             }
-            if state.mode == RunMode::Editing {
+            if state.run_state.mode == RunMode::Editing {
                 state.input.insert_char(c);
                 state.refresh_completion();
             }
@@ -1044,12 +1044,12 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             // F019: open search when input is empty AND no popup is up;
             // otherwise insert literal `/` so the user can still type
             // a slash command.
-            if state.mode == RunMode::Editing
-                && state.completion.is_none()
+            if state.run_state.mode == RunMode::Editing
+                && state.ui_state.completion.is_none()
                 && state.input.text.is_empty()
             {
                 state.begin_search();
-            } else if state.mode == RunMode::Editing {
+            } else if state.run_state.mode == RunMode::Editing {
                 state.input.insert_char('/');
                 state.refresh_completion();
             }
@@ -1057,9 +1057,9 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         KeyAction::OpenCommandPalette => {
             // F015 Ctrl+K: open the command palette. Works from any
             // editing state; closes any open slash popup first.
-            if state.mode == RunMode::Editing {
-                state.completion = None;
-                state.status = "open_selector:palette".to_string();
+            if state.run_state.mode == RunMode::Editing {
+                state.ui_state.completion = None;
+                state.run_state.status = "open_selector:palette".to_string();
             }
         }
         KeyAction::PasteImage => {
@@ -1085,17 +1085,17 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
                         size as f64 / 1024.0
                     ));
                     // Brief status-bar hint.
-                    state.status = format!("pasted {:.1} KB", size as f64 / 1024.0);
+                    state.run_state.status = format!("pasted {:.1} KB", size as f64 / 1024.0);
                 }
                 Ok(None) => {}
                 Err(e) => {
                     state.push_assistant(format!("[paste error] {e}"));
-                    state.status = format!("paste error");
+                    state.run_state.status = format!("paste error");
                 }
             }
         }
         KeyAction::Newline => {
-            if state.mode == RunMode::Editing {
+            if state.run_state.mode == RunMode::Editing {
                 state.input.insert_char('\n');
                 state.refresh_completion();
             }
@@ -1103,11 +1103,11 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         KeyAction::Backspace => {
             // F019: search-mode backspace mutates the query, not the
             // input buffer.
-            if state.search.is_some() {
-                if let Some(search) = state.search.as_mut() {
+            if state.ui_state.search.is_some() {
+                if let Some(search) = state.ui_state.search.as_mut() {
                     search.query.pop();
                 }
-                let q = state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
+                let q = state.ui_state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
                 state.update_search_query(q);
                 return;
             }
@@ -1119,15 +1119,15 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             state.refresh_completion();
         }
         KeyAction::MoveLeft => {
-            if state.completion.is_some() {
-                state.completion.as_mut().unwrap().select_up();
+            if state.ui_state.completion.is_some() {
+                state.ui_state.completion.as_mut().unwrap().select_up();
             } else {
                 state.input.move_left();
             }
         }
         KeyAction::MoveRight => {
-            if state.completion.is_some() {
-                state.completion.as_mut().unwrap().select_down();
+            if state.ui_state.completion.is_some() {
+                state.ui_state.completion.as_mut().unwrap().select_down();
             } else {
                 state.input.move_right();
             }
@@ -1137,15 +1137,15 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         KeyAction::MoveWordLeft => state.input.move_word_left(),
         KeyAction::MoveWordRight => state.input.move_word_right(),
         KeyAction::MoveUp => {
-            if state.completion.is_some() {
-                state.completion.as_mut().unwrap().select_up();
+            if state.ui_state.completion.is_some() {
+                state.ui_state.completion.as_mut().unwrap().select_up();
             } else {
                 state.input.recall_history(-1);
             }
         }
         KeyAction::MoveDown => {
-            if state.completion.is_some() {
-                state.completion.as_mut().unwrap().select_down();
+            if state.ui_state.completion.is_some() {
+                state.ui_state.completion.as_mut().unwrap().select_down();
             } else {
                 state.input.recall_history(1);
             }
@@ -1156,24 +1156,24 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         KeyAction::KillWordForward => state.input.kill_word_forward(),
         KeyAction::Yank => {
             if !state.input.yank() {
-                state.status = "(kill ring empty)".to_string();
+                state.run_state.status = "(kill ring empty)".to_string();
             }
         }
         KeyAction::YankPop => {
             if !state.input.yank_pop() {
-                state.status = "(no previous yank)".to_string();
+                state.run_state.status = "(no previous yank)".to_string();
             }
         }
         KeyAction::Undo => {
             if !state.input.undo() {
-                state.status = "(nothing to undo)".to_string();
+                state.run_state.status = "(nothing to undo)".to_string();
             }
         }
         KeyAction::ClearInput => state.input.clear(),
         KeyAction::AcceptCompletionOrInsertTab => {
-            if state.completion.is_some() {
+            if state.ui_state.completion.is_some() {
                 state.apply_completion();
-            } else if state.mode == RunMode::Editing {
+            } else if state.run_state.mode == RunMode::Editing {
                 // No popup: insert literal tab.
                 state.input.insert_char('\t');
             }
@@ -1193,7 +1193,7 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             //
             // Tab still does the pure "accept" path, so power users can
             // always preview before submitting.
-            if let Some(popup) = state.completion.as_ref() {
+            if let Some(popup) = state.ui_state.completion.as_ref() {
                 let items = &popup.items;
                 let unique = items.len() == 1;
                 let exact = state
@@ -1209,17 +1209,17 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
                     // Fall through to submit below — but clear the popup
                     // first so submit_user_input sees Editing without
                     // completion.
-                    state.completion = None;
+                    state.ui_state.completion = None;
                 } else if popup.selected_item_has_argument_hint() {
                     state.apply_completion();
                     return;
                 } else {
                     state.apply_completion();
                     // Don't return — let submit proceed.
-                    state.completion = None;
+                    state.ui_state.completion = None;
                 }
             }
-            if state.completion.is_some() {
+            if state.ui_state.completion.is_some() {
                 state.apply_completion();
             } else {
                 // Install an abort signal for the upcoming agent turn. The
@@ -1227,29 +1227,29 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
                 // access to AppState today; the CLI would need to set this
                 // before spawning the driver. v1 stores the signal here so
                 // that any future driver-side wiring can read it.
-                state.abort_signal = Some(Arc::new(tokio::sync::Notify::new()));
+                state.run_state.abort_signal = Some(Arc::new(tokio::sync::Notify::new()));
                 drop(state);
                 submit_user_input(shared, agent_driver, done);
             }
         }
         KeyAction::Abort => {
-            if state.completion.is_some() {
-                state.completion = None;
-            } else if state.search.is_some() {
+            if state.ui_state.completion.is_some() {
+                state.ui_state.completion = None;
+            } else if state.ui_state.search.is_some() {
                 // Esc exits transcript search (F019).
                 state.end_search();
-                state.status = "ready".to_string();
-            } else if state.pending_quit.is_some() {
+                state.run_state.status = "ready".to_string();
+            } else if state.run_state.pending_quit.is_some() {
                 // Esc cancels the pending Ctrl+D quit confirmation.
-                state.pending_quit = None;
-                state.status = "ready".to_string();
-            } else if state.mode == RunMode::Running {
+                state.run_state.pending_quit = None;
+                state.run_state.status = "ready".to_string();
+            } else if state.run_state.mode == RunMode::Running {
                 // Signal the agent to abort, then mark mode as Aborted.
-                if let Some(sig) = state.abort_signal.as_ref() {
+                if let Some(sig) = state.run_state.abort_signal.as_ref() {
                     sig.notify_waiters();
                 }
-                state.mode = RunMode::Aborted;
-                state.status = "aborted".to_string();
+                state.run_state.mode = RunMode::Aborted;
+                state.run_state.status = "aborted".to_string();
             } else {
                 state.input.clear();
             }
@@ -1264,18 +1264,18 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             use std::time::{Duration, Instant};
             const QUIT_CONFIRM_WINDOW_MS: u64 = 3000;
             let now = Instant::now();
-            if let Some(pending_at) = state.pending_quit {
+            if let Some(pending_at) = state.run_state.pending_quit {
                 if now.duration_since(pending_at) <= Duration::from_millis(QUIT_CONFIRM_WINDOW_MS) {
-                    state.pending_quit = None;
-                    state.mode = RunMode::Quitting;
+                    state.run_state.pending_quit = None;
+                    state.run_state.mode = RunMode::Quitting;
                 } else {
                     // Window expired; treat this as the first tap again.
-                    state.pending_quit = Some(now);
-                    state.status = "Press Ctrl+D again to quit, or Esc to cancel".to_string();
+                    state.run_state.pending_quit = Some(now);
+                    state.run_state.status = "Press Ctrl+D again to quit, or Esc to cancel".to_string();
                 }
             } else {
-                state.pending_quit = Some(now);
-                state.status = "Press Ctrl+D again to quit, or Esc to cancel".to_string();
+                state.run_state.pending_quit = Some(now);
+                state.run_state.status = "Press Ctrl+D again to quit, or Esc to cancel".to_string();
             }
         }
         KeyAction::SwitchModel => {
@@ -1284,7 +1284,7 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             // The previous implementation only set a status string, which
             // made Ctrl+L a no-op despite the CHANGELOG claiming
             // ModelSelector is wired.
-            state.status = "open_selector:model".to_string();
+            state.run_state.status = "open_selector:model".to_string();
         }
         KeyAction::OpenExternalEditor => {
             // F020: signal the run loop to suspend the TUI, spawn
@@ -1293,8 +1293,8 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             // suspend/resume dance because it has access to the
             // terminal handle. The flag is checked on the next
             // event-loop iteration.
-            state.pending_external_editor = true;
-            state.status = "opening editor…".to_string();
+            state.run_state.pending_external_editor = true;
+            state.run_state.status = "opening editor…".to_string();
         }
         KeyAction::CycleModelNext => cycle_model(&mut state, 1),
         KeyAction::CycleModelPrev => cycle_model(&mut state, -1),
@@ -1303,23 +1303,23 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         KeyAction::ShowHelp => {
             // v0.6: F1 toggles the help overlay + extended footer.
             // The overlay-close half is handled in the main loop via
-            // `state.close_help` (set true here; loop clears the
+            // `state.ui_state.close_help` (set true here; loop clears the
             // active selector and resets the flag).
-            if state.help_extended {
-                state.help_extended = false;
-                state.close_help = true;
-                state.status = "ready".to_string();
+            if state.ui_state.help_extended {
+                state.ui_state.help_extended = false;
+                state.ui_state.close_help = true;
+                state.run_state.status = "ready".to_string();
             } else {
-                state.help_extended = true;
-                state.status = "open_selector:help".to_string();
+                state.ui_state.help_extended = true;
+                state.run_state.status = "open_selector:help".to_string();
             }
         }
         KeyAction::ScrollUp => {
             // PageUp: scroll up by ~10 lines.
-            let max_offset = state.transcript.len().saturating_sub(1);
+            let max_offset = state.transcript_state.lines.len().saturating_sub(1);
             let step = 10usize;
-            state.scroll_offset = (state.scroll_offset + step).min(max_offset);
-            state.autoscroll = false;
+            state.transcript_state.scroll_offset = (state.transcript_state.scroll_offset + step).min(max_offset);
+            state.transcript_state.autoscroll = false;
         }
         KeyAction::ToggleCollapse => {
             // Toggle collapsed on the most-recent collapsible transcript
@@ -1343,11 +1343,11 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
         }
         KeyAction::ScrollDown => {
             let step = 10usize;
-            if state.scroll_offset <= step {
-                state.scroll_offset = 0;
-                state.autoscroll = true;
+            if state.transcript_state.scroll_offset <= step {
+                state.transcript_state.scroll_offset = 0;
+                state.transcript_state.autoscroll = true;
             } else {
-                state.scroll_offset -= step;
+                state.transcript_state.scroll_offset -= step;
             }
         }
         KeyAction::Noop => {}
@@ -1377,7 +1377,7 @@ fn submit_user_input_inner(
 ) {
     let text = {
         let mut g = shared.lock().unwrap();
-        if g.mode != RunMode::Editing {
+        if g.run_state.mode != RunMode::Editing {
             return;
         }
         let text = g.input.submit();
@@ -1426,7 +1426,7 @@ fn submit_user_input_inner(
                 } else {
                     cmd.to_string()
                 };
-                g.transcript.push(TranscriptLine::BashExecution {
+                g.transcript_state.lines.push(TranscriptLine::BashExecution {
                     id,
                     cmd: cmd_display,
                     output: output.clone(),
@@ -1442,7 +1442,7 @@ fn submit_user_input_inner(
                 // privacy marker tells us NOT to do that — the LLM will
                 // never learn the contents of this command.
                 if !private {
-                    g.pending_next_turn_messages.push(format!(
+                    g.run_state.pending_next_turn_messages.push(format!(
                         "[bash $ {}]\n{}",
                         cmd,
                         if result.stderr.is_empty() {
@@ -1455,7 +1455,7 @@ fn submit_user_input_inner(
                 // Brief status bar hint so users can confirm the privacy
                 // marker actually fired.
                 if private {
-                    g.status = "executed (private)".to_string();
+                    g.run_state.status = "executed (private)".to_string();
                 }
                 return;
             }
@@ -1472,42 +1472,42 @@ fn submit_user_input_inner(
                 CommandId::Model if args.trim().is_empty() => {
                     g.push_assistant("(opening model selector...)".to_string());
                     g.push_divider();
-                    g.status = "open_selector:model".to_string();
+                    g.run_state.status = "open_selector:model".to_string();
                     let text_for_agent = text.clone();
                     return drop_and_signal(text_for_agent, done);
                 }
                 CommandId::Thinking if args.trim().is_empty() => {
                     g.push_assistant("(opening thinking selector...)".to_string());
                     g.push_divider();
-                    g.status = "open_selector:thinking".to_string();
+                    g.run_state.status = "open_selector:thinking".to_string();
                     let text_for_agent = text.clone();
                     return drop_and_signal(text_for_agent, done);
                 }
                 CommandId::Session if args.trim().is_empty() => {
                     g.push_assistant("(opening session selector...)".to_string());
                     g.push_divider();
-                    g.status = "open_selector:session".to_string();
+                    g.run_state.status = "open_selector:session".to_string();
                     let text_for_agent = text.clone();
                     return drop_and_signal(text_for_agent, done);
                 }
                 CommandId::Tree if args.trim().is_empty() => {
                     g.push_assistant("(opening tree selector...)".to_string());
                     g.push_divider();
-                    g.status = "open_selector:tree".to_string();
+                    g.run_state.status = "open_selector:tree".to_string();
                     let text_for_agent = text.clone();
                     return drop_and_signal(text_for_agent, done);
                 }
                 CommandId::Trust if args.trim().is_empty() => {
                     g.push_assistant("(opening trust selector...)".to_string());
                     g.push_divider();
-                    g.status = "open_selector:trust".to_string();
+                    g.run_state.status = "open_selector:trust".to_string();
                     let text_for_agent = text.clone();
                     return drop_and_signal(text_for_agent, done);
                 }
                 CommandId::Settings if args.trim().is_empty() => {
                     g.push_assistant("(opening settings selector...)".to_string());
                     g.push_divider();
-                    g.status = "open_selector:settings".to_string();
+                    g.run_state.status = "open_selector:settings".to_string();
                     let text_for_agent = text.clone();
                     return drop_and_signal(text_for_agent, done);
                 }
@@ -1532,7 +1532,7 @@ fn submit_user_input_inner(
                     g.push_divider();
                 }
                 crate::commands::CommandOutcome::Quit => {
-                    g.mode = RunMode::Quitting;
+                    g.run_state.mode = RunMode::Quitting;
                 }
                 crate::commands::CommandOutcome::PromptArgument { prompt, next: _ } => {
                     // v1: prompt-argument flow not wired; show fallback.
@@ -1548,9 +1548,9 @@ fn submit_user_input_inner(
         // instead of spawning an agent. The queued messages are injected
         // as context alongside the next user prompt (mirrors Pi's
         // _pendingNextTurnMessages).
-        if g.is_compacting {
-            let n = g.pending_next_turn_messages.len() + 1;
-            g.pending_next_turn_messages.push(text.clone());
+        if g.run_state.is_compacting {
+            let n = g.run_state.pending_next_turn_messages.len() + 1;
+            g.run_state.pending_next_turn_messages.push(text.clone());
             // Use explicit let-bindings to avoid `format!` holding
             // simultaneous borrows on `g`.
             let msg = format!(
@@ -1566,7 +1566,7 @@ fn submit_user_input_inner(
         // Pi parity: flush any branch summaries or compaction-time queued
         // messages into the transcript as User-content (so the agent sees
         // them as context asides on the next turn). Then clear the queue.
-        let queued = std::mem::take(&mut g.pending_next_turn_messages);
+        let queued = std::mem::take(&mut g.run_state.pending_next_turn_messages);
         for aside in &queued {
             g.push_user(aside.clone());
             g.push_divider();
@@ -1580,7 +1580,7 @@ fn submit_user_input_inner(
         // also calls `should_auto_compact` and produces an LLM summary
         // before the model request, so this serves as the offline
         // default.
-        if g.should_auto_compact(&g.settings_snapshot) {
+        if g.should_auto_compact(&g.model_state.settings_snapshot) {
             let folded = g.auto_compact_local();
             g.push_assistant(format!(
                 "[auto-compact] folded {folded} entries before next turn"
@@ -1590,8 +1590,8 @@ fn submit_user_input_inner(
 
         g.push_user(text.clone());
         g.push_divider();
-        g.mode = RunMode::Running;
-        g.status = "running...".to_string();
+        g.run_state.mode = RunMode::Running;
+        g.run_state.status = "running...".to_string();
         text
     };
 
@@ -1609,26 +1609,26 @@ pub fn apply_action(state: &mut AppState, key: Key) {
     let action = resolve_with_user_overrides(key);
     match action {
         KeyAction::Insert(c) => {
-            if state.mode == RunMode::Editing {
+            if state.run_state.mode == RunMode::Editing {
                 state.input.insert_char(c);
                 state.refresh_completion();
             }
         }
         KeyAction::OpenCommandPalette => {
             // Test path: same as the runtime path (open_selector:palette).
-            if state.mode == RunMode::Editing {
-                state.completion = None;
-                state.status = "open_selector:palette".to_string();
+            if state.run_state.mode == RunMode::Editing {
+                state.ui_state.completion = None;
+                state.run_state.status = "open_selector:palette".to_string();
             }
         }
         KeyAction::OpenSearch => {
             // Test path mirrors the runtime path.
-            if state.mode == RunMode::Editing
-                && state.completion.is_none()
+            if state.run_state.mode == RunMode::Editing
+                && state.ui_state.completion.is_none()
                 && state.input.text.is_empty()
             {
                 state.begin_search();
-            } else if state.mode == RunMode::Editing {
+            } else if state.run_state.mode == RunMode::Editing {
                 state.input.insert_char('/');
                 state.refresh_completion();
             }
@@ -1636,8 +1636,8 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::OpenExternalEditor => {
             // F020: same as the runtime path — set the flag and
             // let the run loop handle the suspend/resume dance.
-            state.pending_external_editor = true;
-            state.status = "opening editor…".to_string();
+            state.run_state.pending_external_editor = true;
+            state.run_state.status = "opening editor…".to_string();
         }
         KeyAction::PasteImage => {
             // Try to read an image from the system clipboard. If found,
@@ -1662,17 +1662,17 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                         size as f64 / 1024.0
                     ));
                     // Brief status-bar hint.
-                    state.status = format!("pasted {:.1} KB", size as f64 / 1024.0);
+                    state.run_state.status = format!("pasted {:.1} KB", size as f64 / 1024.0);
                 }
                 Ok(None) => {}
                 Err(e) => {
                     state.push_assistant(format!("[paste error] {e}"));
-                    state.status = format!("paste error");
+                    state.run_state.status = format!("paste error");
                 }
             }
         }
         KeyAction::Newline => {
-            if state.mode == RunMode::Editing {
+            if state.run_state.mode == RunMode::Editing {
                 state.input.insert_char('\n');
                 state.refresh_completion();
             }
@@ -1680,11 +1680,11 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::Backspace => {
             // F019: search-mode backspace mutates the query, not the
             // input buffer.
-            if state.search.is_some() {
-                if let Some(search) = state.search.as_mut() {
+            if state.ui_state.search.is_some() {
+                if let Some(search) = state.ui_state.search.as_mut() {
                     search.query.pop();
                 }
-                let q = state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
+                let q = state.ui_state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
                 state.update_search_query(q);
                 return;
             }
@@ -1699,19 +1699,19 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             // Popup navigation: if popup visible and cursor is at start,
             // arrow up should select previous item. Otherwise it's
             // standard cursor motion.
-            if state.completion.is_some() {
-                if state.completion.as_ref().unwrap().selected == 0 {
+            if state.ui_state.completion.is_some() {
+                if state.ui_state.completion.as_ref().unwrap().selected == 0 {
                     // wrap
                 } else {
-                    state.completion.as_mut().unwrap().select_up();
+                    state.ui_state.completion.as_mut().unwrap().select_up();
                 }
             } else {
                 state.input.move_left();
             }
         }
         KeyAction::MoveRight => {
-            if state.completion.is_some() {
-                state.completion.as_mut().unwrap().select_down();
+            if state.ui_state.completion.is_some() {
+                state.ui_state.completion.as_mut().unwrap().select_down();
             } else {
                 state.input.move_right();
             }
@@ -1721,15 +1721,15 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::MoveWordLeft => state.input.move_word_left(),
         KeyAction::MoveWordRight => state.input.move_word_right(),
         KeyAction::MoveUp => {
-            if state.completion.is_some() {
-                state.completion.as_mut().unwrap().select_up();
+            if state.ui_state.completion.is_some() {
+                state.ui_state.completion.as_mut().unwrap().select_up();
             } else {
                 state.input.recall_history(-1);
             }
         }
         KeyAction::MoveDown => {
-            if state.completion.is_some() {
-                state.completion.as_mut().unwrap().select_down();
+            if state.ui_state.completion.is_some() {
+                state.ui_state.completion.as_mut().unwrap().select_down();
             } else {
                 state.input.recall_history(1);
             }
@@ -1740,25 +1740,25 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::KillWordForward => state.input.kill_word_forward(),
         KeyAction::Yank => {
             if !state.input.yank() {
-                state.status = "(kill ring empty)".to_string();
+                state.run_state.status = "(kill ring empty)".to_string();
             }
         }
         KeyAction::YankPop => {
             if !state.input.yank_pop() {
-                state.status = "(no previous yank)".to_string();
+                state.run_state.status = "(no previous yank)".to_string();
             }
         }
         KeyAction::Undo => {
             if !state.input.undo() {
-                state.status = "(nothing to undo)".to_string();
+                state.run_state.status = "(nothing to undo)".to_string();
             }
         }
         KeyAction::ClearInput => state.input.clear(),
         KeyAction::Submit => {
-            if state.mode == RunMode::Editing {
+            if state.run_state.mode == RunMode::Editing {
                 // If completion popup is showing, accept the selected item
                 // instead of submitting.
-                if state.completion.is_some() {
+                if state.ui_state.completion.is_some() {
                     state.apply_completion();
                     return;
                 }
@@ -1782,7 +1782,7 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                                 state.push_divider();
                             }
                             crate::commands::CommandOutcome::Quit => {
-                                state.mode = RunMode::Quitting;
+                                state.run_state.mode = RunMode::Quitting;
                             }
                             crate::commands::CommandOutcome::PromptArgument { .. } => {
                                 // v1: prompt-argument flow not implemented; show fallback.
@@ -1800,16 +1800,16 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             }
         }
         KeyAction::Abort => {
-            if state.completion.is_some() {
+            if state.ui_state.completion.is_some() {
                 // Cancel popup without changing input.
-                state.completion = None;
-            } else if state.mode == RunMode::Running {
-                state.mode = RunMode::Aborted;
+                state.ui_state.completion = None;
+            } else if state.run_state.mode == RunMode::Running {
+                state.run_state.mode = RunMode::Aborted;
             } else {
                 state.input.clear();
             }
         }
-        KeyAction::Quit => state.mode = RunMode::Quitting,
+        KeyAction::Quit => state.run_state.mode = RunMode::Quitting,
         KeyAction::SwitchModel
         | KeyAction::ShowHelp
         | KeyAction::ScrollUp

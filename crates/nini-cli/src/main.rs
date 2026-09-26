@@ -456,7 +456,7 @@ async fn main() -> Result<()> {
                         //   2. settings.json `model` field
                         //   3. settings.json `provider` field (fallback name)
                         //   4. "test-model" (last resort)
-                        // The original v0.7.2 code read `s.provider` first,
+                        // The original v0.7.2 code read `s.model_state.provider` first,
                         // which meant the status bar showed "openai-compat"
                         // (the provider name) instead of the actual model.
                         let picked = if !model.is_empty() {
@@ -468,15 +468,15 @@ async fn main() -> Result<()> {
                         } else {
                             "test-model".to_string()
                         };
-                        state.model = picked;
+                        state.model_state.model = picked;
                         // v0.8: surface the provider name in the status bar
                         // (Pi-style `(provider) model`). Helps users
                         // disambiguate `MiniMax-M3` from gateway vs local,
                         // or `gpt-4o` from openai vs openai-compat.
                         if !provider.is_empty() {
-                            state.provider = Some(provider.clone());
+                            state.model_state.provider = Some(provider.clone());
                         }
-                        // Seed state.cwd / state.git_branch so the status
+                        // Seed state.session_state.cwd / state.session_state.git_branch so the status
                         // bar can render them (previously only declared in
                         // AppState, never populated).
                         state.set_status_bar_metadata(
@@ -488,8 +488,8 @@ async fn main() -> Result<()> {
                         let mj = nini_core::settings::load_models_json(dir);
                         if !mj.providers.is_empty() {
                             let runtime = nini_core::model_runtime::ModelRuntime::from_models_json(&mj);
-                            if let Some(m) = runtime.find_by_id(&state.model) {
-                                state.context_window = m.context_window;
+                            if let Some(m) = runtime.find_by_id(&state.model_state.model) {
+                                state.run_state.context_window = m.context_window;
                             }
                         }
                         // Load models.json to populate the model cycle
@@ -497,12 +497,12 @@ async fn main() -> Result<()> {
                         let mj = nini_core::settings::load_models_json(dir);
                         if !mj.providers.is_empty() {
                             let runtime = nini_core::model_runtime::ModelRuntime::from_models_json(&mj);
-                            state.models_cycle = runtime.all().iter().map(|m| m.id.clone()).collect();
+                            state.model_state.models_cycle = runtime.all().iter().map(|m| m.id.clone()).collect();
                             // Pre-select current model in cycle.
-                            state.models_cycle_idx = state
-                                .models_cycle
+                            state.model_state.models_cycle_idx = state
+                                .model_state.models_cycle
                                 .iter()
-                                .position(|m| m == &state.model);
+                                .position(|m| m == &state.model_state.model);
                         }
                         // Wire the live settings.json path so cycle_model /
                         // /model / /thinking actually persist.
@@ -512,16 +512,16 @@ async fn main() -> Result<()> {
                                 .join("agent")
                                 .join("settings.json");
                             if p.exists() {
-                                state.settings_path = Some(p);
+                                state.model_state.settings_path = Some(p);
                             }
                         }
                         // Seed initial thinking level from settings so
                         // cycle_thinking reads a real value (not a string parse
-                        // of state.status).
+                        // of state.run_state.status).
                         if let Some(t) = nini_core::settings::load_settings(dir)
                             .thinking_level
                         {
-                            state.thinking_level = Some(t);
+                            state.model_state.thinking_level = Some(t);
                         }
                         let skills = load_skills(dir);
                         if !skills.skills.is_empty() {
@@ -530,7 +530,7 @@ async fn main() -> Result<()> {
                             // transcript banner — the banner was a
                             // permanent eyesore (and worse, overlapped
                             // with the selector panel).
-                            state.status = format!("loaded {count} skills — type to begin");
+                            state.run_state.status = format!("loaded {count} skills — type to begin");
                         }
                     }
 
@@ -582,9 +582,9 @@ async fn main() -> Result<()> {
                                 .map_err(|e| format!("Failed to load session: {e}"))?;
                             // Rebuild transcript from loaded session entries.
                             // Take the Arc out of state so we can lock it without borrowing state.
-                            state.transcript.clear();
-                            let session_id = state.session_id.clone().unwrap_or_default();
-                            let session_arc = state.session.take();
+                            state.transcript_state.lines.clear();
+                            let session_id = state.session_state.session_id.clone().unwrap_or_default();
+                            let session_arc = state.session_state.session.take();
                             if let Some(arc) = session_arc {
                                 if let Ok(guard) = arc.try_lock() {
                                     for entry in &guard.entries {
@@ -601,7 +601,7 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 }
-                                state.session = Some(arc);
+                                state.session_state.session = Some(arc);
                             }
                             state.push_assistant(format!("(continued session {session_id})"));
                             state.push_divider();

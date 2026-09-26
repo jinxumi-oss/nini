@@ -182,7 +182,7 @@ async fn submit_triggers_agent_and_renders_response() {
         let mut g = shared.lock().unwrap();
         g.push_user(submitted.clone());
         g.push_divider();
-        g.mode = nini_tui::state::RunMode::Running;
+        g.run_state.mode = nini_tui::state::RunMode::Running;
     } // lock dropped here
 
     let done = Arc::new(Notify::new());
@@ -206,7 +206,7 @@ async fn submit_triggers_agent_and_renders_response() {
     assert!(frame.contains("hello"), "assistant text missing");
 
     // Mode should be back to Editing after Done.
-    assert_eq!(snapshot.mode, nini_tui::state::RunMode::Editing);
+    assert_eq!(snapshot.run_state.mode, nini_tui::state::RunMode::Editing);
 }
 
 // =====================================================================
@@ -256,7 +256,7 @@ async fn multiple_submits_accumulate_in_transcript() {
         frame.matches("─────────").count() + frame.matches("─").count().saturating_sub(20); // crude: accept any dashes
     // Just check transcript length grew.
     assert!(
-        snapshot.transcript.len() >= 6,
+        snapshot.transcript_state.lines.len() >= 6,
         "expected at least 6 transcript lines (2x user+assistant+divider)"
     );
     let _ = divider_count;
@@ -292,8 +292,8 @@ async fn token_usage_accumulates() {
     sink.push(AgentEventLite::Usage(200, 100, 0.0));
 
     let snapshot = shared.lock().unwrap().clone();
-    assert_eq!(snapshot.tokens.input, 300);
-    assert_eq!(snapshot.tokens.output, 150);
+    assert_eq!(snapshot.run_state.tokens.input, 300);
+    assert_eq!(snapshot.run_state.tokens.output, 150);
 
     // Render and verify status bar shows totals. New status-bar
     // format: 'in 300 | out 150' (with optional K/M suffix for
@@ -316,7 +316,7 @@ async fn tool_call_args_are_updated_on_stop() {
     });
     // Before stop, args is empty string
     let snap1 = shared.lock().unwrap().clone();
-    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, .. }) = snap1.transcript.last() {
+    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, .. }) = snap1.transcript_state.lines.last() {
         assert_eq!(args, "", "args should be empty before ToolCallStop");
     } else {
         panic!("expected ToolCall line");
@@ -327,7 +327,7 @@ async fn tool_call_args_are_updated_on_stop() {
     });
 
     let snap2 = shared.lock().unwrap().clone();
-    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, name, .. }) = snap2.transcript.last()
+    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, name, .. }) = snap2.transcript_state.lines.last()
     {
         assert_eq!(name, "bash");
         assert_eq!(args, r#"{"command":"ls"}"#);
@@ -351,7 +351,7 @@ async fn running_mode_visible_while_agent_runs() {
     let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
 
     // Set mode to Running (simulating what submit does)
-    shared.lock().unwrap().mode = nini_tui::state::RunMode::Running;
+    shared.lock().unwrap().run_state.mode = nini_tui::state::RunMode::Running;
 
     // Render before any events arrive. The new 5-state status bar
     // shows the spinner + 'working…' label when RunMode is Running.
@@ -419,15 +419,15 @@ async fn multiple_tool_calls_accumulate() {
     });
 
     let snap = shared.lock().unwrap().clone();
-    assert!(snap.transcript.iter().any(
+    assert!(snap.transcript_state.lines.iter().any(
         |l| matches!(l, nini_tui::state::TranscriptLine::ToolCall { name, .. } if name == "bash")
     ));
-    assert!(snap.transcript.iter().any(
+    assert!(snap.transcript_state.lines.iter().any(
         |l| matches!(l, nini_tui::state::TranscriptLine::ToolCall { name, .. } if name == "read")
     ));
     // Two results
     let result_count = snap
-        .transcript
+        .transcript_state.lines
         .iter()
         .filter(|l| matches!(l, nini_tui::state::TranscriptLine::ToolResult { .. }))
         .count();
@@ -444,14 +444,14 @@ fn apply_action_is_pure_no_spawn() {
         nini_tui::runtime::apply_action(&mut state, Key::char(c));
     }
     assert_eq!(state.input.text, "hello");
-    assert_eq!(state.mode, nini_tui::state::RunMode::Editing);
+    assert_eq!(state.run_state.mode, nini_tui::state::RunMode::Editing);
 
     // Submit via pure action (no spawn)
     nini_tui::runtime::apply_action(&mut state, Key::enter());
     assert_eq!(state.input.text, "");
-    assert_eq!(state.transcript.len(), 2); // user + divider
+    assert_eq!(state.transcript_state.lines.len(), 2); // user + divider
     // Mode stays Editing because no agent task spawned.
-    assert_eq!(state.mode, nini_tui::state::RunMode::Editing);
+    assert_eq!(state.run_state.mode, nini_tui::state::RunMode::Editing);
 }
 
 // =====================================================================
@@ -465,7 +465,7 @@ async fn full_pipeline_drive_keys_then_run_agent() {
     let keys = type_str("find TODOs and fix them");
     drive_keys(&mut state, &keys);
     assert_eq!(state.input.text, "");
-    assert_eq!(state.transcript.len(), 2); // user + divider
+    assert_eq!(state.transcript_state.lines.len(), 2); // user + divider
 
     // 2. Set up shared state + driver
     let shared = shared_state(state);
@@ -505,14 +505,14 @@ async fn full_pipeline_drive_keys_then_run_agent() {
     assert!(frame.contains("> find TODOs and fix them"));
     assert!(frame.contains("[tool call] grep"));
     assert!(frame.contains("Found 3 TODOs"));
-    assert_eq!(snap.mode, nini_tui::state::RunMode::Editing);
+    assert_eq!(snap.run_state.mode, nini_tui::state::RunMode::Editing);
 
     // 5. The transcript should have 5+ lines: user, divider, tool_call,
     //    tool_result, assistant, divider (from TurnEnd).
     assert!(
-        snap.transcript.len() >= 5,
+        snap.transcript_state.lines.len() >= 5,
         "expected ≥5 transcript lines, got {}",
-        snap.transcript.len()
+        snap.transcript_state.lines.len()
     );
 }
 
@@ -540,7 +540,7 @@ async fn concurrent_sink_pushes_dont_panic() {
     let snap = shared.lock().unwrap().clone();
     // 100 chunks total
     let combined: String = snap
-        .transcript
+        .transcript_state.lines
         .iter()
         .map(|l| match l {
             nini_tui::state::TranscriptLine::AssistantText(s) => s.clone(),
@@ -698,7 +698,7 @@ fn paste_image_appends_echo_to_transcript() {
     // No image pasted (no clipboard in CI) → input unchanged,
     // no [pasted] echo in transcript.
     assert_eq!(state.input.text, "before");
-    let has_paste_echo = state.transcript.iter().any(|l| {
+    let has_paste_echo = state.transcript_state.lines.iter().any(|l| {
         matches!(l, TranscriptLine::AssistantText(s) if s.contains("[pasted]"))
     });
     assert!(
@@ -707,5 +707,5 @@ fn paste_image_appends_echo_to_transcript() {
     );
     // Status bar should also not show "pasted" without an actual
     // paste event.
-    assert!(!state.status.contains("pasted"));
+    assert!(!state.run_state.status.contains("pasted"));
 }
