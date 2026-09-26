@@ -2022,3 +2022,108 @@ mod tests {
         assert_eq!(s.input.text, "abcdef");
     }
 }
+
+
+#[cfg(test)]
+mod sub_struct_tests {
+    //! v0.8.1: per-sub-struct unit tests. Verifies each sub-struct
+    //! can be constructed, cloned, and mutated independently —
+    //! i.e. the AppState split didn't introduce cross-coupling.
+
+    use super::*;
+
+    #[test]
+    fn transcript_state_push_user_increments_length() {
+        let mut ts = TranscriptState::default();
+        for i in 0..3 {
+            ts.lines.push(TranscriptLine::User(format!("msg {i}")));
+        }
+        assert_eq!(ts.lines.len(), 3);
+        assert!(matches!(ts.lines[0], TranscriptLine::User(_)));
+    }
+
+    #[test]
+    fn transcript_state_estimate_tokens_simple() {
+        let mut ts = TranscriptState::default();
+        // 8 chars / 4 = 2 tokens (round up)
+        ts.lines.push(TranscriptLine::AssistantText("abcdefgh".into()));
+        let app = AppState { transcript_state: ts, ..AppState::default() };
+        assert_eq!(app.estimate_transcript_tokens(), 2);
+    }
+
+    #[test]
+    fn run_state_mode_transitions() {
+        let mut rs = RunState::default();
+        assert_eq!(rs.mode, RunMode::Editing);
+        rs.mode = RunMode::Running;
+        assert_eq!(rs.mode, RunMode::Running);
+        rs.mode = RunMode::Editing;
+        assert_eq!(rs.mode, RunMode::Editing);
+    }
+
+    #[test]
+    fn run_state_pending_quit_window() {
+        let mut rs = RunState::default();
+        rs.pending_quit = Some(std::time::Instant::now());
+        assert!(rs.pending_quit.is_some());
+        rs.pending_quit = None;
+        assert!(rs.pending_quit.is_none());
+    }
+
+    #[test]
+    fn model_state_cycle_model_advances() {
+        let mut ms = ModelState::default();
+        ms.models_cycle = vec!["a".into(), "b".into(), "c".into()];
+        ms.models_cycle_idx = Some(0);
+        // Cycle forward
+        let next = (ms.models_cycle_idx.unwrap() + 1) % ms.models_cycle.len();
+        ms.models_cycle_idx = Some(next);
+        assert_eq!(ms.models_cycle_idx, Some(1));
+        // Wrap-around at end
+        ms.models_cycle_idx = Some(2);
+        let next = (ms.models_cycle_idx.unwrap() + 1) % ms.models_cycle.len();
+        ms.models_cycle_idx = Some(next);
+        assert_eq!(ms.models_cycle_idx, Some(0));
+    }
+
+    #[test]
+    fn model_state_provider_roundtrip() {
+        let mut ms = ModelState::default();
+        ms.provider = Some("anthropic".into());
+        assert_eq!(ms.provider.as_deref(), Some("anthropic"));
+        ms.provider = None;
+        assert_eq!(ms.provider, None);
+    }
+
+    #[test]
+    fn session_state_metadata_setter() {
+        let mut ss = SessionState::default();
+        ss.cwd = Some(PathBuf::from("/tmp"));
+        ss.git_branch = Some("main".into());
+        assert_eq!(ss.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+        assert_eq!(ss.git_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn ui_state_selector_clone_drops() {
+        // The selector field holds Option<Box<dyn SelectorState>>,
+        // which is not Clone. UiState::clone() must reset selector
+        // to None (mirrors v0.8.0's clone_for_render behavior).
+        let mut us = UiState::default();
+        us.theme_name = Some("dark".into());
+        let cloned = us.clone();
+        assert_eq!(cloned.theme_name, Some("dark".into()));
+        assert!(cloned.selector.is_none());
+    }
+
+    #[test]
+    fn appstate_default_has_six_fields() {
+        let s = AppState::default();
+        assert_eq!(s.input.text, "");           // InputBuffer::new()
+        assert!(s.transcript_state.lines.is_empty());
+        assert_eq!(s.run_state.mode, RunMode::Editing);
+        assert_eq!(s.model_state.model, "");
+        assert!(s.session_state.session.is_none());
+        assert!(s.ui_state.selector.is_none());
+    }
+}
