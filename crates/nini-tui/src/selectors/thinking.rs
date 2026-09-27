@@ -27,7 +27,7 @@ impl ThinkingSelector {
         let items: Vec<SelectorItem> = levels
             .iter()
             .map(|(id, desc)| SelectorItem {
-                id: id.to_string(),
+                value: id.to_string(),
                 label: id.to_string(),
                 description: Some(desc.to_string()),
                 is_current: *id == current_id,
@@ -59,7 +59,7 @@ impl SelectorState for ThinkingSelector {
         let item = self.items.get(self.selected).cloned();
         match item {
             Some(it) => {
-                self.result = Some(it.id.clone());
+                self.result = Some(it.value.clone());
                 SelectorOutcome::Picked(it)
             }
             None => SelectorOutcome::Cancelled,

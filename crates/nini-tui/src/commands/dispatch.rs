@@ -20,10 +20,45 @@ use super::result::{CommandOutcome, CommandResult};
 /// `settings` is used for commands that persist to ~/.pi/agent/settings.json
 /// (e.g., /model, /thinking). Pass `&mut SettingsManager::default()` if persistence
 /// is not needed.
-pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: CommandId, args: &str) -> CommandResult {
-    let args = args.trim();
+pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: CommandId, args: &str) -> CommandResult {    let args = args.trim();
     match id {
-        CommandId::Settings => {
+        CommandId::Settings => cmd_settings(state, settings, args),
+        CommandId::Model => cmd_model(state, settings, args),
+        CommandId::Tree => cmd_tree(state, settings, args),
+        CommandId::Thinking => cmd_thinking(state, settings, args),
+        CommandId::ScopedModels => cmd_scoped_models(state, settings, args),
+        CommandId::Export => cmd_export(state, settings, args),
+        CommandId::Import => cmd_import(state, settings, args),
+        CommandId::Copy => cmd_copy(state, settings, args),
+        CommandId::Name => cmd_name(state, settings, args),
+        CommandId::Session => cmd_session(state, settings, args),
+        CommandId::Changelog => cmd_changelog(state, settings, args),
+        CommandId::Fork => cmd_fork(state, settings, args),
+        CommandId::Clone => cmd_clone(state, settings, args),
+        CommandId::Trust => cmd_trust(state, settings, args),
+        CommandId::Login => cmd_login(state, settings, args),
+        CommandId::Logout => cmd_logout(state, settings, args),
+        CommandId::New => cmd_new(state, settings, args),
+        CommandId::Compact => cmd_compact(state, settings, args),
+        CommandId::Resume => cmd_resume(state, settings, args),
+        CommandId::Prompt => cmd_prompt(state, settings, args),
+        CommandId::Reload => cmd_reload(state, settings, args),
+        CommandId::Quit => cmd_quit(state, settings, args),
+        CommandId::Help => cmd_help(state, settings, args),
+        CommandId::Debug => cmd_debug(state, settings, args),
+        CommandId::Status => cmd_status(state, settings, args),
+        CommandId::Editor => cmd_editor(state, settings, args),
+        CommandId::Hotkeys => cmd_hotkeys(state, settings, args),
+        CommandId::Share => cmd_share(state, settings, args),
+    }
+}
+
+// =================================================================
+// Per-command implementations (one fn per CommandId arm)
+// =================================================================
+
+fn cmd_settings(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // Display current settings (mock until real settings UI is wired).
             let lines = vec![
                 "Settings (read-only)".to_string(),
@@ -35,8 +70,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 format!("  status:    {:?}", state.run_state.mode),
             ];
             CommandResult::output(lines)
-        }
-        CommandId::Model => {
+        
+}
+
+fn cmd_model(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /model <provider/model> — set the model for the next turn.
             if args.is_empty() {
                 return CommandResult::output(vec![
@@ -49,8 +87,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.push_assistant(format!("(model set to {})", args));
             state.push_divider();
             CommandResult::output(vec![format!("model → {args}")])
-        }
-        CommandId::Tree => {
+        
+}
+
+fn cmd_tree(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /tree — print the session tree (or build one from the
             // current session if no tree is persisted).
             //
@@ -111,8 +152,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             }));
             state.push_divider();
             CommandResult::output(out)
-        }
-        CommandId::Thinking => {
+        
+}
+
+fn cmd_thinking(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /thinking <off|minimal|low|medium|high|xhigh|max>
             let valid = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
             if args.is_empty() || !valid.contains(&args) {
@@ -125,8 +169,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.push_assistant(format!("(thinking level: {args})"));
             state.push_divider();
             CommandResult::output(vec![format!("thinking → {args}")])
-        }
-        CommandId::ScopedModels => {
+        
+}
+
+fn cmd_scoped_models(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /scoped-models [add|remove <model>|list|clear]
             // Mirrors Pi's per-model scoped-models config. Lets the user
             // curate which models are eligible for Ctrl+P cycling. The
@@ -203,8 +250,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                     CommandResult::output(out)
                 }
             }
-        }
-        CommandId::Export => {
+        
+}
+
+fn cmd_export(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // v1: write a minimal HTML snapshot of the transcript to ~/.pi/agent/exports/.
             let html = render_transcript_html(&state.transcript_state.lines);
             let dir = std::env::var("HOME").ok().map(|h| {
@@ -243,8 +293,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.push_assistant(format!("(exported session to {path})"));
             state.push_divider();
             CommandResult::output(vec![format!("export → {path}")])
-        }
-        CommandId::Import => {
+        
+}
+
+fn cmd_import(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /import <path-to-jsonl>
             // Reads a Pi-compatible JSONL session file, parses each
             // entry, and starts a new in-memory session from it. The
@@ -348,11 +401,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.push_divider();
             out.push(format!("transcript: {imported_count} entries"));
             CommandResult::output(out)
-        }
-        CommandId::Share => CommandResult::output(vec![
-            "(share — GitHub gist upload not yet implemented)".to_string(),
-        ]),
-        CommandId::Copy => {
+        
+}
+
+fn cmd_copy(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // Copy the last assistant message to the system clipboard.
             // Falls back to stdout (for headless) if clipboard unavailable.
             let last_assistant = state.transcript_state.lines.iter().rev().find_map(|l| match l {
@@ -377,8 +430,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 }
                 None => CommandResult::output(vec!["(no assistant message to copy)".to_string()]),
             }
-        }
-        CommandId::Name => {
+        
+}
+
+fn cmd_name(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             if args.is_empty() {
                 return CommandResult::output(vec!["Usage: /name <session name>".to_string()]);
             }
@@ -387,8 +443,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.push_assistant(format!("(session name: {args})"));
             state.push_divider();
             CommandResult::output(vec![format!("name → {args}")])
-        }
-        CommandId::Session => {
+        
+}
+
+fn cmd_session(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             let lines = vec![
                 format!(
                     "session_id: {}",
@@ -403,8 +462,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 ),
             ];
             CommandResult::output(lines)
-        }
-        CommandId::Changelog => {
+        
+}
+
+fn cmd_changelog(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // Read the project CHANGELOG.md and return the [Unreleased]
             // section plus the latest released version's section. Falls
             // back to a one-line note if the file is missing.
@@ -449,24 +511,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             }
             state.push_divider();
             CommandResult::output(lines)
-        }
-        CommandId::Hotkeys => CommandResult::output(vec![
-            "Key bindings (Pi-compatible)".to_string(),
-            "  F1            show help".to_string(),
-            "  Ctrl+C        abort / clear input".to_string(),
-            "  Ctrl+D        quit TUI".to_string(),
-            "  Ctrl+L        switch model".to_string(),
-            "  Enter         send input".to_string(),
-            "  Shift+Enter   newline".to_string(),
-            "  Ctrl+A        beginning of line".to_string(),
-            "  Ctrl+E        end of line".to_string(),
-            "  Ctrl+K        kill to end of line".to_string(),
-            "  Ctrl+U        clear input".to_string(),
-            "  Ctrl+W        kill word backward".to_string(),
-            "  Arrow keys    cursor / history".to_string(),
-            "  PgUp/PgDn     scroll transcript".to_string(),
-        ]),
-        CommandId::Fork => {
+        
+}
+
+fn cmd_fork(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /fork [index]
             // Creates a new session that branches from a previous user
             // message in the current transcript. Without args, the user
@@ -543,8 +592,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 out.push("(pass a number like /fork 2 to fork at that point)".to_string());
             }
             CommandResult::output(out)
-        }
-        CommandId::Clone => {
+        
+}
+
+fn cmd_clone(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /clone — duplicate the current session's JSONL to a new file
             // with a fresh timestamp. The current in-memory transcript
             // keeps editing the original; the clone is a side artifact.
@@ -572,8 +624,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 }
                 Err(e) => CommandResult::output(vec![format!("(clone failed: {e})")]),
             }
-        }
-        CommandId::Trust => {
+        
+}
+
+fn cmd_trust(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /trust [trusted|distrust|ask|list|clear]
             // Persists a TrustDecision for the current working directory
             // in `~/.pi/agent/trust.json` (Pi-compatible).
@@ -648,8 +703,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             }
             state.push_divider();
             CommandResult::output(out)
-        }
-        CommandId::Login => {
+        
+}
+
+fn cmd_login(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /login <provider>
             // nini v1 doesn't run an OAuth/device-flow inside the TUI
             // (matching the README guidance to use env-var credentials).
@@ -707,8 +765,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 out.push("then re-launch nini.".to_string());
             }
             CommandResult::output(out)
-        }
-        CommandId::Logout => {
+        
+}
+
+fn cmd_logout(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /logout [provider]
             // Removes the API key for the given provider (or all known
             // providers when no arg given) from the process environment.
@@ -773,8 +834,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 out.push(format!("already unset: {}", missing.join(", ")));
             }
             CommandResult::output(out)
-        }
-        CommandId::New => {
+        
+}
+
+fn cmd_new(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // Clear the transcript and create a fresh session.
             let prev_len = state.transcript_state.lines.len();
             state.transcript_state.lines.clear();
@@ -805,8 +869,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 prev_len,
                 state.session_state.session_id.as_deref().unwrap_or("?")
             )])
-        }
-        CommandId::Compact => {
+        
+}
+
+fn cmd_compact(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // Manual compaction: call the local heuristic summarizer
             // (matches the algorithm used by the auto-compaction path).
             // The runtime could pass an LLM-backed summary_fn to call
@@ -906,8 +973,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 format!("compacted: {summary_len} entries → summary"),
                 format!("new transcript size: {}", state.transcript_state.lines.len()),
             ])
-        }
-        CommandId::Resume => {
+        
+}
+
+fn cmd_resume(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /resume [n] — list available sessions or load by index.
             // Scans ~/.pi/agent/sessions/ recursively for .jsonl files.
             // v0.5 only read the top-level directory and missed the
@@ -1075,8 +1145,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             }
             lines.push("Type /resume <number> to load.".to_string());
             CommandResult::output(lines)
-        }
-        CommandId::Prompt => {
+        
+}
+
+fn cmd_prompt(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // /prompt <name> [args...]
             // Loads user-defined prompt templates from `.pi/prompts/` and
             // `~/.pi/agent/prompts/`, then substitutes $1, $@, $ARGUMENTS
@@ -1165,8 +1238,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 }
             }
             CommandResult::output(out)
-        }
-        CommandId::Reload => {
+        
+}
+
+fn cmd_reload(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // Reload skills from disk; provider/models are read at startup.
             let cwd = std::env::current_dir().ok();
             let new_count = cwd
@@ -1176,12 +1252,18 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             state.push_assistant(format!("(reloaded {new_count} skills from disk)"));
             state.push_divider();
             CommandResult::output(vec![format!("reload: {new_count} skills")])
-        }
-        CommandId::Quit => {
+        
+}
+
+fn cmd_quit(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             state.run_state.mode = RunMode::Quitting;
             CommandResult::quit()
-        }
-        CommandId::Help => {
+        
+}
+
+fn cmd_help(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // Open the help overlay via the selector-open status flag.
             // The overlay itself lives in the TUI runtime / selector
             // infrastructure (F014 in the plan wires a polished version).
@@ -1189,8 +1271,11 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
             CommandResult::output(vec![
                 "Type /<tab> to see all commands; F1 toggles extended hints.".to_string(),
             ])
-        }
-        CommandId::Debug => {
+        
+}
+
+fn cmd_debug(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+
             // Toggle verbose logging. The log file path mirrors Pi's
             // ~/.pi/agent/log location; users can `tail -f` it.
             let new_state = !state.ui_state.debug_logging;
@@ -1200,27 +1285,26 @@ pub fn dispatch(state: &mut AppState, settings: &mut SettingsManager, id: Comman
                 "debug logging: {label} ({} per keystroke)",
                 if new_state { "logging" } else { "stopped" }
             )])
-        }
-        CommandId::Status => {
-            // Render a one-shot status block into the transcript. Matches
-            // Pi's `/status` semantics: a snapshot, not a live view.
-            let lines = build_status_lines(state);
-            CommandResult::output(lines)
-        }
-        CommandId::Editor => {
-            // Open the current input in $VISUAL / $EDITOR / nano.
-            // Synchronous from the dispatcher's POV; the actual spawn is
-            // handled by the runtime (which has access to the file
-            // handles). We just signal it here via the dedicated flag
-            // (not via state.run_state.status, which is a transient message
-            // surface that gets cleared after each frame).
-            state.run_state.pending_external_editor = true;
-            state.run_state.status = "Opening editor…".to_string();
-            CommandResult::output(vec![
-                "Opening editor…".to_string(),
-            ])
-        }
-    }
+        
+}
+
+fn cmd_status(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+    // Render a one-shot status block into the transcript. Matches
+    // Pi's `/status` semantics: a snapshot, not a live view.
+    let lines = build_status_lines(state);
+    CommandResult::output(lines)
+}
+
+fn cmd_editor(state: &mut AppState, settings: &mut SettingsManager, args: &str) -> CommandResult {
+    // Open the current input in $VISUAL / $EDITOR / nano.
+    // Synchronous from the dispatcher's POV; the actual spawn is
+    // handled by the runtime (which has access to the file
+    // handles). We just signal it here via the dedicated flag
+    // (not via state.run_state.status, which is a transient message
+    // surface that gets cleared after each frame).
+    state.run_state.pending_external_editor = true;
+    state.run_state.status = "Opening editor…".to_string();
+    CommandResult::output(vec!["Opening editor…".to_string()])
 }
 
 /// v0.7.1 — delegate to the chokepoint in nini-core::conversion.
@@ -1234,4 +1318,19 @@ fn entry_legacy_message(entry: &nini_core::SessionEntry) -> Option<nini_core::Ag
         content: m.content,
         timestamp: m.timestamp,
     })
+}
+
+fn cmd_hotkeys(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
+    // v0.6: F1 already toggles `help_extended` in state. This /hotkeys
+    // command prints the same content as a CommandResult for users
+    // who prefer /hotkeys over F1.
+    let _ = state;
+    CommandResult::error("hotkeys: press F1 (help_extended) for the keymap")
+}
+
+fn cmd_share(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
+    // v0.6+: share = export to a secret GitHub gist. Not yet wired;
+    // see Pi spec `references/spec-v0.85.1/slash-commands/share.md`.
+    let _ = state;
+    CommandResult::error("share: not yet implemented")
 }

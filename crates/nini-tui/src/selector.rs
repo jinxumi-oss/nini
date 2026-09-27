@@ -23,19 +23,13 @@ use std::any::Any;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
+use crate::components::select_list::SelectItem;
 use crate::theme::Theme;
 
-/// A single entry shown in a selector list.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SelectorItem {
-    pub id: String,
-    pub label: String,
-    /// Optional secondary line shown dim under the label.
-    pub description: Option<String>,
-    /// True if this item should appear selected by default (e.g. the
-    /// currently-active model).
-    pub is_current: bool,
-}
+/// Alias kept for back-compat with existing callers (selectors/*.rs,
+/// runtime.rs, command_palette.rs). New code should use
+/// `SelectItem` from `crate::components::select_list` directly.
+pub type SelectorItem = SelectItem;
 
 /// Outcome of a user pressing Enter on a selector.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +84,11 @@ impl Widget for SelectorPanel {
         // Outer border around the panel. Fill the inner area with the
         // theme's background so prior transcript text doesn't bleed
         // through (v0.5's selector was effectively transparent).
-        let bg_style = self.theme.bg_style("tool_pending_bg");
+        //
+        // v0.8.3: Fix typo "tool_pending_bg" → "toolPendingBg" so the
+        // background actually uses Pi's pending tint (was falling back
+        // to DarkGray because the old slot name was never declared).
+        let bg_style = self.theme.bg_style("toolPendingBg");
         let block = ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::ALL)
             .border_style(self.theme.fg_style("borderMuted"))
@@ -143,7 +141,9 @@ impl Widget for SelectorPanel {
         };
         prompt.render(rows[0], buf);
 
-        // Visible item rows.
+        // Visible item rows. v0.8.3: delegate rendering to
+        // `SelectList` (Pi parity — cursor arrow, 2-column layout,
+        // wrap-around nav all live in one component now).
         let list_area = rows[1];
         if self.visible.is_empty() {
             let msg = if self.items.is_empty() {
@@ -155,56 +155,39 @@ impl Widget for SelectorPanel {
             return;
         }
 
-        // The runtime passes `selected` as the index into the full items
-        // array. We translate to a position in `visible` by finding the
-        // smallest visible index that's >= selected. If `selected` is
-        // beyond every visible index, we clamp to the last visible.
+        // Build the SelectList from the visible slice.
+        let visible_items: Vec<crate::components::select_list::SelectItem> =
+            self.visible.iter().map(|&i| self.items[i].clone()).collect();
+        let mut list = crate::components::select_list::SelectList::new(
+            visible_items,
+            list_area.height as usize,
+        );
+        // Translate runtime's full-array `selected` to position in
+        // the visible slice (SelectList only knows about visible).
         let pos_in_visible = self
             .visible
             .iter()
             .position(|&i| i >= self.selected)
             .unwrap_or_else(|| self.visible.len().saturating_sub(1));
-
-        // Compute scroll offset so the selected row is visible.
-        let list_height = list_area.height as usize;
-        let mut scroll = 0usize;
-        if list_height > 0 && pos_in_visible >= list_height {
-            scroll = pos_in_visible + 1 - list_height;
-        }
-
-        let lines: Vec<RLine> = self
-            .visible
-            .iter()
-            .enumerate()
-            .skip(scroll)
-            .take(list_height.max(1))
-            .map(|(vi, &item_idx)| {
-                let item = &self.items[item_idx];
-                let is_sel = vi == pos_in_visible;
-                let bullet = if is_sel { "▸ " } else { "  " };
-                let style = if is_sel {
-                    self.theme.fg_style("accent").add_modifier(Modifier::BOLD)
-                } else if item.is_current {
-                    self.theme.fg_style("success")
-                } else {
-                    self.theme.fg_style("text")
-                };
-                let mut spans = vec![Span::styled(bullet.to_string(), style)];
-                spans.push(Span::styled(item.label.clone(), style));
-                if let Some(desc) = &item.description {
-                    spans.push(Span::raw(" ".to_string()));
-                    spans.push(Span::styled(
-                        desc.clone(),
-                        Style::default().fg(self.theme.fg_style("dim").fg.unwrap_or(ratatui::style::Color::DarkGray)),
-                    ));
-                }
-                RLine::from(spans)
-            })
+        list.set_selected(pos_in_visible);
+        let rendered = list.render_spans(
+            list_area.width as usize,
+            &self.theme,
+            "accent",
+            "muted",
+            "dim",
+            "muted",
+        );
+        let mut lines: Vec<RLine> = rendered
+            .lines
+            .into_iter()
+            .map(RLine::from)
             .collect();
-
-        // Render lines into list_area using Paragraph so they wrap correctly.
-        let para = ratatui::widgets::Paragraph::new(lines);
-        para.render(list_area, buf);
+        // Append (N/M) scroll indicator if items overflow.
+        if let Some(scroll_spans) = list.scroll_info_span(&self.theme, "muted") {
+            lines.push(RLine::from(scroll_spans));
+        }
+        ratatui::widgets::Paragraph::new(lines).render(list_area, buf);
     }
 }
 
@@ -236,7 +219,7 @@ pub fn fuzzy_filter(query: &str, items: &[SelectorItem]) -> Vec<usize> {
     let mut exact: Vec<usize> = Vec::new();
     for (i, item) in items.iter().enumerate() {
         if item.label.to_lowercase().contains(&q)
-            || item.id.to_lowercase().contains(&q)
+            || item.value.to_lowercase().contains(&q)
             || item
                 .description
                 .as_deref()
@@ -255,7 +238,7 @@ pub fn fuzzy_filter(query: &str, items: &[SelectorItem]) -> Vec<usize> {
         let hay = format!(
             "{} {} {}",
             item.label.to_lowercase(),
-            item.id.to_lowercase(),
+            item.value.to_lowercase(),
             item.description.as_deref().unwrap_or("")
         );
         // Require all query chars to lie in the SAME whitespace-delimited
@@ -292,7 +275,7 @@ mod tests {
 
     fn item(id: &str, label: &str) -> SelectorItem {
         SelectorItem {
-            id: id.to_string(),
+            value: id.to_string(),
             label: label.to_string(),
             description: None,
             is_current: false,

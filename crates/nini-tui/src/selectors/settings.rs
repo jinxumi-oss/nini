@@ -43,19 +43,19 @@ impl SettingsSelector {
     pub fn with_snapshot(snapshot: SettingsSnapshot) -> Self {
         let items = vec![
             SelectorItem {
-                id: "model".to_string(),
+                value: "model".to_string(),
                 label: "model".to_string(),
                 description: Some(snapshot.model.clone()),
                 is_current: false,
             },
             SelectorItem {
-                id: "theme".to_string(),
+                value: "theme".to_string(),
                 label: "theme".to_string(),
                 description: Some(snapshot.theme.clone()),
                 is_current: false,
             },
             SelectorItem {
-                id: "thinking".to_string(),
+                value: "thinking".to_string(),
                 label: "thinking".to_string(),
                 description: Some(snapshot.thinking.clone()),
                 is_current: false,
@@ -90,7 +90,7 @@ impl SelectorState for SettingsSelector {
         let item = self.items.get(self.selected).cloned();
         match item {
             Some(it) => {
-                self.result = Some(it.id.clone());
+                self.result = Some(it.value.clone());
                 SelectorOutcome::Picked(it)
             }
             None => SelectorOutcome::Cancelled,
