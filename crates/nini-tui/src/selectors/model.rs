@@ -26,7 +26,7 @@ impl ModelSelector {
             .list()
             .into_iter()
             .map(|m| SelectorItem {
-                id: m.id.clone(),
+                value: m.id.clone(),
                 label: m.id.clone(),
                 description: Some(format!("{} • context: {}k", m.provider, m.context_window / 1024)),
                 is_current: m.id == current_id,
@@ -59,7 +59,7 @@ impl SelectorState for ModelSelector {
         let item = self.items.get(self.selected).cloned();
         match item {
             Some(it) => {
-                self.result = Some(it.id.clone());
+                self.result = Some(it.value.clone());
                 SelectorOutcome::Picked(it)
             }
             None => SelectorOutcome::Cancelled,

@@ -41,20 +41,23 @@ pub fn render_assistant_message(text: &str, theme: &Theme) -> Vec<RLine<'static>
 
 /// Render a user message: `> ` prefix + plain text.
 ///
-/// Pure ASCII: we deliberately don't auto-link or markdownify user
-/// input — the prompt editor shows literal text, and markdownifying
-/// user messages would mangle pasted code.
+/// v0.8.3: Pi parity — wrap each line with `bg("userMessageBg")` so the
+/// user turn stands out from assistant output. `> ` prefix is rendered
+/// in `userMessageText` color, body text in `userMessageText` too.
 pub fn render_user_message(text: &str, theme: &Theme) -> Vec<RLine<'static>> {
-    let make_prefix = || Span::styled("> ", theme.fg_style("success"));
+    let bg = theme.bg_style("userMessageBg");
+    let fg = theme.color("userMessageText");
+    let make_prefix = || Span::styled("> ", bg.fg(fg).add_modifier(ratatui::style::Modifier::BOLD));
+    let make_body = |line: &str| Span::styled(line.to_string(), bg.fg(fg));
     // Break on newline so multi-line user input renders as multi-line.
     let mut out: Vec<RLine<'static>> = Vec::new();
     let mut first = true;
     for line in text.split('\n') {
         if first {
-            out.push(RLine::from(vec![make_prefix(), Span::raw(line.to_string())]));
+            out.push(RLine::from(vec![make_prefix(), make_body(line)]));
             first = false;
         } else {
-            out.push(RLine::from(Span::raw(format!("  {line}"))));
+            out.push(RLine::from(make_body(&format!("  {line}"))));
         }
     }
     if out.is_empty() {
@@ -65,23 +68,30 @@ pub fn render_user_message(text: &str, theme: &Theme) -> Vec<RLine<'static>> {
 
 /// Render a tool-call announcement: `[tool call] <name>(<args>)`.
 ///
-/// `args` is a JSON string truncated for display. The call name is
-/// styled with `toolPendingBg` to mirror Pi's pending color.
+/// v0.8.3: Wrap the call row with `bg("toolPendingBg")` so it visually
+/// pops as a pending operation (Pi's `ToolExecutionComponent` pattern).
+/// Title color uses `toolTitle` (emphasized); args in `toolOutput`.
 pub fn render_tool_call(name: &str, args: &str, theme: &Theme) -> Vec<RLine<'static>> {
     let args_preview = if args.len() > 120 {
         format!("{}…", &args[..120])
     } else {
         args.to_string()
     };
+    let bg = theme.bg_style("toolPendingBg");
     vec![RLine::from(vec![
-        Span::styled("[tool call] ", theme.fg_style("toolPendingBg")),
+        Span::styled(
+            "[tool call] ".to_string(),
+            bg.fg(theme.color("toolTitle")),
+        ),
         Span::styled(
             name.to_string(),
-            theme
-                .fg_style("toolPendingBg")
+            bg.fg(theme.color("toolTitle"))
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
-        Span::raw(format!(" {args_preview}")),
+        Span::styled(
+            format!(" {args_preview}"),
+            bg.fg(theme.color("toolOutput")),
+        ),
     ])]
 }
 
@@ -104,12 +114,16 @@ pub fn render_diff(diff: &str, theme: &Theme) -> Vec<RLine<'static>> {
         let first_char = line.chars().next().unwrap_or(' ');
         let rest = line[first_char.len_utf8()..].to_string();
         let sign = first_char;
+        // v0.8.3: Use Pi-equivalent dedicated diff color slots
+        // (toolDiffAdded / toolDiffRemoved / toolDiffContext) instead of
+        // generic success/error/muted. This lets users tune diff colors
+        // independently of general status colors.
         let style = match sign {
             '+' => theme
-                .fg_style("success")
+                .fg_style("toolDiffAdded")
                 .add_modifier(ratatui::style::Modifier::BOLD),
-            '-' => theme.fg_style("error"),
-            ' ' | '…' => theme.fg_style("muted"),
+            '-' => theme.fg_style("toolDiffRemoved"),
+            ' ' | '…' => theme.fg_style("toolDiffContext"),
             _ => theme.fg_style("text"),
         };
         // Preserve the leading sign character so it lines up visually.
@@ -130,7 +144,12 @@ pub fn render_tool_result(
     duration_ms: Option<u64>,
     theme: &Theme,
 ) -> Vec<RLine<'static>> {
-    let prefix_color = if ok { "toolSuccessBg" } else { "error" };
+    // v0.8.3: Pi parity — tool result gets a background-color box.
+    // Success → bg(toolSuccessBg), Error → bg(toolErrorBg).
+    let bg_slot = if ok { "toolSuccessBg" } else { "toolErrorBg" };
+    let bg = theme.bg_style(bg_slot);
+    let fg_title = theme.color("toolTitle");
+    let fg_output = theme.color("toolOutput");
     let label = if ok { "[tool result] " } else { "[tool error] " };
 
     // Strip ANSI + auto-link + truncate. For multi-line content, cap
@@ -142,10 +161,9 @@ pub fn render_tool_result(
     // First line: prefix label + optional duration pill (Pi-style).
     let mut first_spans: Vec<Span<'static>> = vec![Span::styled(
         label.to_string(),
-        theme.fg_style(prefix_color),
+        bg.fg(fg_title).add_modifier(ratatui::style::Modifier::BOLD),
     )];
     if let Some(ms) = duration_ms {
-        // Render as "Took 1.2s" / "Took 850ms" depending on size.
         let label = if ms >= 1000 {
             format!("Took {:.2}s ", ms as f64 / 1000.0)
         } else {
@@ -153,7 +171,7 @@ pub fn render_tool_result(
         };
         first_spans.push(Span::styled(
             label,
-            theme.fg_style("dim"),
+            bg.fg(theme.color("muted")),
         ));
     }
     out.push(RLine::from(first_spans));
@@ -164,7 +182,7 @@ pub fn render_tool_result(
         if line.contains("[pasted image:") {
             out.push(RLine::from(Span::styled(
                 format!("  {line}"),
-                theme.fg_style("accent"),
+                bg.fg(theme.color("accent")),
             )));
             return out;
         }
@@ -180,12 +198,12 @@ pub fn render_tool_result(
         };
         out.push(RLine::from(Span::styled(
             format!("  {truncated}"),
-            theme.fg_style("muted"),
+            bg.fg(fg_output),
         )));
         if i + 1 < lines.len() && i + 1 == max_lines && lines.len() > max_lines {
             out.push(RLine::from(Span::styled(
                 format!("  …({} more lines)", lines.len() - max_lines),
-                theme.fg_style("dim"),
+                bg.fg(theme.color("dim")),
             )));
         }
     }
@@ -195,7 +213,7 @@ pub fn render_tool_result(
                 "  …(truncated, {} more bytes)",
                 linked.len() - TOOL_RESULT_PREVIEW_MAX_BYTES
             ),
-            theme.fg_style("dim"),
+            bg.fg(theme.color("dim")),
         )));
     }
     out
@@ -614,6 +632,19 @@ mod diff_render_tests {
     fn render_diff_empty() {
         let lines = render_diff("", &Theme::default());
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn render_diff_uses_dedicated_diff_color_slots() {
+        // v0.8.3: Pi parity — diff + uses toolDiffAdded (not success).
+        let d = "+added\n-removed\n context\n";
+        let lines = render_diff(d, &Theme::dark());
+        let dark_added = Theme::dark().color("toolDiffAdded");
+        let dark_removed = Theme::dark().color("toolDiffRemoved");
+        let dark_context = Theme::dark().color("toolDiffContext");
+        assert_eq!(lines[0].spans[0].style.fg, Some(dark_added));
+        assert_eq!(lines[1].spans[0].style.fg, Some(dark_removed));
+        assert_eq!(lines[2].spans[0].style.fg, Some(dark_context));
     }
 }
 

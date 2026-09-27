@@ -37,7 +37,7 @@ impl TrustSelector {
         let items: Vec<SelectorItem> = items
             .into_iter()
             .map(|(id, desc, lvl)| SelectorItem {
-                id: id.to_string(),
+                value: id.to_string(),
                 label: id.to_string(),
                 description: Some(desc.to_string()),
                 is_current: lvl == current_level,
@@ -70,7 +70,7 @@ impl SelectorState for TrustSelector {
         let item = self.items.get(self.selected).cloned();
         match item {
             Some(it) => {
-                let level = match it.id.as_str() {
+                let level = match it.value.as_str() {
                     "ask" => TrustLevel::Ask,
                     "trusted" => TrustLevel::Trusted,
                     "distrust" => TrustLevel::Distrusted,
@@ -79,7 +79,7 @@ impl SelectorState for TrustSelector {
                 let decision = TrustDecision::new(level);
                 self.result = Some(decision);
                 SelectorOutcome::Picked(SelectorItem {
-                    id: it.id,
+                    value: it.value,
                     label: it.label,
                     description: it.description,
                     is_current: it.is_current,

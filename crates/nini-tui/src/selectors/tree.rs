@@ -26,7 +26,7 @@ impl TreeSelector {
             .map(|e| {
                 let (icon, label) = label_for(e);
                 SelectorItem {
-                    id: e.id().to_string(),
+                    value: e.id().to_string(),
                     label: format!("{icon} {label}"),
                     description: None,
                     is_current: false,
@@ -96,7 +96,7 @@ impl SelectorState for TreeSelector {
         let item = self.items.get(self.selected).cloned();
         match item {
             Some(it) => {
-                self.result = Some(it.id.clone());
+                self.result = Some(it.value.clone());
                 SelectorOutcome::Picked(it)
             }
             None => SelectorOutcome::Cancelled,

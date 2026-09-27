@@ -32,7 +32,7 @@ impl HelpSelector {
         let items = REGISTRY
             .iter()
             .map(|def| SelectorItem {
-                id: def.name.to_string(),
+                value: def.name.to_string(),
                 label: format!("/{}", def.name),
                 description: Some(def.description.to_string()),
                 is_current: false,
@@ -50,7 +50,7 @@ impl HelpSelector {
     /// argument hint. Used by the renderer's right-pane view.
     pub fn current_detail(&self) -> Option<(String, String, Option<&'static str>)> {
         let item = self.items.get(self.selected)?;
-        by_name(&item.id).map(|def| {
+        by_name(&item.value).map(|def| {
             (
                 format!("/{}", def.name),
                 def.description.to_string(),

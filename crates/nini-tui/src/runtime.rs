@@ -765,7 +765,7 @@ fn apply_selector_result(
         if let Some(item) = items.get(selected_idx) {
             // Read the id first so we can drop the lock before
             // mutating shared state via dispatch().
-            let id = item.id.clone();
+            let id = item.value.clone();
             let label = item.label.clone();
             match id.as_str() {
                 id if id.starts_with("cmd:/") => {

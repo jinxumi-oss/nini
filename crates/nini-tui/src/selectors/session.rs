@@ -21,7 +21,7 @@ impl SessionSelector {
     pub fn from_dir<D: AsRef<std::path::Path>>(dir: D) -> Self {
         let dir = dir.as_ref().to_path_buf();
         let items = list_sessions(&dir);
-        let result = items.first().map(|i| i.id.clone());
+        let result = items.first().map(|i| i.value.clone());
         Self {
             result,
             items,
@@ -47,7 +47,7 @@ fn list_sessions(dir: &Path) -> Vec<SelectorItem> {
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| id.clone());
         items.push(SelectorItem {
-            id,
+            value: id,
             label,
             description: None,
             is_current: false,
@@ -72,7 +72,7 @@ impl SelectorState for SessionSelector {
         let item = self.items.get(self.selected).cloned();
         match item {
             Some(it) => {
-                self.result = Some(it.id.clone());
+                self.result = Some(it.value.clone());
                 SelectorOutcome::Picked(it)
             }
             None => SelectorOutcome::Cancelled,

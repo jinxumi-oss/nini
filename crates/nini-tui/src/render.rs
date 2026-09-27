@@ -30,7 +30,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as RLine, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
 
 /// Render the full TUI frame.
 pub fn render_frame(f: &mut Frame, state: &AppState) {
@@ -110,7 +110,8 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     if state.run_state.mode == RunMode::Running {
         // Running spinner replaces the transcript pane (already
         // computed above as `transcript_chunk`).
-        render_running_indicator(f, theme, transcript_chunk);
+        // render_running_indicator was removed in v0.8.3 — the working
+        // spinner is now embedded in the footer (render_stats_line).
     }
 }
 
@@ -530,95 +531,108 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     // Split into lines for multi-line rendering.
     let lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
 
-    // Build a Paragraph with line-by-line rendering, then position cursor manually.
+    // v0.8.3: Pi parity —
+    //   • Multi-line: first line uses bold ❯, continuation lines use dim ❯
+    //     so the user has continuous visual cues while typing multi-line input.
+    //   • paddingX = 1: left and right margins of 1 column so text doesn't
+    //     touch the borders.
+    //   • Border color = theme.fg_style("borderMuted") (theme-aware).
+    //   • Block title = "─ input ─" (DynamicBorder style, Pi).
+    let padding_x: u16 = 1;
+    let is_first_line = |i: usize| i == 0;
+    let prompt_style_bold = theme.fg_style("success").add_modifier(Modifier::BOLD);
+    let prompt_style_dim = theme.fg_style("dim");
+
     let mut line_widgets: Vec<RLine> = Vec::new();
     if lines.is_empty() {
         line_widgets.push(RLine::from(Span::raw(" ")));
     } else {
         for (i, l) in lines.iter().enumerate() {
-            let prefix = if i == 0 { prompt_symbol } else { " " };
+            let prefix_char = if is_first_line(i) { prompt_symbol } else { "❯" };
+            let prefix_style = if is_first_line(i) { prompt_style_bold } else { prompt_style_dim };
             line_widgets.push(RLine::from(vec![
-                Span::styled(
-                    format!("{prefix} "),
-                    theme
-                        .fg_style("success")
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(format!("{prefix_char} "), prefix_style),
                 Span::raw(l.as_str()),
             ]));
         }
     }
     let para = Paragraph::new(line_widgets)
-        .block(Block::default().borders(Borders::TOP).title(" input "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme.fg_style("borderMuted"))
+                .title(Span::styled(
+                    " \u{2500} input \u{2500} ",
+                    theme.fg_style("borderMuted"),
+                ))
+                .padding(Padding::horizontal(padding_x)),
+        )
         .wrap(Wrap { trim: false });
     f.render_widget(para, area);
 
-    // Render cursor
-    if state.run_state.mode != RunMode::Running && area.height >= 2 && area.width >= 2 {
-        let cursor_x = area.x + 2 + (cursor_char as u16 % area.width.saturating_sub(2));
-        let line_idx = (cursor_char as u16) / area.width.saturating_sub(2);
-        let cursor_y = area.y + 1 + line_idx.min(area.height.saturating_sub(2) - 1);
+    // Render cursor. Account for paddingX: x offset starts after the
+    // left border (1) + padding (padding_x) + the 2-char prompt symbol.
+    if state.run_state.mode != RunMode::Running
+        && area.height >= 3
+        && area.width >= 2 + padding_x + 2
+    {
+        let left_inset: u16 = 1 /* border */ + padding_x + 2 /* "❯ " */;
+        let inner_width = area.width.saturating_sub(1 /* right border */ + padding_x + left_inset);
+        let cursor_x = area.x + left_inset + (cursor_char as u16 % inner_width.max(1));
+        let line_idx = (cursor_char as u16) / inner_width.max(1);
+        let cursor_y = area.y + 1 /* top border */ + line_idx.min(area.height.saturating_sub(2) - 1);
         f.set_cursor_position((cursor_x, cursor_y));
     }
 }
 
 fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    // Build hint segments dynamically based on the current mode.
-    // Pi shows different hints when editing vs running vs selecting —
-    // we mirror that with a small segment list.
-    //
-    // v0.6: F1 toggles `state.ui_state.help_extended`, which switches the
-    // editing-mode footer between a compact 5-row line and an
-    // exhaustive keymap dump. The old code pushed a transcript line
-    // on F1 instead, which clashed with the rest of the layout.
+    // v0.8.3: Pi parity — hints now use keyHint(theme) formatting
+    // (dim key + muted description) instead of bg("dim")+white text.
+    // F1 toggle switches between compact (5 hints) and extended (13+).
     let hints: Vec<(&str, &str)> = match state.run_state.mode {
         RunMode::Editing if state.ui_state.help_extended => vec![
-            (" F1 ", "short "),
-            (" Enter ", "send "),
-            (" Shift+Enter ", "newline "),
-            (" Alt+Backspace ", "kill-word "),
-            (" Alt+D ", "Kill "),
-            (" Ctrl+Z ", "undo "),
-            (" Ctrl+Y ", "yank "),
-            (" Ctrl+L ", "model "),
-            (" Ctrl+T ", "thinking "),
-            (" Ctrl+P ", "model+ "),
-            (" Ctrl+O ", "collapse "),
-            (" Ctrl+C ", "quit "),
-            (" Ctrl+D ", "exit "),
+            (" F1 ", "short"),
+            (" Enter ", "send"),
+            (" Shift+Enter ", "newline"),
+            (" Alt+Backspace ", "kill-word"),
+            (" Alt+D ", "kill"),
+            (" Ctrl+Z ", "undo"),
+            (" Ctrl+Y ", "yank"),
+            (" Ctrl+L ", "model"),
+            (" Ctrl+T ", "thinking"),
+            (" Ctrl+P ", "model+"),
+            (" Ctrl+O ", "collapse"),
+            (" Ctrl+C ", "quit"),
+            (" Ctrl+D ", "exit"),
         ],
         RunMode::Editing => vec![
-            (" F1 ", "help "),
-            (" Enter ", "send "),
-            (" Shift+Enter ", "newline "),
-            (" Ctrl+L ", "model "),
-            (" Ctrl+C ", "quit "),
+            (" F1 ", "help"),
+            (" Enter ", "send"),
+            (" Shift+Enter ", "newline"),
+            (" Ctrl+L ", "model"),
+            (" Ctrl+C ", "quit"),
         ],
         RunMode::Running => vec![
-            (" Esc ", "abort "),
-            (" Ctrl+C ", "force-quit "),
+            (" Esc ", "abort"),
+            (" Ctrl+C ", "force-quit"),
         ],
         RunMode::Aborted => vec![
-            (" Enter ", "retry "),
-            (" Esc ", "clear "),
+            (" Enter ", "retry"),
+            (" Esc ", "clear"),
         ],
-        RunMode::Quitting => vec![(" Ctrl+C ", "force-quit ")],
+        RunMode::Quitting => vec![(" Ctrl+C ", "force-quit")],
     };
 
+    // Use trim_to_width so when hints overflow we append a dim "…"
+    // instead of silently dropping the tail (P1-5 from the typography plan).
+    let trimmed = crate::keyhint::trim_to_width(&hints, area.width as usize, theme);
+
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut current_width = 0usize;
-    for (key, desc) in hints {
-        // Truncate gracefully when the footer would overflow the row.
-        let extra = key.len() + desc.len();
-        if current_width + extra > area.width as usize {
-            break;
+    for (i, (key, desc)) in trimmed.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" ".to_string()));
         }
-        spans.push(Span::styled(
-            key.to_string(),
-            theme.bg_style("dim").fg(Color::White),
-        ));
-        spans.push(Span::raw(desc.to_string()));
-        current_width += extra;
+        spans.extend(crate::keyhint::key_hint_spans(theme, key, desc));
     }
     f.render_widget(Paragraph::new(RLine::from(spans)), area);
 }
@@ -711,19 +725,14 @@ pub fn render_selector_panel(
 }
 
 fn render_running_indicator(f: &mut Frame, theme: &Theme, area: Rect) {
-    // Subtle visual hint: a thin spinner row at the top-right of transcript.
-    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let i = (chrono::Utc::now().timestamp_millis() / 80) as usize % spinner.len();
-    let indicator = RLine::from(Span::styled(spinner[i], theme.fg_style("warning")));
-    let indicator_area = Rect {
-        x: area.x + area.width.saturating_sub(3),
-        y: area.y,
-        width: 3,
-        height: 1,
-    };
-    // Clear the cell first to avoid overlay artifacts.
-    f.render_widget(Clear, indicator_area);
-    f.render_widget(Paragraph::new(indicator), indicator_area);
+    // v0.8.3: Pi parity — the spinner now renders in the status line
+    // (footer) via `render_stats_line` instead of floating over the
+    // transcript's top-right corner. This avoids the "double spinner"
+    // artifact (one in the status bar, one over the transcript) and
+    // matches Pi's layout where the working indicator lives next to
+    // the phase label. This function is kept as a no-op fallback for
+    // callers that still invoke it during a transient resize.
+    let _ = (f, theme, area);
 }
 
 // =====================================================================

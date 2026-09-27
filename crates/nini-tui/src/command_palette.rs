@@ -34,7 +34,7 @@ impl CommandPalette {
         let mut items: Vec<SelectorItem> = REGISTRY
             .iter()
             .map(|def| SelectorItem {
-                id: format!("cmd:/{}", def.name),
+                value: format!("cmd:/{}", def.name),
                 label: format!("/{}", def.name),
                 description: Some(def.description.to_string()),
                 is_current: false,
@@ -43,13 +43,13 @@ impl CommandPalette {
         // Add a couple of meta-actions so users can find them via
         // fuzzy search even if they don't remember the slash name.
         items.push(SelectorItem {
-            id: "action:clear".to_string(),
+            value: "action:clear".to_string(),
             label: "Clear transcript".to_string(),
             description: Some("Clear the visible transcript".to_string()),
             is_current: false,
         });
         items.push(SelectorItem {
-            id: "action:exit".to_string(),
+            value: "action:exit".to_string(),
             label: "Quit nini".to_string(),
             description: Some("Exit the TUI".to_string()),
             is_current: false,
@@ -111,6 +111,6 @@ mod tests {
         let items = p.state_items();
         let item = items.first().expect("at least one item");
         // First entry is the first command in the registry.
-        assert!(item.id.starts_with("cmd:/"));
+        assert!(item.value.starts_with("cmd:/"));
     }
 }
