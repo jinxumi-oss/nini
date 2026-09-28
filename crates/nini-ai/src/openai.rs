@@ -338,16 +338,40 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
                 }
                 for tc in delta.tool_calls.unwrap_or_default() {
                     if let Some(id) = tc.id.clone() {
-                        // New tool call starting
+                        // New tool call starting. aiio / Anthropic-
+                        // translated providers often include the full
+                        // `arguments` JSON on this very first chunk,
+                        // so we eagerly seed `input_json` here rather
+                        // than waiting for a separate ToolCallDelta —
+                        // otherwise the displayed ToolCall line in the
+                        // transcript is rendered as `▸ bash ` with an
+                        // empty argument body until (or unless) a delta
+                        // arrives.
+                        let initial_args = tc
+                            .function
+                            .arguments
+                            .clone()
+                            .unwrap_or_default();
                         state.tool_calls.insert(
                             tc.index,
                             BuildingToolCall {
                                 id: id.clone(),
                                 name: tc.function.name.clone().unwrap_or_default(),
-                                input_json: String::new(),
+                                input_json: initial_args.clone(),
                             },
                         );
                         let name = tc.function.name.clone().unwrap_or_default();
+                        // Emit the start with the args (if any) so the
+                        // downstream transcript gets a single line that
+                        // already carries the final command on aiio's
+                        // one-shot tool emission.
+                        if !initial_args.is_empty() {
+                            return Some(StreamEvent::ToolCallStop {
+                                id,
+                                input_json: serde_json::from_str(&initial_args)
+                                    .unwrap_or(serde_json::Value::String(initial_args.clone())),
+                            });
+                        }
                         return Some(StreamEvent::ToolCallStart { id, name });
                     }
                     // Continuation

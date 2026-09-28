@@ -182,7 +182,21 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
                         nini_tui::runtime::AgentEventLite::PhaseChanged(phase.to_string())
                     }
                     Ok(_) => continue,
-                    Err(_) => continue,
+                    Err(e) => {
+                        // v0.8.4 (bugfix): a provider error was
+                        // previously swallowed by `Err(_) => continue`,
+                        // which left the transcript stuck in
+                        // Running with no visible feedback. Most often
+                        // this is an upstream rate limit (HTTP 429)
+                        // or a transport error during stream; either
+                        // way the user needs to see *something*. Push
+                        // the error to the sink so it lands in the
+                        // transcript, then fall through so the loop
+                        // exits after this single error (no point
+                        // polling a stream that's already errored).
+                        eprintln!("[nini] agent stream error: {e}");
+                        nini_tui::runtime::AgentEventLite::Error(e.to_string())
+                    }
                 };
                 sink.push(lite);
             }
