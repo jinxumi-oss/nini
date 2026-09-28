@@ -12,11 +12,11 @@ use nini_core::tool::ToolRegistry;
 use nini_core::{Agent, AgentEvent, RunConfig};
 use nini_tools::BashTool;
 use nini_tui::render::{render_frame, render_frame_with_theme};
-use nini_tui::theme::Theme;
 use nini_tui::state::{AppState, RunMode, TranscriptLine};
+use nini_tui::theme::Theme;
 use nini_tui::{Key, KeyAction, KeyModifiers};
-use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 use std::sync::Arc;
 
 /// Snapshot the visible text of a frame, ignoring ANSI styling.
@@ -207,9 +207,16 @@ fn enter_submits_and_pushes_user_message() {
     drive(&mut state, Key::enter());
 
     assert_eq!(state.input.text, "", "input should be cleared after submit");
-    assert_eq!(state.transcript_state.lines.len(), 2, "should have user line + divider");
+    assert_eq!(
+        state.transcript_state.lines.len(),
+        2,
+        "should have user line + divider"
+    );
     assert!(matches!(&state.transcript_state.lines[0], TranscriptLine::User(s) if s == "hello"));
-    assert!(matches!(&state.transcript_state.lines[1], TranscriptLine::Divider));
+    assert!(matches!(
+        &state.transcript_state.lines[1],
+        TranscriptLine::Divider
+    ));
 
     let frame = render_to_text(&state, 80, 24);
     assert!(
@@ -386,21 +393,12 @@ fn transcript_renders_all_line_kinds() {
     let frame = render_to_text(&state, 80, 24);
     assert!(frame.contains("> find bugs"), "user line missing");
     assert!(frame.contains("searching..."), "assistant line missing");
-    assert!(
-        frame.contains("[tool call] grep"),
-        "tool call label missing"
-    );
+    assert!(frame.contains("▸ grep"), "tool call label missing");
     // Tool result is now rendered as a 2-row block: header row
     // ('[tool result] ') on its own line, then the body indented
     // ('  main.rs:42: ...'). Verify both pieces appear somewhere.
-    assert!(
-        frame.contains("[tool result]"),
-        "tool result label missing"
-    );
-    assert!(
-        frame.contains("main.rs:42:"),
-        "tool result body missing"
-    );
+    assert!(frame.contains("✓"), "tool result label missing");
+    assert!(frame.contains("main.rs:42:"), "tool result body missing");
 }
 
 // ====================================================================
@@ -455,7 +453,9 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
             }
             Ok(AgentEvent::ToolCallStop { id, input_json }) => {
                 // Update the last tool call line with the final args
-                if let Some(TranscriptLine::ToolCall { args, .. }) = state.transcript_state.lines.last_mut() {
+                if let Some(TranscriptLine::ToolCall { args, .. }) =
+                    state.transcript_state.lines.last_mut()
+                {
                     *args = input_json.to_string();
                 } else {
                     state.push_tool_call(id, input_json.to_string());
@@ -482,8 +482,8 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
         frame.contains("> echo hello"),
         "user message missing in frame"
     );
-    assert!(frame.contains("[tool call] bash"), "tool call line missing");
-    assert!(frame.contains("[tool result]"), "tool result line missing");
+    assert!(frame.contains("▸ bash"), "tool call line missing");
+    assert!(frame.contains("✓"), "tool result line missing");
     assert!(frame.contains("hello"), "assistant text missing");
     // Key hints still visible
     assert!(frame.contains("F1"));
@@ -572,10 +572,18 @@ fn narrow_terminal_handles_long_text() {
     }
     // Render in a 40-wide terminal
     let frame = render_to_text(&state, 40, 12);
-    // Just assert it doesn't panic and the text is present somewhere
+    // Just assert it doesn't panic and the text is present somewhere.
+    // v0.8.4: the prompt box now grows with the soft-wrapped input
+    // height (4 rows for 60 chars in 40-col inner), so the long
+    // string is visible inside the box rather than truncated mid-word.
     assert!(frame.contains("aaa"), "long text should be in frame");
-    let line_count = frame.lines().count();
-    assert_eq!(line_count, 12);
+    // frame_text trims trailing whitespace per line, so the count is
+    // bounded by the terminal height (12) but may be less depending
+    // on how many trailing empty rows survived the trim.
+    assert!(
+        frame.lines().count() <= 12,
+        "frame should not exceed terminal height"
+    );
 }
 
 // ====================================================================
@@ -708,7 +716,9 @@ async fn full_demo_pipeline_through_tui_state() {
         } else if let Ok(AgentEvent::ToolCallStart { name, .. }) = ev {
             state.push_tool_call(name, "");
         } else if let Ok(AgentEvent::ToolCallStop { input_json, .. }) = ev {
-            if let Some(TranscriptLine::ToolCall { args, .. }) = state.transcript_state.lines.last_mut() {
+            if let Some(TranscriptLine::ToolCall { args, .. }) =
+                state.transcript_state.lines.last_mut()
+            {
                 *args = input_json.to_string();
             }
         } else if let Ok(AgentEvent::ToolResult { output, .. }) = ev {
@@ -719,24 +729,15 @@ async fn full_demo_pipeline_through_tui_state() {
     }
 
     // Render and assert the full pipeline produced visible output
-    let frame = render_to_text(&state, 100, 30);
+    let frame = render_to_text(&state, 100, 50);
     assert!(frame.contains("> find TODOs"), "user message in transcript");
     assert!(
         frame.contains("Found and fixed TODOs"),
         "final assistant text"
     );
-    assert!(
-        frame.contains("[tool call] grep"),
-        "grep tool call rendered"
-    );
-    assert!(
-        frame.contains("[tool call] read"),
-        "read tool call rendered"
-    );
-    assert!(
-        frame.contains("[tool call] edit"),
-        "edit tool call rendered"
-    );
+    assert!(frame.contains("▸ grep"), "grep tool call rendered");
+    assert!(frame.contains("▸ read"), "read tool call rendered");
+    assert!(frame.contains("▸ edit"), "edit tool call rendered");
 
     // Token totals still 0 from fixture (real providers would populate)
     assert_eq!(state.run_state.tokens.input, 0);
@@ -788,7 +789,13 @@ fn markdown_in_assistant_text_renders() {
         .iter()
         .map(|sp| sp.content.as_ref())
         .collect();
-    assert!(first.starts_with("# "));
+    // v0.8.4: H1/H2 use bold-only styling (no `# ` prefix) so the
+    // heading reads as plain styled text on terminals without italic
+    // support. The visible content is still the heading text.
+    assert!(
+        first.starts_with("Title"),
+        "expected 'Title' (bold), got {first:?}"
+    );
     // Paragraph break emits a blank line, then the bullet.
     let second: String = lines
         .iter()
@@ -833,8 +840,5 @@ fn scroll_offset_zero_shows_from_beginning() {
     state.transcript_state.scroll_offset = 0;
     let backend = ratatui::backend::TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|f| render_frame(f, &state))
-        .unwrap();
+    terminal.draw(|f| render_frame(f, &state)).unwrap();
 }
-

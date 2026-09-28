@@ -18,8 +18,8 @@
 
 use nini_tui::render::render_frame;
 use nini_tui::state::{AppState, CompletionPopup, RunMode};
-use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 
 fn frame_text(state: &AppState, w: u16, h: u16) -> String {
     let backend = TestBackend::new(w, h);

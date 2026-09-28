@@ -4,7 +4,7 @@
 //! Enter, the command dispatcher runs, output lands in the transcript, and
 //! the rendered frame reflects the result.
 
-use nini_tui::commands::{CommandId, CommandOutcome, REGISTRY, complete, dispatch, parse};
+use nini_tui::commands::{complete, dispatch, parse, CommandId, CommandOutcome, REGISTRY};
 // Mutex serializing tests that mutate the HOME environment variable to
 // avoid cross-test interference when cargo runs tests in parallel.
 static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -12,8 +12,8 @@ static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 use nini_tui::render::render_frame;
 use nini_tui::settings::SettingsManager;
 use nini_tui::state::{AppState, RunMode, TranscriptLine};
-use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 
 /// Snapshot the visible text of a frame, like in tui_e2e.rs.
 fn frame_text(state: &AppState, w: u16, h: u16) -> String {
@@ -96,12 +96,18 @@ fn help_command_renders_keybindings() {
 fn model_command_updates_state() {
     let mut state = AppState::new("old-model");
     let mut settings = SettingsManager::default();
-    let r = dispatch(&mut state, &mut settings, CommandId::Model, "anthropic/claude-opus-4-7");
+    let r = dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::Model,
+        "anthropic/claude-opus-4-7",
+    );
     assert!(matches!(r.outcome, CommandOutcome::Output(_)));
     assert_eq!(state.model_state.model, "anthropic/claude-opus-4-7");
     // Transcript should mention the model change
     let last_text = state
-        .transcript_state.lines
+        .transcript_state
+        .lines
         .iter()
         .rev()
         .find_map(|l| l.as_assistant_text());
@@ -168,12 +174,10 @@ fn new_command_clears_transcript_keeps_model() {
     assert_eq!(state.model_state.model, "test-model"); // unchanged
 
     // Transcript has "(started new session)" + divider
-    assert!(
-        state.transcript_state.lines[0]
-            .as_assistant_text()
-            .map(|t| t.contains("started new session"))
-            .unwrap_or(false)
-    );
+    assert!(state.transcript_state.lines[0]
+        .as_assistant_text()
+        .map(|t| t.contains("started new session"))
+        .unwrap_or(false));
 }
 
 // =====================================================================
@@ -284,7 +288,12 @@ fn thinking_command_no_args_returns_usage() {
 fn name_command_sets_status() {
     let mut state = AppState::new("test");
     let mut settings = SettingsManager::default();
-    let _ = dispatch(&mut state, &mut settings, CommandId::Name, "My Cool Session");
+    let _ = dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::Name,
+        "My Cool Session",
+    );
     assert!(state.run_state.status.contains("My Cool Session"));
 }
 
@@ -345,8 +354,14 @@ fn export_command_path_format() {
                 "exported HTML file should exist: {path_str}"
             );
             let content = std::fs::read_to_string(path_str).unwrap_or_default();
-            assert!(content.contains("<!DOCTYPE html>"), "HTML should contain DOCTYPE");
-            assert!(content.contains("hello world"), "HTML should contain user message");
+            assert!(
+                content.contains("<!DOCTYPE html>"),
+                "HTML should contain DOCTYPE"
+            );
+            assert!(
+                content.contains("hello world"),
+                "HTML should contain user message"
+            );
         }
         _ => panic!("expected Output"),
     }
@@ -372,7 +387,8 @@ fn copy_finds_last_assistant_message() {
             // "second reply" should be the most recent assistant message
             // (we don't capture the printed output here, but verify transcript)
             let last_assistant = state
-                .transcript_state.lines
+                .transcript_state
+                .lines
                 .iter()
                 .rev()
                 .find_map(|l| l.as_assistant_text());
@@ -411,7 +427,12 @@ fn multiple_commands_in_sequence() {
     let mut state = AppState::new("test");
     let mut settings = SettingsManager::default();
 
-    dispatch(&mut state, &mut settings, CommandId::Model, "anthropic/claude");
+    dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::Model,
+        "anthropic/claude",
+    );
     dispatch(&mut state, &mut settings, CommandId::Thinking, "high");
     dispatch(&mut state, &mut settings, CommandId::Name, "Test Run");
     dispatch(&mut state, &mut settings, CommandId::Session, "");
@@ -488,7 +509,11 @@ fn resume_command_lists_sessions_or_none() {
             assert!(!lines.is_empty());
             let is_empty_state = lines[0].contains("No sessions");
             let is_list = lines[0].contains("session(s) available");
-            assert!(is_empty_state || is_list, "Expected no-sessions or list, got: {:?}", lines);
+            assert!(
+                is_empty_state || is_list,
+                "Expected no-sessions or list, got: {:?}",
+                lines
+            );
         }
         _ => panic!("expected Output"),
     }
@@ -510,9 +535,18 @@ fn new_command_creates_session() {
         _ => panic!("expected Output"),
     }
     // A session should have been created.
-    assert!(state.session_state.session.is_some(), "/new should create a session");
-    assert!(state.session_state.session_id.is_some(), "/new should set session_id");
-    assert!(state.session_state.session_path.is_some(), "/new should set session_path");
+    assert!(
+        state.session_state.session.is_some(),
+        "/new should create a session"
+    );
+    assert!(
+        state.session_state.session_id.is_some(),
+        "/new should set session_id"
+    );
+    assert!(
+        state.session_state.session_path.is_some(),
+        "/new should set session_path"
+    );
 }
 
 // =====================================================================
@@ -563,9 +597,11 @@ fn changelog_command_renders_release_notes() {
         _ => panic!("expected Output, got {:?}", r.outcome),
     }
     // Transcript should contain a [changelog] annotation
-    assert!(state.transcript_state.lines.iter().any(|l| {
-        matches!(l, TranscriptLine::AssistantText(s) if s.contains("[changelog]"))
-    }));
+    assert!(state
+        .transcript_state
+        .lines
+        .iter()
+        .any(|l| { matches!(l, TranscriptLine::AssistantText(s) if s.contains("[changelog]")) }));
 }
 
 #[test]
@@ -625,12 +661,7 @@ fn scoped_models_add_and_list() {
     let mut state = AppState::new("test-model");
     let mut settings = SettingsManager::default();
     // Empty cycle.
-    let r = dispatch(
-        &mut state,
-        &mut settings,
-        CommandId::ScopedModels,
-        "list",
-    );
+    let r = dispatch(&mut state, &mut settings, CommandId::ScopedModels, "list");
     assert!(matches!(r.outcome, CommandOutcome::Output(_)));
 
     // Add a model.
@@ -643,13 +674,18 @@ fn scoped_models_add_and_list() {
     match r.outcome {
         CommandOutcome::Output(lines) => {
             assert!(
-                lines.iter().any(|l| l.contains("added anthropic/claude-opus-4-7")),
+                lines
+                    .iter()
+                    .any(|l| l.contains("added anthropic/claude-opus-4-7")),
                 "expected add confirmation, got: {lines:?}"
             );
         }
         _ => panic!("expected Output"),
     }
-    assert!(state.model_state.models_cycle.contains(&"anthropic/claude-opus-4-7".to_string()));
+    assert!(state
+        .model_state
+        .models_cycle
+        .contains(&"anthropic/claude-opus-4-7".to_string()));
 
     // Add a duplicate (should be no-op).
     let before = state.model_state.models_cycle.len();
@@ -764,7 +800,11 @@ fn clone_command_with_session_duplicates_file() {
                 .contains("session-test-clone-")
         })
         .collect();
-    assert_eq!(clones.len(), 1, "expected exactly 1 clone file, got {clones:?}");
+    assert_eq!(
+        clones.len(),
+        1,
+        "expected exactly 1 clone file, got {clones:?}"
+    );
 }
 
 // =====================================================================
@@ -869,7 +909,12 @@ fn fork_command_with_valid_index_cuts_transcript() {
 fn logout_command_unknown_provider_returns_error() {
     let mut state = AppState::new("test-model");
     let mut settings = SettingsManager::default();
-    let r = dispatch(&mut state, &mut settings, CommandId::Logout, "nonexistent-provider");
+    let r = dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::Logout,
+        "nonexistent-provider",
+    );
     match r.outcome {
         CommandOutcome::Output(lines) => {
             assert!(
@@ -947,7 +992,12 @@ fn login_command_specific_provider_reports_status() {
 fn login_command_unknown_provider_returns_error() {
     let mut state = AppState::new("test-model");
     let mut settings = SettingsManager::default();
-    let r = dispatch(&mut state, &mut settings, CommandId::Login, "fake-provider-xyz");
+    let r = dispatch(
+        &mut state,
+        &mut settings,
+        CommandId::Login,
+        "fake-provider-xyz",
+    );
     match r.outcome {
         CommandOutcome::Output(lines) => {
             let joined = lines.join("\n");
@@ -1042,16 +1092,18 @@ fn import_command_with_valid_jsonl_replaces_transcript() {
     // got exactly the 2 imported user messages, not 3 (which would
     // include the garbage) or 0.
     let user_count = state
-        .transcript_state.lines
+        .transcript_state
+        .lines
         .iter()
         .filter(|l| matches!(l, TranscriptLine::User(_)))
         .count();
-    assert_eq!(user_count, 2, "expected 2 user messages from import, got {user_count}");
+    assert_eq!(
+        user_count, 2,
+        "expected 2 user messages from import, got {user_count}"
+    );
     // Verify session_id set
     assert_eq!(state.session_state.session_id.as_deref(), Some("abc123"));
 }
-
-
 
 // =====================================================================
 // /prompt command: loads .md templates from .pi/prompts/ and
@@ -1068,14 +1120,10 @@ fn prompt_command_unknown_template_lists_available() {
     let prompts_dir = tmp.path().join(".pi").join("prompts");
     std::fs::create_dir_all(&prompts_dir).unwrap();
     let mut f = std::fs::File::create(prompts_dir.join("greet.md")).unwrap();
-    writeln!(
-        f,
-        "---\ndescription: Greet the user\n---\nHello $1"
-    )
-    .unwrap();
+    writeln!(f, "---\ndescription: Greet the user\n---\nHello $1").unwrap();
 
     let _home_guard = HOME_LOCK.lock().unwrap();
-        let orig_cwd = std::env::current_dir().ok();
+    let orig_cwd = std::env::current_dir().ok();
     std::env::set_current_dir(tmp.path()).unwrap();
     let r = dispatch(&mut state, &mut settings, CommandId::Prompt, "missing");
     if let Some(orig) = orig_cwd {
@@ -1109,14 +1157,9 @@ fn prompt_command_renders_substituted_template() {
     writeln!(f, "---\ndescription: Greet the user\n---\nHello $1").unwrap();
 
     let _home_guard = HOME_LOCK.lock().unwrap();
-        let orig_cwd = std::env::current_dir().ok();
+    let orig_cwd = std::env::current_dir().ok();
     std::env::set_current_dir(tmp.path()).unwrap();
-    let r = dispatch(
-        &mut state,
-        &mut settings,
-        CommandId::Prompt,
-        "greet World",
-    );
+    let _r = dispatch(&mut state, &mut settings, CommandId::Prompt, "greet World");
     if let Some(orig) = orig_cwd {
         let _ = std::env::set_current_dir(&orig);
     }
@@ -1128,7 +1171,8 @@ fn prompt_command_renders_substituted_template() {
         has_user_world,
         "expected 'Hello World' in transcript, got: {:?}",
         state
-            .transcript_state.lines
+            .transcript_state
+            .lines
             .iter()
             .filter_map(|l| match l {
                 nini_tui::state::TranscriptLine::User(s) => Some(s.as_str()),
@@ -1150,7 +1194,7 @@ fn prompt_command_quoted_args_preserve_whitespace() {
     writeln!(f, "---\ndescription: Greet user\n---\nHello $1").unwrap();
 
     let _home_guard = HOME_LOCK.lock().unwrap();
-        let orig_cwd = std::env::current_dir().ok();
+    let orig_cwd = std::env::current_dir().ok();
     std::env::set_current_dir(tmp.path()).unwrap();
     let r = dispatch(
         &mut state,
@@ -1169,7 +1213,8 @@ fn prompt_command_quoted_args_preserve_whitespace() {
         has,
         "expected 'Hello hello world' (with the space from the quoted arg), got: {:?}",
         state
-            .transcript_state.lines
+            .transcript_state
+            .lines
             .iter()
             .filter_map(|l| match l {
                 nini_tui::state::TranscriptLine::User(s) => Some(s.as_str()),
@@ -1188,8 +1233,14 @@ fn prompt_command_no_args_shows_usage() {
     match r.outcome {
         CommandOutcome::Output(lines) => {
             let joined = lines.join("\n");
-            assert!(joined.contains("Usage"), "expected 'Usage' in help, got: {joined}");
-            assert!(joined.contains("name"), "expected 'name' in help, got: {joined}");
+            assert!(
+                joined.contains("Usage"),
+                "expected 'Usage' in help, got: {joined}"
+            );
+            assert!(
+                joined.contains("name"),
+                "expected 'name' in help, got: {joined}"
+            );
         }
         _ => panic!("expected Output"),
     }

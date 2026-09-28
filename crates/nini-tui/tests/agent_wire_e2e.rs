@@ -18,12 +18,12 @@ use nini_core::provider::Usage;
 use nini_core::tool::ToolRegistry;
 use nini_core::{Agent, AgentEvent, RunConfig};
 use nini_tools::BashTool;
-use nini_tui::Key;
 use nini_tui::render::render_frame;
-use nini_tui::runtime::{AgentEventLite, AgentSink, shared_state};
+use nini_tui::runtime::{shared_state, AgentEventLite, AgentSink};
 use nini_tui::state::AppState;
-use ratatui::Terminal;
+use nini_tui::Key;
 use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -94,7 +94,12 @@ fn make_fixture_driver(
                     Ok(AgentEvent::ToolResult { output, .. }) => {
                         let content = output.content.clone();
                         let ok = !output.is_error;
-                        AgentEventLite::ToolResult { ok, content , details: None,duration_ms: 0}
+                        AgentEventLite::ToolResult {
+                            ok,
+                            content,
+                            details: None,
+                            duration_ms: 0,
+                        }
                     }
                     Ok(AgentEvent::TurnEnd { usage, .. }) => {
                         sink.push(AgentEventLite::Usage(
@@ -198,11 +203,8 @@ async fn submit_triggers_agent_and_renders_response() {
     // Frame must contain user message, tool call line, tool result line, and
     // the assistant's "hello" text.
     assert!(frame.contains("> echo hello"), "user message missing");
-    assert!(
-        frame.contains("[tool call] bash"),
-        "tool call label missing"
-    );
-    assert!(frame.contains("[tool result]"), "tool result label missing");
+    assert!(frame.contains("▸ bash"), "tool call label missing");
+    assert!(frame.contains("✓"), "tool result label missing");
     assert!(frame.contains("hello"), "assistant text missing");
 
     // Mode should be back to Editing after Done.
@@ -254,7 +256,7 @@ async fn multiple_submits_accumulate_in_transcript() {
     // Two dividers (one after each user message).
     let divider_count =
         frame.matches("─────────").count() + frame.matches("─").count().saturating_sub(20); // crude: accept any dashes
-    // Just check transcript length grew.
+                                                                                            // Just check transcript length grew.
     assert!(
         snapshot.transcript_state.lines.len() >= 6,
         "expected at least 6 transcript lines (2x user+assistant+divider)"
@@ -316,7 +318,9 @@ async fn tool_call_args_are_updated_on_stop() {
     });
     // Before stop, args is empty string
     let snap1 = shared.lock().unwrap().clone();
-    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, .. }) = snap1.transcript_state.lines.last() {
+    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, .. }) =
+        snap1.transcript_state.lines.last()
+    {
         assert_eq!(args, "", "args should be empty before ToolCallStop");
     } else {
         panic!("expected ToolCall line");
@@ -327,7 +331,8 @@ async fn tool_call_args_are_updated_on_stop() {
     });
 
     let snap2 = shared.lock().unwrap().clone();
-    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, name, .. }) = snap2.transcript_state.lines.last()
+    if let Some(nini_tui::state::TranscriptLine::ToolCall { args, name, .. }) =
+        snap2.transcript_state.lines.last()
     {
         assert_eq!(name, "bash");
         assert_eq!(args, r#"{"command":"ls"}"#);
@@ -402,7 +407,9 @@ async fn multiple_tool_calls_accumulate() {
     sink.push(AgentEventLite::ToolResult {
         ok: true,
         content: "main.rs".into(),
-    details: None,duration_ms: 0});
+        details: None,
+        duration_ms: 0,
+    });
 
     sink.push(AgentEventLite::ToolCallStart {
         name: "read".to_string(),
@@ -427,7 +434,8 @@ async fn multiple_tool_calls_accumulate() {
     ));
     // Two results
     let result_count = snap
-        .transcript_state.lines
+        .transcript_state
+        .lines
         .iter()
         .filter(|l| matches!(l, nini_tui::state::TranscriptLine::ToolResult { .. }))
         .count();
@@ -450,7 +458,7 @@ fn apply_action_is_pure_no_spawn() {
     nini_tui::runtime::apply_action(&mut state, Key::enter());
     assert_eq!(state.input.text, "");
     assert_eq!(state.transcript_state.lines.len(), 2); // user + divider
-    // Mode stays Editing because no agent task spawned.
+                                                       // Mode stays Editing because no agent task spawned.
     assert_eq!(state.run_state.mode, nini_tui::state::RunMode::Editing);
 }
 
@@ -503,7 +511,7 @@ async fn full_pipeline_drive_keys_then_run_agent() {
 
     // Assertions: full pipeline result
     assert!(frame.contains("> find TODOs and fix them"));
-    assert!(frame.contains("[tool call] grep"));
+    assert!(frame.contains("▸ grep"));
     assert!(frame.contains("Found 3 TODOs"));
     assert_eq!(snap.run_state.mode, nini_tui::state::RunMode::Editing);
 
@@ -540,7 +548,8 @@ async fn concurrent_sink_pushes_dont_panic() {
     let snap = shared.lock().unwrap().clone();
     // 100 chunks total
     let combined: String = snap
-        .transcript_state.lines
+        .transcript_state
+        .lines
         .iter()
         .map(|l| match l {
             nini_tui::state::TranscriptLine::AssistantText(s) => s.clone(),
@@ -559,11 +568,11 @@ async fn concurrent_sink_pushes_dont_panic() {
 
 #[test]
 fn paste_image_inserts_description_in_prompt() {
+    use crossterm::event::KeyCode;
     use nini_tui::image_paste;
     use nini_tui::keys::{Key, KeyModifiers};
     use nini_tui::runtime::apply_action;
     use nini_tui::state::AppState;
-    use crossterm::event::KeyCode;
 
     // We can't easily get a real image into the headless clipboard,
     // so we test the negative path (no image) by checking that the
@@ -574,10 +583,7 @@ fn paste_image_inserts_description_in_prompt() {
     let before = state.input.text.clone();
 
     // Press Ctrl+V.
-    apply_action(
-        &mut state,
-        Key::new(KeyCode::Char('v'), KeyModifiers::CTRL),
-    );
+    apply_action(&mut state, Key::new(KeyCode::Char('v'), KeyModifiers::CTRL));
 
     // Headless CI: clipboard has no image → Noop → input unchanged.
     if image_paste::paste_image_from_clipboard()
@@ -596,9 +602,8 @@ fn paste_image_inserts_description_in_prompt() {
 
 #[test]
 fn user_keybinding_overrides_built_in() {
-    use nini_tui::keys::{KeyAction, KeyModifiers, Key};
-    use nini_tui::keybindings_manager::{parse_key_spec, parse_action};
-    use crossterm::event::{self, KeyCode};
+    use nini_tui::keybindings_manager::{parse_action, parse_key_spec};
+    use nini_tui::keys::KeyAction;
 
     // Build a synthetic "user" override: Ctrl+L should trigger
     // the ClearInput action (default is SwitchModel, but the user
@@ -625,7 +630,7 @@ fn user_keybinding_overrides_built_in() {
     let overrides = vec![(user_action, user_key)];
     let resolved: KeyAction = overrides
         .iter()
-        .find(|(a, k)| *k == user_key)
+        .find(|(_a, k)| *k == user_key)
         .map(|(a, _)| *a)
         .unwrap_or(default_action);
     assert_eq!(resolved, user_action);
@@ -633,9 +638,9 @@ fn user_keybinding_overrides_built_in() {
 
 #[test]
 fn parse_key_spec_handles_all_modifier_combos() {
+    use crossterm::event::KeyCode;
     use nini_tui::keybindings_manager::parse_key_spec;
     use nini_tui::keys::KeyModifiers;
-    use crossterm::event::KeyCode;
 
     let k = parse_key_spec("Ctrl+L").unwrap();
     assert!(k.modifiers.contains(KeyModifiers::CTRL));
@@ -668,19 +673,16 @@ fn parse_action_resolves_all_documented_actions() {
         "Backspace",
     ];
     for input in cases {
-        assert!(
-            parse_action(input).is_some(),
-            "expected {input:?} to parse"
-        );
+        assert!(parse_action(input).is_some(), "expected {input:?} to parse");
     }
 }
 
 #[test]
 fn paste_image_appends_echo_to_transcript() {
+    use crossterm::event::KeyCode;
     use nini_tui::keys::{Key, KeyModifiers};
     use nini_tui::runtime::apply_action;
     use nini_tui::state::TranscriptLine;
-    use crossterm::event::KeyCode;
 
     // The runtime's PasteImage handler uses
     // paste_image_with_size_from_clipboard (not the text-returning
@@ -690,21 +692,17 @@ fn paste_image_appends_echo_to_transcript() {
     // the correct graceful-degradation behavior.
     let mut state = nini_tui::state::AppState::new("test");
     state.input.text = "before".to_string();
-    apply_action(
-        &mut state,
-        Key::new(KeyCode::Char('v'), KeyModifiers::CTRL),
-    );
+    apply_action(&mut state, Key::new(KeyCode::Char('v'), KeyModifiers::CTRL));
 
     // No image pasted (no clipboard in CI) → input unchanged,
     // no [pasted] echo in transcript.
     assert_eq!(state.input.text, "before");
-    let has_paste_echo = state.transcript_state.lines.iter().any(|l| {
-        matches!(l, TranscriptLine::AssistantText(s) if s.contains("[pasted]"))
-    });
-    assert!(
-        !has_paste_echo,
-        "unexpected paste echo in headless CI"
-    );
+    let has_paste_echo = state
+        .transcript_state
+        .lines
+        .iter()
+        .any(|l| matches!(l, TranscriptLine::AssistantText(s) if s.contains("[pasted]")));
+    assert!(!has_paste_echo, "unexpected paste echo in headless CI");
     // Status bar should also not show "pasted" without an actual
     // paste event.
     assert!(!state.run_state.status.contains("pasted"));

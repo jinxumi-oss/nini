@@ -5,8 +5,8 @@
 use nini_tui::render::render_frame_with_theme;
 use nini_tui::state::{AppState, RunMode, TranscriptLine};
 use nini_tui::theme::Theme;
-use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 use std::fs;
 use std::path::Path;
 
@@ -70,9 +70,10 @@ fn snapshot_conversation() {
 
     state.push_user("Please refactor the auth middleware to use JWT instead of session cookies.");
     state.push_divider();
-    state.transcript_state.lines.push(TranscriptLine::ThinkingText(
-        "The user wants to migrate from session cookies to JWT. I should first read the current middleware, identify the session helpers, and propose a JWT strategy with refresh-token rotation.".into(),
-    ));
+    state.transcript_state.lines.push(TranscriptLine::ThinkingText {
+        text: "The user wants to migrate from session cookies to JWT. I should first read the current middleware, identify the session helpers, and propose a JWT strategy with refresh-token rotation.".into(),
+        collapsed: false,
+    });
     state.push_assistant(
         "I'll read the auth middleware first, then propose a JWT plan.\n\n\
          # Plan\n\n\
@@ -96,18 +97,25 @@ fn snapshot_conversation() {
     );
     state.push_divider();
     state.push_tool_call("read", "{\"path\": \"src/middleware/auth.rs\"}");
-    state.push_tool_result(true, "use actix_web::*;\n\npub async fn auth(req: ServiceRequest) -> ...", Some(23));
+    state.push_tool_result(
+        true,
+        "use actix_web::*;\n\npub async fn auth(req: ServiceRequest) -> ...",
+        Some(23),
+    );
     state.push_divider();
-    state.transcript_state.lines.push(TranscriptLine::BashExecution {
-        id: "abc123".into(),
-        cmd: "cargo build".into(),
-        output: "Compiling auth v0.1.0\nFinished release [optimized] in 4.5s".into(),
-        stderr: "warning: unused variable `x`".into(),
-        ok: false,
-        exit_code: Some(101),
-        duration_ms: 4_521,
-        collapsed: false,
-    });
+    state
+        .transcript_state
+        .lines
+        .push(TranscriptLine::BashExecution {
+            id: "abc123".into(),
+            cmd: "cargo build".into(),
+            output: "Compiling auth v0.1.0\nFinished release [optimized] in 4.5s".into(),
+            stderr: "warning: unused variable `x`".into(),
+            ok: false,
+            exit_code: Some(101),
+            duration_ms: 4_521,
+            collapsed: false,
+        });
     state.push_divider();
     state.push_user("Looks good. Run the tests too.");
     state.push_assistant("Running the test suite now.");
@@ -152,9 +160,10 @@ fn snapshot_thinking_visible() {
     state.session_state.session_id = Some("xyz98765".into());
 
     state.push_user("explain monads in 3 sentences");
-    state.transcript_state.lines.push(TranscriptLine::ThinkingText(
-        "Monads are wrappers around values that compose sequential operations while handling effects (state, errors, I/O) in a pure functional style.".into(),
-    ));
+    state.transcript_state.lines.push(TranscriptLine::ThinkingText {
+        text: "Monads are wrappers around values that compose sequential operations while handling effects (state, errors, I/O) in a pure functional style.".into(),
+        collapsed: false,
+    });
     state.push_assistant(
         "A monad is a triple (M, return, >>=) satisfying three laws: left identity, right identity, and associativity. \
          In Rust, `Option<T>` is the simplest monad — `return` is `Some` and `>>=` is `and_then`. \
