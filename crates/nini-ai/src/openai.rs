@@ -114,6 +114,15 @@ struct StreamState {
     /// MiniMax-M3) emit reasoning inline; without this filter,
     /// users see the model's "thinking" in the transcript.
     think_filter: ThinkTagFilter,
+    /// v0.8.4 (bugfix): fragments waiting to be emitted on the next
+    /// call. The ThinkTagFilter splits a chunk at the
+    /// `<think>...</think>` boundary into [Thinking, Visible]
+    /// pairs. We drain one fragment per call so we still emit one
+    /// StreamEvent at a time, but stash the rest here instead of
+    /// dropping them on the floor (the previous code `return`-ed
+    /// on the first match, which also skipped the same chunk's
+    /// tool_calls delta).
+    fragments_pending: Vec<ThinkFragment>,
 }
 
 fn build_request_body(req: &Request) -> Result<String, ProviderError> {
@@ -191,9 +200,17 @@ impl ThinkTagFilter {
                     i = end + b"</think>".len();
                     self.in_think = false;
                 } else {
-                    // No closing tag — hold back from the last `<`
-                    // (or up to 7 chars) and return.
-                    self.buffer = hold_back(&work, i);
+                    // v0.8.4 (bugfix): inside a thinking block we must
+                    // KEEP all text — never throw it away. The
+                    // previous code held back at most the last 7
+                    // chars, which on aiio's chunked thinking stream
+                    // truncated the accumulated reasoning to its
+                    // tail (e.g. `output.`), losing everything before
+                    // the last chunk boundary. Stream the whole
+                    // `work[i..]` forward — the filter's buffer
+                    // holds the in-flight content until the closing
+                    // tag lands.
+                    self.buffer = work[i..].to_string();
                     return out;
                 }
             } else {
@@ -289,22 +306,33 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
                 if let Some(text) = delta.content {
                     if !text.is_empty() {
                         let frags = state.think_filter.push(&text);
-                        // Return the first non-empty fragment so we
-                        // emit one StreamEvent per chunk. Stash the
-                        // rest in state.fragments_pending for the
-                        // next call. (In practice the filter emits
-                        // 1-2 frags per chunk; multi-frag chunks
-                        // only happen at the tag boundary.)
-                        for f in frags {
-                            match f {
-                                ThinkFragment::Visible(t) if !t.is_empty() => {
-                                    return Some(StreamEvent::TextDelta { text: t });
-                                }
-                                ThinkFragment::Thinking(t) if !t.is_empty() => {
-                                    return Some(StreamEvent::ThinkingDelta { text: t });
-                                }
-                                _ => {}
+                        // v0.8.4 (bugfix): stash all fragments instead
+                        // of returning on the first match. The previous
+                        // `return Some(...)` skipped the rest of the
+                        // SSE event — most importantly the
+                        // `for tc in delta.tool_calls` loop below,
+                        // which means every `<think>...</think>` close
+                        // that landed on the same chunk as a tool
+                        // call (the common case on aiio / Anthropic-
+                        // translated models) silently dropped the tool
+                        // call.
+                        state.fragments_pending = frags;
+                    }
+                }
+                // Drain pending text fragments in arrival order
+                // (skip empty ones). One StreamEvent per call site
+                // means downstream consumers see events in order.
+                if !state.fragments_pending.is_empty() {
+                    let pending = std::mem::take(&mut state.fragments_pending);
+                    for f in pending {
+                        match f {
+                            ThinkFragment::Visible(t) if !t.is_empty() => {
+                                return Some(StreamEvent::TextDelta { text: t });
                             }
+                            ThinkFragment::Thinking(t) if !t.is_empty() => {
+                                return Some(StreamEvent::ThinkingDelta { text: t });
+                            }
+                            _ => {}
                         }
                     }
                 }

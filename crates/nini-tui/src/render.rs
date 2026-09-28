@@ -435,6 +435,69 @@ fn render_search_bar(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     f.render_widget(para, area);
 }
 
+/// v0.8.4 (bugfix, ux-001): the previous version stuffed the
+/// accumulated thinking text into a single RLine, so long blocks
+/// were clipped to the viewport tail (e.g. `💭 ectory.` for a
+/// 400-char reasoning). Hard-wrap each logical line at INNER_MAX
+/// cells (using display_width so emoji / CJK count correctly) and
+/// prefix every continuation with the same indent so the 💭 gutter
+/// stays aligned.
+fn wrap_thinking_block(text: &str) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    const FIRST_PREFIX: &str = "  \u{1F4AD} ";
+    const CONT_PREFIX: &str = "   ";
+    const FIRST_W: usize = 5; // 2 + 2 + 1
+    const CONT_W: usize = 3;
+    const INNER_MAX: usize = 180;
+
+    let mut out: Vec<String> = Vec::new();
+    for logical in text.split('\n') {
+        if logical.is_empty() {
+            out.push(format!("{FIRST_PREFIX}"));
+            continue;
+        }
+        let mut first = true;
+        let mut rest = logical;
+        loop {
+            if rest.is_empty() {
+                break;
+            }
+            let (prefix, pw) = if first { (FIRST_PREFIX, FIRST_W) } else { (CONT_PREFIX, CONT_W) };
+            first = false;
+            let total_w: usize = pw
+                + rest.chars().map(|c| UnicodeWidthChar::width(c).unwrap_or(0)).sum::<usize>();
+            if total_w <= INNER_MAX {
+                out.push(format!("{prefix}{rest}"));
+                break;
+            }
+            // Hard-wrap at the largest char index whose prefix+index
+            // still fits in INNER_MAX. Simple char-count is fine here
+            // — word-boundary wrapping isn't worth the complexity for
+            // a dim/italic ephemeral block, and the trade-off is
+            // occasionally splitting a long word vs. an unreadable
+            // tail clip.
+            let max_tail = INNER_MAX - pw;
+            let mut used = 0usize;
+            let mut cut = rest.len();
+            for (i, c) in rest.char_indices() {
+                let w = UnicodeWidthChar::width(c).unwrap_or(0);
+                if used + w > max_tail {
+                    cut = i;
+                    break;
+                }
+                used += w;
+            }
+            let (head, tail) = rest.split_at(cut);
+            out.push(format!("{prefix}{head}"));
+            rest = tail;
+        }
+    }
+    if out.is_empty() {
+        out.push(format!("{FIRST_PREFIX}"));
+    }
+    out
+}
+
 fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     // v0.8.4 (ux-001): the previous logic only used `scroll_offset`
     // for upward scroll and otherwise showed `[0..visible_height]` —
@@ -486,11 +549,27 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 .map(ListItem::new)
                 .collect(),
             // v0.8: dim/italic reasoning block (Pi-style).
+            //
+            // v0.8.4 (bugfix): the previous version stuffed the entire
+            // accumulated thinking text into a single RLine / single
+            // ListItem. With long thinking blocks (200+ chars) the
+            // List widget clipped the visible portion to a few
+            // trailing characters and the user saw only a cryptic
+            // tail — e.g. "💭 ectory." for "…directory listing on
+            // the user's own home directory.". Wrap each line by
+            // display width so the user can read the full block.
             TranscriptLine::ThinkingText(text) => {
-                vec![ListItem::new(RLine::from(Span::styled(
-                    format!("  💭 {text}"),
-                    theme.fg_style("dim").add_modifier(Modifier::ITALIC),
-                )))]
+                wrap_thinking_block(text)
+                    .into_iter()
+                    .map(|line| {
+                        ListItem::new(RLine::from(Span::styled(
+                            line,
+                            theme
+                                .fg_style("dim")
+                                .add_modifier(Modifier::ITALIC),
+                        )))
+                    })
+                    .collect()
             }
             TranscriptLine::ToolCall { name, args, collapsed } => {
                 let lines = render_tool_call(name, args, theme);

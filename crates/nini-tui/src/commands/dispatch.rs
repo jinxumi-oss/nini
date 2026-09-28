@@ -570,12 +570,18 @@ fn cmd_fork(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -
             // (that requires writing to disk and updating the
             // session_path). We just push the branch into a
             // local transcript snapshot and inform the user.
+            //
+            // v0.8.4 (bugfix): push the divider FIRST so the
+            // subsequent `push_assistant` doesn't append to the
+            // previous assistant's text (push_assistant_raw
+            // accumulates into the last AssistantText line, which
+            // would merge "[fork] ..." into "a3").
+            state.push_divider();
             state.push_assistant(format!(
                 "[fork] branch cut at user msg #{} ({} entries kept)",
                 n,
                 branch.len()
             ));
-            state.push_divider();
             out.push(format!(
                 "fork: cut at user msg #{} ({} entries kept, {} dropped)",
                 n,

@@ -1163,17 +1163,63 @@ impl AppState {
 
     /// Internal: push to transcript without session logging. Used by AgentSink
     /// (which handles its own session flush on TurnEnd).
+    ///
+    /// v0.8.4 (bugfix, ux-001): streaming sends one TextDelta per
+    /// token, which previously pushed one TranscriptLine::AssistantText
+    /// per delta. The TUI list widget then showed N tiny rows
+    /// (`Hi` / `, ` / `world`) instead of the full reply, because
+    /// most lines fell outside the viewport. Now we APPEND to the
+    /// last AssistantText line if there is one, but **only when it
+    /// belongs to the same turn**. The previous code merged a fresh
+    /// command's output (e.g. `/fork`) into the previous turn's
+    /// text because it only checked the last line, not whether that
+    /// last line followed a divider / tool call boundary.
+    ///
+    /// The boundary rule: we may append into the last AssistantText
+    /// only if the line *before* it is also a ThinkingText or
+    /// AssistantText (same turn). Anything else (Divider, ToolCall,
+    /// ToolResult, BashExecution, StopNotice, User) is a turn break
+    /// and we must start a new line.
     pub fn push_assistant_raw(&mut self, text: impl Into<String>) {
-        self.transcript_state.lines
-            .push(TranscriptLine::AssistantText(text.into()));
+        let s: String = text.into();
+        if s.is_empty() {
+            return;
+        }
+        let same_turn = matches!(
+            self.transcript_state.lines.last(),
+            Some(TranscriptLine::AssistantText(_) | TranscriptLine::ThinkingText(_))
+        );
+        if same_turn {
+            if let Some(TranscriptLine::AssistantText(existing)) =
+                self.transcript_state.lines.last_mut()
+            {
+                existing.push_str(&s);
+                return;
+            }
+        }
+        self.transcript_state
+            .lines
+            .push(TranscriptLine::AssistantText(s));
     }
 
     /// v0.8: push reasoning content. Rendered dim/italic.
+    ///
+    /// v0.8.4 (bugfix, ux-001): same reasoning as push_assistant_raw.
+    /// Streaming ThinkingDelta chunks were each pushed as their own
+    /// line, so the transcript ended up with hundreds of `💭 The`
+    /// `💭 user` `💭 wants` rows — the viewport only showed the last
+    /// few chars (`💭 ommand.`). Now we APPEND to the last
+    /// ThinkingText line.
     pub fn push_thinking_raw(&mut self, text: impl Into<String>) {
-        // Don't store in session log — thinking is ephemeral, only
-        // the final answer is part of the conversation history.
-        self.transcript_state.lines
-            .push(TranscriptLine::ThinkingText(text.into()));
+        let s: String = text.into();
+        if s.is_empty() {
+            return;
+        }
+        if let Some(TranscriptLine::ThinkingText(existing)) = self.transcript_state.lines.last_mut() {
+            existing.push_str(&s);
+        } else {
+            self.transcript_state.lines.push(TranscriptLine::ThinkingText(s));
+        }
     }
 
     pub fn push_tool_call(&mut self, name: impl Into<String>, args: impl Into<String>) {

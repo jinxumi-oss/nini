@@ -61,27 +61,34 @@ pub(crate) fn build_provider(
             |key| nini_ai::google::GoogleProvider::new(key),
             |base, key| nini_ai::google::GoogleProvider::with_base_url(base, key),
         ),
+        // v0.8.4 (bugfix): the second positional arg of
+        // `build_with_optional_base_url` is `env_var_name`, not a
+        // provider label. The original `("DEEPSEEK_API_KEY", "deepseek", ...)`
+        // caused `std::env::var("deepseek")` to be looked up, which
+        // is never set — every deepseek invocation hit
+        // `DEEPSEEK_API_KEY required` even when the env var was
+        // present. Pass the actual env var name.
         "deepseek" => build_with_optional_base_url(
             "DEEPSEEK_API_KEY",
-            "deepseek",
+            "DEEPSEEK_API_KEY",
             |key| nini_ai::deepseek::DeepSeekProvider::new(key),
             |base, key| nini_ai::deepseek::DeepSeekProvider::with_base_url(base, key),
         ),
         "groq" => build_with_optional_base_url(
             "GROQ_API_KEY",
-            "groq",
+            "GROQ_API_KEY",
             |key| nini_ai::groq::GroqProvider::new(key),
             |base, key| nini_ai::groq::GroqProvider::with_base_url(base, key),
         ),
         "mistral" => build_with_optional_base_url(
             "MISTRAL_API_KEY",
-            "mistral",
+            "MISTRAL_API_KEY",
             |key| nini_ai::mistral::MistralProvider::new(key),
             |base, key| nini_ai::mistral::MistralProvider::with_base_url(base, key),
         ),
         "cohere" => build_with_optional_base_url(
             "COHERE_API_KEY",
-            "cohere",
+            "COHERE_API_KEY",
             |key| nini_ai::cohere::CohereProvider::new(key),
             |base, key| nini_ai::cohere::CohereProvider::with_base_url(base, key),
         ),

@@ -104,8 +104,12 @@ impl AgentSink {
         }
         if let Ok(mut s) = self.state.lock() {
             match ev {
-                AgentEventLite::TextDelta(text) => s.push_assistant_raw(text),
-                AgentEventLite::ThinkingDelta(text) => s.push_thinking_raw(text),
+                AgentEventLite::TextDelta(text) => {
+                    s.push_assistant_raw(text)
+                }
+                AgentEventLite::ThinkingDelta(text) => {
+                    s.push_thinking_raw(text)
+                }
                 AgentEventLite::ToolCallStart { name } => s.push_tool_call(name, ""),
                 AgentEventLite::ToolCallStop { id, args } => {
                     // Update the most recent tool call line with final args.
