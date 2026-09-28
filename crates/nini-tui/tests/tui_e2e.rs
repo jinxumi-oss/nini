@@ -104,6 +104,7 @@ fn drive(state: &mut AppState, key: Key) {
         | KeyAction::ShowHelp
         | KeyAction::ScrollUp
         | KeyAction::ScrollDown
+        | KeyAction::ScrollToBottom
         | KeyAction::KillWordForward
         | KeyAction::Yank
         | KeyAction::YankPop

@@ -436,16 +436,30 @@ fn render_search_bar(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
 }
 
 fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    // Apply scroll: when scroll_offset > 0, show the slice ending at
-    // (total - scroll_offset). When autoscroll is on or scroll_offset is
-    // 0, show the entire transcript (capped by area.height).
+    // v0.8.4 (ux-001): the previous logic only used `scroll_offset`
+    // for upward scroll and otherwise showed `[0..visible_height]` —
+    // i.e. the TOP of the transcript, ignoring new messages. That is
+    // why "output finished but the page stopped and the new lines
+    // were off-screen". Fix:
+    //
+    //   * `autoscroll` true  → show the last `visible_height` rows
+    //     (chat-style: stick to the bottom; new messages appear
+    //     in-place).
+    //   * `autoscroll` false → the user has scrolled up; respect
+    //     `scroll_offset` (rows from the bottom) and show that slice.
+    //
+    // PageUp / PageDown (and j / k) toggle `autoscroll` and bump
+    // `scroll_offset` accordingly — see `runtime.rs`.
     let total = state.transcript_state.lines.len();
     let visible_height = area.height as usize;
-    let (start, end) = if state.transcript_state.scroll_offset == 0 || total == 0 {
-        let end = total.min(visible_height);
-        (0, end)
+    let (start, end) = if state.transcript_state.autoscroll || total == 0 {
+        // Tail-aligned: show the most-recent `visible_height` rows.
+        let end = total;
+        let start = end.saturating_sub(visible_height);
+        (start, end)
     } else {
-        // Show the last (visible_height) lines ending at (total - scroll_offset).
+        // User-scrolled view: end = total - scroll_offset (rows from
+        // the bottom that are *not* visible).
         let end = total.saturating_sub(state.transcript_state.scroll_offset);
         let start = end.saturating_sub(visible_height);
         (start, end)
@@ -569,6 +583,31 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         .block(Block::default().borders(Borders::NONE))
         .style(Style::default());
     f.render_widget(list, area);
+
+    // v0.8.4 (ux-001): when the user has scrolled up, draw a one-row
+    // scroll indicator at the bottom-right corner of the transcript
+    // area so they know how many lines they're missing. Shows
+    //   `↓ N more`
+    // when at the top of the visible window and the tail is off-
+    // screen. The indicator is suppressed during autoscroll so it
+    // doesn't flicker on every token delta.
+    if !state.transcript_state.autoscroll
+        && state.transcript_state.scroll_offset > 0
+        && area.height >= 3
+    {
+        let hidden = state.transcript_state.scroll_offset;
+        let label = format!(" \u{2193} {hidden} more ");
+        let style = theme.fg_style("accent").add_modifier(Modifier::BOLD);
+        // Bottom-right corner: one row, right-aligned within the last
+        // 12 cols (or the area width, whichever is smaller).
+        let width = (label.chars().count() as u16).min(area.width);
+        let x = area.x + area.width.saturating_sub(width);
+        let y = area.y + area.height.saturating_sub(1);
+        let ind_area = Rect::new(x, y, width, 1);
+        let ind = Paragraph::new(Span::styled(label, style))
+            .alignment(ratatui::layout::Alignment::Right);
+        f.render_widget(ind, ind_area);
+    }
 }
 
 /// v0.8.4 (ux-001): cold-start welcome card. Renders into the empty

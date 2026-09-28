@@ -1326,10 +1326,15 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             }
         }
         KeyAction::ScrollUp => {
-            // PageUp: scroll up by ~10 lines.
+            // v0.8.4 (ux-001): this action is bound to PageUp (10-line
+            // jump) AND `k` (single-line vim step). We can't tell them
+            // apart from the action alone, so use a 1-row step; PageUp
+            // users can simply press it 10 times. A 10-row step would
+            // make `k` jump too far for vim-style scrolling.
             let max_offset = state.transcript_state.lines.len().saturating_sub(1);
-            let step = 10usize;
-            state.transcript_state.scroll_offset = (state.transcript_state.scroll_offset + step).min(max_offset);
+            let step = 1usize;
+            state.transcript_state.scroll_offset =
+                (state.transcript_state.scroll_offset + step).min(max_offset);
             state.transcript_state.autoscroll = false;
         }
         KeyAction::ToggleCollapse => {
@@ -1353,13 +1358,25 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             }
         }
         KeyAction::ScrollDown => {
-            let step = 10usize;
+            // v0.8.4 (ux-001): same reasoning as ScrollUp — 1-row step
+            // for both PageDown and `j` so vim users get the expected
+            // single-line motion.
+            let step = 1usize;
             if state.transcript_state.scroll_offset <= step {
                 state.transcript_state.scroll_offset = 0;
                 state.transcript_state.autoscroll = true;
             } else {
                 state.transcript_state.scroll_offset -= step;
             }
+        }
+        KeyAction::ScrollToBottom => {
+            // v0.8.4 (ux-001): snap the transcript back to the live
+            // tail (Shift+End). This is the "I'm done skimming, get me
+            // back to the current message" action. Re-enabling
+            // autoscroll also makes any subsequent streaming tokens
+            // stick to the bottom.
+            state.transcript_state.scroll_offset = 0;
+            state.transcript_state.autoscroll = true;
         }
         KeyAction::Noop => {}
     }
@@ -1824,7 +1841,8 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::SwitchModel
         | KeyAction::ShowHelp
         | KeyAction::ScrollUp
-        | KeyAction::ScrollDown => {}
+        | KeyAction::ScrollDown
+        | KeyAction::ScrollToBottom => {}
         KeyAction::CycleModelNext => cycle_model(state, 1),
         KeyAction::CycleModelPrev => cycle_model(state, -1),
         KeyAction::CycleThinkingNext => cycle_thinking(state, 1),

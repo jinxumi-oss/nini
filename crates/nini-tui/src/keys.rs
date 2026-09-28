@@ -170,6 +170,9 @@ pub enum KeyAction {
     /// Scroll conversation up/down.
     ScrollUp,
     ScrollDown,
+    /// Jump to the bottom of the transcript and re-enable autoscroll.
+    /// Default binding: Shift+End (Pi-compatible).
+    ScrollToBottom,
     /// Toggle collapsed/expanded state on the focused transcript line.
     /// Default binding: Ctrl+O. Operates on the line at the current
     /// scroll offset (so the line currently visible at the top of the
@@ -283,6 +286,15 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         },
         KeyBinding {
             key: Key::new(KeyCode::End, KeyModifiers::NONE),
+            // v0.8.4 (ux-001): `End` jumps the transcript scroll back
+            // to the bottom so the user can return to the latest
+            // message after PageUp-skimming. When the editor is
+            // empty we still want `End` to move the caret to end-of-
+            // line, but in this codebase MoveLineEnd already owns
+            // `End` for the editor. Adding a second binding would
+            // shadow it; instead we tie scroll-to-bottom to the
+            // Shift+End modifier so the bare End stays the editor
+            // motion and Shift+End snaps back to the live message.
             action: MoveLineEnd,
         },
         KeyBinding {
@@ -367,6 +379,27 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         KeyBinding {
             key: Key::new(KeyCode::PageDown, KeyModifiers::NONE),
             action: ScrollDown,
+        },
+        // v0.8.4 (ux-001): vim-style single-line scroll so the user can
+        // skim without losing context. We use Ctrl+J / Ctrl+K (vim
+        // motion with the Ctrl modifier) instead of plain `j` / `k`
+        // because plain `j` / `k` would clobber typing them into the
+        // editor input — especially inside the completion popup where
+        // the user expects `j` to move the highlight down. PageUp /
+        // PageDown are unchanged.
+        KeyBinding {
+            key: Key::new(KeyCode::Char('k'), ctrl),
+            action: ScrollUp,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('j'), ctrl),
+            action: ScrollDown,
+        },
+        // v0.8.4 (ux-001): Shift+End snaps back to the live message
+        // after the user scrolled up with PageUp / k.
+        KeyBinding {
+            key: Key::new(KeyCode::End, KeyModifiers::SHIFT),
+            action: ScrollToBottom,
         },
         // Clear input
         KeyBinding {
@@ -459,8 +492,6 @@ mod tests {
             KeyAction::MoveLineStart,
         );
     }
-
-    #[test]
 
     #[test]
     fn ctrl_o_binds_to_toggle_collapse() {
