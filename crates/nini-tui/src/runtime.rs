@@ -62,6 +62,12 @@ pub enum AgentEventLite {
     },
     TurnEnd,
     Error(String),
+    /// v0.8.4 (ux-001): non-success stop reason surfaced at the end of
+    /// an assistant turn. Mirrors Pi's `AssistantMessageComponent`
+    /// end-of-turn notice ("Response was truncated before completion."
+    /// / "Operation aborted" / "Error: …"). The string is a
+    /// human-readable label that already maps to a friendly message.
+    StopReason(String),
     Usage(u32, u32, f64),
     /// Agent phase transition. Mirrors `AgentEvent::PhaseChanged` from
     /// nini-core but as a lightweight payload (just the phase name).
@@ -130,6 +136,11 @@ impl AgentSink {
                 }
                 AgentEventLite::Error(message) => {
                     s.push_assistant_raw(format!("[error] {message}"));
+                }
+                AgentEventLite::StopReason(label) => {
+                    s.transcript_state
+                        .lines
+                        .push(TranscriptLine::StopNotice(label));
                 }
                 AgentEventLite::Usage(input, output, cost) => {
                     s.run_state.tokens.input += input as u64;

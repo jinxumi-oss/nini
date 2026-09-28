@@ -140,12 +140,39 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
                             duration_ms: output.duration_ms,
                         }
                     }
-                    Ok(AgentEvent::TurnEnd { usage, .. }) => {
+                    Ok(AgentEvent::TurnEnd { stop_reason, usage }) => {
                         sink.push(nini_tui::runtime::AgentEventLite::Usage(
                             usage.input_tokens,
                             usage.output_tokens,
                             0.0,
                         ));
+                        // v0.8.4 (ux-001, pi-parity): surface non-success
+                        // stop reasons at the end of the assistant turn.
+                        // Pi's `AssistantMessageComponent` shows "Response
+                        // was truncated before completion." / "Operation
+                        // aborted" / "Error: …" — same idea, one-line
+                        // notice rendered in `error` colour so the user
+                        // immediately sees the turn did not complete
+                        // normally. `end_turn` / `tool_use` are the happy
+                        // path so we don't emit anything.
+                        match stop_reason.as_str() {
+                            "length" => sink.push(
+                                nini_tui::runtime::AgentEventLite::StopReason(
+                                    "Response was truncated before completion.".to_string()
+                                )
+                            ),
+                            "aborted" => sink.push(
+                                nini_tui::runtime::AgentEventLite::StopReason(
+                                    "Operation aborted.".to_string()
+                                )
+                            ),
+                            "error" => sink.push(
+                                nini_tui::runtime::AgentEventLite::StopReason(
+                                    "Error during generation.".to_string()
+                                )
+                            ),
+                            _ => {}
+                        }
                         nini_tui::runtime::AgentEventLite::TurnEnd
                     }
                     Ok(AgentEvent::Error { message }) => {

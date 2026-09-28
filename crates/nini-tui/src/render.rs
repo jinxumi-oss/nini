@@ -547,10 +547,95 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         };
         items.extend(new_items);
     }
+
+    // v0.8.4 (ux-001): when the transcript is empty AND the input is
+    // empty (cold start, no session yet) the wide gap between the
+    // footer and the input box reads as "the UI is broken" — large
+    // blank space with no hint of what to do. Fill it with a centered
+    // welcome card so the user sees actionable content immediately.
+    // We deliberately skip the card once the user has typed anything,
+    // even before sending — at that point they're engaged with the
+    // editor and a welcome card in the middle of the screen would be
+    // distracting.
+    if items.is_empty()
+        && state.transcript_state.lines.is_empty()
+        && state.input.text.is_empty()
+    {
+        render_welcome_card(f, theme, area);
+        return;
+    }
+
     let list = List::new(items)
         .block(Block::default().borders(Borders::NONE))
         .style(Style::default());
     f.render_widget(list, area);
+}
+
+/// v0.8.4 (ux-001): cold-start welcome card. Renders into the empty
+/// transcript area with the title centred on the vertical midline and
+/// a short list of example commands. Avoids the dead-space look that
+/// confuses first-time users ("did it crash?").
+fn render_welcome_card(f: &mut Frame, theme: &Theme, area: Rect) {
+    use ratatui::layout::Alignment;
+    use ratatui::widgets::Paragraph;
+
+    let title = Paragraph::new(Span::styled(
+        " nini \u{2014} interactive coding agent ".to_string(),
+        theme
+            .fg_style("accent")
+            .add_modifier(Modifier::BOLD),
+    ))
+    .alignment(Alignment::Center);
+
+    let subtitle = Paragraph::new(Span::styled(
+        "Type a prompt and press Enter to start. Examples below.".to_string(),
+        theme.fg_style("muted"),
+    ))
+    .alignment(Alignment::Center);
+
+    let examples: Vec<(&str, &str)> = vec![
+        (" /help ", "list every slash command"),
+        (" /model ", "switch provider / model"),
+        (" /theme ", "toggle dark \u{2194} light"),
+        (" /clear ", "reset the conversation"),
+        (" !ls -la ", "run a shell command inline"),
+    ];
+
+    let mut example_lines: Vec<RLine> = Vec::new();
+    for (i, (key, desc)) in examples.iter().enumerate() {
+        let sep = if i > 0 { "  \u{2022}  " } else { "" };
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if !sep.is_empty() {
+            spans.push(Span::styled(sep.to_string(), theme.fg_style("dim")));
+        }
+        spans.push(Span::styled(
+            key.to_string(),
+            theme.fg_style("keyHint").add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!("  {desc}"),
+            theme.fg_style("muted"),
+        ));
+        example_lines.push(RLine::from(spans));
+    }
+    let examples_widget = Paragraph::new(example_lines).alignment(Alignment::Center);
+
+    // v-stack: title + subtitle + (pad) + examples. The pad fills the
+    // remaining area so the title lands roughly 1/3 from the top.
+    let pad_height = area.height.saturating_sub(3 + examples.len() as u16) / 2;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(pad_height.max(2)),
+            Constraint::Length(1), // title
+            Constraint::Length(1), // subtitle
+            Constraint::Length(examples.len() as u16),
+        ])
+        .split(area);
+
+    f.render_widget(title, chunks[1]);
+    f.render_widget(subtitle, chunks[2]);
+    f.render_widget(examples_widget, chunks[3]);
 }
 
 fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
@@ -626,8 +711,16 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
     // v0.8.3: Pi parity — hints now use keyHint(theme) formatting
     // (dim key + muted description) instead of bg("dim")+white text.
     // F1 toggle switches between compact (5 hints) and extended (13+).
+    //
+    // v0.8.4 (ux-001): pick a shorter hint set on narrow terminals so
+    // the most important keys (Enter=send, Ctrl+C=quit) always fit.
+    // The full 5-hint compact set is ~58 chars; on a 60-col terminal
+    // the 5th hint would overflow and ratatui's `Paragraph` truncates
+    // the tail silently — without an ellipsis the user wouldn't even
+    // know hints were dropped.
+    let narrow = area.width < 70;
     let hints: Vec<(&str, &str)> = match state.run_state.mode {
-        RunMode::Editing if state.ui_state.help_extended => vec![
+        RunMode::Editing if state.ui_state.help_extended && !narrow => vec![
             (" F1 ", "short"),
             (" Enter ", "send"),
             (" Shift+Enter ", "newline"),
@@ -641,6 +734,20 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
             (" Ctrl+O ", "collapse"),
             (" Ctrl+C ", "quit"),
             (" Ctrl+D ", "exit"),
+        ],
+        RunMode::Editing if state.ui_state.help_extended => vec![
+            // narrow extended: drop the seldom-used kill/undo/yank hints
+            (" F1 ", "short"),
+            (" Enter ", "send"),
+            (" Shift+Enter ", "newline"),
+            (" Ctrl+L ", "model"),
+            (" Ctrl+C ", "quit"),
+        ],
+        RunMode::Editing if narrow => vec![
+            // narrow compact: keep only the essentials
+            (" Enter ", "send"),
+            (" Shift+Enter ", "newline"),
+            (" Ctrl+C ", "quit"),
         ],
         RunMode::Editing => vec![
             (" F1 ", "help"),
