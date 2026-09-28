@@ -27,7 +27,6 @@
 //! CLI to invoke.
 
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 /// A user-defined prompt template.

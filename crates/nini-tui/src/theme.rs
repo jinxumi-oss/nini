@@ -112,7 +112,6 @@ fn color_to_sgr(c: Color, is_bg: bool) -> String {
         Color::LightBlue => format!("{}", base + 12),
         Color::LightMagenta => format!("{}", base + 13),
         Color::LightCyan => format!("{}", base + 14),
-        Color::LightGreen => format!("{}", base + 15),
         _ => String::new(),
     }
 }

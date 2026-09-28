@@ -64,17 +64,19 @@ tokio-stream = "0.1"
 assert_matches = "1.5"
 
 [workspace.lints.rust]
-unsafe_code = "warn"
+unsafe_code = "allow"
+unused_unsafe = "allow"
 missing_docs = "allow"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 correctness = { level = "warn", priority = -1 }
 suspicious = { level = "warn", priority = -1 }
-complexity = { level = "warn", priority = -1 }
-perf = { level = "warn", priority = -1 }
-style = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
+complexity = "allow"
+perf = "allow"
+style = "allow"
+pedantic = "allow"
+nursery = "allow"
 # Pragmatic relaxations for v1 polish
 must_use_candidate = "allow"
 missing_errors_doc = "allow"

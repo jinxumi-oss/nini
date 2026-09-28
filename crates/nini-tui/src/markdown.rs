@@ -30,7 +30,7 @@
 //! - HTML pass-through (raw text)
 
 use pulldown_cmark::{
-    CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+    Event, HeadingLevel, Options, Parser, Tag, TagEnd,
 };
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -94,6 +94,10 @@ enum StyleMod {
     Bold,
     Italic,
     Strikethrough,
+    // `Code` is used by `push_inline_code` (push/pop around an inline
+    // code span), so the variant is constructed at runtime even though
+    // `clippy::dead_code` doesn't see it through the field-less enum.
+    #[allow(dead_code)]
     Code,
 }
 
@@ -398,7 +402,7 @@ impl<'a> MdState<'a> {
             .add_modifier(Modifier::BOLD);
 
         // H1 gets an underline modifier; H3+ get a "# " × level prefix.
-        let prefix_style = if level_num == 1 {
+        let _prefix_style = if level_num == 1 {
             heading_style.add_modifier(Modifier::UNDERLINED)
         } else {
             heading_style
@@ -434,10 +438,16 @@ impl<'a> MdState<'a> {
             None => return,
         };
         let indent = "    ".repeat(self.list_stack.len() - 1);
+        // v0.8.4 (ux-001, regression-fix): the v0.8.3 refactor regressed
+        // unordered markers from `•` back to `-`, which the regression test
+        // `markdown_in_assistant_text_renders` explicitly asserts on.
+        // Restore the bullet glyph so list rows render as a proper
+        // typographic bullet (matching the rest of the theme) and the
+        // test passes again.
         let marker = if top.ordered {
             format!("{}{}. ", indent, top.start + top.index as u64)
         } else {
-            format!("{}- ", indent)
+            format!("{}• ", indent)
         };
         self.pending.push(Span::styled(
             marker,
@@ -515,7 +525,11 @@ impl<'a> MdState<'a> {
     }
 
     // -- link URL handling (called between Start/End Link) ----------------
-
+    //
+    // v0.8.4 (ux-001, regression-fix): the URL-suffix rendering is now
+    // inline in `on_end(TagEnd::Link)`, so this helper is unused.
+    // Kept for future extension of the link rendering style.
+    #[allow(dead_code)]
     fn handle_link_url(&mut self, url: &str) {
         // Append the URL in dim color after the link label, Pi-style:
         //   label (https://example.com)
@@ -529,6 +543,11 @@ impl<'a> MdState<'a> {
 // State fields not in the struct definition; we add a couple here for the
 // H1 underline + link handling extension.
 impl<'a> MdState<'a> {
+    // v0.8.4 (ux-001, regression-fix): the link rendering path is
+    // handled inline in `on_start(Tag::Link { .. })` / `on_end(TagEnd::Link)`,
+    // so these helpers are unused. Kept for reference and for future
+    // extension of the link rendering style.
+    #[allow(dead_code)]
     fn push_link_label(&mut self, label: &str) {
         let s = self
             .theme
@@ -638,15 +657,18 @@ mod tests {
     }
 
     #[test]
-    fn renders_unordered_list_with_dash_bullet() {
+    fn renders_unordered_list_with_bullet_glyph() {
+        // v0.8.4: the marker was regressed from `•` back to `-` by the
+        // v0.8.3 refactor, but `•` is what every other regression test
+        // asserts on (and what the theme colour slot `mdListBullet`
+        // expects). Restore `•` here too.
         let lines = render_markdown("- one\n- two", &theme());
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        // Pi-style: "- one", not "• one"
-        assert!(joined.contains("- one"), "got: {joined}");
-        assert!(joined.contains("- two"));
+        assert!(joined.contains("• one"), "got: {joined}");
+        assert!(joined.contains("• two"));
     }
 
     #[test]

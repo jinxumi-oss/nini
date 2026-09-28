@@ -70,10 +70,9 @@ fn snapshot_conversation() {
 
     state.push_user("Please refactor the auth middleware to use JWT instead of session cookies.");
     state.push_divider();
-    state.transcript_state.lines.push(TranscriptLine::ThinkingText {
-        text: "The user wants to migrate from session cookies to JWT. I should first read the current middleware, identify the session helpers, and propose a JWT strategy with refresh-token rotation.".into(),
-        collapsed: false,
-    });
+    state.transcript_state.lines.push(TranscriptLine::ThinkingText(
+        "The user wants to migrate from session cookies to JWT. I should first read the current middleware, identify the session helpers, and propose a JWT strategy with refresh-token rotation.".into(),
+    ));
     state.push_assistant(
         "I'll read the auth middleware first, then propose a JWT plan.\n\n\
          # Plan\n\n\
@@ -160,10 +159,9 @@ fn snapshot_thinking_visible() {
     state.session_state.session_id = Some("xyz98765".into());
 
     state.push_user("explain monads in 3 sentences");
-    state.transcript_state.lines.push(TranscriptLine::ThinkingText {
-        text: "Monads are wrappers around values that compose sequential operations while handling effects (state, errors, I/O) in a pure functional style.".into(),
-        collapsed: false,
-    });
+    state.transcript_state.lines.push(TranscriptLine::ThinkingText(
+        "Monads are wrappers around values that compose sequential operations while handling effects (state, errors, I/O) in a pure functional style.".into(),
+    ));
     state.push_assistant(
         "A monad is a triple (M, return, >>=) satisfying three laws: left identity, right identity, and associativity. \
          In Rust, `Option<T>` is the simplest monad — `return` is `Some` and `>>=` is `and_then`. \

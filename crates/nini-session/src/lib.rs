@@ -27,7 +27,6 @@ use chrono::{DateTime, Utc};
 pub use nini_core::SessionEntry;
 pub use nini_core::entries::AgentMessage;
 use nini_core::CoreError;
-use nini_core::SessionEntry as _SE;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -117,7 +116,7 @@ fn convert_to_pi_message(msg: nini_core::AgentMessage) -> nini_core::entries::Ag
 /// Convert provider ContentBlock list to entries ContentBlock list.
 /// Inverse of `nini_core::conversion::assistant_content_to_blocks`.
 fn provider_to_pi_blocks(blocks: Vec<nini_core::ContentBlock>) -> Vec<nini_core::entries::ContentBlock> {
-    use nini_core::entries::ContentBlock as PiContentBlock;
+    
     blocks.into_iter().map(provider_block_to_pi).collect()
 }
 
@@ -410,11 +409,11 @@ pub fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, CoreError> {
 mod tests {
     use super::*;
     use nini_core::entries::{
-        AgentMessage, BranchSummaryEntry, CompactionEntry, EntryType, LabelEntry,
-        ModelChangeEntry, SessionInfoEntry, SessionMessageEntry, StopReason,
-        StringOrContentBlocks, ThinkingLevelChangeEntry, Usage, UserMessage,
+        AgentMessage, BranchSummaryEntry, CompactionEntry, LabelEntry,
+        ModelChangeEntry, SessionInfoEntry, SessionMessageEntry,
+        StringOrContentBlocks, ThinkingLevelChangeEntry, UserMessage,
     };
-    use nini_core::Role;
+    
     use tempfile::tempdir;
 
     #[test]

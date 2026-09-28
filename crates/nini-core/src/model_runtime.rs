@@ -52,7 +52,7 @@ impl Default for ModelRuntime {
 }
 
 impl ModelSpec {
-    fn _set_model_id(mut self, _id: &str) -> Self { self }
+    fn _set_model_id(self, _id: &str) -> Self { self }
 }
 
 pub fn available_models() -> Vec<ModelSpec> {

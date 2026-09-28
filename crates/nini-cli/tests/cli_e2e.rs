@@ -180,7 +180,7 @@ fn cli_unknown_provider_exits_2() {
 #[test]
 fn cli_anthropic_without_key() {
     // Use a clean env so we don't pick up a real key
-    let mut child = Command::new(nini_bin())
+    let child = Command::new(nini_bin())
         .args(["--provider", "anthropic", "-p", "hi"])
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("OPENAI_API_KEY")
@@ -263,7 +263,7 @@ fn cli_version_independent_of_provider() {
 // =====================================================================
 #[test]
 fn cli_openai_compat_requires_base_url() {
-    let mut child = Command::new(nini_bin())
+    let child = Command::new(nini_bin())
         .args(["--provider", "openai-compat", "-p", "hi"])
         .env_remove("OPENAI_BASE_URL")
         .env_remove("OPENAI_API_KEY")

@@ -2,7 +2,7 @@
 //! (cdylib) from disk. Mirrors pi's `loadExtensions` flow but uses Rust
 //! `libloading` instead of dynamic `.node` linking.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::{Extension, ExtensionAPI, ExtensionInfo};
@@ -61,13 +61,12 @@ impl ExtensionLoader {
             let version = std::fs::metadata(&path)
                 .ok()
                 .and_then(|m| m.modified().ok())
-                .and_then(|t| {
+                .map(|t| {
                     let secs = t
                         .duration_since(std::time::UNIX_EPOCH)
-                        .ok()
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
-                    Some(format!("mtime-{secs}"))
+                    format!("mtime-{secs}")
                 })
                 .unwrap_or_else(|| "0".to_string());
             out.push(ExtensionInfo { name, path, version });
@@ -158,7 +157,7 @@ impl Extension for LoadedHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::path::PathBuf;
 
     fn fake_extension_dir() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();

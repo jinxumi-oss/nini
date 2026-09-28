@@ -96,7 +96,6 @@ fn truncate(s: &str, max: usize) -> String {
     }
     out
 }
-}
 
 impl SelectorState for TreeSelector {
     fn as_any_mut(&mut self) -> &mut dyn Any { self }

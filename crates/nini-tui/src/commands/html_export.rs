@@ -69,6 +69,14 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
             TranscriptLine::ThinkingText(_) => {
                 out.push_str("<p class=\"thinking\" style=\"color:#aaa;font-style:italic\">\n[thinking elided]\n</p>\n");
             }
+            // v0.8.4 (ux-001): surface stop notices in the exported
+            // HTML so an exported session record reflects aborted /
+            // truncated turns honestly.
+            TranscriptLine::StopNotice(msg) => {
+                out.push_str(&format!(
+                    "<p class=\"stop-notice\" style=\"color:#c33\">⚠ {msg}</p>\n"
+                ));
+            }
         }
     }
     out.push_str("</body></html>\n");

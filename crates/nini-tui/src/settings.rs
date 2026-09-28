@@ -19,7 +19,7 @@
 //! Unknown top-level keys are ignored. Missing fields fall back to
 //! defaults so a partial file still loads.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 

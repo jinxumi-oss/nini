@@ -260,7 +260,7 @@ mod tests {
 
 #[cfg(test)]
 mod diff_integration_tests {
-    use super::*;
+    
     use crate::diff::{diff_summary, render_unified};
 
     #[test]

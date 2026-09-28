@@ -52,7 +52,6 @@ pub struct Message {
 
 /// Legacy alias — many places use `AgentMessage` as the type name.
 /// This is the same as `Message`.
-
 /// Tool specification sent to the model. Re-exported from `tool::ToolSpec`.
 pub use crate::tool::ToolSpec;
 

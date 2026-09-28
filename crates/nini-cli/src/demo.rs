@@ -233,6 +233,13 @@ pub(crate) fn find_first_file_with_todo(cwd: &Path) -> Option<String> {
 /// v0.7.1 — delegate to the chokepoint in nini-core::conversion.
 /// See crates/nini-tui/src/commands.rs::entry_legacy_message for the
 /// parallel refactor.
+///
+/// Currently only exercised by `cli_entry_legacy_handles_real_entry`
+/// below; the `let _ =` form doesn't count as a use for `dead_code`,
+/// and `pub(crate)` widens visibility so rustc flags it. The function
+/// is kept for symmetry with the TUI's `entry_legacy_message` and may
+/// be needed again when the CLI gets a `--dump-legacy` flag.
+#[allow(dead_code)]
 pub(crate) fn cli_entry_legacy(entry: &nini_core::SessionEntry) -> Option<nini_core::AgentMessage> {
     let m = nini_core::conversion::session_entry_to_llm_message(entry)?;
     Some(nini_core::AgentMessage {

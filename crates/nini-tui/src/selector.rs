@@ -74,7 +74,7 @@ impl SelectorPanel {
 impl Widget for SelectorPanel {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         use ratatui::layout::{Constraint, Direction, Layout};
-        use ratatui::style::{Modifier, Style};
+        use ratatui::style::Modifier;
         use ratatui::text::Line as RLine;
 
         if area.height < 4 || area.width < 10 {
@@ -361,7 +361,8 @@ mod tests {
                 &Theme::dark(),
                 f.area(),
             )
-        });
+        })
+        .unwrap();
     }
 
     // helper that delegates to the Widget impl so we don't duplicate logic

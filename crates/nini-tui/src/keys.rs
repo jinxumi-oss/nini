@@ -510,6 +510,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn arrow_keys_move() {
         let km = default_keymap();
         assert_eq!(

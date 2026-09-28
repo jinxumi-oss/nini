@@ -321,7 +321,7 @@ mod tests {
         mgr.load_file(&path).unwrap();
         assert_eq!(mgr.len(), 2);
 
-        let map = mgr.effective_keymap();
+        let _map = mgr.effective_keymap();
         // Ctrl+Q → Quit (user)
         let quit_key = Key::new(crossterm::event::KeyCode::Char('q'), KeyModifiers::CTRL);
         assert_eq!(mgr.resolve(quit_key), KeyAction::Quit);
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn apply_to_appstate_doesnt_panic() {
-        let mut state = AppState::new("test");
+        let state = AppState::new("test");
         // Just verify KeybindingsManager can be queried for the state's resolver
         // without panic — currently the manager is independent of state but the
         // path forward is to thread it through `run()` and pass to handle_key.

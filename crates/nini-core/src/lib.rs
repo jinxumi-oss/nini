@@ -33,7 +33,6 @@ pub use provider::{
 };
 
 /// Legacy alias for `Message` — keeps existing call sites working.
-
 pub type LegacyAgentMessage = AgentMessage;
 pub type LegacyContentBlock = ContentBlock;
 

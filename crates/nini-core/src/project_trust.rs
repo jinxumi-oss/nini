@@ -29,9 +29,19 @@ pub struct TrustDecision {
 }
 
 impl TrustDecision {
+    // PascalCase constants mirror the `TrustLevel` enum variants 1:1
+    // so call sites read like a domain concept (`TrustDecision::Trusted`)
+    // rather than a magic bit flag. The intentional PascalCase triggers
+    // clippy's `non_upper_case_globals`; silenced locally rather than
+    // renamed, because the API is consumed at multiple call sites
+    // (see dispatch.rs `complete_trust`).
+    #[allow(non_upper_case_globals)]
     pub const Trusted: Self = Self { level: TrustLevel::Trusted };
+    #[allow(non_upper_case_globals)]
     pub const Distrusted: Self = Self { level: TrustLevel::Distrusted };
+    #[allow(non_upper_case_globals)]
     pub const Ask: Self = Self { level: TrustLevel::Ask };
+    #[allow(non_upper_case_globals)]
     pub const Never: Self = Self { level: TrustLevel::Never };
 
     pub fn new(level: TrustLevel) -> Self { Self { level } }

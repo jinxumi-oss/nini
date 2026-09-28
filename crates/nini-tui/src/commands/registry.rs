@@ -236,6 +236,14 @@ pub fn by_name(name: &str) -> Option<&'static CommandDef> {
 }
 
 /// Score one command against a `/<query>` prefix. Higher = better.
+///
+/// v0.8.4 (ux-001, regression-fix): restored from a v0.8 refactor that
+/// silently dropped the function. Currently unused — `complete()`
+/// returns the raw list in declaration order — but kept under
+/// `#[allow(dead_code)]` because the fuzzy-match design notes still
+/// reference this scoring formula and we may want it back when slash
+/// command search gets fuzzy matching.
+#[allow(dead_code)]
 fn score(def: &CommandDef, q: &str) -> i32 {
     let name = def.name;
     if name == q {

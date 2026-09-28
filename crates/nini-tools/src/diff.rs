@@ -98,7 +98,7 @@ fn collapse_to_hunks(ops: &[(char, &str)], context: usize) -> Vec<DiffLine> {
             break;
         }
     }
-    let Some(first_change) = first_change else {
+    let Some(_first_change) = first_change else {
         // No changes at all — emit the first `context` lines of context.
         let limit = context.min(n);
         for k in 0..limit {
@@ -128,7 +128,7 @@ fn collapse_to_hunks(ops: &[(char, &str)], context: usize) -> Vec<DiffLine> {
 
             // Case 1: first change — handle leading-context collapse.
             // Case 2: subsequent change — handle inter-hunk gap collapse.
-            let mut k_start = pre_start;
+            let k_start = pre_start;
             let mut insert_sep = false;
             if prev_change_end.is_none() {
                 // First change.

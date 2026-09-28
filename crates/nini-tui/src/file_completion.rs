@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use walkdir::WalkDir;
 
 /// Maximum directory depth (anchored on cwd). Bounded so that walking

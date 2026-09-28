@@ -103,7 +103,7 @@ pub fn summarize_branch(entries: &[Entry]) -> String {
 /// Returns `(read_files, modified_files)` as sorted, deduplicated vectors.
 pub fn extract_file_operations(entries: &[Entry]) -> (Vec<String>, Vec<String>) {
     let mut reads: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut mods: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mods: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for entry in entries {
         if let Some(m) = &entry.message {
             if !matches!(m.role, crate::provider::Role::Tool) {
@@ -285,9 +285,7 @@ async fn try_summarize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entries::{
-        AgentMessage, AssistantMessage, ContentBlock, ToolResultMessage, UserMessage,
-    };
+    
 
     fn user_entry(id: &str, content: &str) -> Entry {
         let mut e = Entry::default();

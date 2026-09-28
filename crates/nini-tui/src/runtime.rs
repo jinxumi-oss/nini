@@ -759,7 +759,7 @@ fn apply_selector_result(
     {
         // F015: the user picked a palette entry. Read the selected
         // item and dispatch based on its id prefix.
-        use crate::selector::{SelectorItem, SelectorState};
+        use crate::selector::SelectorState;
         let selected_idx = palette.state_selected();
         let items = palette.state_items();
         if let Some(item) = items.get(selected_idx) {

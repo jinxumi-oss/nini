@@ -6,7 +6,7 @@
 //! session header if readable.
 
 use std::any::Any;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::selector::{SelectorItem, SelectorOutcome, SelectorState};
 

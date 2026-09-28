@@ -226,11 +226,14 @@ impl BashRunner {
     }
 }
 
-/// `setsid(2)` wrapper. We isolate the libc dep here so other Unix targets
-/// keep building untouched.
+// `setsid(2)` wrapper. We isolate the libc dep here so other Unix
+// targets keep building untouched.
+//
+// We use a `//` comment instead of `///` because rustdoc does not
+// generate documentation for `extern` blocks, so the doc comment
+// would be flagged as `unused_doc_comments`.
 #[cfg(unix)]
-#[link(name = "c")]
-extern "C" {
+unsafe extern "C" {
     fn setsid() -> i32;
 }
 

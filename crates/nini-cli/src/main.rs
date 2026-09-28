@@ -6,9 +6,8 @@
 //! - `nini demo [task]`      scripted autonomous demo (no API key needed)
 //! - `nini info`             show loaded skills/settings
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use futures_util::StreamExt;
 
 pub mod startup_ui;
 
@@ -21,17 +20,6 @@ pub(crate) mod tool_registry;
 pub(crate) mod info;
 pub(crate) mod demo;
 pub(crate) mod app;
-
-// FixtureTurn + ProgrammedProvider moved to demo.rs + provider_factory.rs
-use nini_core::provider::{Provider, Usage};
-use nini_core::settings::load_settings;
-use nini_core::skills::{format_skills_for_prompt, load_skills};
-use nini_core::tool::Tool;
-use nini_core::{Agent, AgentEvent, RunConfig};
-use nini_core::tool::ToolRegistry;
-use nini_tui::run as run_tui;
-use std::io::IsTerminal;
-use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "nini", about = "Pi-compatible Rust coding agent", version)]
@@ -226,8 +214,8 @@ async fn main() -> Result<()> {
         model,
         fallback_keys,
         fallback_base_urls,
-        continue_session,
-        session_id,
+        continue_session: _,
+        session_id: _,
         no_session: _,
         name: _,
         fork: _,
@@ -236,7 +224,7 @@ async fn main() -> Result<()> {
         system_prompt: _,
         append_system_prompt: _,
         thinking: _,
-        tui_mode,
+        tui_mode: _,
         list_models,
         tools,
         exclude_tools,

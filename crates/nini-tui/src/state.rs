@@ -43,6 +43,13 @@ pub enum TranscriptLine {
     },
     /// System-injected divider (turn boundary).
     Divider,
+    /// v0.8.4 (ux-001): surfaced at the end of an assistant turn when
+    /// the model stopped for a non-success reason (`aborted`, `length`
+    /// truncation, `error`). The string is the human-readable label.
+    /// Mirrors Pi's `AssistantMessageComponent` end-of-turn notice
+    /// ("Response was truncated before completion." / "Operation
+    /// aborted" / "Error: …").
+    StopNotice(String),
     /// A bash execution rendered as a self-contained component.
     /// Used by `!cmd` passthrough and (future) bash tool calls.
     BashExecution {
@@ -1253,6 +1260,7 @@ impl AppState {
                 TranscriptLine::BashExecution { cmd, output, .. } => {
                     total += chars_to_tokens(cmd) + chars_to_tokens(output);
                 }
+                TranscriptLine::StopNotice(s) => total += chars_to_tokens(s),
                 TranscriptLine::Divider => {}
             }
         }
@@ -1516,6 +1524,7 @@ pub(crate) fn line_summary_text_impl(line: &crate::state::TranscriptLine) -> Str
         }
         TranscriptLine::Divider => "[divider]".to_string(),
         TranscriptLine::ThinkingText(s) => format!("[thinking] {}", truncate(s, 60)),
+        TranscriptLine::StopNotice(s) => format!("[stop] {s}"),
     }
 }
 

@@ -30,7 +30,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as RLine, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap};
 
 /// Render the full TUI frame.
 pub fn render_frame(f: &mut Frame, state: &AppState) {
@@ -57,7 +57,40 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
             .unwrap_or(0);
         (n as u16).min(8) + 2
     } else {
-        0
+        // v0.8.4 (ux-001): prompt box height grows with multi-line
+        // input AND soft-wrapped single-line input. Without the soft-
+        // wrap estimate, a 60-char single line in a 40-col terminal
+        // was clipped mid-word once the box overflowed. Inner width
+        // = area.width minus 2 borders minus 2*padding_x minus the
+        // 2-char `❯ ` prompt prefix; visual rows = explicit
+        // newlines + ceil(first_line_width / inner_width), then 2
+        // for top/bottom border, clamped to [3, area.height/3].
+        let padding_x: u16 = 1;
+        let inner_width = area
+            .width
+            .saturating_sub(2 + 2 * padding_x + 2)
+            .max(1) as usize;
+        let explicit_lines = state.input.text.matches('\n').count() as u16;
+        let first_line_width = state
+            .input
+            .text
+            .split('\n')
+            .next()
+            .unwrap_or("")
+            .chars()
+            // Approximate display width: BMP chars = 1, CJK / wide
+            // / emoji (>= U+1100) = 2 cells. The exact mapping lives
+            // in `unicode-width`; a 2-cell cap is safe for budgeting.
+            .map(|c| if (c as u32) > 0x1100 { 2 } else { 1 })
+            .sum::<usize>();
+        let wrapped_rows = if first_line_width <= inner_width {
+            1u16
+        } else {
+            (first_line_width as f32 / inner_width as f32).ceil() as u16
+        };
+        let total_rows = explicit_lines + wrapped_rows;
+        let max_h = (area.height / 3).max(5);
+        (total_rows + 2).clamp(3, max_h)
     };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -116,7 +149,7 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
 }
 
 fn render_footer(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    use crate::rich::{spinner_frame, AgentPhase};
+    
 
     // v0.8: Pi-style 2-line footer.
     //   Line 1: cwd ⎇ branch • [session_id]                (env context, dim)
@@ -476,6 +509,10 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 out
             }
             TranscriptLine::Divider => vec![ListItem::new(render_divider(theme))],
+            TranscriptLine::StopNotice(msg) => vec![ListItem::new(RLine::from(Span::styled(
+                format!("  {msg}"),
+                theme.fg_style("error"),
+            )))],
             TranscriptLine::BashExecution {
                 cmd,
                 output,
@@ -724,6 +761,10 @@ pub fn render_selector_panel(
     f.render_widget(panel, area);
 }
 
+// v0.8.3: kept as a no-op fallback for callers that still invoke it
+// during a transient resize. The actual spinner renders via
+// `render_stats_line` in the footer (Pi parity).
+#[allow(dead_code)]
 fn render_running_indicator(f: &mut Frame, theme: &Theme, area: Rect) {
     // v0.8.3: Pi parity — the spinner now renders in the status line
     // (footer) via `render_stats_line` instead of floating over the

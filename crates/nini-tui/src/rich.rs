@@ -80,7 +80,7 @@ pub fn render_tool_call(name: &str, args: &str, theme: &Theme) -> Vec<RLine<'sta
     let bg = theme.bg_style("toolPendingBg");
     vec![RLine::from(vec![
         Span::styled(
-            "[tool call] ".to_string(),
+            "▸ ".to_string(),
             bg.fg(theme.color("toolTitle")),
         ),
         Span::styled(
@@ -150,7 +150,11 @@ pub fn render_tool_result(
     let bg = theme.bg_style(bg_slot);
     let fg_title = theme.color("toolTitle");
     let fg_output = theme.color("toolOutput");
-    let label = if ok { "[tool result] " } else { "[tool error] " };
+    // v0.8.4 (ux-001): replace the bracketed labels with icon glyphs so
+        // the tool boundary reads instantly without parsing ASCII. The
+        // triangle / check / cross are standard in IDEs and are also
+        // what most TUI dashboards (lazystart, github-cli) use.
+        let label = if ok { "✓ " } else { "✗ " };
 
     // Strip ANSI + auto-link + truncate. For multi-line content, cap
     // at a small number of lines.
@@ -431,7 +435,7 @@ mod tests {
     fn render_tool_result_success_color() {
         let lines = render_tool_result(true, "ok output", None, &theme());
         assert!(!lines.is_empty());
-        assert!(lines[0].spans.iter().any(|s| s.content.contains("[tool result]")));
+        assert!(lines[0].spans.iter().any(|s| s.content.contains("✓ ")));
     }
 
     #[test]
@@ -440,7 +444,7 @@ mod tests {
         assert!(lines[0]
             .spans
             .iter()
-            .any(|s| s.content.contains("[tool error]")));
+            .any(|s| s.content.contains("✗ ")));
     }
 
     #[test]

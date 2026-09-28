@@ -1695,7 +1695,7 @@ mod retry_loop_tests {
             &self,
             _req: Request,
         ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
-            let mut failures_left = self.failures_left;
+            let _failures_left = self.failures_left;
             // Simple line-style stream: produce `failures_left` errors
             // then one success event. Re-create the Vec per call (it's
             // not in the hot path for retry tests).
@@ -1892,7 +1892,6 @@ mod abort_during_retry_tests {
         // install our handle directly so we can trigger abort from
         // outside the run loop.
         agent.abort = abort_handle.clone();
-        let agent = std::sync::Arc::new(std::sync::Mutex::new(Some(agent)));
         // Trigger abort from another thread after a short delay.
         let ah = abort_handle.clone();
         std::thread::spawn(move || {
@@ -1901,21 +1900,22 @@ mod abort_during_retry_tests {
         });
         let mut aborted = false;
         let mut saw_retrying = false;
-        {
-            // Extract a mutable borrow of agent.run.
-            let mut guard = agent.lock().unwrap();
-            let a = guard.as_mut().unwrap();
-            let mut stream = Box::pin(a.run(Message::user("hi")));
-            while let Some(ev) = stream.next().await {
-                match ev {
-                    Ok(AgentEvent::PhaseChanged(AgentPhase::Retrying { .. })) => {
-                        saw_retrying = true;
-                    }
-                    Ok(AgentEvent::Aborted) => {
-                        aborted = true;
-                    }
-                    _ => {}
+        // Run the agent directly — no Mutex wrapper needed because
+        // `AbortHandle::abort` flips an atomic flag the run loop polls
+        // each tick, so it doesn't need to lock the agent. Holding a
+        // `std::sync::MutexGuard` across `stream.next().await` (the
+        // pattern we used previously) is a deadlock hazard and
+        // triggers `clippy::await_holding_lock`.
+        let mut stream = Box::pin(agent.run(Message::user("hi")));
+        while let Some(ev) = stream.next().await {
+            match ev {
+                Ok(AgentEvent::PhaseChanged(AgentPhase::Retrying { .. })) => {
+                    saw_retrying = true;
                 }
+                Ok(AgentEvent::Aborted) => {
+                    aborted = true;
+                }
+                _ => {}
             }
         }
         // Either the abort triggered during the retry sleep, or the abort
@@ -2368,6 +2368,12 @@ mod tool_lifecycle_hook_tests {
     /// the test via shared counters. Implements `before()` and
     /// `after()` hooks (so we don't need `WrappedTool` indirection
     /// for the most common test path).
+    ///
+    /// `before_calls` / `after_calls` are reserved counters for future
+    /// hook-firing assertions; the current tests assert hook firing via
+    /// `CountingBefore::calls` / `CountingAfter::calls`. Kept under
+    /// `#[allow(dead_code)]` to avoid churn.
+    #[allow(dead_code)]
     struct ControllableTool {
         before: Option<Arc<dyn BeforeExecute>>,
         after: Option<Arc<dyn AfterExecute>>,
@@ -2437,6 +2443,10 @@ mod tool_lifecycle_hook_tests {
         Identity,
         Replace(Value),
         Deny(String),
+        // `Panic` is reserved for future tests that exercise hook-panic
+        // recovery through this exact indirection (other tests panic
+        // directly inside hook closures). Currently unused.
+        #[allow(dead_code)]
         Panic,
     }
     #[async_trait]
@@ -2643,12 +2653,12 @@ mod tool_lifecycle_hook_tests {
     /// is NOT executed, and the ToolResult is an error.
     #[tokio::test(flavor = "current_thread")]
     async fn before_hook_can_deny_call() {
-        let before = Arc::new(CountingBefore {
+        let _before = Arc::new(CountingBefore {
             calls: Arc::new(AtomicUsize::new(0)),
             last_args: Arc::new(std::sync::Mutex::new(None)),
             response: BeforeResponse::Deny("outside whitelist".into()),
         });
-        let after = Arc::new(CountingAfter {
+        let _after = Arc::new(CountingAfter {
             calls: Arc::new(AtomicUsize::new(0)),
             last_output: Arc::new(std::sync::Mutex::new(None)),
             response: AfterResponse::Identity,
@@ -2763,7 +2773,7 @@ mod context_hook_tests {
     use crate::provider::{Capabilities, ContentBlock, Provider, ProviderError, Request, StreamEvent};
     use futures_core::Stream;
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    
 
     /// Minimal text-only provider. Same as M1's tests.
     struct TextOnlyProvider;
@@ -2822,6 +2832,13 @@ mod context_hook_tests {
         }
     }
 
+    // Local helper for the context-hook tests; shadows the upper mod's
+    // `user_msg`. The upper helper is reached via `super::*`, so this
+    // duplicate is dead code from clippy's perspective. Kept (with
+    // `#[allow(dead_code)]`) because the local test module needs a
+    // shorter signature and a fresh helper avoids pulling extra
+    // `use` statements into the test scope.
+    #[allow(dead_code)]
     fn user_msg(text: &str) -> Message {
         Message {
             role: Role::User,

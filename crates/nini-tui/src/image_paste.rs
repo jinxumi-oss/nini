@@ -155,7 +155,7 @@ mod tests {
 /// (text-only — the caller can fall through to a text-paste handler).
 /// Returns `Err` if a real I/O or arboard error occurs.
 pub fn paste_image_from_clipboard() -> io::Result<Option<String>> {
-    use crate::clipboard;
+    
 
     let mut cb = arboard::Clipboard::new()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clipboard open: {e}")))?;
@@ -248,7 +248,7 @@ mod paste_flow_tests {
 /// Returns `None` if the clipboard has no image (or is unavailable).
 /// Returns `Err` on I/O / arboard errors.
 pub fn paste_image_with_size_from_clipboard() -> io::Result<Option<(PathBuf, u64)>> {
-    use crate::clipboard;
+    
 
     let mut cb = arboard::Clipboard::new()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clipboard open: {e}")))?;
