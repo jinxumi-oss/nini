@@ -42,6 +42,7 @@ pub mod signals;
 pub mod state;
 pub mod theme;
 pub mod theme_watcher;
+pub mod width;
 
 pub use commands::{
     CommandId, CommandOutcome, CommandResult, REGISTRY, by_name, complete, dispatch, parse,
@@ -51,3 +52,4 @@ pub use keys::{Key, KeyAction, KeyBinding, KeyModifiers, default_keymap, resolve
 pub use runtime::run;
 pub use state::{AppState, InputBuffer, RunMode, TokenStats, TranscriptLine};
 pub use theme::{COLOR_NAMES, Theme};
+pub use width::{display_width, display_width_clamped};

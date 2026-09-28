@@ -13,6 +13,7 @@
 //! standard "VSCode-style" hint layout.
 
 use crate::theme::Theme;
+use crate::width::display_width;
 use ratatui::text::Span;
 
 /// Render a `[dim]key + muted] description` pair as two Spans.
@@ -35,12 +36,15 @@ pub fn key_hint_string(theme: &Theme, key: &str, description: &str) -> String {
 /// a dim "…" is appended. The trim prefers dropping whole hints over
 /// truncating one mid-line — matches Pi's `truncateToWidth(statsLeft +
 /// " ".repeat(...) + rightSide, width)`.
+///
+/// Width is computed via [`crate::width::display_width`] so wide
+/// characters (CJK, emoji) are counted as 2 cells, not 1.
 pub fn trim_to_width(hints: &[(&str, &str)], max_width: usize, theme: &Theme) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut used = 0usize;
     for (key, desc) in hints {
-        // Per-line width is key + " " + desc.
-        let line_w = key.chars().count() + 1 + desc.chars().count();
+        // Per-line width is key + " " + desc, in display cells.
+        let line_w = display_width(key) + 1 + display_width(desc);
         // Always keep at least the first hint.
         if !out.is_empty() && used + line_w + 1 > max_width {
             // Truncate — append " …" rendered as muted.
@@ -97,5 +101,21 @@ mod tests {
         // Even if width is 1, we still emit the first hint.
         let out = trim_to_width(&hints, 1, &Theme::dark());
         assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn trim_to_width_counts_wide_chars_as_two() {
+        // Without display-width, hint 2 would be measured at 4 chars
+        // (looks like it fits in 14 cells) when it actually takes 7
+        // cells, and the trim would silently keep it past max.
+        let hints = vec![
+            (" F1 ", "help"),       // 4 + 1 + 4 = 9 cells
+            (" \u{1F4AD} ", "hi"),  // 4 + 1 + 2 = 7 cells
+        ];
+        // After hint 1, used = 10. Adding hint 2 (line_w 7) = 17 > 14
+        // -> trim with ellipsis.
+        let out = trim_to_width(&hints, 14, &Theme::dark());
+        assert_eq!(out.len(), 2, "expected hint1 + ellipsis, got {out:?}");
+        assert!(out.last().unwrap().0.contains('\u{2026}'));
     }
 }

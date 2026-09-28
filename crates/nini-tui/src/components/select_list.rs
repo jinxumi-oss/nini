@@ -21,6 +21,7 @@
 
 use ratatui::text::Span;
 use serde::{Deserialize, Serialize};
+use unicode_width::UnicodeWidthChar;
 
 /// Default primary column width — matches Pi's `DEFAULT_PRIMARY_COLUMN_WIDTH`.
 pub const DEFAULT_PRIMARY_COLUMN_WIDTH: usize = 32;
@@ -202,11 +203,10 @@ impl SelectList {
                     theme.fg_style(prefix_color)
                 },
             ));
-            // Label (truncate to primary_width if needed).
-            let label_disp = if item.label.chars().count() > primary_width {
-                let mut s: String = item.label.chars().take(primary_width.saturating_sub(1)).collect();
-                s.push('\u{2026}');
-                s
+            // Label (truncate to primary_width cells, not chars - emoji and CJK
+            // would otherwise be cut mid-glyph and render as tofu).
+            let label_disp = if crate::width::display_width(&item.label) > primary_width {
+                truncate_to_cells(&item.label, primary_width.saturating_sub(1))
             } else {
                 item.label.clone()
             };
@@ -220,13 +220,13 @@ impl SelectList {
             row.push(Span::styled(label_disp, label_style));
             // Description (if present).
             if let Some(desc) = &item.description {
-                // Pad to align columns.
-                let pad = primary_width.saturating_sub(item.label.chars().count()) + PRIMARY_COLUMN_GAP;
+                // Pad to align columns (cells, not chars).
+                let pad = primary_width.saturating_sub(crate::width::display_width(&item.label)) + PRIMARY_COLUMN_GAP;
                 row.push(Span::raw(" ".repeat(pad)));
-                let desc_disp = if desc.chars().count() > width.saturating_sub(primary_width + 6) {
-                    let mut s: String = desc.chars().take(width.saturating_sub(primary_width + 5)).collect();
-                    s.push('\u{2026}');
-                    s
+                let desc_disp = if crate::width::display_width(desc)
+                    > width.saturating_sub(primary_width + 6)
+                {
+                    truncate_to_cells(desc, width.saturating_sub(primary_width + 5))
                 } else {
                     desc.clone()
                 };
@@ -268,6 +268,23 @@ impl SelectList {
             theme.fg_style(color),
         )])
     }
+}
+
+/// Truncate by display cells (not code points) so emoji/CJK past
+/// the cutoff aren't cut mid-glyph.
+fn truncate_to_cells(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in s.chars() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > max {
+            out.push('\u{2026}');
+            return out;
+        }
+        out.push(c);
+        used += w;
+    }
+    out
 }
 
 #[cfg(test)]

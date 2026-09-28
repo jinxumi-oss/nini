@@ -15,6 +15,7 @@
 //! ```
 
 use crate::theme::Theme;
+use crate::width::display_width;
 use ratatui::text::{Line, Span};
 
 /// Horizontal rule that always fills the given width.
@@ -55,7 +56,9 @@ impl DynamicBorder {
     /// with `─` to the full width. Used for Pi-style ` ``` ` fenced code.
     pub fn render_with_label(&self, width: usize, label: &str, theme: &Theme) -> Line<'static> {
         let w = width.max(1);
-        let label_len = label.chars().count();
+        // Use display_width so a CJK/emoji label is correctly measured
+        // in cells (otherwise the dashes underrun or overrun the row).
+        let label_len = display_width(label);
         let half = w.saturating_sub(label_len + 2) / 2;
         let rest = w.saturating_sub(half).saturating_sub(label_len + 2);
 

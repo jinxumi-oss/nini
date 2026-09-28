@@ -9,6 +9,7 @@
 use std::any::Any;
 
 use nini_session::SessionEntry;
+use unicode_width::UnicodeWidthChar;
 
 use crate::selector::{SelectorItem, SelectorOutcome, SelectorState};
 
@@ -74,12 +75,27 @@ fn label_for(entry: &SessionEntry) -> (&'static str, String) {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max).collect();
-        format!("{cut}…")
+    // Truncate by display width so an emoji or CJK character is never
+    // cut mid-glyph (the previous `chars().take()` counted code points,
+    // not cells, so we'd cut mid-emoji and the renderer would show a
+    // tofu glyph).
+    if crate::width::display_width(s) <= max {
+        return s.to_string();
     }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in s.chars() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w + 1 > max {
+            // +1 reserves a cell for the trailing ellipsis.
+            out.push('\u{2026}');
+            return out;
+        }
+        out.push(c);
+        used += w;
+    }
+    out
+}
 }
 
 impl SelectorState for TreeSelector {

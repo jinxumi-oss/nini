@@ -125,7 +125,7 @@ impl SettingsList {
         let label_width = self
             .items
             .iter()
-            .map(|i| i.label.chars().count())
+            .map(|i| crate::width::display_width(&i.label))
             .max()
             .unwrap_or(8)
             .max(8);
@@ -151,7 +151,7 @@ impl SettingsList {
 
             // Label.
             let label_padded = format!("{:<width$}", item.label, width = label_width);
-            let label_len = label_padded.chars().count();
+            let label_len = crate::width::display_width(&label_padded);
             let label_style = if is_sel {
                 theme
                     .fg_style("accent")
@@ -174,11 +174,11 @@ impl SettingsList {
 
             // Optional description.
             if let Some(desc) = &item.description {
-                let used = bullet.len() + label_len + 2 + item.current_value.chars().count();
+                let used = bullet.len() + label_len + 2 + crate::width::display_width(&item.current_value);
                 let avail = col_width.saturating_sub(used);
                 if avail > 4 {
                     let mut d = desc.clone();
-                    if d.chars().count() > avail {
+                    if crate::width::display_width(&d) > avail {
                         d = d.chars().take(avail.saturating_sub(1)).collect();
                         d.push('\u{2026}');
                     }
