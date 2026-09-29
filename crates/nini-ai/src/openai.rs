@@ -706,6 +706,123 @@ impl From<OpenAiUsage> for Usage {
     }
 }
 
+/// v0.8.4 regression: aiio / Anthropic-translated providers emit
+/// the full `tool_calls[*].function.arguments` JSON inline on the
+/// very first chunk (the same one that carries `id` and
+/// `function.name`). The previous code seeded `input_json = ""`
+/// on ToolCallStart and only consumed arguments from later
+/// ToolCallDelta chunks, so the transcript rendered `▸ bash `
+/// (empty body) and downstream `BashTool` panicked with `invalid
+/// type: null, expected struct BashArgs`. These tests pin both
+/// the inline-args-on-start path and the empty-args fallback.
+#[cfg(test)]
+mod tool_call_inline_args_tests {
+    use super::*;
+
+    fn make_chunk(json: &str) -> SseEvent {
+        SseEvent::new("", json)
+    }
+
+    #[test]
+    fn inline_args_on_start_chunk_emits_complete_stop() {
+        // aiio-shape SSE event: a single chunk carries the id, name,
+        // AND the full arguments JSON object — no separate delta
+        // chunk arrives later.
+        let raw = r#"{
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"command\":\"ls /tmp\"}"
+                        }
+                    }]
+                }
+            }]
+        }"#;
+        let ev = make_chunk(raw);
+        let mut state = StreamState::default();
+        let out = translate_sse(&ev, &mut state)
+            .expect("translate_sse returned None");
+        // Should produce ONE ToolCallStop with the parsed args —
+        // not a Start+empty followed by Stop+empty.
+        match out {
+            StreamEvent::ToolCallStop { id, input_json } => {
+                assert_eq!(id, "call_abc123");
+                assert_eq!(input_json["command"], "ls /tmp");
+            }
+            other => panic!("expected ToolCallStop, got {other:?}"),
+        }
+        let stored = state.tool_calls.get(&0)
+            .expect("BuildingToolCall for index 0 missing");
+        assert_eq!(stored.id, "call_abc123");
+        assert_eq!(stored.name, "bash");
+        assert_eq!(stored.input_json, r#"{"command":"ls /tmp"}"#);
+    }
+
+    #[test]
+    fn empty_args_on_start_chunk_falls_back_to_start_event() {
+        // Legacy / strict-openai path: arguments arrive on a later
+        // delta chunk. We should still emit ToolCallStart with an
+        // empty input_json, not crash.
+        let raw = r#"{
+            "choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": "call_empty", "type": "function",
+                "function": { "name": "bash", "arguments": "" }
+            }]}}]
+        }"#;
+        let ev = make_chunk(raw);
+        let mut state = StreamState::default();
+        let out = translate_sse(&ev, &mut state)
+            .expect("returned None");
+        match out {
+            StreamEvent::ToolCallStart { id, name } => {
+                assert_eq!(id, "call_empty");
+                assert_eq!(name, "bash");
+            }
+            other => panic!("expected ToolCallStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn continuation_delta_still_appends_args() {
+        // After an empty-args start, the next delta chunk must
+        // append to `input_json` so the eventual stop carries the
+        // full command.
+        let mut state = StreamState::default();
+        let start = make_chunk(r#"{
+            "choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": "call_xyz", "type": "function",
+                "function": { "name": "bash", "arguments": "" }
+            }]}}]
+        }"#);
+        let _ = translate_sse(&start, &mut state);
+        assert_eq!(state.tool_calls.get(&0).unwrap().input_json, "");
+        let delta = make_chunk(r#"{
+            "choices": [{"delta": {"tool_calls": [{
+                "index": 0,
+                "function": { "arguments": "{\"command\":\"ls\"}" }
+            }]}}]
+        }"#);
+        let out = translate_sse(&delta, &mut state)
+            .expect("returned None");
+        match out {
+            StreamEvent::ToolCallDelta { id, input_json_delta } => {
+                assert_eq!(id, "call_xyz");
+                assert_eq!(input_json_delta, "{\"command\":\"ls\"}");
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+        assert_eq!(
+            state.tool_calls.get(&0).unwrap().input_json,
+            "{\"command\":\"ls\"}"
+        );
+    }
+}
+
 /// v0.7.4 (UX fix) tests for the think-tag filter.
 #[cfg(test)]
 mod think_filter_tests {
@@ -833,6 +950,57 @@ fn visible_only(frags: Vec<ThinkFragment>) -> String {
         let mut f = ThinkTagFilter::new();
         let frags = f.push("<think></think>X");
         assert_eq!(frags, vec![ThinkFragment::Visible("X".into())]);
+    }
+
+    #[test]
+    fn aiio_streaming_keeps_full_thinking_across_chunks() {
+        // v0.8.4 (regression): aiio / Anthropic-translated
+        // MiniMax-M3 splits a single reasoning turn across many
+        // `data:` chunks; the `</think>` close only arrives on the
+        // final chunk. The previous `hold_back` implementation only
+        // retained at most the last 7 chars before the open tag, so
+        // everything before that window was silently dropped and the
+        // user saw `💭 ommand.` instead of the full 80+ char
+        // reasoning. The fix keeps every byte in `in_think` mode.
+        let mut f = ThinkTagFilter::new();
+        // Five small chunks that simulate aiio's byte-stream.
+        let chunks = [
+            "<think>The user wants me to run",
+            " `ls /tmp` and list 5 files.",
+            " Let me ",
+            "execute the ",
+            "command.</think>
+
+",
+        ];
+        // No visible fragment yet (we are inside a think block).
+        for c in &chunks[..chunks.len() - 1] {
+            let frags = f.push(c);
+            assert!(
+                frags.is_empty(),
+                "expected no fragments before close, got {frags:?}"
+            );
+        }
+        // Final chunk triggers the close — and now we should see
+        // the FULL accumulated reasoning as a single Thinking
+        // fragment, not just the last few characters.
+        let frags = f.push(chunks[chunks.len() - 1]);
+        // The Thinking fragment is the concat of all 5 chunks with
+        // the `<think>` opener and `</think>\n\n` closer stripped.
+        let expected_thinking = chunks
+            .concat()
+            .trim_start_matches("<think>")
+            .trim_end_matches("</think>\n\n")
+            .to_string();
+        assert_eq!(
+            frags,
+            vec![
+                ThinkFragment::Thinking(expected_thinking),
+                ThinkFragment::Visible("\n\n".into()),
+            ],
+            "v0.8.4 regression: aiio-style multi-chunk thinking must \
+             surface in full, not clip to the last few chars"
+        );
     }
 }
 

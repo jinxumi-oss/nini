@@ -165,6 +165,48 @@ fn cli_demo_runs_autonomously() {
 // Test 8: nini --provider bogus exits 2 with error
 // =====================================================================
 #[test]
+fn cli_provider_error_visible_in_print_mode() {
+    // v0.8.4 (regression): the agent driver used to swallow
+    // provider stream errors via `Err(_) => continue`, leaving the
+    // TUI / `-p` invocation stuck in Running with no visible
+    // feedback. The fix surfaces provider errors as
+    // `AgentEventLite::Error`, which `-p` prints via the same
+    // `[error]` prefix as runtime transcript rendering.
+    //
+    // We use `openai-compat` (which honors `OPENAI_BASE_URL` from
+    // the env so the test is hermetic — pointing at a non-existent
+    // host) with a bogus API key. The provider hits a connection
+    // failure on the very first byte, the error is propagated up,
+    // and the test asserts `nini -p` exits non-zero AND prints the
+    // error to stderr so users see *something* went wrong.
+    //
+    // Note: `--provider openai` would hard-code api.openai.com and
+    // ignore `OPENAI_BASE_URL`, which is a separate bug — tracked
+    // separately — so we use openai-compat here.
+    let (_out, err, code) = run_nini_with_env(
+        &["-p", "say hi", "--provider", "openai-compat", "--model", "regression-model"],
+        b"",
+        &[
+            ("OPENAI_API_KEY", Some("sk-regression-invalid-key")),
+            (
+                "OPENAI_BASE_URL",
+                Some("http://127.0.0.1:1/nini-regression-unreachable"),
+            ),
+        ],
+    );
+    assert_ne!(
+        code, 0,
+        "nini -p with an unreachable provider must exit non-zero          (was silently exiting 0 before the fix)"
+    );
+    assert!(
+        err.to_lowercase().contains("error")
+            || err.to_lowercase().contains("connection")
+            || err.to_lowercase().contains("refused"),
+        "provider error must surface to user via stderr, got: {err:?}"
+    );
+}
+
+#[test]
 fn cli_unknown_provider_exits_2() {
     let (_out, err, code) = run_nini(&["--provider", "bogus", "-p", "hi"], b"");
     assert_eq!(code, 2, "unknown provider should exit 2");
