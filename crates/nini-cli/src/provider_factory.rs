@@ -34,10 +34,24 @@ pub(crate) fn build_provider(
     match provider {
         "fixture" => Ok(Arc::new(ProgrammedProvider::from_turns(turns))),
         "anthropic" => build_anthropic_with_fallbacks(fallback_keys, fallback_base_urls),
+        // v0.8.4 (bugfix): `OPENAI_BASE_URL` was previously ignored
+        // — `OpenAiProvider::new(key)` hard-codes the upstream URL
+        // to `https://api.openai.com`. Any user pointing the env at
+        // a proxy / gateway / staging host (e.g.
+        // `OPENAI_BASE_URL=http://localhost:8080`) had their
+        // requests silently go to the wrong place. We previously
+        // routed this through `build_with_optional_base_url`, which
+        // derives `{ENV_VAR_NAME}_BASE_URL` from the API-key name —
+        // but the actual env var is `OPENAI_BASE_URL`, not
+        // `OPENAI_API_KEY_BASE_URL`. Inline the read instead.
         "openai" => {
-            let key =
-                std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY required for openai")?;
-            Ok(Arc::new(nini_ai::openai::OpenAiProvider::new(key)))
+            let key = std::env::var("OPENAI_API_KEY")
+                .context("OPENAI_API_KEY required for openai")?;
+            let provider = match std::env::var("OPENAI_BASE_URL").ok() {
+                Some(base) => nini_ai::openai::OpenAiProvider::new(key).with_base_url(base),
+                None => nini_ai::openai::OpenAiProvider::new(key),
+            };
+            Ok(Arc::new(provider))
         }
         "openai-responses" => {
             let key = std::env::var("OPENAI_API_KEY")
@@ -68,30 +82,46 @@ pub(crate) fn build_provider(
         // is never set — every deepseek invocation hit
         // `DEEPSEEK_API_KEY required` even when the env var was
         // present. Pass the actual env var name.
-        "deepseek" => build_with_optional_base_url(
-            "DEEPSEEK_API_KEY",
-            "DEEPSEEK_API_KEY",
-            |key| nini_ai::deepseek::DeepSeekProvider::new(key),
-            |base, key| nini_ai::deepseek::DeepSeekProvider::with_base_url(base, key),
-        ),
-        "groq" => build_with_optional_base_url(
-            "GROQ_API_KEY",
-            "GROQ_API_KEY",
-            |key| nini_ai::groq::GroqProvider::new(key),
-            |base, key| nini_ai::groq::GroqProvider::with_base_url(base, key),
-        ),
-        "mistral" => build_with_optional_base_url(
-            "MISTRAL_API_KEY",
-            "MISTRAL_API_KEY",
-            |key| nini_ai::mistral::MistralProvider::new(key),
-            |base, key| nini_ai::mistral::MistralProvider::with_base_url(base, key),
-        ),
-        "cohere" => build_with_optional_base_url(
-            "COHERE_API_KEY",
-            "COHERE_API_KEY",
-            |key| nini_ai::cohere::CohereProvider::new(key),
-            |base, key| nini_ai::cohere::CohereProvider::with_base_url(base, key),
-        ),
+        // v0.8.4 (bugfix): same env-var-derive design flaw as
+        // `openai` — `build_with_optional_base_url` reads
+        // `{NAME}_BASE_URL` (= `DEEPSEEK_API_KEY_BASE_URL`) instead
+        // of `DEEPSEEK_BASE_URL`. Inline the read.
+        "deepseek" => {
+            let key = std::env::var("DEEPSEEK_API_KEY")
+                .context("DEEPSEEK_API_KEY required for deepseek")?;
+            let provider = match std::env::var("DEEPSEEK_BASE_URL").ok() {
+                Some(base) => nini_ai::deepseek::DeepSeekProvider::with_base_url(base, key),
+                None => nini_ai::deepseek::DeepSeekProvider::new(key),
+            };
+            Ok(Arc::new(provider))
+        }
+        "groq" => {
+            let key = std::env::var("GROQ_API_KEY")
+                .context("GROQ_API_KEY required for groq")?;
+            let provider = match std::env::var("GROQ_BASE_URL").ok() {
+                Some(base) => nini_ai::groq::GroqProvider::with_base_url(base, key),
+                None => nini_ai::groq::GroqProvider::new(key),
+            };
+            Ok(Arc::new(provider))
+        }
+        "mistral" => {
+            let key = std::env::var("MISTRAL_API_KEY")
+                .context("MISTRAL_API_KEY required for mistral")?;
+            let provider = match std::env::var("MISTRAL_BASE_URL").ok() {
+                Some(base) => nini_ai::mistral::MistralProvider::with_base_url(base, key),
+                None => nini_ai::mistral::MistralProvider::new(key),
+            };
+            Ok(Arc::new(provider))
+        }
+        "cohere" => {
+            let key = std::env::var("COHERE_API_KEY")
+                .context("COHERE_API_KEY required for cohere")?;
+            let provider = match std::env::var("COHERE_BASE_URL").ok() {
+                Some(base) => nini_ai::cohere::CohereProvider::with_base_url(base, key),
+                None => nini_ai::cohere::CohereProvider::new(key),
+            };
+            Ok(Arc::new(provider))
+        }
         other => {
             eprintln!("nini: unknown provider: {other}");
             std::process::exit(2);
