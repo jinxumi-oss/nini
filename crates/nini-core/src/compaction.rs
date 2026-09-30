@@ -635,19 +635,41 @@ fn safe_json_stringify(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "[unserializable]".to_string())
 }
 
-/// Truncate a tool result body to at most `max_chars` characters. If
+/// Truncate a tool result body to at most `max_chars` bytes. If
 /// truncated, emit a `[... N more characters truncated]` marker.
+///
+/// v0.8.4 (bugfix): `max_chars` is documented as "characters" but
+/// historically was used as a *byte* slice (`&text[..max_chars]`),
+/// which panicked on multi-byte UTF-8 tool output (CJK chars are 3
+/// bytes each). We honour the documented intent — slice at the
+/// largest char boundary ≤ `max_chars` bytes. The truncated-count
+/// message also reports bytes for honesty.
 fn truncate_for_summary(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_string();
     }
-    let truncated = text.len() - max_chars;
-    let mut out = String::with_capacity(max_chars + 64);
-    out.push_str(&text[..max_chars]);
+    // Find the largest char boundary ≤ max_chars bytes.
+    let end = floor_char_boundary(text, max_chars);
+    let truncated = text.len() - end;
+    let mut out = String::with_capacity(end + 64);
+    out.push_str(&text[..end]);
     out.push_str("\n\n[... ");
     out.push_str(&truncated.to_string());
     out.push_str(" more characters truncated]");
     out
+}
+
+/// v0.8.4 (bugfix): hand-rolled `floor_char_boundary` (inline because
+/// nini's MSRV is 1.85, predating `str::floor_char_boundary` 1.91).
+fn floor_char_boundary(s: &str, at: usize) -> usize {
+    if at >= s.len() {
+        return s.len();
+    }
+    let mut i = at;
+    while i > 0 && (s.as_bytes()[i] & 0b1100_0000) == 0b1000_0000 {
+        i -= 1;
+    }
+    i
 }
 
 /// Render tool-call argument values as `key=val, key=val` (Pi format).

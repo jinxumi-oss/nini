@@ -45,6 +45,45 @@ pub fn display_width_clamped(s: &str, max: usize) -> usize {
     total
 }
 
+/// v0.8.4 (bugfix): returns the largest byte index ≤ `at` that
+/// is a UTF-8 character boundary in `s`. Equivalent to
+/// `str::floor_char_boundary` (stabilised in Rust 1.91); we inline
+/// the 4-line walk because nini's MSRV is 1.85.
+///
+/// Use this everywhere we previously did `&s[..N]` or
+/// `String::truncate(N)` where `N` is a byte budget — CJK
+/// characters are 3 bytes and emoji are 4, so any byte-aligned
+/// slice on multi-byte text will panic with
+/// `byte index N is not a char boundary; it is inside '某字'`.
+#[inline]
+pub fn floor_char_boundary(s: &str, at: usize) -> usize {
+    if at >= s.len() {
+        return s.len();
+    }
+    let mut i = at;
+    // Continuation bytes match `10xxxxxx`. Walk back while we're
+    // sitting on one.
+    while i > 0 && (s.as_bytes()[i] & 0b1100_0000) == 0b1000_0000 {
+        i -= 1;
+    }
+    i
+}
+
+/// v0.8.4 (bugfix): like [`floor_char_boundary`] but for the start
+/// of a slice (`at` is a *byte* index where we want to start the
+/// next slice, so we may need to step *forward* if `at` is mid-char).
+#[inline]
+pub fn ceil_char_boundary(s: &str, at: usize) -> usize {
+    if at >= s.len() {
+        return s.len();
+    }
+    let mut i = at;
+    while i < s.len() && (s.as_bytes()[i] & 0b1100_0000) == 0b1000_0000 {
+        i += 1;
+    }
+    i
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +123,35 @@ mod tests {
     fn clamped_signals_overflow_early() {
         // "你" is 2 cells; max=1 should overflow after first char.
         assert!(display_width_clamped("你好", 1) > 1);
+    }
+
+    #[test]
+    fn floor_char_boundary_walks_back_continuation_bytes() {
+        // 50 × '文' = 150 bytes; char #40 starts at byte 120, so byte
+        // 121 (a continuation byte) sits inside char #40. floor must
+        // step back to 120 — NOT 119, which would put us inside
+        // char #39.
+        let s = "文".repeat(50);
+        let end = floor_char_boundary(&s, 121);
+        assert_eq!(end, 120, "should step back to byte 120 (start of char #40)");
+        assert!(s.is_char_boundary(end));
+        // And on an exact boundary, floor passes through.
+        assert_eq!(floor_char_boundary(&s, 120), 120);
+        // A byte inside char #39 (e.g. 118) is also a continuation
+        // byte — floor should step back to byte 117.
+        assert_eq!(floor_char_boundary(&s, 118), 117);
+    }
+
+    #[test]
+    fn floor_char_boundary_passes_through_ascii() {
+        let s = "hello world";
+        assert_eq!(floor_char_boundary(s, 5), 5);
+        assert_eq!(floor_char_boundary(s, 11), 11);
+    }
+
+    #[test]
+    fn floor_char_boundary_at_or_past_end_returns_len() {
+        let s = "hi";
+        assert_eq!(floor_char_boundary(s, 100), 2);
     }
 }

@@ -13,6 +13,7 @@
 
 use crate::markdown::render_markdown;
 use crate::theme::Theme;
+use crate::width::floor_char_boundary;
 use ratatui::text::{Line as RLine, Span};
 
 /// Maximum bytes to keep from a single bash-output preview.
@@ -71,25 +72,6 @@ pub fn render_user_message(text: &str, theme: &Theme) -> Vec<RLine<'static>> {
 /// v0.8.3: Wrap the call row with `bg("toolPendingBg")` so it visually
 /// pops as a pending operation (Pi's `ToolExecutionComponent` pattern).
 /// Title color uses `toolTitle` (emphasized); args in `toolOutput`.
-/// v0.8.4 (bugfix): returns the largest byte index ≤ `at` that
-/// is a UTF-8 character boundary in `s`. Equivalent to
-/// `str::floor_char_boundary` (stabilised in Rust 1.91); we
-/// inline the 4-line walk to keep nini's MSRV at 1.85.
-fn floor_char_boundary(s: &str, at: usize) -> usize {
-    if at >= s.len() {
-        return s.len();
-    }
-    let mut i = at;
-    // Walk back while `i` is in the middle of a UTF-8 codepoint.
-    // The leading byte of any UTF-8 sequence is either
-    // 0xxxxxxx (ASCII) or 11xxxxxx; continuation bytes are
-    // 10xxxxxx.
-    while i > 0 && (s.as_bytes()[i] & 0b1100_0000) == 0b1000_0000 {
-        i -= 1;
-    }
-    i
-}
-
 pub fn render_tool_call(name: &str, args: &str, theme: &Theme) -> Vec<RLine<'static>> {
     // v0.8.4 (bugfix): byte-slicing at a hard index panics on
     // multi-byte UTF-8 (CJK characters are 3 bytes each). Use a
@@ -226,8 +208,15 @@ pub fn render_tool_result(
     let max_lines = 8;
     let max_chars_per_line = 200;
     for (i, line) in lines.iter().take(max_lines).enumerate() {
+        // v0.8.4 (bugfix): byte-slicing `&line[..max_chars_per_line]`
+        // panics on multi-byte UTF-8 (CJK is 3 bytes, emoji is 4).
+        // Use `floor_char_boundary` to truncate at the largest safe
+        // boundary ≤ the byte budget. Any tool output line whose
+        // 200th byte falls inside a 3-byte CJK char used to crash the
+        // TUI.
         let truncated: String = if line.len() > max_chars_per_line {
-            format!("{}…", &line[..max_chars_per_line])
+            let end = floor_char_boundary(line, max_chars_per_line);
+            format!("{}…", &line[..end])
         } else {
             line.to_string()
         };
@@ -282,12 +271,20 @@ pub fn render_bash_execution(
     let clean = crate::ansi::strip_ansi(output);
     let linked = crate::hyperlink::auto_link(&clean);
     let bytes_truncated = linked.len() > BASH_PREVIEW_MAX_BYTES;
+    // v0.8.4 (bugfix): byte-slicing `&linked[..BASH_PREVIEW_MAX_BYTES]`
+    // panics on multi-byte UTF-8 (CJK is 3 bytes). Use
+    // `floor_char_boundary` to truncate at the largest safe
+    // boundary. bash output containing Chinese / Japanese / Korean
+    // longer than ~666 chars (666 × 3 = 1998 bytes) used to crash
+    // the TUI when `BASH_PREVIEW_MAX_BYTES` (2000) landed
+    // mid-character.
     let truncated = if bytes_truncated {
+        let end = floor_char_boundary(&linked, BASH_PREVIEW_MAX_BYTES);
         format!(
             "{}…\n[…{} bytes total, showing first {}]",
-            &linked[..BASH_PREVIEW_MAX_BYTES],
+            &linked[..end],
             linked.len(),
-            BASH_PREVIEW_MAX_BYTES
+            end
         )
     } else {
         linked.clone()
