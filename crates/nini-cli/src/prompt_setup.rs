@@ -19,13 +19,24 @@ pub(crate) fn model_for_cfg(s: &nini_core::settings::Settings) -> String {
 
 /// Build the system prompt for an agent run. Combines the agent
 /// identity (Pi-compatible Rust coding agent), the user's default
-/// provider/model/thinking-level from `Settings`, and any skills
-/// prompt produced by the runtime.
+/// provider/model/thinking-level from `Settings`, the current working
+/// directory (so the model uses relative paths for `read`/`grep`/
+/// `find`/`write`/`edit` instead of guessing absolute paths), and any
+/// skills prompt produced by the runtime.
 pub(crate) fn settings_to_system_prompt(
     settings: &nini_core::settings::Settings,
+    cwd: &std::path::Path,
     skills_prompt: &str,
 ) -> String {
     let mut s = String::from("You are nini, a Pi-compatible Rust coding agent.\n");
+    // v0.8.5: surface the working directory so the model uses relative
+    // paths for read/grep/find/write/edit. Without this, models often
+    // guess `/home/<user>/<file>` for project files — which fails
+    // when the project lives at `/home/<user>/<project>/<file>`.
+    // bash already runs in cwd, but the explicit-path tools need this
+    // hint to compose correct relative paths.
+    s.push_str(&format!("\nWorking directory: {}\n", cwd.display()));
+    s.push_str("All relative paths in tool calls are resolved against this directory.\n");
     if let Some(p) = &settings.provider {
         s.push_str(&format!("Default provider: {p}\n"));
     }
@@ -73,7 +84,7 @@ mod tests {
     #[test]
     fn system_prompt_includes_identity_and_tools() {
         let s = Settings::default();
-        let prompt = settings_to_system_prompt(&s, "");
+        let prompt = settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), "");
         assert!(prompt.contains("Pi-compatible Rust coding agent"));
         assert!(prompt.contains("Available tools: bash, read, write, edit, grep, find"));
     }
@@ -82,7 +93,7 @@ mod tests {
     fn system_prompt_appends_skills_prompt() {
         let s = Settings::default();
         let skills = "\n\n[Skills] foo, bar";
-        let prompt = settings_to_system_prompt(&s, skills);
+        let prompt = settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), skills);
         assert!(prompt.ends_with(skills));
     }
 
@@ -92,9 +103,29 @@ mod tests {
         s.provider = Some("anthropic".into());
         s.model = Some("claude-opus".into());
         s.thinking_level = Some("high".into());
-        let prompt = settings_to_system_prompt(&s, "");
+        let prompt = settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), "");
         assert!(prompt.contains("Default provider: anthropic"));
         assert!(prompt.contains("Default model: claude-opus"));
         assert!(prompt.contains("Thinking level: high"));
+    }
+
+    // v0.8.5 regression: cwd must appear in system prompt so the
+    // model uses relative paths for read/grep/find/write/edit.
+    // Before this fix, models would guess `/home/<user>/<file>` for
+    // project files, which fails when the project lives at
+    // `/home/<user>/<project>/<file>`.
+    #[test]
+    fn system_prompt_includes_cwd() {
+        let s = Settings::default();
+        let cwd = std::path::Path::new("/home/jin/nini");
+        let prompt = settings_to_system_prompt(&s, cwd, "");
+        assert!(
+            prompt.contains("Working directory: /home/jin/nini"),
+            "system prompt must surface cwd; got: {prompt}"
+        );
+        assert!(
+            prompt.contains("relative paths"),
+            "system prompt must hint that relative paths are resolved against cwd"
+        );
     }
 }

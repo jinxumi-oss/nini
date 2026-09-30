@@ -103,7 +103,7 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
     };
     let shared_cfg = RunConfig {
         model: cfg_model.clone(),
-        system: Some(prompt_setup::settings_to_system_prompt(&settings, "")),
+        system: Some(prompt_setup::settings_to_system_prompt(&settings, &cwd, "")),
         ..RunConfig::new(cfg_model)
     };
 
