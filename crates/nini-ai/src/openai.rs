@@ -95,6 +95,25 @@ impl Provider for OpenAiProvider {
                         yield ev;
                     }
                 }
+                // v0.8.4 (bugfix): the previous version finished here,
+                // so the agent loop saw `None` from the stream and
+                // broke out *without* ever observing a
+                // `MessageStop`. With no Stop event, agent.rs had no
+                // way to know the model had finished its turn: tool
+                // calls stayed half-built (no Stop line in the
+                // transcript), and on the next iteration the agent
+                // returned Idle without the model ever producing a
+                // visible assistant message after running a tool.
+                //
+                // `finalize` flushes any remaining queued
+                // ToolCallStop bodies AND emits the terminal
+                // MessageStop with the recorded finish_reason (or
+                // "stop" as a default if the model never sent one).
+                // Yield every event it produces so the agent loop
+                // sees the full turn boundary.
+                for ev in finalize(&mut state, None) {
+                    yield ev;
+                }
             } else {
                 Err(ProviderError::Api {
                     status: status.as_u16(),
@@ -1069,6 +1088,85 @@ fn visible_only(frags: Vec<ThinkFragment>) -> String {
             ],
             "v0.8.4 regression: aiio-style multi-chunk thinking must \
              surface in full, not clip to the last few chars"
+        );
+    }
+}
+
+/// v0.8.4 (bugfix): the OpenAI provider's stream() function MUST
+/// emit a terminal `StreamEvent::MessageStop` after the SSE
+/// connection closes, even when the upstream model never sent a
+/// `finish_reason` chunk. Without this, the agent loop sees `None`
+/// from the stream and breaks out without ever observing a stop —
+/// so a tool-call turn ends without producing an assistant message
+/// in the transcript (the model streams text, calls a tool, the
+/// tool result is fed back, but the next iteration's "model is
+/// done" signal never arrives, leaving the agent stuck in Idle
+/// with no assistant text visible after tool execution).
+#[cfg(test)]
+mod stream_emits_message_stop_tests {
+    use super::*;
+
+    /// Drive `translate_sse` over a single chunk, then assert
+    /// `finalize` produces a MessageStop event. This is the exact
+    /// contract `stream()` follows: parse → translate → finalize.
+    #[test]
+    fn finalize_emits_message_stop_when_stream_ends() {
+        let mut state = StreamState::default();
+        // Empty chunk: provider did not emit a finish_reason.
+        let raw = r#"{"choices":[{"delta":{"content":"hello"}}]}"#;
+        let ev = SseEvent::new("", raw);
+        let _ = translate_sse(&ev, &mut state);
+        // Drive finalize exactly like stream() now does.
+        let final_events = finalize(&mut state, None);
+        // Must contain a MessageStop.
+        let has_stop = final_events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::MessageStop { .. }));
+        assert!(
+            has_stop,
+            "v0.8.4 regression: finalize() must yield a MessageStop even when no finish_reason was observed; agent loop needs it to break out of Idle after tool execution. Got: {final_events:?}"
+        );
+        // And the stop_reason must default to "stop", not be empty
+        // (agent.rs treats unknown / empty stop_reasons as
+        // "end_turn" but a literal default is easier to reason
+        // about in transcripts / logs).
+        let stop_reason = final_events
+            .iter()
+            .find_map(|e| match e {
+                StreamEvent::MessageStop { stop_reason, .. } => Some(stop_reason.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        assert_eq!(stop_reason, "stop");
+    }
+
+    #[test]
+    fn finalize_flushes_unclosed_tool_call() {
+        // v0.8.4 regression: a model like aiio sometimes emits
+        // ToolCallStart with a partial args fragment (`{`) but
+        // never sends a separate ToolCallDelta and never sends
+        // finish_reason (the connection just closes). Without
+        // finalize's flush, the transcript line for the tool call
+        // stays open with empty `input_json`. finalize should
+        // emit ToolCallStop for any remaining pending tool calls
+        // BEFORE MessageStop, so the runtime can render the
+        // truncated args line.
+        let mut state = StreamState::default();
+        let raw = r#"{
+            "choices":[{"delta":{"tool_calls":[{
+                "index":0, "id":"call_xyz", "type":"function",
+                "function":{"name":"bash","arguments":"{"}
+            }]}}]
+        }"#;
+        let ev = SseEvent::new("", raw);
+        let _ = translate_sse(&ev, &mut state);
+        let final_events = finalize(&mut state, None);
+        let has_stop = final_events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolCallStop { .. }));
+        assert!(
+            has_stop,
+            "finalize() must flush pending ToolCallStop for unclosed tool calls; got: {final_events:?}"
         );
     }
 }
