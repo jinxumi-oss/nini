@@ -6,6 +6,7 @@
 //! for commands that persist). Each helper has unit tests in this
 //! module.
 
+use std::sync::Arc;
 use crate::commands::{build_status_lines, render_transcript_html};
 use crate::settings::SettingsManager;
 use crate::state::{AppState, RunMode, TranscriptLine};
@@ -384,7 +385,7 @@ fn cmd_import(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
         }
     }
     let imported_count = new_transcript.len();
-    state.transcript_state.lines = new_transcript;
+    Arc::make_mut(&mut state.transcript_state).lines = new_transcript;
     state.run_state.tokens = Default::default();
     state.push_assistant(format!(
         "[import] {} transcript entries ({} skipped)",
@@ -838,7 +839,7 @@ fn cmd_logout(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
 fn cmd_new(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
     // Clear the transcript and create a fresh session.
     let prev_len = state.transcript_state.lines.len();
-    state.transcript_state.lines.clear();
+    Arc::make_mut(&mut state.transcript_state).lines.clear();
     state.run_state.tokens = Default::default();
 
     // Derive a session file path: ~/.pi/agent/sessions/<project>/<timestamp>.jsonl
@@ -895,7 +896,7 @@ fn cmd_compact(
     }
     let cut_at = total / 2;
     // Drain prefix out, convert TranscriptLine → legacy Entry.
-    let prefix_lines: Vec<_> = state.transcript_state.lines.drain(..cut_at).collect();
+    let prefix_lines: Vec<_> = Arc::make_mut(&mut state.transcript_state).lines.drain(..cut_at).collect();
     let prefix_entries: Vec<Entry> = prefix_lines
         .iter()
         .enumerate()
@@ -963,7 +964,7 @@ fn cmd_compact(
     let summary = nini_core::compaction::generate_local_summary(&prefix_entries);
     let summary_len = prefix_lines.len();
     // Replace the prefix with a single summary message.
-    state.transcript_state.lines.insert(
+    Arc::make_mut(&mut state.transcript_state).lines.insert(
         0,
         TranscriptLine::AssistantText(format!("[CONTEXT SUMMARY]\n\n{summary}")),
     );
@@ -1053,7 +1054,7 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
             return CommandResult::error(format!("Failed to load session: {e}"));
         }
         // Rebuild transcript from session entries.
-        state.transcript_state.lines.clear();
+        Arc::make_mut(&mut state.transcript_state).lines.clear();
         let session_id = state.session_state.session_id.clone().unwrap_or_default();
         // Take ownership of the session Arc so we can lock it without
         // keeping a borrow of state.

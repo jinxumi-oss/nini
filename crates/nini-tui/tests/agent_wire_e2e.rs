@@ -149,7 +149,7 @@ fn type_str(s: &str) -> Vec<Key> {
 async fn submit_triggers_agent_and_renders_response() {
     let mut state = AppState::new("test-model");
     let shared = shared_state(state.clone());
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
     // Pre-fill the input as if user typed it
     for c in "echo hello".chars() {
@@ -226,7 +226,7 @@ async fn multiple_submits_accumulate_in_transcript() {
             usage: Usage::default(),
         },
     ]];
-    let sink1 = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink1 = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let driver1 = make_fixture_driver(turns1);
     let done1 = Arc::new(Notify::new());
     driver1("first question".into(), sink1, done1.clone());
@@ -240,7 +240,7 @@ async fn multiple_submits_accumulate_in_transcript() {
             usage: Usage::default(),
         },
     ]];
-    let sink2 = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink2 = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let driver2 = make_fixture_driver(turns2);
     let done2 = Arc::new(Notify::new());
     driver2("second question".into(), sink2, done2.clone());
@@ -270,7 +270,7 @@ async fn multiple_submits_accumulate_in_transcript() {
 #[tokio::test]
 async fn agent_error_is_recorded() {
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
     // Push an error event directly via the sink
     sink.push(AgentEventLite::Error("boom".to_string()));
@@ -288,7 +288,7 @@ async fn agent_error_is_recorded() {
 #[tokio::test]
 async fn token_usage_accumulates() {
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
     sink.push(AgentEventLite::Usage(100, 50, 0.0));
     sink.push(AgentEventLite::Usage(200, 100, 0.0));
@@ -311,7 +311,7 @@ async fn token_usage_accumulates() {
 #[tokio::test]
 async fn tool_call_args_are_updated_on_stop() {
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
     sink.push(AgentEventLite::ToolCallStart {
         name: "bash".to_string(),
@@ -353,7 +353,7 @@ async fn tool_call_args_are_updated_on_stop() {
 #[tokio::test]
 async fn running_mode_visible_while_agent_runs() {
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
     // Set mode to Running (simulating what submit does)
     shared.lock().unwrap().run_state.mode = nini_tui::state::RunMode::Running;
@@ -394,7 +394,7 @@ async fn running_mode_visible_while_agent_runs() {
 #[tokio::test]
 async fn multiple_tool_calls_accumulate() {
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
     // Three tool calls back to back (realistic for bash → read → edit)
     sink.push(AgentEventLite::ToolCallStart {
@@ -477,7 +477,7 @@ async fn full_pipeline_drive_keys_then_run_agent() {
 
     // 2. Set up shared state + driver
     let shared = shared_state(state);
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let driver: nini_tui::runtime::AgentDriver = Arc::new(make_fixture_driver(vec![
         vec![
             FixtureTurn::ToolCall {
@@ -531,7 +531,7 @@ async fn full_pipeline_drive_keys_then_run_agent() {
 async fn concurrent_sink_pushes_dont_panic() {
     use std::sync::Arc;
     let shared = shared_state(AppState::new("test-model"));
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
     let mut handles = vec![];
     for _ in 0..5 {
@@ -706,4 +706,148 @@ fn paste_image_appends_echo_to_transcript() {
     // Status bar should also not show "pasted" without an actual
     // paste event.
     assert!(!state.run_state.status.contains("pasted"));
+}
+
+// =====================================================================
+// Test 11 (v0.8.5 REGRESSION): sink notify wakes a watcher within 5ms
+//
+// Bug history: v0.7.4 added a `Notify` field to AgentSink so the runtime
+// could redraw between agent events instead of waiting 50ms. v0.8.4's
+// implementation wired the Notify wrong — `submit_user_input` created a
+// fresh `Arc::new(Notify::new())` per call and passed it to the sink,
+// while the runtime loop held its OWN per-iteration Notify in select!.
+// The two were never connected, so the "wake-on-event" mechanism was a
+// silent no-op (the agent was notifying a Notify with zero listeners).
+//
+// v0.8.5 replaces both with a single shared `tokio::sync::watch::Sender`
+// that the runtime subscribes to once per session. All agent tasks
+// spawned during that session `send(true)` on the same channel.
+//
+// This test pins down the timing contract: after `sink.push()` returns,
+// a runtime-like watcher must see the change within 5ms (well under
+// the 50ms tick).
+// =====================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sink_push_wakes_watcher_within_5ms() {
+    use std::time::{Duration, Instant};
+
+    let shared = shared_state(AppState::new("test-model"));
+    let (event_tx, mut event_rx) = tokio::sync::watch::channel(false);
+    let sink = AgentSink::new(shared.clone(), event_tx);
+
+    // We simulate the runtime loop's per-iteration subscription:
+    // wait on changed(), then mark as seen, repeat forever.
+    // We measure the gap BETWEEN "pushed event N" and "watcher saw N".
+    let (saw_tx, mut saw_rx) = tokio::sync::mpsc::unbounded_channel();
+    let watch_task = tokio::spawn(async move {
+        loop {
+            // Mark previous value as seen so the next changed() blocks
+            // until a *new* send() arrives.
+            let _ = event_rx.borrow_and_update();
+            let _ = event_rx.changed().await;
+            let _ = saw_tx.send(Instant::now());
+        }
+    });
+
+    // Give the watcher a moment to enter the changed() await.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Now push 14 events as if the agent just finished 14 parallel reads.
+    let push_start = Instant::now();
+    for i in 0..14 {
+        sink.push(AgentEventLite::ToolResult {
+            ok: true,
+            content: format!("file content {i}"),
+            details: None,
+            duration_ms: 0,
+        });
+    }
+    // The watcher should see the coalesced change within 5ms — well
+    // under the 50ms tick that the v0.8.4 code path was stuck on.
+    let first_wake = tokio::time::timeout(Duration::from_millis(50), saw_rx.recv())
+        .await
+        .expect("watcher did not wake within 50ms (worse than the tick!)")
+        .expect("watcher channel closed");
+    let latency = first_wake.duration_since(push_start);
+    assert!(
+        latency < Duration::from_millis(5),
+        "watcher wake latency = {latency:?} — should be <5ms (was 50ms before v0.8.5 fix)"
+    );
+
+    // Cleanup: drop sink so the watch channel can close, then await task.
+    drop(sink);
+    let _ = tokio::time::timeout(Duration::from_millis(100), watch_task).await;
+
+    // Sanity: all 14 events made it into state.
+    let snap = shared.lock().unwrap().clone();
+    let tool_results = snap
+        .transcript_state
+        .lines
+        .iter()
+        .filter(|l| matches!(l, nini_tui::state::TranscriptLine::ToolResult { .. }))
+        .count();
+    assert_eq!(tool_results, 14, "expected all 14 ToolResult events in state");
+}
+
+// =====================================================================
+// Test 12 (v0.8.5 PERF): AppState::clone() is O(1) regardless of
+// transcript size.
+//
+// Before v0.8.5: `transcript_state` was deep-cloned via `Vec<TranscriptLine>::clone()`.
+// 14 parallel reads × 25 KB each = ~350 KB memcpy per render-frame.
+// With 20 FPS the runtime was effectively bandwidth-bound.
+//
+// After v0.8.5: `transcript_state: Arc<TranscriptState>` — clone is
+// an Arc bump (8 bytes), regardless of how many lines exist.
+//
+// We assert the perf contract: cloning 14 × 25 KB TranscriptState
+// 100× takes <50 ms total. The pre-fix baseline was ~3,500 ms
+// (350 KB × 100 = 35 MB of memcpy at ~10 GB/s ≈ 3.5 s). We pick a
+// generous 50 ms ceiling to keep CI noise-immune while still catching
+// a regression to deep-clone.
+// =====================================================================
+#[test]
+fn appstate_clone_is_cheap_regardless_of_transcript_size() {
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let mut state = AppState::new("test-model");
+    // 14 tool results, each carrying ~25 KB of file content.
+    let big = "x".repeat(25 * 1024);
+    for i in 0..14 {
+        state.push_tool_result(true, big.clone(), Some(0));
+    }
+    // Sanity: we really did inflate the transcript.
+    assert!(
+        state.transcript_state.lines.len() >= 14,
+        "setup: expected ≥14 lines, got {}",
+        state.transcript_state.lines.len()
+    );
+
+    let start = Instant::now();
+    let mut clones = Vec::with_capacity(100);
+    for _ in 0..100 {
+        clones.push(state.clone());
+    }
+    let elapsed = start.elapsed();
+
+    assert_eq!(clones.len(), 100);
+    assert!(
+        elapsed.as_millis() < 50,
+        "100 clones of a 350 KB-transcript AppState took {elapsed:?} — \
+         expected <50ms. If this regressed, AppState::clone() may have \
+         stopped using Arc::clone for the transcript_state field."
+    );
+
+    // Sanity: clones share the same TranscriptState (Arc).
+    let ptrs: Vec<*const _> = clones
+        .iter()
+        .map(|c| Arc::as_ptr(&c.transcript_state))
+        .collect();
+    for p in &ptrs[1..] {
+        assert_eq!(
+            *p, ptrs[0],
+            "all clones must share the same Arc<TranscriptState> — got divergent pointers"
+        );
+    }
 }

@@ -81,28 +81,47 @@ pub enum AgentEventLite {
 #[derive(Clone)]
 pub struct AgentSink {
     state: SharedState,
-    /// v0.7.4 (UX test fix) — wake the runtime event loop whenever an
-    /// event arrives, so the TUI redraws between events instead of
-    /// waiting for the 50ms tick. Without this, fast agents that
-    /// complete in <50ms never show the "working" / tool-call /
-    /// text-delta intermediate states — the user only sees the final
-    /// "idle" state, which is confusing (looks like nothing happened).
-    notify: Arc<tokio::sync::Notify>,
+    /// v0.8.5: shared `watch::Sender<bool>` so every agent task spawned
+    /// during one runtime lifetime wakes the SAME runtime loop
+    /// subscription. Replaces v0.7.4's per-iteration `Arc<Notify>`
+    /// which was created inside `submit_user_input` and never wired
+    /// to the runtime's select!, making the wake-on-event mechanism
+    /// a silent no-op (notifications went to a Notify with zero
+    /// listeners). The `watch` channel also deduplicates: 14 rapid
+    /// pushes from parallel tool results collapse into a single
+    /// `changed()` signal that the runtime consumes on its next
+    /// iteration.
+    notify: tokio::sync::watch::Sender<bool>,
 }
 
 impl AgentSink {
-    pub fn new(state: SharedState, notify: Arc<tokio::sync::Notify>) -> Self {
+    pub fn new(state: SharedState, notify: tokio::sync::watch::Sender<bool>) -> Self {
         Self { state, notify }
     }
 
     /// Apply an `AgentEventLite` to the state.
+    ///
+    /// v0.8.5 (perf + correctness):
+    ///   * **Single lock acquisition per event** (was: two). The
+    ///     previous double-lock opened a race window where concurrent
+    ///     pushes could interleave `PhaseChanged` and the rest of the
+    ///     event, causing `status` to lag behind the actual transcript
+    ///     update. Single lock also halves syscall cost during bursty
+    ///     event streams (e.g. 14 parallel tool results).
+    ///   * **Wakes the runtime via shared `watch` channel** (was:
+    ///     per-iteration `Notify` that was wired to the wrong handle
+    ///     and never fired).
     pub fn push(&self, ev: AgentEventLite) {
-        if let Ok(mut s) = self.state.lock() {
+        let phase_status: Option<String> =
             if let AgentEventLite::PhaseChanged(phase) = &ev {
-                s.run_state.status = phase.clone();
-            }
-        }
+                Some(phase.clone())
+            } else {
+                None
+            };
         if let Ok(mut s) = self.state.lock() {
+            if let Some(phase) = phase_status {
+                s.run_state.status = phase;
+            }
             match ev {
                 AgentEventLite::TextDelta(text) => {
                     s.push_assistant_raw(text)
@@ -113,7 +132,7 @@ impl AgentSink {
                 AgentEventLite::ToolCallStart { name } => s.push_tool_call(name, ""),
                 AgentEventLite::ToolCallStop { id, args } => {
                     // Update the most recent tool call line with final args.
-                    if let Some(TranscriptLine::ToolCall { args: a, .. }) = s.transcript_state.lines.last_mut()
+                    if let Some(TranscriptLine::ToolCall { args: a, .. }) = Arc::make_mut(&mut s.transcript_state).lines.last_mut()
                     {
                         *a = args;
                     } else {
@@ -142,9 +161,7 @@ impl AgentSink {
                     s.push_assistant_raw(format!("[error] {message}"));
                 }
                 AgentEventLite::StopReason(label) => {
-                    s.transcript_state
-                        .lines
-                        .push(TranscriptLine::StopNotice(label));
+                    Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::StopNotice(label));
                 }
                 AgentEventLite::Usage(input, output, cost) => {
                     s.run_state.tokens.input += input as u64;
@@ -155,7 +172,7 @@ impl AgentSink {
                     }
                 }
                 AgentEventLite::PhaseChanged(_) => {
-                    // Already handled above (set s.run_state.status).
+                    // Already handled at top of this match (set status).
                 }
                 AgentEventLite::Done => {
                     s.run_state.mode = RunMode::Editing;
@@ -164,11 +181,13 @@ impl AgentSink {
                 }
             }
         }
-        // v0.7.4 (UX fix) — notify the runtime's select! so the TUI
-        // redraws immediately rather than waiting for the 50ms tick.
-        // notify_one() is sufficient — the runtime re-snapshots and
-        // renders on its next loop iteration.
-        self.notify.notify_one();
+        // v0.8.5: notify via shared watch channel. send() ignores
+        // the error if the receiver (runtime loop) has been dropped,
+        // so we never block or panic here. Watch's "latest value"
+        // semantics also coalesce 14+ rapid pushes from parallel tool
+        // results into one `changed()` that the runtime drains on
+        // its next iteration.
+        let _ = self.notify.send(true);
     }
 
     /// Inject a tool result into the transcript synchronously. Used by local
@@ -260,8 +279,20 @@ async fn run_loop(
     let (theme_tx, mut theme_rx) = tokio::sync::mpsc::unbounded_channel();
     let _watcher = crate::theme_watcher::spawn_theme_watcher(cwd.as_deref(), theme_tx);
 
+    // v0.8.5: SINGLE shared `watch` channel between runtime and ALL
+    // agent tasks spawned during this session. Replaces v0.7.4's
+    // per-iteration `Arc<Notify>` which was created inside
+    // `submit_user_input` and never wired to this loop's select! —
+    // making the "wake-on-event" mechanism a silent no-op. Watch
+    // coalesces: 14 rapid pushes from parallel tool results collapse
+    // into one `changed()` that the loop drains on its next iteration.
+    let (event_tx, mut event_rx) = tokio::sync::watch::channel(false);
+
     loop {
         // Snapshot state for rendering (cheap clone, doesn't hold lock long).
+        // v0.8.5: large transcripts make this clone expensive; we still
+        // hold the lock briefly. The watch channel above means we no
+        // longer have to spin-lock on a Notify that nobody listens to.
         let snapshot = {
             let g = shared.lock().unwrap();
             g.clone()
@@ -336,11 +367,10 @@ async fn run_loop(
 
         let done = Arc::new(Notify::new()); // per-iteration done signal
         let done_for_select = done.clone();
-        // v0.7.4 (UX fix) — cloned notify for the agent sink to wake
-        // the loop between events. Created once per loop iteration
-        // so each submit's sink has its own notification handle.
-        let sink_notify: Arc<tokio::sync::Notify> =
-            Arc::new(tokio::sync::Notify::new());
+        // v0.8.5: sink_notify removed (was per-iteration, never wired).
+        // The shared `event_rx` above is the runtime's wake-up channel
+        // for all agent events, regardless of which iteration spawned
+        // them.
 
         // Check if submit_user_input signaled a selector-open request via
         // state.run_state.status. Run AFTER done.notify_waiters() in submit_user_input.
@@ -483,7 +513,7 @@ async fn run_loop(
                                 }
                             }
                         } else {
-                            handle_key(k, &shared, &agent_driver, done);
+                            handle_key(k, &shared, &agent_driver, done, event_tx.clone());
                         }
                     }
                     Some(Ok(Event::Resize(_, _))) => { /* ratatui handles */ }
@@ -495,11 +525,12 @@ async fn run_loop(
             _ = done_for_select.notified() => {
                 // Agent finished; loop will redraw on next iteration.
             }
-            _ = sink_notify.notified() => {
-                // v0.7.4 (UX fix) — agent emitted an event. Redraw
-                // immediately so the TUI reflects the latest
-                // transcript / status / mode — don't wait for the
-                // 50ms tick.
+            _ = event_rx.changed() => {
+                // v0.8.5: agent emitted one or more events since last
+                // redraw. Watch coalesces — one `changed()` covers
+                // bursts (e.g. 14 parallel tool results). Mark seen
+                // so the next iteration can detect new changes.
+                let _ = event_rx.borrow_and_update();
             }
             // F020: external editor dance. Polled each iteration
             // because the dance is synchronous (we leave alt screen
@@ -828,7 +859,7 @@ fn apply_selector_result(
                 }
                 "action:clear" => {
                     let mut g = shared.lock().unwrap();
-                    g.transcript_state.lines.clear();
+                    Arc::make_mut(&mut g.transcript_state).lines.clear();
                     g.push_divider();
                 }
                 "action:exit" => {
@@ -1025,7 +1056,13 @@ fn cycle_thinking(state: &mut crate::state::AppState, direction: i32) {
     state.run_state.status = format!("thinking: {new_level}");
 }
 
-fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, done: Arc<Notify>) {
+fn handle_key(
+    k: KeyEvent,
+    shared: &SharedState,
+    agent_driver: &AgentDriver,
+    done: Arc<Notify>,
+    event_tx: tokio::sync::watch::Sender<bool>,
+) {
     let mut state = shared.lock().unwrap();
     let key: Key = k.into();
     let action = resolve_with_user_overrides(key);
@@ -1244,7 +1281,7 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
                 // that any future driver-side wiring can read it.
                 state.run_state.abort_signal = Some(Arc::new(tokio::sync::Notify::new()));
                 drop(state);
-                submit_user_input(shared, agent_driver, done);
+                submit_user_input(shared, agent_driver, done, event_tx.clone());
             }
         }
         KeyAction::Abort => {
@@ -1337,9 +1374,9 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             // make `k` jump too far for vim-style scrolling.
             let max_offset = state.transcript_state.lines.len().saturating_sub(1);
             let step = 1usize;
-            state.transcript_state.scroll_offset =
+            Arc::make_mut(&mut state.transcript_state).scroll_offset =
                 (state.transcript_state.scroll_offset + step).min(max_offset);
-            state.transcript_state.autoscroll = false;
+            Arc::make_mut(&mut state.transcript_state).autoscroll = false;
         }
         KeyAction::ToggleCollapse => {
             // Toggle collapsed on the most-recent collapsible transcript
@@ -1367,10 +1404,10 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             // single-line motion.
             let step = 1usize;
             if state.transcript_state.scroll_offset <= step {
-                state.transcript_state.scroll_offset = 0;
-                state.transcript_state.autoscroll = true;
+                Arc::make_mut(&mut state.transcript_state).scroll_offset = 0;
+                Arc::make_mut(&mut state.transcript_state).autoscroll = true;
             } else {
-                state.transcript_state.scroll_offset -= step;
+                Arc::make_mut(&mut state.transcript_state).scroll_offset -= step;
             }
         }
         KeyAction::ScrollToBottom => {
@@ -1379,8 +1416,8 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
             // back to the current message" action. Re-enabling
             // autoscroll also makes any subsequent streaming tokens
             // stick to the bottom.
-            state.transcript_state.scroll_offset = 0;
-            state.transcript_state.autoscroll = true;
+            Arc::make_mut(&mut state.transcript_state).scroll_offset = 0;
+            Arc::make_mut(&mut state.transcript_state).autoscroll = true;
         }
         KeyAction::Noop => {}
     }
@@ -1391,21 +1428,28 @@ fn handle_key(k: KeyEvent, shared: &SharedState, agent_driver: &AgentDriver, don
 /// Slash commands are dispatched locally — they run synchronously and do NOT
 /// transition the TUI to Running mode. Non-slash input goes to the agent
 /// driver as before.
-pub fn submit_user_input(shared: &SharedState, agent_driver: &AgentDriver, done: Arc<Notify>) {
-    // v0.7.4 (UX fix) — share a notify with the agent sink so the
-    // runtime's event loop wakes immediately when an agent event
-    // arrives, instead of waiting up to 50ms for the next tick.
-    submit_user_input_inner(shared, agent_driver, done, Arc::new(tokio::sync::Notify::new()))
+pub fn submit_user_input(
+    shared: &SharedState,
+    agent_driver: &AgentDriver,
+    done: Arc<Notify>,
+    event_tx: tokio::sync::watch::Sender<bool>,
+) {
+    // v0.8.5: caller (the runtime loop) passes the SHARED watch sender
+    // so all agent tasks created during this runtime lifetime wake
+    // the same loop subscription. Replaces v0.7.4's per-call fresh
+    // `Arc::new(Notify::new())` that was never connected to the
+    // runtime's select!.
+    submit_user_input_inner(shared, agent_driver, done, event_tx)
 }
 
 /// Internal helper for `submit_user_input` — takes an additional
-/// `sink_notify` arg that is passed to the agent sink so the
-/// runtime can wake on each event arrival.
+/// `event_tx` arg that is passed to the agent sink so the runtime
+/// can wake on each event arrival.
 fn submit_user_input_inner(
     shared: &SharedState,
     agent_driver: &AgentDriver,
     done: Arc<Notify>,
-    sink_notify: Arc<tokio::sync::Notify>,
+    event_tx: tokio::sync::watch::Sender<bool>,
 ) {
     let text = {
         let mut g = shared.lock().unwrap();
@@ -1458,7 +1502,7 @@ fn submit_user_input_inner(
                 } else {
                     cmd.to_string()
                 };
-                g.transcript_state.lines.push(TranscriptLine::BashExecution {
+                Arc::make_mut(&mut g.transcript_state).lines.push(TranscriptLine::BashExecution {
                     id,
                     cmd: cmd_display,
                     output: output.clone(),
@@ -1628,7 +1672,7 @@ fn submit_user_input_inner(
     };
 
     // Spawn the agent task with its own sink.
-    let sink = AgentSink::new(shared.clone(), sink_notify.clone());
+    let sink = AgentSink::new(shared.clone(), event_tx.clone());
     let _handle = (agent_driver)(text, sink, done.clone());
     // The handle is intentionally dropped — the task continues running in
     // the background. We don't abort the agent on quit; the runtime owns

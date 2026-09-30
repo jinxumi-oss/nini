@@ -293,7 +293,7 @@ async fn multi_turn_agent_via_sink() {
         g.push_divider();
         g.run_state.mode = RunMode::Running;
     }
-    let sink1 = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink1 = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let done1 = Arc::new(Notify::new());
     drop(driver("hi".into(), sink1, done1.clone()));
     done1.notified().await;
@@ -313,7 +313,7 @@ async fn multi_turn_agent_via_sink() {
         g.push_divider();
         g.run_state.mode = RunMode::Running;
     }
-    let sink2 = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink2 = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let done2 = Arc::new(Notify::new());
     drop(driver("use bash".into(), sink2, done2.clone()));
     done2.notified().await;
@@ -490,7 +490,7 @@ async fn full_pipeline_drive_keys_then_run_agent() {
         state.input.text = "echo hi".to_string();
         state.input.cursor = state.input.text.len();
     }
-    submit_user_input(&shared, &driver, done.clone());
+    submit_user_input(&shared, &driver, done.clone(), tokio::sync::watch::channel(false).0);
 
     // 3. Wait for the agent task to complete
     timeout(Duration::from_secs(2), done.notified())
@@ -552,7 +552,7 @@ async fn slash_quit_via_submit_user_input() {
     }
 
     // submit_user_input should intercept /quit without spawning the agent.
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert_eq!(
@@ -590,7 +590,7 @@ async fn slash_hotkeys_via_submit_user_input() {
         s.input.cursor = 8;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert_eq!(
@@ -639,7 +639,7 @@ async fn slash_model_via_submit_user_input() {
         s.input.cursor = s.input.text.len();
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert_eq!(
@@ -673,7 +673,7 @@ async fn slash_export_via_submit_user_input() {
         s.input.cursor = 7;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
     let snap = shared.lock().unwrap().clone();
     assert_eq!(snap.run_state.mode, RunMode::Editing);
 
@@ -731,7 +731,7 @@ async fn regular_input_via_submit_user_input_still_spawns_agent() {
         s.input.cursor = s.input.text.len();
     }
 
-    submit_user_input(&shared, &driver, done.clone());
+    submit_user_input(&shared, &driver, done.clone(), tokio::sync::watch::channel(false).0);
 
     // The agent should complete within 2 seconds.
     timeout(Duration::from_secs(2), done.notified())
@@ -768,7 +768,7 @@ async fn bang_cmd_passthrough_executes_locally() {
         s.input.cursor = 21;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert_eq!(snap.run_state.mode, RunMode::Editing);
@@ -807,7 +807,7 @@ async fn double_bang_cmd_passthrough() {
         s.input.cursor = 21;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert_eq!(snap.run_state.mode, RunMode::Editing);
@@ -837,7 +837,7 @@ async fn slash_model_no_args_signals_selector_open() {
         s.input.cursor = 6;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert!(
@@ -865,7 +865,7 @@ async fn slash_thinking_no_args_signals_selector_open() {
         s.input.cursor = 9;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert!(
@@ -889,7 +889,7 @@ async fn slash_session_no_args_signals_selector_open() {
         s.input.cursor = 8;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert!(
@@ -913,7 +913,7 @@ async fn slash_tree_no_args_signals_selector_open() {
         s.input.cursor = 5;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert!(
@@ -937,7 +937,7 @@ async fn slash_trust_no_args_signals_selector_open() {
         s.input.cursor = 6;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert!(
@@ -1060,7 +1060,7 @@ async fn slash_settings_no_args_signals_selector_open() {
         s.input.cursor = 9;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     let snap = shared.lock().unwrap().clone();
     assert!(
@@ -1087,7 +1087,7 @@ async fn submit_during_compaction_queues_message() {
         s.input.cursor = 14;
     }
 
-    submit_user_input(&shared, &noop_driver(), done.clone());
+    submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     // The message should be queued, NOT sent to the agent.
     let snap = shared.lock().unwrap().clone();
@@ -1144,7 +1144,7 @@ async fn phase_changed_event_updates_state_status() {
     use nini_tui::runtime::{AgentEventLite, AgentSink};
     let state = AppState::new("test-model");
     let shared = shared_state(state);
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     // Simulate the agent emitting phase transitions.
     sink.push(AgentEventLite::PhaseChanged("Working".into()));
     {
@@ -1169,7 +1169,7 @@ async fn agent_sink_handles_all_variants() {
     use nini_tui::runtime::{AgentEventLite, AgentSink};
     let state = AppState::new("test-model");
     let shared = shared_state(state);
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     // Fire one of every variant; none should panic.
     sink.push(AgentEventLite::TextDelta("a".into()));
     sink.push(AgentEventLite::ToolCallStart {
@@ -1235,7 +1235,7 @@ async fn tree_pick_queues_branch_summary_for_next_turn() {
         s.input.text = "/tree".into();
         s.input.cursor = 5;
     }
-    nini_tui::runtime::submit_user_input(&shared, &noop_driver(), done.clone());
+    nini_tui::runtime::submit_user_input(&shared, &noop_driver(), done.clone(), tokio::sync::watch::channel(false).0);
 
     // Simulate pick by calling apply_selector_result directly.
     {
@@ -1296,7 +1296,7 @@ async fn tool_selection_picks_bash_for_list_files() {
         g.push_divider();
         g.run_state.mode = RunMode::Running;
     }
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let done = Arc::new(Notify::new());
     drop(driver(
         "List files in src/, just first 5".into(),
@@ -1341,7 +1341,7 @@ async fn tool_selection_picks_grep_for_file_content_search() {
         g.push_divider();
         g.run_state.mode = RunMode::Running;
     }
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let done = Arc::new(Notify::new());
     drop(driver(
         "Find files containing TODO".into(),
@@ -1385,7 +1385,7 @@ async fn tool_selection_picks_find_for_file_name_enumeration() {
         g.push_divider();
         g.run_state.mode = RunMode::Running;
     }
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let done = Arc::new(Notify::new());
     drop(driver(
         "List all .rs files in the workspace".into(),
@@ -1440,7 +1440,7 @@ async fn token_counts_accumulate_after_turn() {
         g.push_divider();
         g.run_state.mode = RunMode::Running;
     }
-    let sink = AgentSink::new(shared.clone(), Arc::new(Notify::new()));
+    let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let done = Arc::new(Notify::new());
     drop(driver("hello".into(), sink, done.clone()));
     done.notified().await;

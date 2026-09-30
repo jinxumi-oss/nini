@@ -1036,112 +1036,124 @@ impl Agent {
                     return;
                 }
 
-                // Execute each tool call, accumulate results, then continue loop.
-                let mut tool_results: Vec<ContentBlock> = Vec::new();
-                for tc in &tool_calls {
-                    if abort.is_aborted() {
-                        self.set_phase(AgentPhase::Idle);
-                        yield AgentEvent::PhaseChanged(AgentPhase::Idle);
-                        yield AgentEvent::Aborted;
-                        return;
-                    }
-                    // v0.7 (M2) — split into 4 explicit phases:
-                    //   1. prepare (arg parse)
-                    //   2. before hook (may substitute args or deny)
-                    //   3. execute (tool body)
-                    //   4. after hook (may rewrite output)
-                    let tool = tool_registry.get(&tc.name);
-                    let output = match tool {
-                        Some(t) => {
-                            let mut args: serde_json::Value = serde_json::from_str(&tc.input_json)
-                                .unwrap_or(serde_json::Value::Null);
+                // v0.8.5: execute tool calls in PARALLEL via
+                // `FuturesUnordered`. The model often emits many
+                // `tool_calls` in one assistant turn (e.g. 14 reads);
+                // before this change, nini ran them serially — each
+                // tool awaited to completion before the next started.
+                // For read-only tools (`read`, `grep`, `find`) this
+                // wasted wall-clock time on independent filesystem
+                // syscalls. Serial execution also broke the user's
+                // mental model: the model says "parallel calls" and
+                // nini answered sequentially.
+                //
+                // Ordering invariant: providers (notably Anthropic)
+                // require tool_result blocks to be in the SAME order as
+                // the tool_use blocks they answer. We preserve this by
+                // allocating `Vec<Option<ContentBlock>>` keyed by the
+                // tool_call's original index and emitting results in
+                // index order at the end.
+                //
+                // Abort semantics: abort cancels the WHOLE agent run,
+                // not individual tool calls. If abort fires while
+                // futures are still running, we drop the partial
+                // results and return Aborted — we never emit a partial
+                // tool_results message (that would break the
+                // API contract with the next LLM call).
 
-                            // Phase 2: before-execute hook. May:
-                            //   * return Ok(Some(replaced)) to substitute args
-                            //   * return Ok(None) to pass through
-                            //   * return Err(msg) to deny the call
-                            //
-                            // Panic safety: `FutureExt::catch_unwind`
-                            // wraps the async future. A panicking hook
-                            // returns an `Err(Box<dyn Any>)` which we
-                            // convert to a ToolError.
-                            let mut denied: Option<String> = None;
-                            if let Some(b) = t.before() {
-                                use futures_util::FutureExt;
-                                match std::panic::AssertUnwindSafe(
-                                    b.run(args.clone(), &config.tool_context),
-                                )
-                                .catch_unwind()
-                                .await
-                                {
-                                    Ok(Ok(Some(replaced))) => args = replaced,
-                                    Ok(Ok(None)) => { /* pass through */ }
-                                    Ok(Err(e)) => denied = Some(e.to_string()),
-                                    Err(panic_payload) => {
-                                        let msg = panic_msg(&panic_payload);
-                                        eprintln!(
-                                            "[nini] before-execute hook panicked: {msg}"
-                                        );
-                                        denied = Some(format!("hook panicked: {msg}"));
-                                    }
-                                }
-                            }
+                // 1. Spawn one future per tool_call. Each future
+                //    captures the abort handle and aborts itself at
+                //    its first await point if abort fires.
+                use futures_util::stream::FuturesUnordered;
+                use futures_util::StreamExt;
 
-                            if let Some(msg) = denied {
-                                ToolOutput::err(format!("[before-hook denied] {msg}"))
-                            } else {
-                                // Phase 3: execute the tool body.
-                                let raw_out = match t
-                                    .execute(args, config.tool_context.clone())
-                                    .await
-                                {
-                                    Ok(out) => out,
-                                    Err(e) => ToolOutput::err(e.to_string()),
-                                };
+                let n_calls = tool_calls.len();
+                let mut tool_results_slots: Vec<Option<ContentBlock>> =
+                    (0..n_calls).map(|_| None).collect();
 
-                                // Phase 4: after-execute hook. Same
-                                // panic-safety contract as before.
-                                if let Some(a) = t.after() {
-                                    use futures_util::FutureExt;
-                                    match std::panic::AssertUnwindSafe(
-                                        a.run(raw_out, &config.tool_context),
-                                    )
-                                    .catch_unwind()
-                                    .await
-                                    {
-                                        Ok(Ok(out)) => out,
-                                        Ok(Err(e)) => {
-                                            eprintln!(
-                                                "[nini] after-execute hook returned error: {e}; raw output lost"
-                                            );
-                                            ToolOutput::err(format!(
-                                                "[after-hook error] {e}"
-                                            ))
-                                        }
-                                        Err(panic_payload) => {
-                                            let msg = panic_msg(&panic_payload);
-                                            eprintln!(
-                                                "[nini] after-execute hook panicked: {msg}"
-                                            );
-                                            ToolOutput::err(format!(
-                                                "[after-hook panicked] {msg}"
-                                            ))
-                                        }
-                                    }
-                                } else {
-                                    raw_out
-                                }
-                            }
+                // Pre-extract the per-call data we need to move into
+                // the future (the registry + config are & references;
+                // we need to clone the strings we want to keep alive).
+                let specs: Vec<PendingToolCall> = tool_calls.clone();
+
+                let mut futures = FuturesUnordered::new();
+                for (idx, spec) in specs.into_iter().enumerate() {
+                    let abort = abort.clone();
+                    let tool_registry = tool_registry.clone();
+                    let config = config.clone();
+                    futures.push(async move {
+                        // Check abort at the start of each future so
+                        // a pre-aborted batch doesn't even begin
+                        // running its tool bodies.
+                        if abort.is_aborted() {
+                            return (
+                                idx,
+                                spec.id.clone(),
+                                ToolOutput::err("[aborted before execution]".to_string()),
+                            );
                         }
-                        None => ToolOutput::err(format!("tool not found: {}", tc.name)),
+                        let output = run_single_tool(
+                            &spec,
+                            &tool_registry,
+                            &config,
+                            &abort,
+                        )
+                        .await;
+                        (idx, spec.id.clone(), output)
+                    });
+                }
+
+                // 2. Drain futures. We use `select!` against abort so
+                //    an abort signal during the drain path drops the
+                //    whole batch (we never partial-commit).
+                let mut aborted = false;
+                while let Some((idx, tc_id, output)) = futures.next().await {
+                    if abort.is_aborted() {
+                        aborted = true;
+                        break;
+                    }
+                    yield AgentEvent::ToolResult {
+                        id: tc_id.clone(),
+                        output: output.clone(),
                     };
-                    yield AgentEvent::ToolResult { id: tc.id.clone(), output: output.clone() };
-                    tool_results.push(ContentBlock::ToolResult {
-                        tool_use_id: tc.id.clone(),
+                    tool_results_slots[idx] = Some(ContentBlock::ToolResult {
+                        tool_use_id: tc_id,
                         content: output.content,
                         is_error: output.is_error,
                     });
                 }
+                drop(futures); // cancel any still-pending futures
+
+                if aborted {
+                    self.set_phase(AgentPhase::Idle);
+                    yield AgentEvent::PhaseChanged(AgentPhase::Idle);
+                    yield AgentEvent::Aborted;
+                    return;
+                }
+
+                // 3. Flatten in original order. With abort=false,
+                //    every slot must be Some; if not, that's a bug in
+                //    the future dispatch above.
+                let tool_results: Vec<ContentBlock> = tool_results_slots
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, slot)| {
+                        slot.unwrap_or_else(|| {
+                            // Defensive: if a future was silently
+                            // dropped (shouldn't happen — FuturesUnordered
+                            // yields None only when empty), emit a
+                            // synthetic tool_error so the next LLM call
+                            // still gets a tool_result for every
+                            // tool_use.
+                            ContentBlock::ToolResult {
+                                tool_use_id: format!("__missing_{i}"),
+                                content: format!("[internal error] tool call {i} produced no result"),
+                                is_error: true,
+                            }
+                        })
+                    })
+                    .collect();
+
                 self.messages.push(Message { role: Role::Tool, content: tool_results.clone(), timestamp: 0 });
                 // v0.7 (M1) steering hook: let extensions inject
                 // messages between tool execution and the next LLM
@@ -1167,6 +1179,88 @@ impl Agent {
             }
         })
     }
+}
+
+
+/// v0.8.5: extract the per-tool-call execution body so it can be
+/// spawned as a `Send` future inside a `FuturesUnordered`. Mirrors
+/// the v0.7 (M2) 4-phase lifecycle (prepare → before → execute →
+/// after) but lives outside the `async_stream::stream!` block so it
+/// can be moved across tasks.
+async fn run_single_tool(
+    spec: &PendingToolCall,
+    tool_registry: &ToolRegistry,
+    config: &RunConfig,
+    abort: &AbortHandle,
+) -> ToolOutput {
+    let tool = tool_registry.get(&spec.name);
+    let tool = match tool {
+        Some(t) => t,
+        None => return ToolOutput::err(format!("tool not found: {}", spec.name)),
+    };
+    let mut args: serde_json::Value = serde_json::from_str(&spec.input_json)
+        .unwrap_or(serde_json::Value::Null);
+
+    // Phase 2: before-execute hook.
+    let mut denied: Option<String> = None;
+    if let Some(b) = tool.before() {
+        use futures_util::FutureExt;
+        match std::panic::AssertUnwindSafe(
+            b.run(args.clone(), &config.tool_context),
+        )
+        .catch_unwind()
+        .await
+        {
+            Ok(Ok(Some(replaced))) => args = replaced,
+            Ok(Ok(None)) => { /* pass through */ }
+            Ok(Err(e)) => denied = Some(e.to_string()),
+            Err(panic_payload) => {
+                let msg = panic_msg(&panic_payload);
+                eprintln!("[nini] before-execute hook panicked: {msg}");
+                denied = Some(format!("hook panicked: {msg}"));
+            }
+        }
+    }
+    if let Some(msg) = denied {
+        return ToolOutput::err(format!("[before-hook denied] {msg}"));
+    }
+
+    // Phase 3: execute the tool body, abort-aware.
+    let raw_out = {
+        let exec = tool.execute(args, config.tool_context.clone());
+        tokio::select! {
+            result = exec => match result {
+                Ok(out) => out,
+                Err(e) => ToolOutput::err(e.to_string()),
+            },
+            _ = abort.wait_aborted() => {
+                return ToolOutput::err("[aborted during execute]".to_string());
+            }
+        }
+    };
+
+    // Phase 4: after-execute hook.
+    if let Some(a) = tool.after() {
+        use futures_util::FutureExt;
+        match std::panic::AssertUnwindSafe(
+            a.run(raw_out, &config.tool_context),
+        )
+        .catch_unwind()
+        .await
+        {
+            Ok(Ok(out)) => return out,
+            Ok(Err(e)) => {
+                eprintln!("[nini] after-execute hook returned error: {e}; raw output lost");
+                return ToolOutput::err(format!("[after-hook error] {e}"));
+            }
+            Err(panic_payload) => {
+                let msg = panic_msg(&panic_payload);
+                eprintln!("[nini] after-execute hook panicked: {msg}");
+                return ToolOutput::err(format!("[after-hook panicked] {msg}"));
+            }
+        }
+    }
+    raw_out
 }
 
 #[cfg(test)]

@@ -1,3 +1,72 @@
+## v0.8.5 — TUI hang on parallel reads + AppState clone perf (2026-09-30)
+
+**Bug fix — TUI unresponsive during / after parallel tool execution**
+
+Reproducer: ask the agent to read 14 docs in one turn. The TUI would
+appear frozen: status bar stuck on the last frame, key presses
+ignored, no spinner animation. Root cause was a silent no-op in the
+v0.7.4 wake-on-event mechanism (Notify wired to the wrong handle)
+combined with an O(transcript-size) `AppState::clone()` on every
+runtime loop iteration. Both fixed.
+
+  * **Watch-channel wake-up (`runtime.rs`)** — replaced v0.7.4's
+    per-iteration `Arc<Notify>` (which `submit_user_input` created
+    independently and never connected to the runtime loop's
+    `select!`) with a single shared `tokio::sync::watch::Sender<bool>`
+    owned by the loop. Every agent task spawned during one session
+    sends on the same channel; the loop drains coalesced changes in
+    `<5ms` (well under the 50ms tick). Regression test
+    `sink_push_wakes_watcher_within_5ms` pins the timing contract.
+  * **Single lock per `AgentSink::push`** — was two locks
+    (`lock → release → lock → release`) which opened a race window
+    where concurrent pushes could interleave `PhaseChanged` and the
+    body of an event, causing `status` to lag the transcript.
+  * **`AppState::clone()` is O(1)** — wrapped
+    `transcript_state: TranscriptState` in `Arc<TranscriptState>`.
+    With 14 tool results each carrying ~25 KB of file content, the
+    old code did ~350 KB of memcpy per render-frame (~3.5 s/s at
+    20 FPS). Now it's an Arc bump. Mutation sites use
+    `Arc::make_mut(&mut self.transcript_state)` which, since the
+    outer `Mutex` gives unique access, never triggers the CoW
+    branch. Regression test
+    `appstate_clone_is_cheap_regardless_of_transcript_size` asserts
+    100 clones of a 350 KB transcript take <50 ms.
+
+- **Parallel tool execution** — replaced the serial
+  `for tc in tool_calls` loop in `agent.rs` with a
+  `FuturesUnordered<...>` pool. The model often emits N parallel
+  tool_calls in one turn (e.g. 14 reads); before this change, nini
+  ran them serially even though the provider API treats them as
+  independent. Now they execute concurrently — 8 × 100ms sleeps
+  finish in ~100ms (was ~800ms).
+  - **Slot-ordering invariant preserved**: tool_results in the
+    message sent to the next LLM call are in the SAME order as
+    tool_calls in the preceding assistant message. Anthropic's API
+    requires this; breaking it 400-errors the next turn. Verified
+    by `parallel_tool_results_in_slot_order_for_llm_message`.
+  - **Abort semantics preserved**: firing `abort.abort()` while
+    futures are mid-flight cancels the whole agent run (returns
+    `Aborted` event). We never emit partial tool_results — that
+    would break the API contract. Verified by
+    `abort_during_parallel_tool_returns_aborted_event`.
+  - **Per-future abort check**: each spawned future checks abort at
+    its first await point so a pre-aborted batch doesn't begin
+    running tool bodies at all.
+
+**Out of scope (next iterations)**
+- Truncating `ToolResult.content` at push time (would also need
+  `/export` HTML to either accept truncated output or read from a
+  separate `raw_content` field)
+- Capping `transcript_state.lines` length
+- Replacing `auto_link` with a regex-based scan (10× faster on
+  large tool results)
+
+**Tests**: 816 → 824 (+5 new regression tests in `agent_integration`
++ `agent_wire_e2e`). All other tests pass unchanged. `cargo clippy`
+clean across workspace.
+
+---
+
 ## v0.8.4 — Pi TUI parity + AI streaming protocol fixes (2026-09-28)
 
 **AI streaming protocol — correctness**

@@ -455,7 +455,7 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
             Ok(AgentEvent::ToolCallStop { id, input_json }) => {
                 // Update the last tool call line with the final args
                 if let Some(TranscriptLine::ToolCall { args, .. }) =
-                    state.transcript_state.lines.last_mut()
+                    Arc::make_mut(&mut state.transcript_state).lines.last_mut()
                 {
                     *args = input_json.to_string();
                 } else {
@@ -718,7 +718,7 @@ async fn full_demo_pipeline_through_tui_state() {
             state.push_tool_call(name, "");
         } else if let Ok(AgentEvent::ToolCallStop { input_json, .. }) = ev {
             if let Some(TranscriptLine::ToolCall { args, .. }) =
-                state.transcript_state.lines.last_mut()
+                Arc::make_mut(&mut state.transcript_state).lines.last_mut()
             {
                 *args = input_json.to_string();
             }
@@ -820,7 +820,7 @@ fn scroll_offset_clips_to_last_n_lines() {
         state.push_user(format!("line {i}"));
     }
     // Set scroll_offset to 20 → show only last 30 lines.
-    state.transcript_state.scroll_offset = 20;
+    Arc::make_mut(&mut state.transcript_state).scroll_offset = 20;
     let backend = ratatui::backend::TestBackend::new(80, 10);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
@@ -838,7 +838,7 @@ fn scroll_offset_zero_shows_from_beginning() {
     let mut state = AppState::new("test");
     state.push_user("first");
     state.push_user("second");
-    state.transcript_state.scroll_offset = 0;
+    Arc::make_mut(&mut state.transcript_state).scroll_offset = 0;
     let backend = ratatui::backend::TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| render_frame(f, &state)).unwrap();

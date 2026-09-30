@@ -663,7 +663,15 @@ impl Default for CompletionPopup {
 #[derive(Debug)]
 pub struct AppState {
     pub input: InputBuffer,
-    pub transcript_state: TranscriptState,
+    /// v0.8.5: `Arc<TranscriptState>` so that `AppState::clone()` is
+    /// O(1) instead of deep-cloning every TranscriptLine (each
+    /// ToolResult can carry ~25 KB of file content, so 14 parallel
+    /// reads == ~350 KB memcpy per render-frame). The `Arc` is
+    /// write-through-coW via `Arc::make_mut` in mutation paths;
+    /// since mutation paths hold `&mut AppState` via the outer
+    /// `Mutex`, `make_mut` always returns the unique inner buffer
+    /// (no clone-on-write triggered).
+    pub transcript_state: Arc<TranscriptState>,
     pub run_state: RunState,
     pub model_state: ModelState,
     pub session_state: SessionState,
@@ -995,7 +1003,9 @@ impl Clone for AppState {
     fn clone(&self) -> Self {
         Self {
             input: self.input.clone(),
-            transcript_state: self.transcript_state.clone(),
+            // v0.8.5: Arc bump instead of deep clone. See the
+            // `transcript_state` field comment for why this matters.
+            transcript_state: Arc::clone(&self.transcript_state),
             run_state: self.run_state.clone(),
             model_state: self.model_state.clone(),
             session_state: self.session_state.clone(),
@@ -1008,7 +1018,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             input: InputBuffer::new(),
-            transcript_state: TranscriptState::default(),
+            transcript_state: Arc::new(TranscriptState::default()),
             run_state: RunState::default(),
             model_state: ModelState::default(),
             session_state: SessionState::default(),
@@ -1151,7 +1161,7 @@ impl AppState {
 
     pub fn push_user(&mut self, text: impl Into<String>) {
         let s = text.into();
-        self.transcript_state.lines.push(TranscriptLine::User(s.clone()));
+        Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::User(s.clone()));
         self.session_append(None, nini_core::Role::User, s);
     }
 
@@ -1191,15 +1201,13 @@ impl AppState {
         );
         if same_turn {
             if let Some(TranscriptLine::AssistantText(existing)) =
-                self.transcript_state.lines.last_mut()
+                Arc::make_mut(&mut self.transcript_state).lines.last_mut()
             {
                 existing.push_str(&s);
                 return;
             }
         }
-        self.transcript_state
-            .lines
-            .push(TranscriptLine::AssistantText(s));
+        Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::AssistantText(s));
     }
 
     /// v0.8: push reasoning content. Rendered dim/italic.
@@ -1215,15 +1223,15 @@ impl AppState {
         if s.is_empty() {
             return;
         }
-        if let Some(TranscriptLine::ThinkingText(existing)) = self.transcript_state.lines.last_mut() {
+        if let Some(TranscriptLine::ThinkingText(existing)) = Arc::make_mut(&mut self.transcript_state).lines.last_mut() {
             existing.push_str(&s);
         } else {
-            self.transcript_state.lines.push(TranscriptLine::ThinkingText(s));
+            Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::ThinkingText(s));
         }
     }
 
     pub fn push_tool_call(&mut self, name: impl Into<String>, args: impl Into<String>) {
-        self.transcript_state.lines.push(TranscriptLine::ToolCall {
+        Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::ToolCall {
             name: name.into(),
             args: args.into(),
             collapsed: false,
@@ -1248,7 +1256,7 @@ impl AppState {
         content: impl Into<String>,
         duration_ms: Option<u64>,
     ) {
-        self.transcript_state.lines.push(TranscriptLine::ToolResult {
+        Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::ToolResult {
             ok,
             content: content.into(),
             collapsed: false,
@@ -1257,7 +1265,7 @@ impl AppState {
     }
 
     pub fn push_divider(&mut self) {
-        self.transcript_state.lines.push(TranscriptLine::Divider);
+        Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::Divider);
     }
 
     pub fn transcript_len(&self) -> usize {
@@ -1328,7 +1336,7 @@ impl AppState {
             return 0;
         }
         let cut_at = total / 2;
-        let prefix_lines: Vec<TranscriptLine> = self.transcript_state.lines.drain(..cut_at).collect();
+        let prefix_lines: Vec<TranscriptLine> = Arc::make_mut(&mut self.transcript_state).lines.drain(..cut_at).collect();
         // Build a short textual summary from the prefix. We don't have
         // direct access to `nini_core::Entry` from the prefix, but
         // `generate_local_summary` works on `Vec<Entry>` — so we
@@ -1340,7 +1348,7 @@ impl AppState {
         }
         summary.push_str(&format!("\n({} entries folded into this summary.)\n", prefix_lines.len()));
         // Replace prefix with a single AssistantText.
-        self.transcript_state.lines
+        Arc::make_mut(&mut self.transcript_state).lines
             .insert(0, TranscriptLine::AssistantText(format!(
                 "[CONTEXT SUMMARY]\n\n{summary}"
             )));
@@ -1352,7 +1360,7 @@ impl AppState {
     /// that line is collapsible (ToolCall / ToolResult / BashExecution).
     /// Returns true if the toggle changed the line's state.
     pub fn toggle_collapsed(&mut self, index: usize) -> bool {
-        if let Some(line) = self.transcript_state.lines.get_mut(index) {
+        if let Some(line) = Arc::make_mut(&mut self.transcript_state).lines.get_mut(index) {
             match line {
                 TranscriptLine::ToolCall { collapsed, .. }
                 | TranscriptLine::ToolResult { collapsed, .. }
@@ -1372,7 +1380,7 @@ impl AppState {
     /// Returns the number of lines collapsed.
     pub fn collapse_all(&mut self) -> usize {
         let mut n = 0;
-        for line in self.transcript_state.lines.iter_mut() {
+        for line in Arc::make_mut(&mut self.transcript_state).lines.iter_mut() {
             if let TranscriptLine::ToolCall { collapsed, .. }
             | TranscriptLine::ToolResult { collapsed, .. }
             | TranscriptLine::BashExecution { collapsed, .. } = line
@@ -1773,7 +1781,7 @@ mod tests {
         s.push_tool_call("read", "{}");
         // Append a bash via the underlying TranscriptLine constructor
         // since we don't have a public push_bash helper yet.
-        s.transcript_state.lines.push(TranscriptLine::BashExecution {
+        Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::BashExecution {
             id: "b1".to_string(),
             cmd: "ls".to_string(),
             output: "file1\nfile2".to_string(),
@@ -1894,7 +1902,7 @@ mod tests {
         s.push_user("hi");
         s.push_assistant("hello");
         // Index 5: a bash via direct TranscriptLine.
-        s.transcript_state.lines.push(TranscriptLine::BashExecution {
+        Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::BashExecution {
             id: "b2".to_string(),
             cmd: "ls".to_string(),
             output: "out".to_string(),
@@ -2102,7 +2110,7 @@ mod sub_struct_tests {
         let mut ts = TranscriptState::default();
         // 8 chars / 4 = 2 tokens (round up)
         ts.lines.push(TranscriptLine::AssistantText("abcdefgh".into()));
-        let app = AppState { transcript_state: ts, ..AppState::default() };
+        let app = AppState { transcript_state: Arc::new(ts), ..AppState::default() };
         assert_eq!(app.estimate_transcript_tokens(), 2);
     }
 

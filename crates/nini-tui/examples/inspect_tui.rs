@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use nini_tui::render::render_frame;
 use nini_tui::state::{AppState, TranscriptLine};
 use ratatui::Terminal;
@@ -6,7 +7,7 @@ use ratatui::backend::TestBackend;
 fn main() {
     let mut s = AppState::new("test-model");
     s.push_user("Run ls /tmp and list 5 files you see");
-    s.transcript_state.lines.push(TranscriptLine::ThinkingText(
+    Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::ThinkingText(
         "The user wants me to run ls /tmp and list 5 files I see. \
          I'll use the bash tool to execute the ls command and then \
          report back the first 5 file names from the output. \
@@ -15,18 +16,18 @@ fn main() {
          command to see what files are available."
             .to_string(),
     ));
-    s.transcript_state.lines.push(TranscriptLine::ToolCall {
+    Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::ToolCall {
         name: "bash".to_string(),
         args: r#"{"command": "ls /tmp"}"#.to_string(),
         collapsed: false,
     });
-    s.transcript_state.lines.push(TranscriptLine::ToolResult {
+    Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::ToolResult {
         ok: true,
         content: "file1\nfile2\nfile3\nfile4\nfile5\nfile6\nfile7\nfile8\nfile9\nfile10".to_string(),
         collapsed: false,
         duration_ms: Some(42),
     });
-    s.transcript_state.lines.push(TranscriptLine::AssistantText(
+    Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::AssistantText(
         "Here are 5 files from /tmp:\n1. file1\n2. file2\n3. file3\n4. file4\n5. file5".to_string(),
     ));
 

@@ -2,6 +2,7 @@
 //! eyeball the new Pi-style 2-line footer alongside the markdown/prompt
 //! rendering. Snapshots go to /tmp/nini-snapshots/.
 
+use std::sync::Arc;
 use nini_tui::render::render_frame_with_theme;
 use nini_tui::state::{AppState, RunMode, TranscriptLine};
 use nini_tui::theme::Theme;
@@ -70,7 +71,7 @@ fn snapshot_conversation() {
 
     state.push_user("Please refactor the auth middleware to use JWT instead of session cookies.");
     state.push_divider();
-    state.transcript_state.lines.push(TranscriptLine::ThinkingText(
+    Arc::make_mut(&mut state.transcript_state).lines.push(TranscriptLine::ThinkingText(
         "The user wants to migrate from session cookies to JWT. I should first read the current middleware, identify the session helpers, and propose a JWT strategy with refresh-token rotation.".into(),
     ));
     state.push_assistant(
@@ -102,8 +103,7 @@ fn snapshot_conversation() {
         Some(23),
     );
     state.push_divider();
-    state
-        .transcript_state
+    Arc::make_mut(&mut state.transcript_state)
         .lines
         .push(TranscriptLine::BashExecution {
             id: "abc123".into(),
@@ -159,7 +159,7 @@ fn snapshot_thinking_visible() {
     state.session_state.session_id = Some("xyz98765".into());
 
     state.push_user("explain monads in 3 sentences");
-    state.transcript_state.lines.push(TranscriptLine::ThinkingText(
+    Arc::make_mut(&mut state.transcript_state).lines.push(TranscriptLine::ThinkingText(
         "Monads are wrappers around values that compose sequential operations while handling effects (state, errors, I/O) in a pure functional style.".into(),
     ));
     state.push_assistant(
