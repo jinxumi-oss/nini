@@ -140,6 +140,11 @@ struct StreamState {
     /// pending" from "queued, Stop already emitted" once the entry
     /// is removed. Tracking emitted indices prevents that loop.
     pending_stop_emitted: std::collections::HashSet<u32>,
+    /// v0.8.4 (bugfix): tool-call indices whose ToolCallStart has
+    /// already been emitted. A re-poll of the same start chunk must
+    /// not emit Start a second time (the runtime would append a
+    /// duplicate `▸ bash` line and the args would be double-counted).
+    tool_call_started: std::collections::HashSet<u32>,
 }
 
 fn build_request_body(req: &Request) -> Result<String, ProviderError> {
@@ -336,34 +341,33 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
                         state.fragments_pending = frags;
                     }
                 }
-                // Drain pending text fragments in arrival order
-                // (skip empty ones). One StreamEvent per call site
-                // means downstream consumers see events in order.
-                if !state.fragments_pending.is_empty() {
-                    let pending = std::mem::take(&mut state.fragments_pending);
-                    for f in pending {
-                        match f {
-                            ThinkFragment::Visible(t) if !t.is_empty() => {
-                                return Some(StreamEvent::TextDelta { text: t });
-                            }
-                            ThinkFragment::Thinking(t) if !t.is_empty() => {
-                                return Some(StreamEvent::ThinkingDelta { text: t });
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                // v0.8.4 (bugfix): process tool_calls BEFORE draining
+                // text fragments. The previous order drained fragments
+                // first and returned the first non-empty one — which
+                // silently dropped tool_calls on the same chunk. On
+                // aiio / Anthropic-translated models, the very chunk
+                // that closes `</think>` also carries the tool-call
+                // id+name+args start (`{`), so this path was dropping
+                // the Start event entirely (no transcript line at
+                // all, then tool args accumulated as Delta on later
+                // chunks but never found a Start to attach to).
                 for tc in delta.tool_calls.unwrap_or_default() {
                     if let Some(id) = tc.id.clone() {
-                        // New tool call starting. aiio / Anthropic-
-                        // translated providers often include the full
-                        // `arguments` JSON on this very first chunk,
-                        // so we eagerly seed `input_json` here rather
-                        // than waiting for a separate ToolCallDelta —
-                        // otherwise the displayed ToolCall line in the
-                        // transcript is rendered as `▸ bash ` with an
-                        // empty argument body until (or unless) a delta
-                        // arrives.
+                        // First chunk for this tool call index.
+                        // Insert into `state.tool_calls` (id+name+seed
+                        // input_json) and emit ToolCallStart so the
+                        // transcript line carries the function name
+                        // (e.g. "bash"), not the tool-call id.
+                        //
+                        // Single-shot inline (small aiio payloads):
+                        // queue the parsed body in
+                        // `pending_stop_args` so the next
+                        // translate_sse call drains it as Stop.
+                        // Streaming (aiio / Anthropic): the args
+                        // fragment on this chunk is just `{` —
+                        // subsequent chunks arrive as plain deltas,
+                        // Continuation accumulates, finalize emits
+                        // Stop from `input_json`.
                         let initial_args = tc
                             .function
                             .arguments
@@ -378,104 +382,37 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
                             },
                         );
                         let name = tc.function.name.clone().unwrap_or_default();
-                        // v0.8.4 (bugfix): we used to emit only one
-                        // of {Start, Stop} depending on whether args
-                        // arrived inline. But the runtime's `last_mut`
-                        // path uses `name` from the existing ToolCall
-                        // line — and when only `Stop` is emitted the
-                        // runtime falls through to `push_tool_call(id,
-                        // args)` (the else-branch), so `name` gets
-                        // initialised from the tool-call **id**, not
-                        // the function name. Result: the transcript
-                        // rendered `▸ call_01a0ec2ad12... {"path":...}`
-                        // instead of `▸ bash {"path":...}`.
-                        //
-                        // Fix: emit ToolCallStart (so the transcript
-                        // line gets the function name) AND, if args
-                        // arrived inline, queue the parsed body in
-                        // `pending_stop_args` so the next
-                        // `translate_sse` call (from a finish_reason
-                        // / trailing SSE event) emits ToolCallStop.
-                        // Without this, aiio's single-shot tool
-                        // emission would never produce a Stop event
-                        // and the transcript line would carry an
-                        // empty `input_json`.
-                        // v0.8.4 (bugfix): first call on this data
-                        // emits ToolCallStart and queues the parsed
-                        // body. Subsequent calls on the SAME data
-                        // must NOT re-emit Start or accumulate delta
-                        // args (those have already been baked into
-                        // the queued body). They fall through to the
-                        // drain logic so the queue produces a matching
-                        // ToolCallStop. Without this guard the runtime
-                        // either spins (re-emitting Start) or
-                        // double-emits (Start + Delta) for the same
-                        // tool call.
-                        // v0.8.4 (bugfix): queue the parsed body so the
-                        // drain logic at the bottom of this match arm
-                        // emits the matching ToolCallStop on a later
-                        // chunk's translate_sse call. aiio's single-
-                        // shot tool emission never sends a separate
-                        // delta chunk, so without this queue the
-                        // transcript line ends up with empty `input_json`.
-                        // v0.8.4 (bugfix): first call queues the body
-                        // and emits ToolCallStart; later calls on the
-                        // same data fall through to the drain logic at
-                        // the bottom of this match arm so the queue
-                        // produces the matching ToolCallStop.
-                        // v0.8.4 (bugfix): inline args → queue the body so
-                        // the drain logic at the bottom of this match
-                        // arm emits the matching ToolCallStop on a later
-                        // chunk's translate_sse call. We always emit
-                        // ToolCallStart here so the runtime transcript
-                        // line carries the function name "bash"
-                        // rather than the tool-call id.
-                        //
-                        // Subsequent translate_sse calls on the same
-                        // data fall through to the drain (without
-                        // re-emitting Start, which would spin the
-                        // runtime).
-                        // Inline args: queue the body for the drain
-                        // to emit as a Stop on a later translate_sse
-                        // call. Skip if we already emitted Stop (the
-                        // drain path) so we don't re-queue the same
-                        // body forever on re-polls.
-                        if !state.pending_stop_emitted.contains(&tc.index) {
-                            if !initial_args.is_empty() {
-                                state.pending_stop_args.insert(
-                                    tc.index,
-                                    serde_json::from_str(&initial_args)
-                                        .unwrap_or(serde_json::Value::String(initial_args.clone())),
-                                );
-                                // Mark as "Start emitted" so subsequent
-                                // translate_sse calls on the same data
-                                // fall through to drain (which then
-                                // emits ToolCallStop). Without this
-                                // mark, the inline path would re-emit
-                                // Start on every poll, but drain (also
-                                // called on the same chunk) would emit
-                                // Stop — so the runtime sees
-                                // Start, Stop, Start, Stop, ... in
-                                // sequence.
-                                state.pending_stop_emitted.insert(tc.index);
+                        // Single-shot providers send the whole body on
+                        // the start chunk. Only then do we have a
+                        // complete object to hand to ToolCallStop —
+                        // streaming providers send just `{` here and
+                        // stream the rest as Continuation deltas, which
+                        // `finalize` closes out. Queueing a partial
+                        // fragment would fire Stop with `Value::String`
+                        // and the tool would fail to parse its args.
+                        let complete = serde_json::from_str::<serde_json::Value>(&initial_args)
+                            .ok()
+                            .filter(serde_json::Value::is_object);
+                        if !state.tool_call_started.contains(&tc.index) {
+                            state.tool_call_started.insert(tc.index);
+                            if let Some(body) = complete {
+                                state.pending_stop_args.insert(tc.index, body);
                             }
                             return Some(StreamEvent::ToolCallStart { id, name });
                         }
-                        // Already emitted — fall through to drain
-                        // (drain is also a no-op since the entry has
-                        // been removed from `pending_stop_args`).
-                    }
-                    // Continuation (skipped for inline-args path —
-                    // handled by drain below).
-                    let skip_continuation =
-                        state.pending_stop_args.contains_key(&tc.index)
-                            || state.pending_stop_emitted.contains(&tc.index);
-                    if !skip_continuation {
+                    } else if state.tool_call_started.contains(&tc.index) {
+                        // Continuation: subsequent delta chunks carry
+                        // args fragments (and sometimes a late name).
+                        // Accumulate into `input_json` and emit
+                        // ToolCallDelta so the transcript line grows.
+                        // Skip if Stop already emitted (single-shot
+                        // path) — `pending_stop_emitted` is set by
+                        // the drain below.
                         if let Some(call) = state.tool_calls.get_mut(&tc.index) {
-                            if let Some(name) = tc.function.name {
+                            if let Some(name) = tc.function.name.clone() {
                                 call.name = name;
                             }
-                            if let Some(args) = tc.function.arguments {
+                            if let Some(args) = tc.function.arguments.clone() {
                                 call.input_json.push_str(&args);
                                 return Some(StreamEvent::ToolCallDelta {
                                     id: call.id.clone(),
@@ -487,12 +424,11 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
                 }
             }
             // v0.8.4 (bugfix): drain any queued ToolCallStop bodies
-            // from the aiio / Anthropic-translated inline-args path.
-            // We emit ToolCallStart for those tool calls on the chunk
-            // that carries their id+name+arguments (above), and the
-            // next `translate_sse` call (this one) drains the queued
-            // bodies into ToolCallStop events so the transcript line
-            // gets the function name *and* the parsed body.
+            // from the single-shot inline-args path. The next
+            // translate_sse call (after the one that emitted
+            // ToolCallStart) drains the queued body into a Stop event
+            // and marks the index emitted, so the streaming path's
+            // Continuation does not re-append the same body.
             if let Some((idx, input_json)) = state.pending_stop_args.iter().next().map(|(k, v)| (*k, v.clone())) {
                 state.pending_stop_args.remove(&idx);
                 state.pending_stop_emitted.insert(idx);
