@@ -1,3 +1,56 @@
+## v0.8.4 — Pi TUI parity + AI streaming protocol fixes (2026-09-28)
+
+**AI streaming protocol — correctness**
+
+The single-shot and streaming code paths through `nini-ai` had drifted
+apart, dropping tool_call args on the first chunk, swallowing agent
+errors, and emitting `MessageStop` inconsistently. All paths now share
+one canonical lifecycle:
+
+  * `9c9783e` single-shot + streaming tool_call share one `Start`, drain
+    only when complete (no partial-args leakage)
+  * `7a71f5b` `aiio` inline-args tool_call now emits both `Start` + `Stop`
+  * `c3944d1` tool_call args dropped on first chunk + agent errors
+    swallowed — both fixed
+  * `8b4ff90` openai `stream()` must emit `MessageStop` at end of stream
+    (closes loop with TUI renderer)
+
+**TUI multi-byte UTF-8 safety — zero panics**
+
+Five regressions were panicking on CJK / emoji / accented input by
+byte-slicing at non-char-boundary indices. All replaced with
+`UnicodeWidthStr` for display width and `chars().take()` / proper
+`char_indices()` slicing:
+
+  * `7f7f24c` eliminate every remaining byte-slicing panic in `tui` + `core`
+  * `3a31fe9` `prompt_template` description no longer panics on multi-byte
+  * `30db289` `render_tool_call` no longer panics on multi-byte args
+  * `0f8232d` `UnicodeWidthStr` for emoji and CJK display width
+
+**TUI UX (Pi parity polish)**
+
+  * `dda5f51` v0.8.4 UX improvements — Pi-parity refinements
+  * `8744ceb` complete wiring: `StopReason` + welcome card + narrow hints
+  * `ffb3d96` transcript autoscroll
+  * `82df71c` transcript scroll indicator (fixes "ommand." truncation on
+    long thinking — ux-001)
+  * `0233372` restore `/hotkeys` command output (v0.8 regression)
+  * `0afb740` update e2e tests for v0.8.4 TUI changes
+
+**Provider configuration**
+
+  * `24950d4` honor `{PROVIDER}_BASE_URL` env var for openai / deepseek /
+    groq / mistral / cohere (previously only Anthropic picked up the
+    override)
+
+**Tests**
+
+  * `ee105b2` regression coverage for v0.8.4 thinking + tool-call +
+    provider-error paths
+  * Total: **816 passing** (v0.8.3: 760, +56)
+
+---
+
 ## v0.8.3 — commands.rs拆分计划 (2026-09-25)
 
 `crates/nini-tui/src/commands.rs` (1833 LOC, 含1个1200 LOC的`dispatch()`
