@@ -208,7 +208,17 @@ where
                 _ => {
                     let first = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
                     if first.len() > 60 {
-                        format!("{}...", &first[..60])
+                        // v0.8.4 (bugfix): byte-slicing `&first[..60]`
+                        // panics on multi-byte UTF-8 (CJK characters
+                        // are 3 bytes each). Find the largest char
+                        // boundary ≤ 60 instead. nini's MSRV (1.85)
+                        // predates `str::floor_char_boundary` (1.91),
+                        // so we use `chars().take(60).map(|c| c.len_utf8()).sum()`.
+                        let mut end = 0;
+                        for c in first.chars().take(60) {
+                            end += c.len_utf8();
+                        }
+                        format!("{}...", &first[..end])
                     } else {
                         first.to_string()
                     }
