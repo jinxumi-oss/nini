@@ -105,6 +105,13 @@ impl Provider for FallbackProvider {
             // sacred. This matches the documented behavior.
             let any_event_emitted = Arc::new(AtomicBool::new(false));
 
+            // v0.8.5: collect a per-provider failure summary so the
+            // final "all exhausted" error tells the user WHICH keys
+            // failed and HOW (auth, 5xx, 429, network, SSE parse,
+            // empty stream). Without this, debugging required enabling
+            // RUST_LOG and reading anthropic.rs traces.
+            let mut failures: Vec<String> = Vec::new();
+
             for provider in providers.iter() {
                 let any_event_emitted = any_event_emitted.clone();
                 let mut had_event = false;
@@ -150,15 +157,47 @@ impl Provider for FallbackProvider {
                 // and didn't fail retryably. Emit the last error
                 // if any, otherwise success.
                 if let Some(e) = last_err {
+                    let kind = match &e {
+                        ProviderError::Api { status, .. } => format!("HTTP {status}"),
+                        ProviderError::Http(_) => "network/transport".to_string(),
+                        ProviderError::Io(_) => "I/O".to_string(),
+                        ProviderError::Sse(_) => "SSE parse".to_string(),
+                        ProviderError::Auth(_) => "auth".to_string(),
+                        ProviderError::InvalidRequest(_) => "invalid-request".to_string(),
+                        ProviderError::Json(_) => "json-parse".to_string(),
+                        ProviderError::NotImplemented(_) => "not-implemented".to_string(),
+                    };
+                    failures.push(format!("{}: {}", provider.name(), kind));
                     yield Err(e);
+                } else {
+                    // Empty stream — the provider returned 200 but
+                    // yielded zero events. This happens with a
+                    // misconfigured gateway that buffers the whole
+                    // response into one chunk instead of streaming,
+                    // or with a model that emits nothing. Surface
+                    // it explicitly so the user has a clue.
+                    failures.push(format!("{}: empty stream (0 events)", provider.name()));
                 }
                 return;
             }
 
-            // All providers exhausted. Emit a fallback error.
-            yield Err(ProviderError::NotImplemented(
-                "all fallback providers exhausted without producing a result".into(),
-            ));
+            // All providers exhausted. Emit a fallback error with
+            // per-provider diagnostics so the user can see which key
+            // failed (auth / 5xx / 429 / network / empty stream) and
+            // which was tried. Without this the bare "all fallback
+            // providers exhausted" message gave no actionable info.
+            let mut summary = format!(
+                "all {} fallback providers exhausted without producing a result",
+                providers.len()
+            );
+            if !failures.is_empty() {
+                summary.push_str(": ");
+                for (i, f) in failures.iter().enumerate() {
+                    if i > 0 { summary.push_str("; "); }
+                    summary.push_str(&f);
+                }
+            }
+            yield Err(ProviderError::NotImplemented(summary));
         })
     }
 }
