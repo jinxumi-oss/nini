@@ -71,9 +71,40 @@ pub fn render_user_message(text: &str, theme: &Theme) -> Vec<RLine<'static>> {
 /// v0.8.3: Wrap the call row with `bg("toolPendingBg")` so it visually
 /// pops as a pending operation (Pi's `ToolExecutionComponent` pattern).
 /// Title color uses `toolTitle` (emphasized); args in `toolOutput`.
+/// v0.8.4 (bugfix): returns the largest byte index ≤ `at` that
+/// is a UTF-8 character boundary in `s`. Equivalent to
+/// `str::floor_char_boundary` (stabilised in Rust 1.91); we
+/// inline the 4-line walk to keep nini's MSRV at 1.85.
+fn floor_char_boundary(s: &str, at: usize) -> usize {
+    if at >= s.len() {
+        return s.len();
+    }
+    let mut i = at;
+    // Walk back while `i` is in the middle of a UTF-8 codepoint.
+    // The leading byte of any UTF-8 sequence is either
+    // 0xxxxxxx (ASCII) or 11xxxxxx; continuation bytes are
+    // 10xxxxxx.
+    while i > 0 && (s.as_bytes()[i] & 0b1100_0000) == 0b1000_0000 {
+        i -= 1;
+    }
+    i
+}
+
 pub fn render_tool_call(name: &str, args: &str, theme: &Theme) -> Vec<RLine<'static>> {
+    // v0.8.4 (bugfix): byte-slicing at a hard index panics on
+    // multi-byte UTF-8 (CJK characters are 3 bytes each). Use a
+    // hand-rolled `floor_char_boundary` to truncate at the
+    // largest byte index ≤ 120 that is a valid character
+    // boundary. We avoid `str::floor_char_boundary` (stable
+    // 1.91) because nini's MSRV is 1.85. Without this guard, a
+    // tool whose `args` happen to land mid-character at byte 120
+    // (very common with Chinese / Japanese / Korean text)
+    // panicked the entire TUI with
+    // `end byte index 120 is not a char boundary; it is inside
+    // '文'`.
     let args_preview = if args.len() > 120 {
-        format!("{}…", &args[..120])
+        let end = floor_char_boundary(args, 120);
+        format!("{}…", &args[..end])
     } else {
         args.to_string()
     };
@@ -649,6 +680,25 @@ mod diff_render_tests {
         assert_eq!(lines[0].spans[0].style.fg, Some(dark_added));
         assert_eq!(lines[1].spans[0].style.fg, Some(dark_removed));
         assert_eq!(lines[2].spans[0].style.fg, Some(dark_context));
+    }
+
+    #[test]
+    fn render_tool_call_does_not_panic_on_multibyte_args() {
+        // v0.8.4 regression: byte-slicing `&args[..120]` panicked
+        // when byte 120 fell inside a 3-byte CJK character. The
+        // TUI would crash with `end byte index 120 is not a char
+        // boundary; it is inside '文'` on any tool whose args
+        // exceeded 120 bytes of multi-byte UTF-8 text.
+        // Build a string where byte 120 is mid-character.
+        let args = "文".repeat(50); // 50 * 3 = 150 bytes; byte 120 inside char #40 (bytes 119..122)
+        let lines = render_tool_call("bash", &args, &Theme::default());
+        let joined: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        // Should not panic and should include an ellipsis to signal truncation.
+        assert!(joined.contains('…'), "missing ellipsis: {joined:?}");
     }
 }
 
