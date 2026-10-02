@@ -161,8 +161,13 @@ pub fn project_skills_dir(cwd: &Path) -> Option<PathBuf> {
     Some(cwd.join(".pi").join("skills"))
 }
 
-/// Render the loaded skills into a system-prompt fragment (markdown section
-/// listing each visible skill).
+/// Render the loaded skills into a system-prompt fragment (Pi-style
+/// `<available_skills>` XML with `<name>`, `<description>`, `<location>`).
+///
+/// The `<location>` element is critical: it gives the model the file path
+/// it needs to use the `read` tool to actually load the skill content.
+/// Without it, skills are advertised but unreachable (the model knows
+/// they exist but can't fetch them).
 pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     let visible: Vec<&Skill> = skills
         .iter()
@@ -174,12 +179,30 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     let mut out = String::from(
         "\n\nThe following skills provide specialized instructions for specific tasks.\n\
          Use the read tool to load a skill's file when the task matches its description.\n\
-         When a skill file references a relative path, resolve it against the skill directory.\n",
+         When a skill file references a relative path, resolve it against the skill directory.\n\
+         \n\
+         <available_skills>\n",
     );
     for s in visible {
-        out.push_str(&format!("\n- {}: {}\n", s.name, s.description));
+        // v0.8.6: skill file lives at base_dir/SKILL.md (see load_skill).
+        let skill_path = s.base_dir.join("SKILL.md");
+        out.push_str(&format!(
+            "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n    <location>{}</location>\n  </skill>\n",
+            xml_escape(&s.name),
+            xml_escape(&s.description),
+            xml_escape(&skill_path.display().to_string()),
+        ));
     }
+    out.push_str("</available_skills>\n");
     out
+}
+
+/// XML-escape special characters in skill name/description/path.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&")
+        .replace('<', "<")
+        .replace('>', ">")
+        .replace('"', r#"""#)
 }
 
 #[cfg(test)]
@@ -204,5 +227,67 @@ mod tests {
     #[test]
     fn format_empty_returns_empty() {
         assert_eq!(format_skills_for_prompt(&[]), "");
+    }
+
+    // v0.8.6: skill prompt now emits <available_skills> XML with
+    // <location> so the model can `read` the SKILL.md file when the
+    // task matches the skill description.
+    #[test]
+    fn format_skills_includes_location_xml() {
+        let skill = Skill {
+            name: "firecrawl".into(),
+            description: "Search & scrape the web".into(),
+            body: String::new(),
+            base_dir: PathBuf::from("/home/jin/.pi/agent/skills/firecrawl"),
+            source: SkillSource::User,
+            disable_model_invocation: false,
+        };
+        let out = format_skills_for_prompt(&[skill]);
+        assert!(out.contains("<available_skills>"), "missing wrapper: {out}");
+        assert!(out.contains("<name>firecrawl</name>"), "missing name: {out}");
+        assert!(out.contains("Search & scrape"), "missing escaped desc: {out}");
+        assert!(
+            out.contains("<location>/home/jin/.pi/agent/skills/firecrawl/SKILL.md</location>"),
+            "missing location path: {out}"
+        );
+        assert!(out.contains("</available_skills>"), "missing closer: {out}");
+    }
+
+    #[test]
+    fn format_skills_xml_escapes_special_chars() {
+        let skill = Skill {
+            name: "a&b".into(),
+            description: "<script>alert(1)</script>".into(),
+            body: String::new(),
+            base_dir: PathBuf::from("/tmp"),
+            source: SkillSource::User,
+            disable_model_invocation: false,
+        };
+        let out = format_skills_for_prompt(&[skill]);
+        assert!(out.contains("a&b"), "& must be escaped: {out}");
+        assert!(
+            out.contains("<script>"),
+            "<> must be escaped: {out}"
+        );
+    }
+
+    #[test]
+    fn format_skills_skips_disabled_model_invocation() {
+        let visible = Skill {
+            name: "visible".into(),
+            description: "shown".into(),
+            body: String::new(),
+            base_dir: PathBuf::from("/tmp/visible"),
+            source: SkillSource::User,
+            disable_model_invocation: false,
+        };
+        let hidden = Skill {
+            name: "hidden".into(),
+            disable_model_invocation: true,
+            ..visible.clone()
+        };
+        let out = format_skills_for_prompt(&[visible, hidden]);
+        assert!(out.contains("<name>visible</name>"));
+        assert!(!out.contains("<name>hidden</name>"));
     }
 }
