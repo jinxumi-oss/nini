@@ -52,6 +52,21 @@ impl Tool for WriteTool {
         }
     }
 
+    fn system_prompt_contribution(&self) -> Option<nini_core::tool::ToolSystemPrompt> {
+        Some(nini_core::tool::ToolSystemPrompt {
+            snippet: "Write a file atomically (temp file + rename). \
+                      Overwrites if the file exists."
+                .to_string(),
+            guidelines: vec![
+                "For whole-file rewrites use write, not edit (which is for \
+                 targeted patches).".to_string(),
+                "Creates parent directories as needed; do NOT mkdir \
+                 beforehand."
+                    .to_string(),
+            ],
+        })
+    }
+
     async fn execute(&self, args: Value, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
         let parsed: WriteArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;

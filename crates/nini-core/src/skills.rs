@@ -199,10 +199,10 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
 
 /// XML-escape special characters in skill name/description/path.
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&")
-        .replace('<', "<")
-        .replace('>', ">")
-        .replace('"', r#"""#)
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]
@@ -245,7 +245,7 @@ mod tests {
         let out = format_skills_for_prompt(&[skill]);
         assert!(out.contains("<available_skills>"), "missing wrapper: {out}");
         assert!(out.contains("<name>firecrawl</name>"), "missing name: {out}");
-        assert!(out.contains("Search & scrape"), "missing escaped desc: {out}");
+        assert!(out.contains("Search &amp; scrape"), "missing escaped desc: {out}");
         assert!(
             out.contains("<location>/home/jin/.pi/agent/skills/firecrawl/SKILL.md</location>"),
             "missing location path: {out}"
@@ -264,10 +264,11 @@ mod tests {
             disable_model_invocation: false,
         };
         let out = format_skills_for_prompt(&[skill]);
-        assert!(out.contains("a&b"), "& must be escaped: {out}");
+        // & < > " should be escaped to their XML entities.
+        assert!(out.contains("a&amp;b"), "& must escape to &amp;: {out}");
         assert!(
-            out.contains("<script>"),
-            "<> must be escaped: {out}"
+            out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "<> must escape to &lt;/&gt;: {out}"
         );
     }
 

@@ -21,11 +21,13 @@ pub(crate) fn model_for_cfg(s: &nini_core::settings::Settings) -> String {
 /// identity (Pi-compatible Rust coding agent), the user's default
 /// provider/model/thinking-level from `Settings`, the current working
 /// directory (so the model uses relative paths for `read`/`grep`/
-/// `find`/`write`/`edit` instead of guessing absolute paths), and any
-/// skills prompt produced by the runtime.
+/// `find`/`write`/`edit` instead of guessing absolute paths), the
+/// tool snippets+guidelines (v0.8.6 — was hardcoded before), and
+/// any skills prompt produced by the runtime.
 pub(crate) fn settings_to_system_prompt(
     settings: &nini_core::settings::Settings,
     cwd: &std::path::Path,
+    tools: &nini_core::tool::ToolRegistry,
     skills_prompt: &str,
 ) -> String {
     let mut s = String::from("You are nini, a Pi-compatible Rust coding agent.\n");
@@ -46,10 +48,14 @@ pub(crate) fn settings_to_system_prompt(
     if let Some(t) = &settings.thinking_level {
         s.push_str(&format!("Thinking level: {t}\n"));
     }
-    s.push_str(
-        "\nAvailable tools: bash, read, write, edit, grep, find. \
-         Use them to complete complex multi-step tasks.",
-    );
+    // v0.8.6: v0.7.1's system_prompt_contribution() was never wired up.
+    // Append each registered tool's snippet + guidelines (sorted by name
+    // for stable token-cache hits). The hardcoded
+    // "Available tools: bash, read, write, edit, grep, find" line is
+    // replaced with Pi-style "## Tool self-descriptions" + "## Tool usage
+    // guidelines" sections built from the live registry.
+    let mut s = nini_core::tool::build_system_prompt_with_contributions(Some(&s), tools)
+        .unwrap_or(s);
     s.push_str(skills_prompt);
     s
 }
@@ -58,6 +64,7 @@ pub(crate) fn settings_to_system_prompt(
 mod tests {
     use super::*;
     use nini_core::settings::Settings;
+use nini_core::tool::ToolRegistry;
 
     #[test]
     fn model_for_cfg_prefers_model_over_provider() {
@@ -84,16 +91,21 @@ mod tests {
     #[test]
     fn system_prompt_includes_identity_and_tools() {
         let s = Settings::default();
-        let prompt = settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), "");
+        let tools = ToolRegistry::new();
+        let prompt = settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), &tools, "");
         assert!(prompt.contains("Pi-compatible Rust coding agent"));
-        assert!(prompt.contains("Available tools: bash, read, write, edit, grep, find"));
+        // v0.8.6: hardcoded "Available tools: ..." line replaced with
+        // the snippet+guidelines sections from the live registry.
+        // With an empty registry there's no snippet section.
+        assert!(!prompt.contains("Available tools: bash, read, write, edit, grep, find"));
     }
 
     #[test]
     fn system_prompt_appends_skills_prompt() {
         let s = Settings::default();
         let skills = "\n\n[Skills] foo, bar";
-        let prompt = settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), skills);
+        let tools = ToolRegistry::new();
+        let prompt = settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), &tools, skills);
         assert!(prompt.ends_with(skills));
     }
 
@@ -103,7 +115,8 @@ mod tests {
         s.provider = Some("anthropic".into());
         s.model = Some("claude-opus".into());
         s.thinking_level = Some("high".into());
-        let prompt = settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), "");
+        let tools = ToolRegistry::new();
+        let prompt = settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), &tools, "");
         assert!(prompt.contains("Default provider: anthropic"));
         assert!(prompt.contains("Default model: claude-opus"));
         assert!(prompt.contains("Thinking level: high"));
@@ -118,7 +131,8 @@ mod tests {
     fn system_prompt_includes_cwd() {
         let s = Settings::default();
         let cwd = std::path::Path::new("/home/jin/nini");
-        let prompt = settings_to_system_prompt(&s, cwd, "");
+        let tools = ToolRegistry::new();
+        let prompt = settings_to_system_prompt(&s, cwd, &tools, "");
         assert!(
             prompt.contains("Working directory: /home/jin/nini"),
             "system prompt must surface cwd; got: {prompt}"

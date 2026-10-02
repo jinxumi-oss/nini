@@ -45,8 +45,13 @@ pub(crate) async fn run_demo(
         demo_simple_turns(task)
     };
     let provider_impl = provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
-    let system = prompt_setup::settings_to_system_prompt(&settings, &cwd, &skills_prompt);
     let tools = tool_registry::build_tools();
+    let system = prompt_setup::settings_to_system_prompt(
+        &settings,
+        &cwd,
+        &tools,
+        &skills_prompt,
+    );
     let config = RunConfig {
         model: model.to_string(),
         system: Some(system),
@@ -123,8 +128,13 @@ pub(crate) async fn run_print(
         },
     ]];
     let provider_impl = provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
-    let system = prompt_setup::settings_to_system_prompt(&settings, &cwd, &skills_prompt);
     let tools = tool_registry::build_tools();
+    let system = prompt_setup::settings_to_system_prompt(
+        &settings,
+        &cwd,
+        &tools,
+        &skills_prompt,
+    );
     let config = RunConfig {
         model: model.to_string(),
         system: Some(system),

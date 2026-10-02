@@ -449,6 +449,12 @@ pub fn build_system_prompt_with_contributions(
     if snippets.is_empty() && guidelines.is_empty() {
         return base.map(String::from);
     }
+    // v0.8.5: sort by name (audit fix for HashMap-random iteration order).
+    // Deterministic output → LTM token caching stays hot + tests are
+    // reproducible.
+    snippets.sort_by(|a, b| a.0.cmp(&b.0));
+    guidelines.sort_by(|a, b| a.0.cmp(&b.0));
+
     let mut out = base.unwrap_or("").to_string();
     if !snippets.is_empty() {
         out.push_str("\n\n## Tool self-descriptions\n");

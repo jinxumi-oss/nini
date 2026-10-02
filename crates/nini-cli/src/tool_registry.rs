@@ -132,3 +132,62 @@ mod tests {
         assert_eq!(names, vec!["bash"], "deny wins in intersection");
     }
 }
+// v0.8.6: cross-cutting regression — every built-in tool must ship a
+// `system_prompt_contribution()` so the model sees its snippet in the
+// system prompt. If a new tool is wired into build_tools() without a
+// contribution, this test catches the gap before release.
+#[test]
+fn every_built_in_tool_has_system_prompt_contribution() {
+    use nini_core::settings::Settings;
+    let reg = build_tools();
+    let names: Vec<&str> = reg.tools().map(|t| t.name()).collect();
+    assert_eq!(
+        names.len(),
+        6,
+        "build_tools() must register exactly 6 tools (current: {names:?})"
+    );
+    for name in &names {
+        let tools_for_prompt = build_tools();
+        let prompt = crate::prompt_setup::settings_to_system_prompt(
+            &Settings::default(),
+            std::path::Path::new("/tmp/proj"),
+            &tools_for_prompt,
+            "",
+        );
+        let line = format!("- {name}:");
+        assert!(
+            prompt.contains(&line),
+            "tool '{name}' missing from system prompt snippets; \
+             did it implement system_prompt_contribution()?\n\
+             full prompt:\n{prompt}"
+        );
+    }
+}
+
+#[test]
+fn build_system_prompt_prompt_sections_sorted_alphabetically() {
+    use nini_core::settings::Settings;
+    let reg = build_tools();
+    let prompt = crate::prompt_setup::settings_to_system_prompt(
+        &Settings::default(),
+        std::path::Path::new("/tmp/proj"),
+        &reg,
+        "",
+    );
+    // 抽出 "## Tool usage guidelines" 后所有 "- name:" 行
+    let guidelines_section = prompt
+        .split("\n## Tool usage guidelines\n")
+        .nth(1)
+        .unwrap_or("");
+    let names: Vec<&str> = guidelines_section
+        .lines()
+        .filter(|l| l.starts_with("- "))
+        .filter_map(|l| l.split(':').next())
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(
+        names, sorted,
+        "guidelines must be sorted by tool name (deterministic token-cache)"
+    );
+}
