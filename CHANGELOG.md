@@ -1,3 +1,68 @@
+## v0.8.6 — Wire up tool self-descriptions + length-stop safety (2026-09-30)
+
+**Bug fix — system prompt now exposes tool snippets + guidelines**
+
+Every tool (`bash`/`read`/`edit`/`find`/`grep`) has implemented
+`system_prompt_contribution()` since v0.7.1, and `nini-core` has had
+`build_system_prompt_with_contributions()` since then too. None of
+this was ever wired up. The CLI was using a hardcoded
+"Available tools: bash, read, write, edit, grep, find" string with
+no snippets or guidelines — the model had no idea each tool's
+distinguishing characteristics (e.g. "bash is default for any shell
+operation" vs "read is for whole files", "edit is for targeted
+patches", "find is for glob enumeration"). This release wires it up.
+
+`write` was missing its `system_prompt_contribution()` (added now).
+Output is now sorted alphabetically by tool name to fix the
+HashMap-random-iteration flakiness in tests + LLM cache hit rate.
+
+New system prompt section (sorted, alphabetical):
+
+    ## Tool self-descriptions
+    - bash: Run shell commands (ls, grep, cat, cargo test, ...).
+    - edit: Apply a targeted text replacement to a file.
+    - find: Enumerate files matching a glob (e.g. `*.rs`).
+    - grep: Regex search file CONTENTS (not file names).
+    - read: Read a file's contents into your context.
+    - write: Write a file atomically (temp file + rename).
+
+    ## Tool usage guidelines
+    - bash: Default for any shell operation; pick this unless ...
+    - bash: Set `timeout` for anything that could run unboundedly.
+    - bash: Confirm with the user before destructive commands ...
+    - edit: `old_text` must match EXACTLY ONCE — include enough ...
+    - read: Always read a file before editing it — never edit blind.
+    - write: For whole-file rewrites use write, not edit.
+
+**Bug fix — reject tool_calls on length stop**
+
+When the LLM hits its output_tokens limit, the assistant message
+may end mid-tool-call-JSON. The current code falls through to the
+tool execution loop with truncated args (`serde_json::from_str`
+returns `Value::Null`, the tool runs with empty args, the user sees
+a cryptic "tool error: invalid args"). This release matches Pi's
+`failToolCallsFromTruncatedMessage`: when stop_reason == "length"
+AND tool_calls is non-empty, emit synthetic `[reject] tool call
+truncated by output token limit` ToolResults, push them to messages,
+and let the next LLM turn recover.
+
+The existing auto-compaction-on-length-stop path is preserved
+(shrinks context before next turn); only the tool execution is
+skipped.
+
+**Enhancement — skill prompt includes `<location>` for model loading**
+
+Previously, `format_skills_for_prompt` emitted markdown bullets
+`- name: description` with no file path. The model knew a skill
+existed but had no way to load it via `read`. Now uses Pi-style
+`<available_skills>` XML with `<location>` (the path to SKILL.md).
+Models can now actually load skill content.
+
+**Tests**: 822 → 826 (+4 new regression tests across 3 PRs).
+All existing tests pass unchanged. `cargo clippy` clean.
+
+---
+
 ## v0.8.5 — TUI hang on parallel reads + AppState clone perf (2026-09-30)
 
 **Bug fix — TUI unresponsive during / after parallel tool execution**
