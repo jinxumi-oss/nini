@@ -1013,8 +1013,35 @@ impl Agent {
 
                 yield AgentEvent::TurnEnd { stop_reason: stop_reason.clone(), usage: last_usage };
 
-                // If no tool calls, we're done. Return to Idle.
-                if tool_calls.is_empty() {
+                // v0.8.6: length-stop tool_call reject gate (audit fix).
+                //
+                // When stop_reason == "length" and there are tool_calls,
+                // the assistant message ends mid-tool-call-JSON (the
+                // LLM ran out of output_tokens before serializing the
+                // tool args). nini would otherwise pass the truncated
+                // JSON through serde_json::from_str → Value::Null, run
+                // tools with empty args, and surface a cryptic
+                // "tool error: invalid args" to the user.
+                //
+                // Mirrors Pi's agent-loop.js:128
+                //   failToolCallsFromTruncatedMessage(toolCalls, emit)
+                //
+                // Coordinates with the existing auto-compact-on-length-
+                // stop path above (which fires unconditionally and shrinks
+                // context for the *next* turn). We only skip the tool
+                // execution itself; auto-compaction still runs.
+                //
+                // Note: do NOT yield a second AgentEvent::TurnEnd here —
+                // it was already yielded above, and the TUI phase state
+                // is 1:1 per turn (audit fix #4).
+                let length_stop_reject =
+                    stop_reason == "length" && !tool_calls.is_empty();
+
+                // If no tool calls AND not length-stop-rejecting, we're
+                // done — return to Idle. (The length_stop_reject branch
+                // below pushes synthetic Tool results so the message
+                // graph is still well-formed for the next LLM call.)
+                if tool_calls.is_empty() && !length_stop_reject {
                     // v0.7 (M1) followup hook: let extensions inject
                     // final messages before we exit. Defensive: a
                     // panicking hook falls back to an empty Vec so
@@ -1071,12 +1098,52 @@ impl Agent {
                 let mut tool_results_slots: Vec<Option<ContentBlock>> =
                     (0..n_calls).map(|_| None).collect();
 
-                // Pre-extract the per-call data we need to move into
-                // the future (the registry + config are & references;
-                // we need to clone the strings we want to keep alive).
-                let specs: Vec<PendingToolCall> = tool_calls.clone();
+                // v0.8.6 (audit fix #3): length-stop tool_call reject branch.
+                //
+                // If the LLM ran out of output_tokens mid-tool_call, the
+                // assistant message contains truncated JSON. Executing
+                // those tools would surface as cryptic 'tool error: invalid
+                // args' — they're really model-level truncation errors.
+                //
+                // Mirrors Pi's agent-loop.js:128
+                //   failToolCallsFromTruncatedMessage(toolCalls, emit).
+                //
+                // Coordinates with the existing auto-compact-on-length-stop
+                // path above (which still runs unconditionally and shrinks
+                // context for the next turn). We only skip tool execution.
+                if length_stop_reject {
+                    let mut tool_results: Vec<ContentBlock> =
+                        Vec::with_capacity(tool_calls.len());
+                    for tc in &tool_calls {
+                        let reject_output = ToolOutput::err(
+                            "[reject] tool call arguments truncated by output token limit \
+                             (length stop). The LLM hit max_tokens before serializing the \
+                             tool call JSON. Retry with a shorter prompt or split the \
+                             request."
+                                .to_string(),
+                        );
+                        yield AgentEvent::ToolResult {
+                            id: tc.id.clone(),
+                            output: reject_output.clone(),
+                        };
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: tc.id.clone(),
+                            content: reject_output.content,
+                            is_error: true,
+                        });
+                    }
+                    self.messages.push(Message {
+                        role: Role::Tool,
+                        content: tool_results,
+                        timestamp: 0,
+                    });
+                } else {
+                    // Pre-extract the per-call data we need to move into
+                    // the future (the registry + config are & references;
+                    // we need to clone the strings we want to keep alive).
+                    let specs: Vec<PendingToolCall> = tool_calls.clone();
 
-                let mut futures = FuturesUnordered::new();
+                    let mut futures = FuturesUnordered::new();
                 for (idx, spec) in specs.into_iter().enumerate() {
                     let abort = abort.clone();
                     let tool_registry = tool_registry.clone();
@@ -1130,6 +1197,7 @@ impl Agent {
                     yield AgentEvent::Aborted;
                     return;
                 }
+                }  // v0.8.6: end of else branch (normal parallel execution vs length-stop reject)
 
                 // 3. Flatten in original order. With abort=false,
                 //    every slot must be Some; if not, that's a bug in

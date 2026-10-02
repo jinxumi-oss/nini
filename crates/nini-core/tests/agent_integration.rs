@@ -7,7 +7,8 @@ use futures_util::StreamExt;
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::Usage;
 use nini_core::tool::ToolRegistry;
-use nini_core::{Agent, AgentEvent, RunConfig};
+use nini_core::{Agent, AgentEvent, AgentMessage, RunConfig};
+use nini_core::tool::ToolOutput;
 use nini_tools::BashTool;
 use std::sync::Arc;
 
@@ -707,4 +708,150 @@ mod abort_parallel_tests {
             "abort should cancel in-flight futures, but {n}/6 completed"
         );
     }
+}
+// =====================================================================
+// v0.8.6: length-stop tool_call reject gate.
+//
+// When stop_reason == "length" and tool_calls is non-empty, the assistant
+// message ends mid-tool-call-JSON. nini must emit synthetic [reject]
+// ToolResults instead of executing the truncated calls (which would
+// surface as cryptic 'tool error: invalid args' downstream).
+//
+// Coordinate with the existing auto-compact-on-length-stop path: that
+// path still fires (it shrinks context for the next turn). We only skip
+// the tool execution itself.
+// =====================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn length_stop_with_tool_calls_rejects_all() {
+    use nini_core::AgentEvent;
+
+    // Turn 0: LLM emits a tool_call AND hits length stop. The args
+    // JSON is syntactically valid (length stop doesn't necessarily
+    // truncate mid-string), but per Pi we still refuse the whole
+    // batch on length stop.
+    // Turn 1: LLM recovers with a fresh tool_call + tool_use stop.
+    // Turn 2: Final assistant text + end_turn.
+    let provider: Arc<dyn nini_core::Provider> = Arc::new(ProgrammedProvider::from_turns(vec![
+        vec![
+            FixtureTurn::ToolCall {
+                name: "bash".to_string(),
+                args: serde_json::json!({"command": "echo hi"}),
+            },
+            FixtureTurn::Stop {
+                stop_reason: "length".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::ToolCall {
+                name: "bash".to_string(),
+                args: serde_json::json!({"command": "echo recovered"}),
+            },
+            FixtureTurn::Stop {
+                stop_reason: "tool_use".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::Text("done".to_string()),
+            FixtureTurn::Stop {
+                stop_reason: "end_turn".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+    ]));
+
+    let tools = ToolRegistry::new().register(Arc::new(BashTool::new()));
+    let mut agent = Agent::new(provider, tools, RunConfig::new("test-model"));
+    let stream = Box::pin(agent.run(AgentMessage::user("test length stop")));
+    use futures_util::StreamExt;
+    let mut stream = stream;
+    let mut tool_results: Vec<ToolOutput> = Vec::new();
+    while let Some(ev) = stream.next().await {
+        if let Ok(AgentEvent::ToolResult { output, .. }) = ev {
+            tool_results.push(output);
+        }
+    }
+
+    assert_eq!(
+        tool_results.len(),
+        2,
+        "expected 2 tool_results (1 reject from length-stop + 1 success after recovery); got {tool_results:?}"
+    );
+
+    // Turn 0: length stop → reject
+    assert!(
+        tool_results[0].is_error,
+        "first tool_result must be error (length-stop reject); got: {}",
+        tool_results[0].content
+    );
+    assert!(
+        tool_results[0].content.contains("[reject]"),
+        "first tool_result must contain '[reject]' marker; got: {}",
+        tool_results[0].content
+    );
+    assert!(
+        tool_results[0].content.contains("truncated"),
+        "first tool_result must mention 'truncated'; got: {}",
+        tool_results[0].content
+    );
+    assert!(
+        tool_results[0].content.contains("length stop"),
+        "first tool_result must mention 'length stop'; got: {}",
+        tool_results[0].content
+    );
+
+    // Turn 1: recovered — bash actually ran
+    assert!(
+        !tool_results[1].is_error,
+        "second tool_result must succeed after recovery; got: {}",
+        tool_results[1].content
+    );
+    assert!(
+        tool_results[1].content.contains("recovered"),
+        "second tool_result should contain 'recovered' from bash output; got: {}",
+        tool_results[1].content
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn length_stop_with_no_tool_calls_returns_normally() {
+    use nini_core::AgentEvent;
+
+    // Turn 0: pure text + length stop, no tool_calls. Should NOT
+    // enter the reject path (tool_calls.is_empty() is true).
+    // Turn 1: end_turn so the agent finishes.
+    let provider: Arc<dyn nini_core::Provider> = Arc::new(ProgrammedProvider::from_turns(vec![
+        vec![
+            FixtureTurn::Text("I gave up due to length.".to_string()),
+            FixtureTurn::Stop {
+                stop_reason: "length".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+        vec![
+            FixtureTurn::Text("recovered".to_string()),
+            FixtureTurn::Stop {
+                stop_reason: "end_turn".to_string(),
+                usage: Usage::default(),
+            },
+        ],
+    ]));
+
+    let tools = ToolRegistry::new();
+    let mut agent = Agent::new(provider, tools, RunConfig::new("test-model"));
+    let stream = Box::pin(agent.run(AgentMessage::user("test")));
+    use futures_util::StreamExt;
+    let mut stream = stream;
+    let mut tool_results = 0;
+    let mut text_chunks = 0;
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(AgentEvent::ToolResult { .. }) => tool_results += 1,
+            Ok(AgentEvent::TextDelta { .. }) => text_chunks += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(tool_results, 0, "no tool calls means nothing to reject");
+    assert!(text_chunks >= 1, "should still get text from both turns");
 }
