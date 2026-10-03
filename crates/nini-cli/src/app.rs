@@ -128,8 +128,8 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
                     Ok(AgentEvent::ThinkingDelta { text }) => {
                         nini_tui::runtime::AgentEventLite::ThinkingDelta(text)
                     }
-                    Ok(AgentEvent::ToolCallStart { name, .. }) => {
-                        nini_tui::runtime::AgentEventLite::ToolCallStart { name }
+                    Ok(AgentEvent::ToolCallStart { id, name }) => {
+                        nini_tui::runtime::AgentEventLite::ToolCallStart { id, name }
                     }
                     Ok(AgentEvent::ToolCallStop { id, input_json }) => {
                         nini_tui::runtime::AgentEventLite::ToolCallStop {
@@ -137,8 +137,10 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
                             args: input_json.to_string(),
                         }
                     }
-                    Ok(AgentEvent::ToolResult { output, .. }) => {
+                    Ok(AgentEvent::ToolResult { id, name, output }) => {
                         nini_tui::runtime::AgentEventLite::ToolResult {
+                            id,
+                            name,
                             ok: !output.is_error,
                             content: output.content,
                             details: None,
@@ -233,6 +235,10 @@ async fn run_tui_bootstrap(agent_driver: nini_tui::runtime::AgentDriver, cfg: &A
         std::process::exit(2);
     }
 
+    // v0.8.8 (tool-identity): pass cfg.model as initial_model so the
+    // status bar reflects the user's `--model` flag (was hardcoded
+    // to "test-model" in v0.7.x). cli/cli.rs's bootstrap closure also
+    // sets model_state.model which keeps things consistent.
     run_tui_inner(
         |state| {
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -261,6 +267,7 @@ async fn run_tui_bootstrap(agent_driver: nini_tui::runtime::AgentDriver, cfg: &A
             }
         },
         agent_driver,
+        &cfg.model,
     )
     .await
 }

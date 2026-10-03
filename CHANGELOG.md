@@ -1,3 +1,64 @@
+## v0.8.8 — Tool identity preservation (2026-10-03)
+
+Driving real LLM tasks after v0.8.7 revealed 3 additional bugs where
+tool call identity was lost between the agent and the TUI:
+
+**Bug fix — parallel tool calls keep distinct args**
+
+`AgentSink::push(ToolCallStop)` previously updated the LAST
+`TranscriptLine::ToolCall` unconditionally. For N parallel tool calls
+in one assistant turn, each Stop event overwrote the LAST line — so
+only the final call's args survived in the transcript and earlier
+calls' args were silently lost. Fix: `TranscriptLine::ToolCall` and
+`TranscriptLine::ToolResult` gain an `id` field; the sink looks up the
+target line by id (reverse-walked from the end) and updates in place.
+Falls back to pushing a new line if no matching id is found (handles
+out-of-order events from buggy providers).
+
+**Bug fix — tool results display tool name**
+
+`render_tool_result` previously emitted just `✓ ` or `✗ ` followed by
+a duration pill — no tool name. For N parallel tool results the user
+couldn't tell which `✓ Took Nms` block belonged to which call. Fix:
+`AgentEvent::ToolResult` carries the tool name end-to-end (agent →
+cli driver → sink → `TranscriptLine::ToolResult.name` →
+`render_tool_result`). Renders as `✓ bash (4ms)` / `✗ read (0ms)`.
+
+**Bug fix — `--model` flag now propagates to the status bar**
+
+`crates/nini-tui/src/runtime.rs:214` hardcoded `AppState::new("test-model")`,
+silently dropping the user's `--model MiniMax-M3` (or any other) flag
+at the TUI layer. The CLI-side `cfg.model` was already plumbed to
+`RunConfig.model` and used for the actual LLM call, but the status
+bar always displayed `test-model`. Fix: `run()` takes a new
+`initial_model: &str` parameter; `cli::app::run_tui_bootstrap` passes
+`&cfg.model`. Closes a sister issue to v0.7.2 ux-report #7 (model
+selector not synced).
+
+**Breaking — `TranscriptLine::ToolCall/ToolResult` add `id`/`name`**
+fields
+
+Session JSONL v4 codec handles arbitrary enum fields; old session
+files reload with the new fields populated as `""`. In-memory
+transcripts round-trip cleanly through `Arc::make_mut` clones.
+
+**Tests**: 836 → 842 (+6 e2e regression in
+`crates/nini-tui/tests/tool_identity_e2e.rs`):
+  * `parallel_tool_calls_keep_distinct_args` — 3 parallel reads, each
+    preserves its own path
+  * `tool_result_renders_tool_name` — `✓ bash` appears in result header
+  * `failing_tool_result_renders_tool_name` — `✗ read` on errors
+  * `parallel_tool_results_keep_distinct_names` — bash/read/grep names
+    distinct in mixed parallel runs
+  * `tool_call_stop_unknown_id_falls_back` — out-of-order Stop
+    without matching Start doesn't panic
+  * `initial_model_arg_propagates_to_status_bar` — status bar shows
+    `--model` argument
+
+All existing tests pass unchanged. `cargo clippy` clean.
+
+---
+
 ## v0.8.7 — TUI transcript continuity + Pi collapse parity (2026-10-03)
 
 **Bug fix — transcript overflow no longer clips tool-call headers**

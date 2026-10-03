@@ -152,6 +152,7 @@ pub fn render_diff(diff: &str, theme: &Theme) -> Vec<RLine<'static>> {
 }
 
 pub fn render_tool_result(
+    name: &str,
     ok: bool,
     content: &str,
     duration_ms: Option<u64>,
@@ -168,7 +169,14 @@ pub fn render_tool_result(
         // the tool boundary reads instantly without parsing ASCII. The
         // triangle / check / cross are standard in IDEs and are also
         // what most TUI dashboards (lazystart, github-cli) use.
-        let label = if ok { "✓ " } else { "✗ " };
+        // v0.8.8 (tool-identity): show the tool name in the result
+    // header so the user can tell which of N parallel results this
+    // belongs to. Renders as `✓ bash` or `✗ read` (Pi parity).
+    let label = if ok {
+        format!("✓ {} ", name)
+    } else {
+        format!("✗ {} ", name)
+    };
 
     // Strip ANSI + auto-link + truncate. For multi-line content, cap
     // at a small number of lines.
@@ -176,19 +184,21 @@ pub fn render_tool_result(
     let linked = crate::hyperlink::auto_link(&clean);
     let lines: Vec<&str> = linked.lines().collect();
     let mut out: Vec<RLine<'static>> = Vec::new();
-    // First line: prefix label + optional duration pill (Pi-style).
+    // First line: `✓ <name>` (bold) + optional duration pill
+    // `Took N.Ns` (Pi-style). v0.8.8 changed label from `✓ ` to
+    // `✓ <name> ` so the user knows which tool produced this result.
     let mut first_spans: Vec<Span<'static>> = vec![Span::styled(
-        label.to_string(),
+        label,
         bg.fg(fg_title).add_modifier(ratatui::style::Modifier::BOLD),
     )];
     if let Some(ms) = duration_ms {
-        let label = if ms >= 1000 {
+        let dur_label = if ms >= 1000 {
             format!("Took {:.2}s ", ms as f64 / 1000.0)
         } else {
             format!("Took {ms}ms ")
         };
         first_spans.push(Span::styled(
-            label,
+            dur_label,
             bg.fg(theme.color("muted")),
         ));
     }
@@ -492,14 +502,14 @@ mod tests {
 
     #[test]
     fn render_tool_result_success_color() {
-        let lines = render_tool_result(true, "ok output", None, &theme(), None);
+        let lines = render_tool_result("bash", true, "ok output", None, &theme(), None);
         assert!(!lines.is_empty());
         assert!(lines[0].spans.iter().any(|s| s.content.contains("✓ ")));
     }
 
     #[test]
     fn render_tool_result_error_label() {
-        let lines = render_tool_result(false, "fail", None, &theme(), None);
+        let lines = render_tool_result("bash", false, "fail", None, &theme(), None);
         assert!(lines[0]
             .spans
             .iter()
@@ -510,13 +520,13 @@ mod tests {
     fn render_tool_result_shows_duration_pill_when_set() {
         // v0.8: Pi-style "Took 1.23s" / "Took 850ms" pill on the
         // first line of the tool result.
-        let lines = render_tool_result(true, "ok", Some(1230), &theme(), None);
+        let lines = render_tool_result("bash", true, "ok", Some(1230), &theme(), None);
         assert!(
             lines[0].spans.iter().any(|s| s.content.contains("Took 1.23s")),
             "expected 'Took 1.23s' pill, got: {:?}",
             lines[0].spans,
         );
-        let lines_ms = render_tool_result(true, "ok", Some(850), &theme(), None);
+        let lines_ms = render_tool_result("bash", true, "ok", Some(850), &theme(), None);
         assert!(
             lines_ms[0].spans.iter().any(|s| s.content.contains("Took 850ms")),
             "expected 'Took 850ms' pill, got: {:?}",
@@ -528,7 +538,7 @@ mod tests {
     fn render_tool_result_omits_duration_pill_when_none() {
         // v0.8: when the tool doesn't measure its own duration
         // (duration_ms = None), no "Took ..." pill appears.
-        let lines = render_tool_result(true, "ok", None, &theme(), None);
+        let lines = render_tool_result("bash", true, "ok", None, &theme(), None);
         assert!(
             !lines[0].spans.iter().any(|s| s.content.starts_with("Took ")),
             "unexpected duration pill, got: {:?}",
@@ -539,7 +549,7 @@ mod tests {
     #[test]
     fn render_tool_result_image_path_promoted() {
         let content = "[pasted image: /tmp/abc.png]\nsome more text";
-        let lines = render_tool_result(true, content, None, &theme(), None);
+        let lines = render_tool_result("bash", true, content, None, &theme(), None);
         // Image line should appear prominently (accent color).
         assert!(lines.iter().any(|l| {
             l.spans.iter().any(|s| s.content.contains("pasted image"))
@@ -549,7 +559,7 @@ mod tests {
     #[test]
     fn render_tool_result_truncates_long_content() {
         let content = "line\n".repeat(100);
-        let lines = render_tool_result(true, &content, None, &theme(), None);
+        let lines = render_tool_result("bash", true, &content, None, &theme(), None);
         // Should not render 100 lines.
         assert!(lines.len() < 15, "got {} lines", lines.len());
         // Should have a "more lines" marker.

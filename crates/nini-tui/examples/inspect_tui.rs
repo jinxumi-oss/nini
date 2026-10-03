@@ -16,12 +16,12 @@ fn main() {
          command to see what files are available."
             .to_string(),
     ));
-    Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::ToolCall {
+    Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::ToolCall { id: "ex".into(),
         name: "bash".to_string(),
         args: r#"{"command": "ls /tmp"}"#.to_string(),
         collapsed: false,
     });
-    Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::ToolResult {
+    Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::ToolResult { id: "ex".into(), name: "ex".into(),
         ok: true,
         content: "file1\nfile2\nfile3\nfile4\nfile5\nfile6\nfile7\nfile8\nfile9\nfile10".to_string(),
         collapsed: false,

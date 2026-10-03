@@ -22,7 +22,10 @@ pub enum TranscriptLine {
     /// Rendered with dim/italic style (Pi-style).
     ThinkingText(String),
     /// Tool invocation. `args` is rendered as a one-line JSON preview.
+    /// `id` ties the Start/Stop events together so parallel tool calls
+    /// don't overwrite each other's args (v0.8.8 tool-identity fix).
     ToolCall {
+        id: String,
         name: String,
         args: String,
         /// When true the rendered preview is collapsed to a single line and
@@ -30,7 +33,12 @@ pub enum TranscriptLine {
         collapsed: bool,
     },
     /// Tool result. `Ok`/`Err` reflects `ToolOutput.is_error`.
+    /// `id` + `name` let the renderer show `✓ bash (4ms)` instead of
+    /// just `✓` — without `name` the user can't tell which of N
+    /// parallel tool results this belongs to (v0.8.8 tool-identity).
     ToolResult {
+        id: String,
+        name: String,
         ok: bool,
         content: String,
         /// When true the body of the result is hidden — only a one-line
@@ -1230,8 +1238,14 @@ impl AppState {
         }
     }
 
-    pub fn push_tool_call(&mut self, name: impl Into<String>, args: impl Into<String>) {
+    pub fn push_tool_call(
+        &mut self,
+        id: impl Into<String>,
+        name: impl Into<String>,
+        args: impl Into<String>,
+    ) {
         Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::ToolCall {
+            id: id.into(),
             name: name.into(),
             args: args.into(),
             collapsed: false,
@@ -1240,11 +1254,13 @@ impl AppState {
 
     pub fn push_tool_result(
         &mut self,
+        id: impl Into<String>,
+        name: impl Into<String>,
         ok: bool,
         content: impl Into<String>,
         duration_ms: Option<u64>,
     ) {
-        self.push_tool_result_raw(ok, content, duration_ms);
+        self.push_tool_result_raw(id, name, ok, content, duration_ms);
         // Tool results are part of the turn — session_append is handled on TurnEnd
         // by the session flush, so we do NOT append here to avoid double-logging.
     }
@@ -1252,11 +1268,15 @@ impl AppState {
     /// Internal: push to transcript without session logging.
     pub fn push_tool_result_raw(
         &mut self,
+        id: impl Into<String>,
+        name: impl Into<String>,
         ok: bool,
         content: impl Into<String>,
         duration_ms: Option<u64>,
     ) {
         Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::ToolResult {
+            id: id.into(),
+            name: name.into(),
             ok,
             content: content.into(),
             collapsed: false,
@@ -1747,8 +1767,8 @@ mod tests {
         let mut s = AppState::new("test-model");
         s.push_user("hi");
         s.push_assistant("hello");
-        s.push_tool_call("bash", "{}");
-        s.push_tool_result(true, "ok", None);
+        s.push_tool_call("t1", "bash", "{}");
+        s.push_tool_result("t1", "bash", true, "ok", None);
         s.push_divider();
         assert_eq!(s.transcript_len(), 5);
     }
@@ -1756,7 +1776,7 @@ mod tests {
     #[test]
     fn toggle_collapsed_flips_tool_call_state() {
         let mut s = AppState::new("test");
-        s.push_tool_call("bash", "{}");
+        s.push_tool_call("t1", "bash", "{}");
         // ToolCall index is 0.
         assert!(s.toggle_collapsed(0));
         // Verify the line is now collapsed by re-pushing another line
@@ -1777,8 +1797,8 @@ mod tests {
     #[test]
     fn toggle_collapsed_flips_tool_result_and_bash() {
         let mut s = AppState::new("test");
-        s.push_tool_result(true, "ok", None);
-        s.push_tool_call("read", "{}");
+        s.push_tool_result("t1", "bash", true, "ok", None);
+        s.push_tool_call("t2", "read", "{}");
         // Append a bash via the underlying TranscriptLine constructor
         // since we don't have a public push_bash helper yet.
         Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::BashExecution {
@@ -1822,7 +1842,7 @@ mod tests {
     #[test]
     fn toggle_collapsed_returns_false_on_out_of_bounds() {
         let mut s = AppState::new("test");
-        s.push_tool_call("bash", "{}");
+        s.push_tool_call("t1", "bash", "{}");
         assert!(!s.toggle_collapsed(99));
     }
 
@@ -1832,7 +1852,7 @@ mod tests {
         let mut s = AppState::new("m");
         s.push_user("hello");   // 5 chars -> 2 tokens
         s.push_assistant("world this is longer");  // 21 -> 6 tokens
-        s.push_tool_result(true, "out", None);
+        s.push_tool_result("t1", "bash", true, "out", None);
         // total chars / 4 rounded up
         assert!(s.estimate_transcript_tokens() > 0);
     }
@@ -1896,8 +1916,8 @@ mod tests {
     #[test]
     fn collapse_all_folds_every_collapsible_line() {
         let mut s = AppState::new("test");
-        s.push_tool_call("bash", "{}");
-        s.push_tool_result(true, "ok", None);
+        s.push_tool_call("t1", "bash", "{}");
+        s.push_tool_result("t1", "bash", true, "ok", None);
         s.push_divider();
         s.push_user("hi");
         s.push_assistant("hello");

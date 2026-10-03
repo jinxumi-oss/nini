@@ -387,8 +387,8 @@ fn transcript_renders_all_line_kinds() {
     state.push_divider();
     state.push_assistant("searching...");
     state.push_divider();
-    state.push_tool_call("grep", "{\"pattern\":\"TODO\"}");
-    state.push_tool_result(true, "main.rs:42: // TODO: ...", None);
+    state.push_tool_call("t1", "grep", "{\"pattern\":\"TODO\"}");
+    state.push_tool_result("t1", "bash", true, "main.rs:42: // TODO: ...", None);
     state.push_divider();
 
     let frame = render_to_text(&state, 80, 24);
@@ -449,8 +449,8 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
     while let Some(ev) = stream.next().await {
         match ev {
             Ok(AgentEvent::TextDelta { text }) => state.push_assistant(text),
-            Ok(AgentEvent::ToolCallStart { name, .. }) => {
-                state.push_tool_call(name, "");
+            Ok(AgentEvent::ToolCallStart { id, name }) => {
+                state.push_tool_call(id.clone(), name, "");
             }
             Ok(AgentEvent::ToolCallStop { id, input_json }) => {
                 // Update the last tool call line with the final args
@@ -459,11 +459,11 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
                 {
                     *args = input_json.to_string();
                 } else {
-                    state.push_tool_call(id, input_json.to_string());
+                    state.push_tool_call(id.clone(), id, input_json.to_string());
                 }
             }
-            Ok(AgentEvent::ToolResult { output, .. }) => {
-                state.push_tool_result(!output.is_error, output.content, None);
+            Ok(AgentEvent::ToolResult { id, name, output }) => {
+                state.push_tool_result(id.clone(), name.clone(), !output.is_error, output.content, None);
             }
             Ok(AgentEvent::TurnEnd { usage, .. }) => {
                 total_tokens += usage.input_tokens + usage.output_tokens;
@@ -714,16 +714,16 @@ async fn full_demo_pipeline_through_tui_state() {
     while let Some(ev) = stream.next().await {
         if let Ok(AgentEvent::TextDelta { text }) = ev {
             state.push_assistant(text);
-        } else if let Ok(AgentEvent::ToolCallStart { name, .. }) = ev {
-            state.push_tool_call(name, "");
+        } else if let Ok(AgentEvent::ToolCallStart { id, name }) = ev {
+            state.push_tool_call(id.clone(), name, "");
         } else if let Ok(AgentEvent::ToolCallStop { input_json, .. }) = ev {
             if let Some(TranscriptLine::ToolCall { args, .. }) =
                 Arc::make_mut(&mut state.transcript_state).lines.last_mut()
             {
                 *args = input_json.to_string();
             }
-        } else if let Ok(AgentEvent::ToolResult { output, .. }) = ev {
-            state.push_tool_result(!output.is_error, output.content, None);
+        } else if let Ok(AgentEvent::ToolResult { id, name, output }) = ev {
+            state.push_tool_result(id.clone(), name.clone(), !output.is_error, output.content, None);
         } else if let Ok(AgentEvent::TurnEnd { .. }) = ev {
             state.push_divider();
         }

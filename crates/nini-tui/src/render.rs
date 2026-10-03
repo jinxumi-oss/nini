@@ -682,7 +682,7 @@ fn items_for_line(
                 )))
             })
             .collect(),
-        TranscriptLine::ToolCall { name, args, collapsed } => {
+        TranscriptLine::ToolCall { id: _, name, args, collapsed } => {
             let lines = render_tool_call(name, args, theme);
             let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
             if *collapsed {
@@ -693,13 +693,13 @@ fn items_for_line(
             }
             out
         }
-        TranscriptLine::ToolResult { ok, content, collapsed, duration_ms } => {
+        TranscriptLine::ToolResult { id: _, name, ok, content, collapsed, duration_ms } => {
             // v0.8.7 (ux-002): pass the actual area width so per-line
             // truncation accounts for the visible terminal width. When
             // the renderer is called outside a Frame (tests), area.width
             // is 0 and we fall back to the legacy 200-byte budget.
             let max_w = if area_width > 4 { Some(area_width) } else { None };
-            let lines = render_tool_result(*ok, content, *duration_ms, theme, max_w);
+            let lines = render_tool_result(name, *ok, content, *duration_ms, theme, max_w);
             let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
             if *collapsed {
                 if !out.is_empty() {

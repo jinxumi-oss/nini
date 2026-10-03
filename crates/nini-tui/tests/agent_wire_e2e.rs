@@ -83,7 +83,7 @@ fn make_fixture_driver(
                 let lite = match ev {
                     Ok(AgentEvent::TextDelta { text }) => AgentEventLite::TextDelta(text),
                     Ok(AgentEvent::ToolCallStart { name, .. }) => {
-                        AgentEventLite::ToolCallStart { name }
+                        AgentEventLite::ToolCallStart { id: "test_id".to_string(), name }
                     }
                     Ok(AgentEvent::ToolCallStop { id, input_json }) => {
                         AgentEventLite::ToolCallStop {
@@ -94,7 +94,7 @@ fn make_fixture_driver(
                     Ok(AgentEvent::ToolResult { output, .. }) => {
                         let content = output.content.clone();
                         let ok = !output.is_error;
-                        AgentEventLite::ToolResult {
+                        AgentEventLite::ToolResult { id: "test_id".to_string(), name: "test_tool".to_string(),
                             ok,
                             content,
                             details: None,
@@ -313,9 +313,7 @@ async fn tool_call_args_are_updated_on_stop() {
     let shared = shared_state(AppState::new("test-model"));
     let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
-    sink.push(AgentEventLite::ToolCallStart {
-        name: "bash".to_string(),
-    });
+    sink.push(AgentEventLite::ToolCallStart { id: "toolu_1".to_string(), name: "bash".to_string(), });
     // Before stop, args is empty string
     let snap1 = shared.lock().unwrap().clone();
     if let Some(nini_tui::state::TranscriptLine::ToolCall { args, .. }) =
@@ -397,28 +395,24 @@ async fn multiple_tool_calls_accumulate() {
     let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
     // Three tool calls back to back (realistic for bash → read → edit)
-    sink.push(AgentEventLite::ToolCallStart {
-        name: "bash".to_string(),
-    });
+    sink.push(AgentEventLite::ToolCallStart { id: "toolu_1".to_string(), name: "bash".to_string(), });
     sink.push(AgentEventLite::ToolCallStop {
         id: "t1".into(),
         args: r#"{"command":"ls"}"#.into(),
     });
-    sink.push(AgentEventLite::ToolResult {
+    sink.push(AgentEventLite::ToolResult { id: "test_id".to_string(), name: "test_tool".to_string(),
         ok: true,
         content: "main.rs".into(),
         details: None,
         duration_ms: 0,
     });
 
-    sink.push(AgentEventLite::ToolCallStart {
-        name: "read".to_string(),
-    });
+    sink.push(AgentEventLite::ToolCallStart { id: "test_id".to_string(), name: "read".to_string(), });
     sink.push(AgentEventLite::ToolCallStop {
         id: "t2".into(),
         args: r#"{"path":"main.rs"}"#.into(),
     });
-    sink.push(AgentEventLite::ToolResult {
+    sink.push(AgentEventLite::ToolResult { id: "test_id".to_string(), name: "test_tool".to_string(),
         ok: true,
         content: "fn main() {}".into(),
         details: None,
@@ -755,7 +749,7 @@ async fn sink_push_wakes_watcher_within_5ms() {
     // Now push 14 events as if the agent just finished 14 parallel reads.
     let push_start = Instant::now();
     for i in 0..14 {
-        sink.push(AgentEventLite::ToolResult {
+        sink.push(AgentEventLite::ToolResult { id: "test_id".to_string(), name: "test_tool".to_string(),
             ok: true,
             content: format!("file content {i}"),
             details: None,
@@ -815,7 +809,7 @@ fn appstate_clone_is_cheap_regardless_of_transcript_size() {
     // 14 tool results, each carrying ~25 KB of file content.
     let big = "x".repeat(25 * 1024);
     for i in 0..14 {
-        state.push_tool_result(true, big.clone(), Some(0));
+        state.push_tool_result("t1", "read", true, big.clone(), Some(0));
     }
     // Sanity: we really did inflate the transcript.
     assert!(

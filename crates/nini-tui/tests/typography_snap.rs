@@ -96,8 +96,8 @@ fn snapshot_conversation() {
             .to_string(),
     );
     state.push_divider();
-    state.push_tool_call("read", "{\"path\": \"src/middleware/auth.rs\"}");
-    state.push_tool_result(
+    state.push_tool_call("t1", "read", "{\"path\": \"src/middleware/auth.rs\"}");
+    state.push_tool_result("t1", "read",
         true,
         "use actix_web::*;\n\npub async fn auth(req: ServiceRequest) -> ...",
         Some(23),

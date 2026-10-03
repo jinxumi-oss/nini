@@ -91,7 +91,14 @@ pub enum AgentEvent {
         input_json: serde_json::Value,
     },
     /// A tool finished executing.
-    ToolResult { id: String, output: ToolOutput },
+    /// A tool finished executing. `name` lets the TUI render
+    /// `✓ bash (4ms)` instead of just `✓`, so parallel tool results
+    /// are distinguishable (v0.8.8 tool-identity fix).
+    ToolResult {
+        id: String,
+        name: String,
+        output: ToolOutput,
+    },
     /// Agent finished (called once per `run`).
     AgentEnd,
     /// Agent aborted (user or system cancellation).
@@ -1124,6 +1131,7 @@ impl Agent {
                         );
                         yield AgentEvent::ToolResult {
                             id: tc.id.clone(),
+                            name: tc.name.clone(),
                             output: reject_output.clone(),
                         };
                         tool_results.push(ContentBlock::ToolResult {
@@ -1148,6 +1156,7 @@ impl Agent {
                     let abort = abort.clone();
                     let tool_registry = tool_registry.clone();
                     let config = config.clone();
+                    let tc_name = spec.name.clone();
                     futures.push(async move {
                         // Check abort at the start of each future so
                         // a pre-aborted batch doesn't even begin
@@ -1156,6 +1165,7 @@ impl Agent {
                             return (
                                 idx,
                                 spec.id.clone(),
+                                tc_name,
                                 ToolOutput::err("[aborted before execution]".to_string()),
                             );
                         }
@@ -1166,7 +1176,7 @@ impl Agent {
                             &abort,
                         )
                         .await;
-                        (idx, spec.id.clone(), output)
+                        (idx, spec.id.clone(), tc_name, output)
                     });
                 }
 
@@ -1174,13 +1184,14 @@ impl Agent {
                 //    an abort signal during the drain path drops the
                 //    whole batch (we never partial-commit).
                 let mut aborted = false;
-                while let Some((idx, tc_id, output)) = futures.next().await {
+                while let Some((idx, tc_id, tc_name, output)) = futures.next().await {
                     if abort.is_aborted() {
                         aborted = true;
                         break;
                     }
                     yield AgentEvent::ToolResult {
                         id: tc_id.clone(),
+                        name: tc_name.clone(),
                         output: output.clone(),
                     };
                     tool_results_slots[idx] = Some(ContentBlock::ToolResult {

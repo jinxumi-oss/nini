@@ -73,14 +73,14 @@ fn make_parallel_8_read_state() -> AppState {
         "crates/nini-core/src/tool.rs",
     ];
     for (i, path) in paths.iter().enumerate() {
-        s.push_tool_call("read", format!(r#"{{"path":"{path}"}}"#));
+        s.push_tool_call("t1", "read", format!(r#"{{"path":"{path}"}}"#));
         // body: ~12 lines of Rust-looking content so render_tool_result
         // expands to many ListItems.
         let mut body = String::new();
         for j in 0..12 {
             body.push_str(&format!("// line {j:02} of {path}\n"));
         }
-        s.push_tool_result(true, body, Some(5 + i as u64));
+        s.push_tool_result("t1", "read", true, body, Some(5 + i as u64));
     }
     // Final assistant turn so the transcript has a clear "tail" to autoscroll to.
     s.push_assistant("All 8 files reviewed.".to_string());
@@ -93,8 +93,8 @@ fn make_single_tool_state() -> AppState {
     let mut s = AppState::new("test-model");
     s.push_user("find TODOs".to_string());
     s.push_divider();
-    s.push_tool_call("bash", r#"{"command":"ls"}"#);
-    s.push_tool_result(true, "main.rs\ncli.rs".to_string(), Some(8));
+    s.push_tool_call("t1", "bash", r#"{"command":"ls"}"#);
+    s.push_tool_result("t1", "bash", true, "main.rs\ncli.rs".to_string(), Some(8));
     s.push_assistant("Found 2 files.".to_string());
     s.push_divider();
     s
@@ -276,12 +276,12 @@ fn parallel_8_reads_with_cjk_args_does_not_panic() {
     // and the v0.8.7 cell-aware truncation together.
     for i in 0..8 {
         let path = format!("src/模块{i}/文件.rs");
-        state.push_tool_call("read", format!(r#"{{"path":"{path}"}}"#));
+        state.push_tool_call("t1", "read", format!(r#"{{"path":"{path}"}}"#));
         let mut body = String::new();
         for j in 0..8 {
             body.push_str(&format!("// 第{j}行：代码片段中文注释\n"));
         }
-        state.push_tool_result(true, body, Some(3));
+        state.push_tool_result("t1", "read", true, body, Some(3));
     }
     state.push_assistant("完成。".to_string());
     state.push_divider();
@@ -324,11 +324,11 @@ fn tool_result_long_line_truncates_with_visible_ellipsis() {
     let mut state = AppState::new("test-model");
     state.push_user("read".to_string());
     state.push_divider();
-    state.push_tool_call("read", r#"{"path":"long.txt"}"#);
+    state.push_tool_call("t1", "read", r#"{"path":"long.txt"}"#);
     // 500 bytes of ASCII — at 80-wide terminal, body line must end with
     // visible `…` truncation indicator (NOT just get cut off at col 80
     // with no indicator).
-    state.push_tool_result(true, "x".repeat(500), Some(0));
+    state.push_tool_result("t1", "read", true, "x".repeat(500), Some(0));
 
     let frame = frame_dump(&state, 80, 24);
     let has_ellipsis = frame.iter().any(|r| r.contains('…'));
@@ -347,7 +347,7 @@ fn tool_result_uses_single_combined_truncation_indicator() {
     let mut state = AppState::new("test-model");
     state.push_user("read".to_string());
     state.push_divider();
-    state.push_tool_call("read", r#"{"path":"big.txt"}"#);
+    state.push_tool_call("t1", "read", r#"{"path":"big.txt"}"#);
     // 100 lines × 200 chars each → exceeds both max_lines (8) and
     // TOOL_RESULT_PREVIEW_MAX_BYTES (2KB). Old behavior: TWO indicator
     // rows ("…(92 more lines)" and "…(truncated, 18KB more)"). New
@@ -356,7 +356,7 @@ fn tool_result_uses_single_combined_truncation_indicator() {
     for i in 0..100 {
         body.push_str(&format!("line {i:03}: {}\n", "x".repeat(180)));
     }
-    state.push_tool_result(true, body, Some(15));
+    state.push_tool_result("t1", "read", true, body, Some(15));
 
     let frame = frame_dump(&state, 200, 30);
     let indicator_rows: Vec<&String> = frame

@@ -45,6 +45,7 @@ pub enum AgentEventLite {
     /// Renders with dim/italic style in the transcript (Pi-style).
     ThinkingDelta(String),
     ToolCallStart {
+        id: String,
         name: String,
     },
     ToolCallStop {
@@ -52,6 +53,8 @@ pub enum AgentEventLite {
         args: String,
     },
     ToolResult {
+        id: String,
+        name: String,
         ok: bool,
         content: String,
         details: Option<serde_json::Value>,
@@ -129,17 +132,43 @@ impl AgentSink {
                 AgentEventLite::ThinkingDelta(text) => {
                     s.push_thinking_raw(text)
                 }
-                AgentEventLite::ToolCallStart { name } => s.push_tool_call(name, ""),
+                AgentEventLite::ToolCallStart { id, name } => s.push_tool_call(id, name, ""),
                 AgentEventLite::ToolCallStop { id, args } => {
-                    // Update the most recent tool call line with final args.
-                    if let Some(TranscriptLine::ToolCall { args: a, .. }) = Arc::make_mut(&mut s.transcript_state).lines.last_mut()
-                    {
-                        *a = args;
+                    // v0.8.8 (tool-identity): update the SPECIFIC tool
+                    // call line by id, not by last position. Parallel
+                    // tool calls (8× read in one turn) previously had
+                    // every Stop event overwrite the LAST line, so
+                    // only the final call's args survived — earlier
+                    // calls' args were silently lost. Now we find the
+                    // line by id and update in place.
+                    let found = {
+                        let mut found_idx: Option<usize> = None;
+                        let lines = Arc::make_mut(&mut s.transcript_state);
+                        for (i, line) in lines.lines.iter().enumerate().rev() {
+                            if let TranscriptLine::ToolCall { id: existing_id, .. } = line {
+                                if existing_id == &id {
+                                    found_idx = Some(i);
+                                    break;
+                                }
+                            }
+                        }
+                        found_idx
+                    };
+                    if let Some(idx) = found {
+                        let lines = Arc::make_mut(&mut s.transcript_state);
+                        if let Some(TranscriptLine::ToolCall { args: a, .. }) = lines.lines.get_mut(idx)
+                        {
+                            *a = args;
+                        }
                     } else {
-                        s.push_tool_call(id, args);
+                        // Stop without matching Start (out-of-order
+                        // event from buggy provider). Fall back to
+                        // pushing a new line; id is preserved for
+                        // any later ToolResult to find.
+                        s.push_tool_call(id, String::new(), args);
                     }
                 }
-                AgentEventLite::ToolResult { ok, content, details, duration_ms } => {
+                AgentEventLite::ToolResult { id, name, ok, content, details, duration_ms } => {
                     // Capture edit-tool diff stats for the status bar pill.
                     if let Some(d) = &details {
                         if let (Some(adds), Some(dels)) =
@@ -149,7 +178,12 @@ impl AgentSink {
                             s.ui_state.last_diff = Some((adds as usize, dels as usize));
                         }
                     }
-                    s.push_tool_result_raw(ok, content, Some(duration_ms));
+                    // v0.8.8 (tool-identity): ToolResult event carries the
+                    // tool name so the TUI can render `✓ bash (4ms)`
+                    // instead of just `✓`. This is critical when
+                    // multiple tools run in parallel — the user needs
+                    // to know which result belongs to which call.
+                    s.push_tool_result_raw(id, name, ok, content, Some(duration_ms));
                 }
                 AgentEventLite::TurnEnd => {
                     s.push_divider();
@@ -195,7 +229,7 @@ impl AgentSink {
     /// to the same turn's transcript without spawning an async task.
     pub fn inject_tool_result(&self, ok: bool, content: String) {
         if let Ok(mut s) = self.state.lock() {
-            s.push_tool_result(ok, content, None);
+            s.push_tool_result("placeholder", "placeholder", ok, content, None);
         }
     }
 }
@@ -207,11 +241,21 @@ pub type AgentDriver = Arc<dyn Fn(String, AgentSink, Arc<Notify>) -> JoinHandle<
 
 /// Public entrypoint: run the TUI. `bootstrap` is called once to seed the
 /// `AppState`. `agent_driver` is spawned whenever the user submits a message.
-pub async fn run<F>(bootstrap: F, agent_driver: AgentDriver) -> Result<()>
+///
+/// v0.8.8 (tool-identity): `initial_model` seeds `AppState::model` so the
+/// status bar reflects the user-chosen model (e.g. `--model MiniMax-M3`).
+/// Previously this was hardcoded to `"test-model"` and the user's `--model`
+/// flag was silently ignored at the TUI layer (cf. v0.7.2 ux-report #7).
+/// `bootstrap` may override the model again if the caller needs to.
+pub async fn run<F>(
+    bootstrap: F,
+    agent_driver: AgentDriver,
+    initial_model: &str,
+) -> Result<()>
 where
     F: FnOnce(&mut AppState),
 {
-    let mut state = AppState::new("test-model");
+    let mut state = AppState::new(initial_model);
     bootstrap(&mut state);
     let shared = shared_state(state);
 
