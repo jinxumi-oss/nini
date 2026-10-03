@@ -13,7 +13,7 @@
 
 use crate::markdown::render_markdown;
 use crate::theme::Theme;
-use crate::width::floor_char_boundary;
+use crate::width::{display_width, floor_char_boundary};
 use ratatui::text::{Line as RLine, Span};
 
 /// Maximum bytes to keep from a single bash-output preview.
@@ -156,6 +156,7 @@ pub fn render_tool_result(
     content: &str,
     duration_ms: Option<u64>,
     theme: &Theme,
+    max_width: Option<usize>,
 ) -> Vec<RLine<'static>> {
     // v0.8.3: Pi parity — tool result gets a background-color box.
     // Success → bg(toolSuccessBg), Error → bg(toolErrorBg).
@@ -205,18 +206,41 @@ pub fn render_tool_result(
         }
     }
 
-    let max_lines = 8;
-    let max_chars_per_line = 200;
-    for (i, line) in lines.iter().take(max_lines).enumerate() {
-        // v0.8.4 (bugfix): byte-slicing `&line[..max_chars_per_line]`
-        // panics on multi-byte UTF-8 (CJK is 3 bytes, emoji is 4).
-        // Use `floor_char_boundary` to truncate at the largest safe
-        // boundary ≤ the byte budget. Any tool output line whose
-        // 200th byte falls inside a 3-byte CJK char used to crash the
-        // TUI.
-        let truncated: String = if line.len() > max_chars_per_line {
-            let end = floor_char_boundary(line, max_chars_per_line);
-            format!("{}…", &line[..end])
+// v0.8.7 (ux-002): when caller passes `max_width`, budget
+    // per-line to `max_width - 2` cells (subtracting the 2-space
+    // indent) so the `…` indicator stays visible. Otherwise fall
+    // back to the legacy 200-byte budget.
+    //
+    // v0.8.7 also uses display-cell width instead of byte length for
+    // the truncation decision. Previously a 200-byte line of CJK
+    // content (~67 cells) would get cut to the byte-budget, wasting
+    // visible width. With cell-aware truncation we pack the full
+    // visible area. The `floor_char_boundary` guard from v0.8.4 is
+    // preserved for the resulting byte slice.
+    let max_lines: usize = 8;
+    // Budget accounts for the 2-space indent + 1 cell for the `…`
+    // indicator so the indicator stays inside the visible area when
+    // the terminal width equals the budget exactly.
+    let max_chars_per_line: usize = match max_width {
+        Some(n) if n >= 5 => n.saturating_sub(2 + 1),
+        _ => 199,
+    };
+    for line in lines.iter().take(max_lines) {
+        let truncated: String = if display_width(line) > max_chars_per_line {
+            // Walk chars accumulating display width, slice at the
+            // boundary that fits in max_chars_per_line cells.
+            let mut consumed = 0usize;
+            let mut cut_byte = line.len();
+            for (byte_idx, c) in line.char_indices() {
+                let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                if consumed + cw > max_chars_per_line {
+                    cut_byte = byte_idx;
+                    break;
+                }
+                consumed += cw;
+            }
+            let safe = floor_char_boundary(line, cut_byte);
+            format!("{}…", &line[..safe])
         } else {
             line.to_string()
         };
@@ -224,19 +248,26 @@ pub fn render_tool_result(
             format!("  {truncated}"),
             bg.fg(fg_output),
         )));
-        if i + 1 < lines.len() && i + 1 == max_lines && lines.len() > max_lines {
-            out.push(RLine::from(Span::styled(
-                format!("  …({} more lines)", lines.len() - max_lines),
-                bg.fg(theme.color("dim")),
-            )));
-        }
     }
-    if linked.len() > TOOL_RESULT_PREVIEW_MAX_BYTES {
+    // v0.8.7 (ux-002): combined truncation indicator. Old behavior
+    // produced two rows ("more lines" then "more bytes") which was
+    // visually noisy. Single combined row keeps the tail tidy.
+    let hidden_lines = lines.len().saturating_sub(max_lines);
+    let hidden_bytes = linked.len().saturating_sub(TOOL_RESULT_PREVIEW_MAX_BYTES);
+    if hidden_lines > 0 || hidden_bytes > 0 {
+        let mut parts: Vec<String> = Vec::new();
+        if hidden_lines > 0 {
+            parts.push(format!("{hidden_lines} more lines"));
+        }
+        if hidden_bytes > 0 {
+            if hidden_bytes >= 1024 {
+                parts.push(format!("{} KB hidden", hidden_bytes / 1024));
+            } else {
+                parts.push(format!("{hidden_bytes} more bytes"));
+            }
+        }
         out.push(RLine::from(Span::styled(
-            format!(
-                "  …(truncated, {} more bytes)",
-                linked.len() - TOOL_RESULT_PREVIEW_MAX_BYTES
-            ),
+            format!("  …({})", parts.join(", ")),
             bg.fg(theme.color("dim")),
         )));
     }
@@ -461,14 +492,14 @@ mod tests {
 
     #[test]
     fn render_tool_result_success_color() {
-        let lines = render_tool_result(true, "ok output", None, &theme());
+        let lines = render_tool_result(true, "ok output", None, &theme(), None);
         assert!(!lines.is_empty());
         assert!(lines[0].spans.iter().any(|s| s.content.contains("✓ ")));
     }
 
     #[test]
     fn render_tool_result_error_label() {
-        let lines = render_tool_result(false, "fail", None, &theme());
+        let lines = render_tool_result(false, "fail", None, &theme(), None);
         assert!(lines[0]
             .spans
             .iter()
@@ -479,13 +510,13 @@ mod tests {
     fn render_tool_result_shows_duration_pill_when_set() {
         // v0.8: Pi-style "Took 1.23s" / "Took 850ms" pill on the
         // first line of the tool result.
-        let lines = render_tool_result(true, "ok", Some(1230), &theme());
+        let lines = render_tool_result(true, "ok", Some(1230), &theme(), None);
         assert!(
             lines[0].spans.iter().any(|s| s.content.contains("Took 1.23s")),
             "expected 'Took 1.23s' pill, got: {:?}",
             lines[0].spans,
         );
-        let lines_ms = render_tool_result(true, "ok", Some(850), &theme());
+        let lines_ms = render_tool_result(true, "ok", Some(850), &theme(), None);
         assert!(
             lines_ms[0].spans.iter().any(|s| s.content.contains("Took 850ms")),
             "expected 'Took 850ms' pill, got: {:?}",
@@ -497,7 +528,7 @@ mod tests {
     fn render_tool_result_omits_duration_pill_when_none() {
         // v0.8: when the tool doesn't measure its own duration
         // (duration_ms = None), no "Took ..." pill appears.
-        let lines = render_tool_result(true, "ok", None, &theme());
+        let lines = render_tool_result(true, "ok", None, &theme(), None);
         assert!(
             !lines[0].spans.iter().any(|s| s.content.starts_with("Took ")),
             "unexpected duration pill, got: {:?}",
@@ -508,7 +539,7 @@ mod tests {
     #[test]
     fn render_tool_result_image_path_promoted() {
         let content = "[pasted image: /tmp/abc.png]\nsome more text";
-        let lines = render_tool_result(true, content, None, &theme());
+        let lines = render_tool_result(true, content, None, &theme(), None);
         // Image line should appear prominently (accent color).
         assert!(lines.iter().any(|l| {
             l.spans.iter().any(|s| s.content.contains("pasted image"))
@@ -518,7 +549,7 @@ mod tests {
     #[test]
     fn render_tool_result_truncates_long_content() {
         let content = "line\n".repeat(100);
-        let lines = render_tool_result(true, &content, None, &theme());
+        let lines = render_tool_result(true, &content, None, &theme(), None);
         // Should not render 100 lines.
         assert!(lines.len() < 15, "got {} lines", lines.len());
         // Should have a "more lines" marker.

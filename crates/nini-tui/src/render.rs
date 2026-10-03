@@ -499,186 +499,147 @@ fn wrap_thinking_block(text: &str) -> Vec<String> {
 }
 
 fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    // v0.8.4 (ux-001): the previous logic only used `scroll_offset`
+    // v0.8.7 (ux-002, transcript continuity): the previous autoscroll
+    // math used `lines.len()` (TranscriptLine count) as the scroll unit,
+    // but each TranscriptLine expands to 1..N ListItems at render time.
+    // For 8 parallel tool calls with multi-line bodies, the rendered
+    // item count (~80) is much larger than visible_height (~18 at
+    // 80x24). ratatui's List widget by default clips the BOTTOM, so
+    // the LATEST `▸ name{…}` headers scrolled off-screen — user saw
+    // tool result body fragments without their tool call announcement
+    // ("窗口工具调用输出不连续,会断开").
+    //
+    // Fix: render all items, then truncate to `visible_height`. For
+    // autoscroll keep the TAIL (latest, chat-style). For user-scrolled
+    // view, translate `scroll_offset` (TranscriptLine count) to an
+    // item-space offset via per-line item counts, so the user-scroll
+    // window is also correct.
+    //
+    // v0.8.4 (ux-001) history: previous logic only used `scroll_offset`
     // for upward scroll and otherwise showed `[0..visible_height]` —
-    // i.e. the TOP of the transcript, ignoring new messages. That is
-    // why "output finished but the page stopped and the new lines
-    // were off-screen". Fix:
-    //
-    //   * `autoscroll` true  → show the last `visible_height` rows
-    //     (chat-style: stick to the bottom; new messages appear
-    //     in-place).
-    //   * `autoscroll` false → the user has scrolled up; respect
-    //     `scroll_offset` (rows from the bottom) and show that slice.
-    //
-    // PageUp / PageDown (and j / k) toggle `autoscroll` and bump
-    // `scroll_offset` accordingly — see `runtime.rs`.
-    let total = state.transcript_state.lines.len();
+    // i.e. the TOP of the transcript, ignoring new messages. The
+    // v0.8.4 fix computed `start = total - visible_height` but the
+    // iteration still produced ALL items when items > visible_height,
+    // and ratatui clipped from the top down (so the OLDEST items were
+    // visible, not the newest). v0.8.7 fixes both.
+    let lines = &state.transcript_state.lines;
+    let total_lines = lines.len();
     let visible_height = area.height as usize;
-    let (start, end) = if state.transcript_state.autoscroll || total == 0 {
-        // Tail-aligned: show the most-recent `visible_height` rows.
-        let end = total;
-        let start = end.saturating_sub(visible_height);
-        (start, end)
+    let autoscroll = state.transcript_state.autoscroll || total_lines == 0;
+    let scroll_offset = state.transcript_state.scroll_offset;
+
+    // First pass: per-line item counts. Used for user-scroll item-space
+    // offset translation, and for the overflow indicator count.
+    let items_per_line: Vec<usize> = lines
+        .iter()
+        .map(|line| items_for_line(line, theme, area.width as usize).len())
+        .collect();
+    let total_items: usize = items_per_line.iter().sum();
+
+    // Choose the visible slice.
+    let mut visible_items: Vec<ListItem> = Vec::with_capacity(visible_height.min(total_items));
+    let mut hidden_above_items: usize = 0;
+
+    if total_items <= visible_height {
+        // Everything fits — render everything.
+        for line in lines.iter() {
+            visible_items.extend(items_for_line(line, theme, area.width as usize));
+        }
+    } else if autoscroll {
+        // Tail-aligned: keep the latest `visible_height` items.
+        hidden_above_items = total_items - visible_height;
+        let mut budget = visible_height;
+        for i in (0..total_lines).rev() {
+            let count = items_per_line[i];
+            if count <= budget {
+                let line_items = items_for_line(&lines[i], theme, area.width as usize);
+                visible_items = line_items
+                    .into_iter()
+                    .chain(visible_items.into_iter())
+                    .collect();
+                budget -= count;
+                if budget == 0 {
+                    break;
+                }
+            } else {
+                // Single line bigger than entire visible area — tail-truncate.
+                let mut line_items = items_for_line(&lines[i], theme, area.width as usize);
+                let start = line_items.len() - budget;
+                visible_items = line_items.split_off(start)
+                    .into_iter()
+                    .chain(visible_items.into_iter())
+                    .collect();
+                break;
+            }
+        }
     } else {
-        // User-scrolled view: end = total - scroll_offset (rows from
-        // the bottom that are *not* visible).
-        let end = total.saturating_sub(state.transcript_state.scroll_offset);
-        let start = end.saturating_sub(visible_height);
-        (start, end)
-    };
-    // Build ListItems. Each TranscriptLine may map to 1..N rows:
-    //   - User: 1 row (or N rows for multi-line)
-    //   - AssistantText: 1..N rows from Markdown rendering
-    //   - ToolCall/ToolResult: 1..N rows (header + body lines)
-    //   - BashExecution: 1 banner row + N output rows
-    //   - Divider: 1 row
-    //
-    // We flatten per-line expansion into a Vec<ListItem> by emitting
-    // multiple items for a single TranscriptLine. Then truncate to
-    // `visible_height` based on the cumulative tail.
-    let mut items: Vec<ListItem> = Vec::new();
-    for line in state.transcript_state.lines.iter().skip(start).take(end.saturating_sub(start)) {
-        let new_items: Vec<ListItem> = match line {
-            TranscriptLine::User(text) => render_user_message(text, theme)
+        // User-scrolled view: translate `scroll_offset` (TranscriptLine
+        // count) to an item-space offset.
+        let mut items_to_skip_from_bottom: usize = 0;
+        let mut lines_skipped = 0;
+        for i in (0..total_lines).rev() {
+            if lines_skipped >= scroll_offset {
+                break;
+            }
+            items_to_skip_from_bottom += items_per_line[i];
+            lines_skipped += 1;
+        }
+        // Now collect items from the bottom, skipping
+        // `items_to_skip_from_bottom` items, until we have visible_height.
+        let mut budget = visible_height;
+        for i in (0..total_lines).rev() {
+            let count = items_per_line[i];
+            let skip_here = items_to_skip_from_bottom.min(count);
+            items_to_skip_from_bottom -= skip_here;
+            let take_from_line = count - skip_here;
+            if take_from_line == 0 || budget == 0 {
+                continue;
+            }
+            let take = take_from_line.min(budget);
+            let mut line_items = items_for_line(&lines[i], theme, area.width as usize);
+            let start = line_items.len() - take;
+            visible_items = line_items.split_off(start)
                 .into_iter()
-                .map(ListItem::new)
-                .collect(),
-            TranscriptLine::AssistantText(text) => render_assistant_message(text, theme)
-                .into_iter()
-                .map(ListItem::new)
-                .collect(),
-            // v0.8: dim/italic reasoning block (Pi-style).
-            //
-            // v0.8.4 (bugfix): the previous version stuffed the entire
-            // accumulated thinking text into a single RLine / single
-            // ListItem. With long thinking blocks (200+ chars) the
-            // List widget clipped the visible portion to a few
-            // trailing characters and the user saw only a cryptic
-            // tail — e.g. "💭 ectory." for "…directory listing on
-            // the user's own home directory.". Wrap each line by
-            // display width so the user can read the full block.
-            TranscriptLine::ThinkingText(text) => {
-                wrap_thinking_block(text)
-                    .into_iter()
-                    .map(|line| {
-                        ListItem::new(RLine::from(Span::styled(
-                            line,
-                            theme
-                                .fg_style("dim")
-                                .add_modifier(Modifier::ITALIC),
-                        )))
-                    })
-                    .collect()
+                .chain(visible_items.into_iter())
+                .collect();
+            budget -= take;
+            if budget == 0 {
+                break;
             }
-            TranscriptLine::ToolCall { name, args, collapsed } => {
-                let lines = render_tool_call(name, args, theme);
-                let mut out: Vec<ListItem> = lines
-                    .into_iter()
-                    .map(ListItem::new)
-                    .collect();
-                if *collapsed {
-                    // Drop everything but the header line, then append the
-                    // expand hint.
-                    if !out.is_empty() {
-                        out.truncate(1);
-                    }
-                    out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
-                }
-                out
-            }
-            TranscriptLine::ToolResult { ok, content, collapsed, duration_ms } => {
-                let lines = render_tool_result(*ok, content, *duration_ms, theme);
-                let mut out: Vec<ListItem> = lines
-                    .into_iter()
-                    .map(ListItem::new)
-                    .collect();
-                if *collapsed {
-                    if !out.is_empty() {
-                        out.truncate(1);
-                    }
-                    out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
-                }
-                out
-            }
-            TranscriptLine::Divider => vec![ListItem::new(render_divider(theme))],
-            TranscriptLine::StopNotice(msg) => vec![ListItem::new(RLine::from(Span::styled(
-                format!("  {msg}"),
-                theme.fg_style("error"),
-            )))],
-            TranscriptLine::BashExecution {
-                cmd,
-                output,
-                stderr,
-                ok,
-                exit_code,
-                duration_ms,
-                collapsed,
-                ..
-            } => {
-                let lines = render_bash_execution(
-                    cmd,
-                    output,
-                    stderr,
-                    *ok,
-                    *exit_code,
-                    *duration_ms,
-                    theme,
-                );
-                let mut out: Vec<ListItem> = lines
-                    .into_iter()
-                    .map(ListItem::new)
-                    .collect();
-                if *collapsed {
-                    if !out.is_empty() {
-                        out.truncate(1);
-                    }
-                    out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
-                }
-                out
-            }
-        };
-        items.extend(new_items);
+        }
     }
 
-    // v0.8.4 (ux-001): when the transcript is empty AND the input is
-    // empty (cold start, no session yet) the wide gap between the
-    // footer and the input box reads as "the UI is broken" — large
-    // blank space with no hint of what to do. Fill it with a centered
-    // welcome card so the user sees actionable content immediately.
-    // We deliberately skip the card once the user has typed anything,
-    // even before sending — at that point they're engaged with the
-    // editor and a welcome card in the middle of the screen would be
-    // distracting.
-    if items.is_empty()
-        && state.transcript_state.lines.is_empty()
-        && state.input.text.is_empty()
-    {
+    // v0.8.4 (ux-001): welcome card for empty cold-start state.
+    if visible_items.is_empty() && total_lines == 0 && state.input.text.is_empty() {
         render_welcome_card(f, theme, area);
         return;
     }
 
-    let list = List::new(items)
+    // (debug prints removed)
+    let list = List::new(visible_items)
         .block(Block::default().borders(Borders::NONE))
         .style(Style::default());
     f.render_widget(list, area);
 
-    // v0.8.4 (ux-001): when the user has scrolled up, draw a one-row
-    // scroll indicator at the bottom-right corner of the transcript
-    // area so they know how many lines they're missing. Shows
-    //   `↓ N more`
-    // when at the top of the visible window and the tail is off-
-    // screen. The indicator is suppressed during autoscroll so it
-    // doesn't flicker on every token delta.
-    if !state.transcript_state.autoscroll
-        && state.transcript_state.scroll_offset > 0
-        && area.height >= 3
-    {
-        let hidden = state.transcript_state.scroll_offset;
+    // v0.8.7 (ux-002): scroll indicator in autoscroll mode when
+    // content overflows above. Tells them they can scroll up to see
+    // more. Bottom-right placement matches the user-scroll indicator.
+    if autoscroll && hidden_above_items > 0 && area.height >= 3 {
+        let label = format!(" \u{2191} {hidden_above_items} more above ");
+        let style = theme.fg_style("dim");
+        let width = (label.chars().count() as u16).min(area.width);
+        let ind_area = Rect::new(area.x, area.y, width, 1);
+        let ind = Paragraph::new(Span::styled(label, style));
+        f.render_widget(ind, ind_area);
+    }
+
+    // v0.8.4 (ux-001): user-scroll `↓ N more` indicator at the
+    // bottom-right corner of the transcript area. Suppressed during
+    // autoscroll so it doesn't flicker on every token delta.
+    if !autoscroll && scroll_offset > 0 && area.height >= 3 {
+        let hidden = scroll_offset;
         let label = format!(" \u{2193} {hidden} more ");
         let style = theme.fg_style("accent").add_modifier(Modifier::BOLD);
-        // Bottom-right corner: one row, right-aligned within the last
-        // 12 cols (or the area width, whichever is smaller).
         let width = (label.chars().count() as u16).min(area.width);
         let x = area.x + area.width.saturating_sub(width);
         let y = area.y + area.height.saturating_sub(1);
@@ -688,6 +649,102 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         f.render_widget(ind, ind_area);
     }
 }
+
+/// v0.8.7 (ux-002): extract the per-line item expansion so we can
+/// compute item counts without rendering, and render twice without doing
+/// the work twice. (We DO render twice — once for counting, once for
+/// the actual list — but the cost is bounded: 1..N items per line where
+/// N is typically <10. For a 200-line transcript this is cheap.)
+fn items_for_line(
+    line: &TranscriptLine,
+    theme: &Theme,
+    area_width: usize,
+) -> Vec<ListItem<'static>> {
+    match line {
+        TranscriptLine::User(text) => render_user_message(text, theme)
+            .into_iter()
+            .map(ListItem::new)
+            .collect(),
+        TranscriptLine::AssistantText(text) => render_assistant_message(text, theme)
+            .into_iter()
+            .map(ListItem::new)
+            .collect(),
+        // v0.8: dim/italic reasoning block (Pi-style). Wrap by display
+        // width so long thinking blocks render across multiple rows.
+        TranscriptLine::ThinkingText(text) => wrap_thinking_block(text)
+            .into_iter()
+            .map(|line| {
+                ListItem::new(RLine::from(Span::styled(
+                    line,
+                    theme
+                        .fg_style("dim")
+                        .add_modifier(Modifier::ITALIC),
+                )))
+            })
+            .collect(),
+        TranscriptLine::ToolCall { name, args, collapsed } => {
+            let lines = render_tool_call(name, args, theme);
+            let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
+            if *collapsed {
+                if !out.is_empty() {
+                    out.truncate(1);
+                }
+                out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
+            }
+            out
+        }
+        TranscriptLine::ToolResult { ok, content, collapsed, duration_ms } => {
+            // v0.8.7 (ux-002): pass the actual area width so per-line
+            // truncation accounts for the visible terminal width. When
+            // the renderer is called outside a Frame (tests), area.width
+            // is 0 and we fall back to the legacy 200-byte budget.
+            let max_w = if area_width > 4 { Some(area_width) } else { None };
+            let lines = render_tool_result(*ok, content, *duration_ms, theme, max_w);
+            let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
+            if *collapsed {
+                if !out.is_empty() {
+                    out.truncate(1);
+                }
+                out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
+            }
+            out
+        }
+        TranscriptLine::Divider => vec![ListItem::new(render_divider(theme))],
+        TranscriptLine::StopNotice(msg) => vec![ListItem::new(RLine::from(Span::styled(
+            format!("  {msg}"),
+            theme.fg_style("error"),
+        )))],
+        TranscriptLine::BashExecution {
+            cmd,
+            output,
+            stderr,
+            ok,
+            exit_code,
+            duration_ms,
+            collapsed,
+            ..
+        } => {
+            let lines = render_bash_execution(
+                cmd,
+                output,
+                stderr,
+                *ok,
+                *exit_code,
+                *duration_ms,
+                theme,
+            );
+            let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
+            if *collapsed {
+                if !out.is_empty() {
+                    out.truncate(1);
+                }
+                out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
+            }
+            out
+        }
+    }
+}
+
 
 /// v0.8.4 (ux-001): cold-start welcome card. Renders into the empty
 /// transcript area with the title centred on the vertical midline and

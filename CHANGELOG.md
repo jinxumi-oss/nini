@@ -1,3 +1,67 @@
+## v0.8.7 — TUI transcript continuity + Pi collapse parity (2026-10-03)
+
+**Bug fix — transcript overflow no longer clips tool-call headers**
+
+When the model emits parallel tool calls with substantial bodies
+(typical: 8× `read` of large files), the previous TUI showed
+tool-result body fragments without their `▸ <name>{…}` headers — the
+user could no longer tell which tool produced which body fragment
+("窗口工具调用输出不连续,会断开"). Root cause: `render_transcript` used
+`lines.len()` (TranscriptLine count) for autoscroll math, but each
+TranscriptLine expands to 1..N ListItems at render time. When items
+> visible_height (~18 at 80x24), ratatui's List widget clipped the
+bottom — but the latest tool-call *header* sat right above its result
+body, so the header scrolled off the top while the body stayed
+visible. Fix:
+  * Render all items into a `Vec<ListItem>`, then truncate to
+    `visible_height` keeping the tail (autoscroll) or the user-scroll
+    window. Truncation is in **item space**, not line space, so it
+    respects the actual rendered row count.
+  * Per-line item counts (`items_for_line` helper) drive both the
+    truncation decision and the new overflow indicator count.
+  * User-scroll path translates `scroll_offset` (TranscriptLine
+    count) to an item-space offset, keeping the existing keybindings
+    (`PageUp`/`PageDown`/`j`/`k`) but with item-space-respected view.
+
+**Enhancement — `↑ N more above` indicator in autoscroll mode**
+
+When autoscroll has hidden items above (the common case during /
+after a burst of parallel tool calls), show `↑ N more above` at the
+top of the transcript. Mirrors the existing user-scroll `↓ N more`
+indicator at the bottom-right — same coverage of the corner cell.
+Tells the user they can scroll up to see hidden content.
+
+**Cleanup — single combined truncation indicator for tool results**
+
+Old behavior emitted TWO consecutive truncation rows when a tool
+result exceeded both the per-line (200 bytes) and total (2 KB)
+budgets: `…(N more lines)` then `…(truncated, N more bytes)`. New
+behavior emits ONE row: `…(N more lines, M KB hidden)`. Single
+visual cue, less noise.
+
+**Bug fix — `…` truncation indicator stays visible**
+
+`render_tool_result` now accepts `max_width: Option<usize>` and the
+TUI threads `area.width` through. Per-line budget is
+`max_width - 2 - 1` cells (subtracting the 2-space indent and 1 cell
+for the `…` indicator itself). Truncation uses display-cell width
+(via `unicode-width`) instead of byte length, so CJK content (2
+cells per char) packs the visible area without wasting width.
+
+**Tests**: 829 → 836 (+7 e2e regression tests in
+`crates/nini-tui/tests/transcript_overflow_e2e.rs`):
+  * 8 parallel reads don't bottom-clip the latest tool call header
+  * `↑ N more above` appears when overflow
+  * single-tool control flow shows no indicator
+  * 200x50 keeps call→result adjacency + body rows
+  * CJK args don't panic and respect visible_height
+  * long single-line result shows visible `…` indicator
+  * single combined truncation row replaces the old double row
+
+All existing tests pass unchanged. `cargo clippy` clean.
+
+---
+
 ## v0.8.6 — Wire up tool self-descriptions + length-stop safety (2026-09-30)
 
 **Bug fix — system prompt now exposes tool snippets + guidelines**
