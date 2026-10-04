@@ -176,6 +176,12 @@ mod parallel_tool_tests {
     pub struct SleeperTool {
         delay: Duration,
         call_count: Arc<AtomicU32>,
+        /// v0.8.9 (P2-10): live + peak counters, kept in sync with the
+        /// existing `call_count` semantics (total invocations).
+        #[allow(dead_code)]
+        live: Arc<AtomicU32>,
+        #[allow(dead_code)]
+        peak_live: Arc<AtomicU32>,
     }
 
     impl SleeperTool {
@@ -183,6 +189,8 @@ mod parallel_tool_tests {
             Self {
                 delay,
                 call_count: Arc::new(AtomicU32::new(0)),
+                live: Arc::new(AtomicU32::new(0)),
+                peak_live: Arc::new(AtomicU32::new(0)),
             }
         }
     }
@@ -874,6 +882,229 @@ mod abort_parallel_tests {
         }
     }
 }
+// =====================================================================
+// v0.8.9 (P2-10): a tool that reports its own peak concurrency.
+//
+// `SleeperTool` counts total invocations, which cannot distinguish
+// "30 calls ran at once" from "8 ran at once and 22 queued". The worker
+// pool's entire purpose is the second number, so the tool has to expose
+// the high-water mark.
+// =====================================================================
+mod probe_tools {
+    use async_trait::async_trait;
+    use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// v0.8.9 (P2-10): a tool that records how many of its own bodies
+    /// were executing at the same time.
+    ///
+    /// `SleeperTool` only counted total invocations, which cannot tell
+    /// "30 calls ran concurrently" from "8 ran concurrently, 22 queued".
+    /// The worker pool's whole point is the second number, so the tool
+    /// has to expose the high-water mark.
+    pub struct ConcurrencyProbeTool {
+        delay: Duration,
+        #[allow(dead_code)]
+        pub live: Arc<AtomicU32>,
+        pub peak_live: Arc<AtomicU32>,
+        pub total: Arc<AtomicU32>,
+    }
+
+    impl ConcurrencyProbeTool {
+        pub fn new(delay: Duration) -> Self {
+            Self {
+                delay,
+                live: Arc::new(AtomicU32::new(0)),
+                peak_live: Arc::new(AtomicU32::new(0)),
+                total: Arc::new(AtomicU32::new(0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for ConcurrencyProbeTool {
+        fn name(&self) -> &'static str {
+            "probe"
+        }
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "probe".to_string(),
+                description: "Records peak concurrency (test only).".to_string(),
+                input_schema: json!({"type": "object"}),
+            }
+        }
+
+        async fn execute(&self, _args: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
+            self.total.fetch_add(1, Ordering::SeqCst);
+            let now = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+            // Bump the high-water mark. A plain `fetch_max` is not
+            // available on all supported rustc targets for this shape,
+            // so compare-and-swap in a loop.
+            let mut peak = self.peak_live.load(Ordering::SeqCst);
+            while now > peak {
+                match self
+                    .peak_live
+                    .compare_exchange(peak, now, Ordering::SeqCst, Ordering::SeqCst)
+                {
+                    Ok(_) => break,
+                    Err(actual) => peak = actual,
+                }
+            }
+            tokio::time::sleep(self.delay).await;
+            self.live.fetch_sub(1, Ordering::SeqCst);
+            Ok(ToolOutput::ok("probe done".to_string()))
+        }
+    }
+}
+
+// =====================================================================
+// v0.8.9 (P2-10): parallel tool execution has a ceiling.
+//
+// Models emit however many tool calls they like. Before this, every one
+// of them got a future immediately, so a 30-call turn forked 30 process
+// trees at the same instant — which multiplies directly against the
+// per-stream memory ceiling in `nini_tools::bash`. The batch size was
+// the model's mood, not our decision.
+//
+// These tests measure the tool's own peak concurrency, because "all N
+// calls completed" cannot distinguish "N ran at once" from "8 ran at
+// once and 12 queued".
+// =====================================================================
+mod parallel_ceiling_tests {
+    use super::probe_tools::ConcurrencyProbeTool;
+    use super::*;
+    use nini_core::tool::Tool;
+    use nini_core::{AgentMessage, RunConfig};
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    const CALLS: usize = 20;
+    const LIMIT: usize = 4;
+
+    fn provider_with(calls: usize) -> Arc<ProgrammedProvider> {
+        let mut turn0: Vec<FixtureTurn> = Vec::with_capacity(calls + 1);
+        for i in 0..calls {
+            turn0.push(FixtureTurn::ToolCall {
+                name: "probe".to_string(),
+                args: json!({"label": format!("c{i}")}),
+            });
+        }
+        turn0.push(FixtureTurn::Stop {
+            stop_reason: "tool_use".to_string(),
+            usage: Usage::default(),
+        });
+        let turn1 = vec![FixtureTurn::Stop {
+            stop_reason: "end_turn".to_string(),
+            usage: Usage::default(),
+        }];
+        Arc::new(ProgrammedProvider::from_turns(vec![turn0, turn1]))
+    }
+
+    async fn run_with_limit(limit: usize, delay: Duration) -> (u32, u32, Duration) {
+        let probe = Arc::new(ConcurrencyProbeTool::new(delay));
+        let peak = probe.peak_live.clone();
+        let total = probe.total.clone();
+        let tools = ToolRegistry::new().register(probe as Arc<dyn Tool>);
+        let mut cfg = RunConfig::new("test-model");
+        cfg.max_parallel_tools = limit;
+        let mut agent = Agent::new(provider_with(CALLS), tools, cfg);
+
+        let started = Instant::now();
+        {
+            let mut stream = Box::pin(agent.run(AgentMessage::user("go")));
+            use futures_util::StreamExt;
+            while let Some(ev) = stream.next().await {
+                let _ = ev.expect("agent stream error");
+            }
+        }
+        (
+            peak.load(Ordering::SeqCst),
+            total.load(Ordering::SeqCst),
+            started.elapsed(),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn peak_concurrency_respects_the_configured_limit() {
+        let (peak, total, _) = run_with_limit(LIMIT, Duration::from_millis(60)).await;
+        assert_eq!(
+            total, CALLS as u32,
+            "every tool call must still run — the limit queues, it does not drop"
+        );
+        assert!(
+            peak <= LIMIT as u32,
+            "peak concurrency {peak} exceeded the configured limit of {LIMIT}"
+        );
+        // And it must actually be parallel, otherwise "respects the
+        // limit" is trivially satisfied by running everything serially.
+        assert!(
+            peak > 1,
+            "peak concurrency was {peak} — the calls ran serially, so the              limit is not buying anything and v0.8.5's win is gone"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn zero_means_no_limit() {
+        // Explicit opt-out preserves the pre-v0.8.9 behaviour.
+        let (peak, total, _) = run_with_limit(0, Duration::from_millis(60)).await;
+        assert_eq!(total, CALLS as u32);
+        assert!(
+            peak > LIMIT as u32,
+            "max_parallel_tools = 0 should mean unlimited, but peak was only {peak}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_ceiling_actually_saves_wall_clock_vs_serial() {
+        // The whole point of a bounded pool: the batch finishes in about
+        // `ceil(CALLS / LIMIT)` waves, not `CALLS` serial steps.
+        let delay = Duration::from_millis(60);
+        let (_, _, elapsed) = run_with_limit(LIMIT, delay).await;
+        let serial = CALLS as u32 * delay;
+        assert!(
+            elapsed < serial / 2,
+            "20 calls at {LIMIT}-way concurrency took {elapsed:?}, which is              not meaningfully better than the {serial:?} a serial run costs"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn results_still_arrive_in_call_order() {
+        // The ordering invariant predates the pool: providers require
+        // tool_result blocks in the same order as the tool_use blocks
+        // they answer. The pool must not have broken it.
+        let probe = Arc::new(ConcurrencyProbeTool::new(Duration::from_millis(5)));
+        let tools = ToolRegistry::new().register(probe as Arc<dyn Tool>);
+        let mut cfg = RunConfig::new("test-model");
+        cfg.max_parallel_tools = 3;
+        let mut agent = Agent::new(provider_with(CALLS), tools, cfg);
+
+        let mut results: Vec<String> = Vec::new();
+        {
+            let mut stream = Box::pin(agent.run(AgentMessage::user("go")));
+            use futures_util::StreamExt;
+            use nini_core::AgentEvent;
+            while let Some(ev) = stream.next().await {
+                if let Ok(AgentEvent::ToolResult { id, .. }) = ev {
+                    results.push(id);
+                }
+            }
+        }
+        assert_eq!(
+            results.len(),
+            CALLS,
+            "expected {CALLS} results: {results:?}"
+        );
+        let unique: std::collections::HashSet<&String> = results.iter().collect();
+        assert_eq!(unique.len(), CALLS, "duplicate tool results: {results:?}");
+    }
+}
+
 // =====================================================================
 // v0.8.6: length-stop tool_call reject gate.
 //

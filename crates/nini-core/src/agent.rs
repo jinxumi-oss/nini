@@ -338,6 +338,15 @@ impl Default for RetrySettings {
     }
 }
 
+/// v0.8.9 (P2-10): default ceiling on concurrently-running tool calls
+/// from one assistant turn.
+///
+/// Eight is comfortably above the "read a pile of files in parallel"
+/// pattern that motivated v0.8.5's parallel execution, and low enough
+/// that a model emitting 30 `bash` calls forks 8 process trees rather
+/// than 30.
+pub const DEFAULT_MAX_PARALLEL_TOOLS: usize = 8;
+
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     pub model: String,
@@ -350,6 +359,22 @@ pub struct RunConfig {
     pub compaction: crate::compaction::CompactionSettings,
     /// Retry policy for transient LLM errors.
     pub retry: RetrySettings,
+    /// v0.8.9 (P2-10): how many tool calls from a single assistant turn
+    /// may be in flight at once.
+    ///
+    /// Models happily emit 30 parallel tool calls, and before this
+    /// limit every one of them got its own future immediately. For
+    /// `bash` that is 30 process trees forked in the same instant, each
+    /// buffering output against `nini_tools::bash::STREAM_CAPTURE_CAP`
+    /// — so this limit and that memory ceiling multiply together.
+    /// v0.8.5 introduced the parallelism because serial execution
+    /// wasted wall-clock time on 14 independent file reads; this keeps
+    /// that win without letting the batch size be whatever the model
+    /// felt like emitting.
+    ///
+    /// `0` means "no limit" — an explicit opt-out that preserves the
+    /// pre-v0.8.9 behaviour.
+    pub max_parallel_tools: usize,
 }
 
 impl RunConfig {
@@ -364,6 +389,7 @@ impl RunConfig {
             tool_context: ToolContext::default(),
             compaction: crate::compaction::CompactionSettings::default(),
             retry: crate::agent::RetrySettings::default(),
+            max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
         }
     }
 }
@@ -1109,9 +1135,22 @@ impl Agent {
                 // tool_results message (that would break the
                 // API contract with the next LLM call).
 
-                // 1. Spawn one future per tool_call. Each future
-                //    captures the abort handle and aborts itself at
-                //    its first await point if abort fires.
+                // 1. Dispatch tool calls, at most
+                //    `config.max_parallel_tools` at a time.
+                //
+                //    v0.8.9 (P2-10): this used to push every tool_call
+                //    into the `FuturesUnordered` at once, so a model
+                //    emitting 30 `bash` calls forked 30 process trees
+                //    simultaneously — each buffering its own output
+                //    against `nini_tools::bash::STREAM_CAPTURE_CAP`.
+                //    The batch size was whatever the model felt like
+                //    emitting. It is now a config knob (default 8).
+                //
+                //    Still a worker pool rather than a semaphore or a
+                //    semaphore-per-batch: futures are pushed lazily as
+                //    earlier ones complete, so a batch of 30 costs the
+                //    same peak as a batch of 8 without adding a round
+                //    of artificial barrier waits.
                 use futures_util::stream::FuturesUnordered;
                 use futures_util::StreamExt;
 
@@ -1172,38 +1211,46 @@ impl Agent {
                         .iter()
                         .map(|s| (s.id.clone(), s.name.clone()))
                         .collect();
+                    // v0.8.9 (P2-10): the un-dispatched tail of the
+                    // batch. The worker pool drains this as slots free
+                    // up; on abort it is simply dropped, and the
+                    // close-out loop below emits a cancelled result for
+                    // each of those `None` slots like any other
+                    // outstanding call.
+
+                    // Declared here, filled from the pool setup below,
+                    // and drained by the refill step in the drain loop.
+                    #[allow(unused_mut)]
+                    let mut pending_queue: Option<std::iter::Enumerate<std::vec::IntoIter<PendingToolCall>>>;
 
                     let mut futures = FuturesUnordered::new();
-                for (idx, spec) in specs.into_iter().enumerate() {
-                    let abort = abort.clone();
-                    let tool_registry = tool_registry.clone();
-                    let config = config.clone();
-                    let tc_name = spec.name.clone();
-                    futures.push(async move {
-                        // Check abort at the start of each future so
-                        // a pre-aborted batch doesn't even begin
-                        // running its tool bodies.
-                        if abort.is_aborted() {
-                            return (
+                    // `0` means "no limit" — an explicit opt-out of the
+                    // ceiling, preserving the pre-v0.8.9 behaviour.
+                    let parallelism = if config.max_parallel_tools == 0 {
+                        specs.len().max(1)
+                    } else {
+                        config.max_parallel_tools
+                    };
+                    {
+                        let mut queue = specs.into_iter().enumerate();
+                        for _ in 0..parallelism {
+                            let Some((idx, spec)) = queue.next() else {
+                                break;
+                            };
+                            futures.push(dispatch_tool_call(
                                 idx,
-                                spec.id.clone(),
-                                tc_name,
-                                ToolOutput::err("[aborted before execution]".to_string()),
-                            );
+                                spec,
+                                tool_registry.clone(),
+                                config.clone(),
+                                abort.clone(),
+                            ));
                         }
-                        let output = run_single_tool(
-                            &spec,
-                            &tool_registry,
-                            &config,
-                            &abort,
-                        )
-                        .await;
-                        (idx, spec.id.clone(), tc_name, output)
-                    });
-                }
+                        pending_queue = Some(queue);
+                    }
 
-                // 2. Drain futures. We use `select!` against abort so
-                //    an abort signal during the drain path drops the
+                // 2. Drain futures, topping the pool back up as each
+                //    one finishes. We check abort *before* publishing a
+                //    result so an abort during the drain path drops the
                 //    whole batch (we never partial-commit).
                 let mut aborted = false;
                 while let Some((idx, tc_id, tc_name, output)) = futures.next().await {
@@ -1221,6 +1268,19 @@ impl Agent {
                         content: output.content,
                         is_error: output.is_error,
                     });
+                    // v0.8.9 (P2-10): a slot just freed up — pull the
+                    // next queued tool call into it.
+                    if let Some(queue) = pending_queue.as_mut() {
+                        if let Some((nidx, nspec)) = queue.next() {
+                            futures.push(dispatch_tool_call(
+                                nidx,
+                                nspec,
+                                tool_registry.clone(),
+                                config.clone(),
+                                abort.clone(),
+                            ));
+                        }
+                    }
                 }
                 drop(futures); // cancel any still-pending futures
 
@@ -1311,6 +1371,35 @@ impl Agent {
             }
         })
     }
+}
+
+/// One unit of work in the v0.8.9 (P2-10) worker pool: run a single
+/// tool call and report `(index, id, name, output)`.
+///
+/// A named function rather than an inline `async move` block because the
+/// pool has two call sites (the initial fill and the per-completion
+/// refill), and two separately-written opaque async-block types will
+/// not unify inside one `FuturesUnordered`.
+async fn dispatch_tool_call(
+    idx: usize,
+    spec: PendingToolCall,
+    tool_registry: ToolRegistry,
+    config: RunConfig,
+    abort: AbortHandle,
+) -> (usize, String, String, ToolOutput) {
+    let tc_name = spec.name.clone();
+    // Check abort at the start so a pre-aborted batch doesn't even begin
+    // running its tool bodies.
+    if abort.is_aborted() {
+        return (
+            idx,
+            spec.id.clone(),
+            tc_name,
+            ToolOutput::err("[aborted before execution]".to_string()),
+        );
+    }
+    let output = run_single_tool(&spec, &tool_registry, &config, &abort).await;
+    (idx, spec.id.clone(), tc_name, output)
 }
 
 /// v0.8.5: extract the per-tool-call execution body so it can be

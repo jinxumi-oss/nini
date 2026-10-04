@@ -19,7 +19,9 @@ pub mod settings;
 pub mod skills;
 pub mod tool;
 
-pub use agent::{AbortHandle, Agent, AgentError, AgentEvent, RunConfig};
+pub use agent::{
+    AbortHandle, Agent, AgentError, AgentEvent, RunConfig, DEFAULT_MAX_PARALLEL_TOOLS,
+};
 pub use entries::{
     AssistantMessage, BranchSummaryEntry, BranchSummaryMessage, CompactionEntry,
     CompactionSummaryMessage, ContentBlock as PiContentBlock, Cost, CustomEntry, CustomMessage,
