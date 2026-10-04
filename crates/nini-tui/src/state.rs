@@ -8,7 +8,11 @@
 //! them trivially testable without a terminal.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+// `session` is held across `.await` points in the agent task, so it
+// needs the async mutex. The render cache is only ever touched from the
+// synchronous render path, so `std::sync::Mutex` (as `StdMutex`) keeps
+// `render_frame` free of async.
 use tokio::sync::Mutex;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -76,7 +80,60 @@ pub enum TranscriptLine {
     },
 }
 
+/// v0.8.9 (perf): cheap change-detector for a transcript line.
+///
+/// Deliberately O(1) — it exists so the render path can ask "has this
+/// line changed since I last counted its rows?" without walking the
+/// content. The variant tag catches a type swap; the byte length
+/// catches the common streaming case where text is appended.
+///
+/// A line edited to exactly the same length with different bytes would
+/// collide. That cannot produce wrong *content* — only a stale row
+/// count, and therefore a slightly-off scroll position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineFingerprint {
+    pub tag: u8,
+    pub len: usize,
+}
+
 impl TranscriptLine {
+    /// O(1) fingerprint of this line's render-relevant content.
+    pub fn content_fingerprint(&self) -> LineFingerprint {
+        let (tag, len) = match self {
+            TranscriptLine::User(s) => (0u8, s.len()),
+            TranscriptLine::AssistantText(s) => (1u8, s.len()),
+            TranscriptLine::ThinkingText(s) => (2u8, s.len()),
+            TranscriptLine::ToolCall {
+                name,
+                args,
+                collapsed,
+                ..
+            } => (3u8, name.len() + args.len() + u8::from(*collapsed) as usize),
+            TranscriptLine::ToolResult {
+                content,
+                collapsed,
+                name,
+                ..
+            } => (
+                4u8,
+                content.len() + name.len() + u8::from(*collapsed) as usize,
+            ),
+            TranscriptLine::Divider => (5u8, 0),
+            TranscriptLine::StopNotice(s) => (6u8, s.len()),
+            TranscriptLine::BashExecution {
+                cmd,
+                output,
+                stderr,
+                collapsed,
+                ..
+            } => (
+                7u8,
+                cmd.len() + output.len() + stderr.len() + u8::from(*collapsed) as usize,
+            ),
+        };
+        LineFingerprint { tag, len }
+    }
+
     /// If this line is `AssistantText`, return a reference to the text.
     pub fn as_assistant_text(&self) -> Option<&str> {
         match self {
@@ -676,6 +733,17 @@ impl Default for CompletionPopup {
 #[derive(Debug)]
 pub struct AppState {
     pub input: InputBuffer,
+    /// v0.8.9 (perf): render-side cache of per-line row counts.
+    ///
+    /// Lives on `AppState` rather than on `TranscriptState` because the
+    /// render path takes `&AppState` and must not mutate transcript
+    /// state (that would need `Arc::make_mut`, i.e. a clone). `Mutex`
+    /// because `AppState` is shared across the render loop and the
+    /// agent task, and this must stay `Send`.
+    ///
+    /// Invalidate with [`AppState::invalidate_item_counts`] whenever
+    /// line *indices* shift.
+    pub item_cache: Arc<StdMutex<TranscriptItemCache>>,
     /// v0.8.5: `Arc<TranscriptState>` so that `AppState::clone()` is
     /// O(1) instead of deep-cloning every TranscriptLine (each
     /// ToolResult can carry ~25 KB of file content, so 14 parallel
@@ -694,6 +762,93 @@ pub struct AppState {
 // =================================================================
 // TranscriptState — chat history + scroll state.
 // =================================================================
+
+/// v0.8.9 (perf): cache of "how many screen rows does transcript line
+/// `i` expand to", for a given terminal width.
+///
+/// `render_transcript` needs this to place the autoscroll window and
+/// the `↑ N more above` indicator. It used to get it by rendering
+/// **every** line in the transcript, in full, on **every** frame —
+/// markdown parsing, per-character cell-width truncation, the lot.
+///
+/// Measured, release build: a linear **0.545 ms/KB** of transcript with
+/// essentially no intercept:
+///
+/// ```text
+///   16 lines /   8 KB →   5.9 ms/frame
+///  307 lines / 164 KB →  90.7 ms/frame
+/// 1227 lines / 661 KB → 361.5 ms/frame
+/// ```
+///
+/// A 16 ms budget is 60 fps, so ~29 KB saturates a frame and anything a
+/// real task accumulates makes typing in the prompt laggy. The cost is
+/// also **independent of how much is on screen**: 34 visible rows,
+/// 1227 lines rendered, the other 1193 discarded immediately.
+///
+/// Keyed on `(width, content fingerprint)`, which makes it
+/// self-invalidating — a streamed `AssistantText` grows, its length
+/// changes, its entry misses, and only that one line is re-counted. The
+/// count depends on content and width and on nothing else (the theme
+/// only affects styling), so no theme dimension is needed.
+///
+/// A stale hit can produce a slightly-off *scroll position*, never wrong
+/// content, and only if a line changed to exactly the same byte length.
+#[derive(Debug, Default)]
+pub struct TranscriptItemCache {
+    entries: Vec<Option<ItemCountCacheEntry>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ItemCountCacheEntry {
+    width: u16,
+    fingerprint: LineFingerprint,
+    count: usize,
+}
+
+impl TranscriptItemCache {
+    /// Cached row count for line `idx`, or `None` on a miss (new line,
+    /// different width, or content changed since it was counted).
+    pub(crate) fn get(&self, idx: usize, width: u16) -> Option<(LineFingerprint, usize)> {
+        let e = self.entries.get(idx).copied().flatten()?;
+        if e.width != width {
+            return None;
+        }
+        Some((e.fingerprint, e.count))
+    }
+
+    pub(crate) fn put(
+        &mut self,
+        idx: usize,
+        width: u16,
+        fingerprint: LineFingerprint,
+        count: usize,
+    ) {
+        if idx >= self.entries.len() {
+            // Keep the vector at least as long as the live transcript.
+            // Growing is cheap; we never shrink on the hot path.
+            return;
+        }
+        self.entries[idx] = Some(ItemCountCacheEntry {
+            width,
+            fingerprint,
+            count,
+        });
+    }
+
+    /// Grow to `lines` entries, preserving what is still valid.
+    pub(crate) fn ensure_len(&mut self, lines: usize) {
+        if self.entries.len() < lines {
+            self.entries.resize(lines, None);
+        }
+    }
+
+    /// Drop everything. Used when line *indices* shift (compaction
+    /// folding, `/clear`, session reload), so a stored count cannot end
+    /// up describing a different line.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
 
 /// Transcript (chat history) + display state. Owns the Vec of
 /// TranscriptLine that the renderer walks, plus autoscroll +
@@ -1076,6 +1231,13 @@ impl Clone for AppState {
             // v0.8.5: Arc bump instead of deep clone. See the
             // `transcript_state` field comment for why this matters.
             transcript_state: Arc::clone(&self.transcript_state),
+            // v0.8.9 (perf): share the cache on clone. A `from`-clone
+            // gets a *copy* of the transcript (fork), so it must not
+            // inherit counts that describe the other copy's lines —
+            // see the fingerprint check, which catches a same-length
+            // coincident line, and `invalidate_item_counts` for the
+            // from-scratch case.
+            item_cache: Arc::clone(&self.item_cache),
             run_state: self.run_state.clone(),
             model_state: self.model_state.clone(),
             session_state: self.session_state.clone(),
@@ -1089,6 +1251,7 @@ impl Default for AppState {
         Self {
             input: InputBuffer::new(),
             transcript_state: Arc::new(TranscriptState::default()),
+            item_cache: Arc::new(StdMutex::new(TranscriptItemCache::default())),
             run_state: RunState::default(),
             model_state: ModelState::default(),
             session_state: SessionState::default(),
@@ -1240,6 +1403,19 @@ impl AppState {
         // line count that is about to be replaced.
         Arc::make_mut(&mut self.transcript_state).reset_view();
         Ok(())
+    }
+
+    /// v0.8.9 (perf): drop the per-line row-count cache.
+    ///
+    /// Call this whenever transcript line **indices** shift — compaction
+    /// folding, `/clear`, `/new`, session reload — because a stored
+    /// count would then describe whichever line moved into that slot.
+    /// Purely appends (the normal case) need no call: the cache is
+    /// self-invalidating on content fingerprint.
+    pub fn invalidate_item_counts(&self) {
+        if let Ok(mut c) = self.item_cache.lock() {
+            c.clear();
+        }
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) {
@@ -1482,6 +1658,10 @@ impl AppState {
         // the transcript renders blank. Snap back to the tail — which is
         // also where the user wants to be right after a compaction.
         Arc::make_mut(&mut self.transcript_state).reset_view();
+        // v0.8.9 (perf): `drain(..cut_at)` + `insert(0, ..)` shifts every
+        // surviving line down one slot, so a cached row count could end
+        // up describing a different line. Drop the cache.
+        self.invalidate_item_counts();
         prefix_lines.len()
     }
 

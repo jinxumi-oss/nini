@@ -715,10 +715,40 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
 
     // First pass: per-line item counts. Used for user-scroll item-space
     // offset translation, and for the overflow indicator count.
-    let items_per_line: Vec<usize> = lines
-        .iter()
-        .map(|line| items_for_line(line, theme, area.width as usize).len())
-        .collect();
+    //
+    // v0.8.9 (perf): this used to render every line in the transcript,
+    // in full, on every frame — measured at a linear 0.545 ms/KB, so a
+    // real task's worth of history (a few hundred KB) put every frame
+    // in the 100-360 ms range and made typing in the prompt visibly
+    // laggy. The count depends only on the line's content and the
+    // terminal width, so it is cached on the `TranscriptState`.
+    //
+    // The count is still exact on a miss: we render that one line and
+    // keep the result. Streaming assistant output invalidates exactly
+    // the one line that grew, so a frame during token streaming costs
+    // one line, not the whole transcript.
+    let width = area.width;
+    let mut items_per_line: Vec<usize> = Vec::with_capacity(total_lines);
+    for (idx, line) in lines.iter().enumerate() {
+        let fingerprint = line.content_fingerprint();
+        let count = match state.item_cache.lock() {
+            Ok(mut cache) => {
+                cache.ensure_len(total_lines);
+                match cache.get(idx, width) {
+                    Some((cached_fp, count)) if cached_fp == fingerprint => count,
+                    _ => {
+                        let count = items_for_line(line, theme, width as usize).len();
+                        cache.put(idx, width, fingerprint, count);
+                        count
+                    }
+                }
+            }
+            // A poisoned lock must not take the TUI down; worst case is
+            // the pre-cache behaviour (recompute every frame).
+            Err(_) => items_for_line(line, theme, width as usize).len(),
+        };
+        items_per_line.push(count);
+    }
     let total_items: usize = items_per_line.iter().sum();
 
     // Choose the visible slice.

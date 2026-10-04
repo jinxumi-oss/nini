@@ -845,6 +845,8 @@ fn cmd_new(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -
     let ts = Arc::make_mut(&mut state.transcript_state);
     ts.lines.clear();
     ts.reset_view();
+    // v0.8.9 (perf): the new session reuses the same line indices.
+    state.invalidate_item_counts();
     state.run_state.tokens = Default::default();
 
     // Derive a session file path: ~/.pi/agent/sessions/<project>/<timestamp>.jsonl
@@ -1067,6 +1069,8 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
         let ts = Arc::make_mut(&mut state.transcript_state);
         ts.lines.clear();
         ts.reset_view();
+        // v0.8.9 (perf): same — the rebuilt transcript reuses indices.
+        state.invalidate_item_counts();
         let session_id = state.session_state.session_id.clone().unwrap_or_default();
         // Take ownership of the session Arc so we can lock it without
         // keeping a borrow of state.

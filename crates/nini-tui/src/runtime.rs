@@ -924,6 +924,9 @@ fn apply_selector_result(
                     let ts = Arc::make_mut(&mut g.transcript_state);
                     ts.lines.clear();
                     ts.reset_view();
+                    // v0.8.9 (perf): the line indices are about to be
+                    // reused by new content.
+                    g.invalidate_item_counts();
                     g.push_divider();
                 }
                 "action:exit" => {
