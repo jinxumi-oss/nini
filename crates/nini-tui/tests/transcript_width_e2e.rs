@@ -821,3 +821,180 @@ fn scroll_indicator_does_not_quote_an_impossible_line_count() {
         "the indicator quoted an impossible offset:\n{transcript}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 8. The footer must not lie about what it cut (v0.8.9 P1-6)
+// ---------------------------------------------------------------------------
+//
+// Both footer rows were handed to `Paragraph` whole and clipped at the
+// screen edge. At 40 columns:
+//
+//   line 1:  ~/very/deep/nested/project/path/that/kee     ← cut, unmarked
+//   line 2:   nini   idle  some-extremely-long-model-      ← cut, unmarked
+//
+// and at 80 columns the session pill degraded to `[no `. Worse, the
+// stats line measured its halves with `chars().count()` (1 cell per
+// CJK character instead of 2) and, when the halves didn't fit, appended
+// the right half *anyway* past the terminal edge — so the thing pushed
+// off screen was the model name, the one label v0.8.8 spent a whole
+// release plumbing through from `--model`.
+//
+// The footer is the first two rows of the frame.
+
+fn footer_rows(s: &AppState, w: u16, h: u16) -> Vec<String> {
+    let rows = frame_rows(s, w, h);
+    rows[..2].to_vec()
+}
+
+fn state_with_long_cwd_and_model() -> AppState {
+    let mut s = AppState::new("some-extremely-long-model-name-that-will-not-fit");
+    s.session_state.cwd = Some(
+        "/home/jin/very/deep/nested/project/path/that/keeps/going/on/and/on/forever/nini".into(),
+    );
+    s
+}
+
+#[test]
+fn footer_rows_never_exceed_the_terminal_width() {
+    let s = state_with_long_cwd_and_model();
+    for w in [20u16, 30, 40, 60, 80, 120] {
+        let rows = footer_rows(&s, w, 24);
+        for (i, row) in rows.iter().enumerate() {
+            assert!(
+                row_width(row) <= w as usize,
+                "footer row {i} is {} cells at {w} cols: {row:?}",
+                row_width(row)
+            );
+        }
+    }
+}
+
+#[test]
+fn long_cwd_is_marked_and_cut_from_the_left() {
+    let s = state_with_long_cwd_and_model();
+    for w in [20u16, 30, 40, 60] {
+        let pwd = &footer_rows(&s, w, 24)[0];
+        assert!(
+            pwd.contains('…'),
+            "long cwd at {w} cols is cut with no marker: {pwd:?}"
+        );
+        // The tail of a path is the part that identifies the project, so
+        // the cut must come from the left — never show the head.
+        assert!(
+            !pwd.contains("/home/jin"),
+            "cwd truncation kept the head instead of the tail at {w} cols: {pwd:?}"
+        );
+        assert!(
+            pwd.starts_with('…'),
+            "a head-cut cwd must start with the marker: {pwd:?}"
+        );
+    }
+}
+
+#[test]
+fn cwd_tail_survives_when_there_is_room() {
+    // At a width where the whole tail can fit, it must be there. (At 20
+    // columns a 77-character path can only keep 19 cells, so "nini" is
+    // physically unreachable — the test above asserts the *direction* of
+    // the cut instead, which is the part that is actually a bug.)
+    let s = state_with_long_cwd_and_model();
+    for w in [60u16, 80, 120] {
+        let pwd = &footer_rows(&s, w, 24)[0];
+        assert!(
+            pwd.contains("nini"),
+            "cwd tail dropped at {w} cols where it fits: {pwd:?}"
+        );
+    }
+}
+
+#[test]
+fn model_name_survives_narrow_terminals() {
+    // The regression that matters: the right half used to be appended
+    // past the terminal edge, so the model name — the one label v0.8.8
+    // spent a release plumbing through from `--model` — got pushed off
+    // screen. A name that *can* fit must always be shown in full.
+    let mut s = AppState::new("claude-sonnet-4-5");
+    s.session_state.cwd = Some("/home/jin/nini".into());
+    for w in [20u16, 30, 40, 60, 80] {
+        let stats = &footer_rows(&s, w, 24)[1];
+        assert!(
+            stats.contains("claude-sonnet-4-5"),
+            "model identity lost at {w} cols: {stats:?}"
+        );
+    }
+}
+
+#[test]
+fn pathological_model_name_is_cut_but_never_overflows() {
+    // 47 cells of model id cannot fit in a 40-column terminal no matter
+    // what. The correct behaviour is a head-cut with a marker, and a
+    // row that stays inside the terminal — not an overflow.
+    let s = state_with_long_cwd_and_model();
+    for w in [20u16, 30, 40] {
+        let stats = &footer_rows(&s, w, 24)[1];
+        assert!(
+            stats.contains('…'),
+            "a 47-cell model id at {w} cols must be marked as cut: {stats:?}"
+        );
+        assert!(
+            !stats.contains("……"),
+            "double ellipsis on screen: {stats:?}"
+        );
+        assert!(
+            stats.contains("-not-fit") || stats.contains("model"),
+            "head-cut should keep the identifying tail: {stats:?}"
+        );
+    }
+}
+
+#[test]
+fn wide_terminal_shows_the_footer_uncut() {
+    // The other direction — at a comfortable width nothing should be
+    // truncated, and the model name should be complete.
+    let mut s = AppState::new("claude-sonnet-4-5");
+    s.session_state.cwd = Some("/home/jin/nini".into());
+    let rows = footer_rows(&s, 120, 24);
+    assert!(
+        !rows[0].contains('…'),
+        "short cwd was truncated: {:?}",
+        rows[0]
+    );
+    assert!(
+        rows[1].contains("claude-sonnet-4-5"),
+        "model name should be complete at 120 cols: {:?}",
+        rows[1]
+    );
+}
+
+#[test]
+fn cjk_model_name_is_measured_in_cells_not_chars() {
+    // A CJK model id is half the char count of its cell width. With
+    // `chars().count()` the padding came up short and the right half
+    // spilled off the right edge.
+    let mut s = AppState::new("模型名称很长的测试用例");
+    s.session_state.cwd = Some("/home/jin/nini".into());
+    for w in [20u16, 30, 40, 60] {
+        let rows = footer_rows(&s, w, 24);
+        for (i, row) in rows.iter().enumerate() {
+            assert!(
+                row_width(row) <= w as usize,
+                "CJK footer row {i} is {} cells at {w} cols: {row:?}",
+                row_width(row)
+            );
+        }
+    }
+}
+
+#[test]
+fn session_pill_is_dropped_whole_not_shown_half() {
+    // `[no ` tells the user strictly less than no pill at all.
+    let mut s = AppState::new("m");
+    s.session_state.cwd = Some("/home/jin/very/deep/nested/project/path/that/keeps/going".into());
+    for w in [20u16, 30, 40] {
+        let pwd = &footer_rows(&s, w, 24)[0];
+        assert!(
+            !pwd.contains("[no"),
+            "half-shown session pill at {w} cols: {pwd:?}"
+        );
+    }
+}

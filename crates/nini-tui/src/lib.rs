@@ -52,4 +52,6 @@ pub use keys::{default_keymap, resolve, Key, KeyAction, KeyBinding, KeyModifiers
 pub use runtime::run;
 pub use state::{AppState, InputBuffer, RunMode, TokenStats, TranscriptLine};
 pub use theme::{Theme, COLOR_NAMES};
-pub use width::{display_width, display_width_clamped, truncate_cells, truncate_line_cells};
+pub use width::{
+    display_width, display_width_clamped, truncate_cells, truncate_cells_head, truncate_line_cells,
+};

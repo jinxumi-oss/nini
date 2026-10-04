@@ -130,6 +130,39 @@ pub fn truncate_cells(s: &str, max: usize) -> String {
     out
 }
 
+/// Truncate `s` to at most `max` cells **from the left**, prefixing
+/// `…`.
+///
+/// Use this where the *tail* is the informative end: filesystem paths
+/// (`~/a/b/c/nini` → `…/b/c/nini`) and model identifiers
+/// (`anthropic/claude-sonnet-4-5` → `…claude-sonnet-4-5`). Cutting
+/// these from the right throws away exactly the part that distinguishes
+/// them.
+pub fn truncate_cells_head(s: &str, max: usize) -> String {
+    if display_width(s) <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    if max == 1 {
+        return "…".to_string();
+    }
+    let budget = max - 1;
+    // Walk backwards accumulating width, then cut on a char boundary.
+    let mut end = s.len();
+    let mut consumed = 0usize;
+    for (byte_idx, c) in s.char_indices().rev() {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if consumed + cw > budget {
+            end = byte_idx + c.len_utf8();
+            break;
+        }
+        consumed += cw;
+    }
+    format!("…{}", &s[ceil_char_boundary(s, end)..])
+}
+
 /// [`truncate_cells`] for a styled ratatui `Line`, preserving each
 /// span's style. The `…` inherits the style of the span it was cut
 /// inside, so a truncated colored line still reads as one object.
@@ -300,6 +333,44 @@ mod tests {
         for s in samples {
             for max in 0..40usize {
                 let out = truncate_cells(s, max);
+                assert!(
+                    display_width(&out) <= max,
+                    "{s:?} at max={max} produced width {}",
+                    display_width(&out)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn truncate_cells_head_keeps_the_tail() {
+        // Paths and model ids: the tail is the informative end.
+        assert_eq!(truncate_cells_head("~/a/b/c/nini", 20), "~/a/b/c/nini");
+        assert_eq!(truncate_cells_head("~/a/b/c/nini", 10), "…/b/c/nini"); // 12 chars -> keep last 9
+        assert_eq!(
+            truncate_cells_head("anthropic/claude-sonnet-4-5", 12),
+            "…-sonnet-4-5"
+        ); // keep last 11
+    }
+
+    #[test]
+    fn truncate_cells_head_degenerate_budgets() {
+        assert_eq!(truncate_cells_head("abcdef", 0), "");
+        assert_eq!(truncate_cells_head("abcdef", 1), "…");
+        assert_eq!(truncate_cells_head("", 5), "");
+    }
+
+    #[test]
+    fn truncate_cells_head_never_exceeds_the_budget() {
+        let samples = [
+            "plain ascii that is long enough to cut",
+            "中文路径很长需要从左边截断",
+            "mixed 中文 and ascii together",
+            "💭 emoji 🧠 tail",
+        ];
+        for s in samples {
+            for max in 0..40usize {
+                let out = truncate_cells_head(s, max);
                 assert!(
                     display_width(&out) <= max,
                     "{s:?} at max={max} produced width {}",

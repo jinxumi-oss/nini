@@ -26,6 +26,7 @@ use crate::rich::{
 use crate::selector::{SelectorItem, SelectorPanel};
 use crate::state::{AppState, RunMode, TranscriptLine};
 use crate::theme::Theme;
+use crate::width::{display_width, truncate_cells, truncate_cells_head};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as RLine, Span};
@@ -210,7 +211,104 @@ fn render_pwd_line(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
         theme.fg_style("dim"),
     ));
 
+    // v0.8.9 (P1-6): the line used to be handed to `Paragraph` whole
+    // and clipped at the screen edge with no marker, so a long cwd read
+    // as `~/very/deep/nested/project/path/that/kee` — the user could
+    // not tell it was cut, and a long session tag degraded to `[no `.
+    //
+    // Priorities, worst-to-best:
+    //   1. session tag  — least useful. Dropped whole, never half-shown.
+    //   2. git branch   — truncated, not dropped.
+    //   3. cwd          — truncated **from the left**, because the tail
+    //      of a path is the part that identifies the project.
+    let width = area.width as usize;
+    if line_width(&spans) > width {
+        spans = fit_pwd_line(spans, &session_disp, theme, width);
+    }
+
     f.render_widget(Paragraph::new(RLine::from(spans)), area);
+}
+
+/// Cell width of a span list. v0.8.9 (P1-6): this used to be
+/// `chars().count()` in the stats line, which under-counts CJK (1 char
+/// = 2 cells) and therefore under-pads the right-aligned half — pushing
+/// the model name off screen for any non-ASCII input.
+fn line_width(spans: &[Span<'static>]) -> usize {
+    spans
+        .iter()
+        .map(|s| display_width(s.content.as_ref()))
+        .sum()
+}
+
+/// Fit the pwd line into `width` cells, in the priority order described
+/// on [`render_pwd_line`].
+fn fit_pwd_line(
+    spans: Vec<Span<'static>>,
+    session_disp: &str,
+    theme: &Theme,
+    width: usize,
+) -> Vec<Span<'static>> {
+    // Drop the session tag first — the whole `[...]` span plus its
+    // preceding separator. A half-shown `[no ` tells the user less than
+    // no session pill at all.
+    let without_session: Vec<Span<'static>> = spans
+        .iter()
+        .filter(|s| s.content.as_ref() != format!("[{session_disp}]"))
+        .cloned()
+        .collect();
+    // The separator only existed to join the session tag; without it, a
+    // trailing `  •  ` is noise.
+    let mut kept: Vec<Span<'static>> = without_session
+        .into_iter()
+        .filter(|s| s.content.as_ref() != "  \u{2022}  ")
+        .collect();
+
+    if line_width(&kept) > width {
+        // Still too long: head-truncate so the tail of the path — the
+        // part that identifies the project — survives.
+        kept = truncate_spans_head(&kept, width);
+    }
+    let _ = theme;
+    kept
+}
+
+/// Truncate a span list to `max` cells from the left, prefixing `…` on
+/// the first span. Used for the pwd line, where the tail identifies the
+/// directory.
+fn truncate_spans_head(spans: &[Span<'static>], max: usize) -> Vec<Span<'static>> {
+    if max == 0 {
+        return Vec::new();
+    }
+    let total = line_width(spans);
+    if total <= max {
+        return spans.to_vec();
+    }
+    // Which span does the cut land in, and how many cells survive?
+    let keep_from = total - (max - 1);
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut acc = 0usize;
+    let mut cut_done = false;
+    for (i, s) in spans.iter().enumerate() {
+        let w = display_width(s.content.as_ref());
+        if cut_done {
+            break;
+        }
+        if acc + w <= keep_from {
+            acc += w;
+            out.push(s.clone());
+            continue;
+        }
+        let keep = keep_from.saturating_sub(acc);
+        // `truncate_cells_head` already prefixes the marker; adding one
+        // here produced "……" on screen (caught by the e2e test).
+        let _ = i;
+        out.push(Span::styled(
+            truncate_cells_head(s.content.as_ref(), keep + 1),
+            s.style,
+        ));
+        cut_done = true;
+    }
+    out
 }
 
 /// Line 2 of the footer: brand badge + stats (left) ............ (provider) model + thinking + [theme] (right).
@@ -337,27 +435,97 @@ fn render_stats_line(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     }
 
     // ---- Compose with right-alignment ----
-    let left_width: usize = left
-        .iter()
-        .map(|s| s.content.as_ref().chars().count())
-        .sum();
-    let right_width: usize = right
-        .iter()
-        .map(|s| s.content.as_ref().chars().count())
-        .sum();
+    //
+    // v0.8.9 (P1-6): three problems, all visible in a 40-column
+    // terminal:
+    //
+    //   * widths were measured with `chars().count()`, so a CJK model
+    //     name or status was counted as 1 cell per character while
+    //     rendering as 2 — the padding came up short and the right
+    //     half spilled off screen.
+    //   * when the halves didn't fit, the code kept a 2-space gap and
+    //     appended `right` **anyway**, guaranteeing an overflow. The
+    //     thing that got pushed off was the model name — the single
+    //     most useful thing on the line. v0.8.8 went to some trouble
+    //     to plumb `--model` through to this label.
+    //   * nothing was ever marked as cut.
+    //
+    // New priority: the model identity on the right is never the thing
+    // that gets sacrificed. The left half (brand, phase, ctx%, tokens,
+    // cost) is truncated with `…` to make room.
     let width = area.width as usize;
     let min_gap = 2;
 
-    let mut spans = left;
-    if left_width + right_width + min_gap <= width {
-        spans.push(Span::raw(" ".repeat(width - left_width - right_width)));
+    // A right half wider than the terminal on its own (a very long
+    // model id) gets head-truncated — the tail is what identifies it.
+    let right: Vec<Span<'static>> = if line_width(&right) > width {
+        truncate_spans_head(&right, width)
     } else {
-        // Not enough room: still keep a min gap so the two halves don't collide.
-        spans.push(Span::raw(" ".repeat(min_gap)));
-    }
+        right
+    };
+    let right_width = line_width(&right);
+
+    let left_fits = line_width(&left) + right_width + min_gap <= width;
+    let left_budget = width.saturating_sub(right_width + min_gap);
+    let left: Vec<Span<'static>> = if left_fits {
+        std::mem::take(&mut left)
+    } else if left_budget == 0 {
+        // No room for anything on the left at all.
+        Vec::new()
+    } else {
+        truncate_spans_tail(&left, left_budget)
+    };
+    let left_width = line_width(&left);
+    let left_is_empty = left.is_empty();
+
+    let mut spans = left;
+    // When the left half had to be dropped entirely there is nothing to
+    // separate, and adding `min_gap` would push the line one to two
+    // cells past the terminal — which is exactly how the right half used
+    // to escape the screen.
+    let gap = if left_is_empty {
+        0
+    } else {
+        width.saturating_sub(left_width + right_width).max(min_gap)
+    };
+    spans.push(Span::raw(" ".repeat(gap)));
     spans.extend(right);
 
     f.render_widget(Paragraph::new(RLine::from(spans)), area);
+}
+
+/// Truncate a span list to `max` cells from the right, appending `…` to
+/// the span the cut lands in. Used for the stats line's left half, where
+/// the head (brand + phase) matters more than the tail (token counts).
+fn truncate_spans_tail(spans: &[Span<'static>], max: usize) -> Vec<Span<'static>> {
+    if max == 0 {
+        return Vec::new();
+    }
+    let total = line_width(spans);
+    if total <= max {
+        return spans.to_vec();
+    }
+    // Everything after this many cells is dropped.
+    let keep_to = max.saturating_sub(1);
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut acc = 0usize;
+    let mut cut_done = false;
+    for s in spans.iter() {
+        if cut_done {
+            break;
+        }
+        let w = display_width(s.content.as_ref());
+        if acc + w <= keep_to {
+            acc += w;
+            out.push(s.clone());
+            continue;
+        }
+        let keep = keep_to.saturating_sub(acc);
+        let tail = truncate_cells(s.content.as_ref(), keep + 1);
+        out.push(Span::styled(tail, s.style));
+        cut_done = true;
+    }
+    out
 }
 
 /// Render a simple ASCII progress bar for context-window usage.
