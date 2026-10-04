@@ -662,12 +662,23 @@ fn items_for_line(
     theme: &Theme,
     area_width: usize,
 ) -> Vec<ListItem<'static>> {
+    // v0.8.9 (P1-3): one width for every branch. Only the ToolResult
+    // arm used to receive it, which is why a 210-character user message
+    // rendered as `> STARTAAAA…` with its tail silently gone — the
+    // `List` widget does not wrap, it cuts at the screen edge.
+    // `None` when called outside a Frame (tests) or on a degenerate
+    // width, so the renderers fall back to their legacy budgets.
+    let max_w = if area_width > 4 {
+        Some(area_width)
+    } else {
+        None
+    };
     match line {
-        TranscriptLine::User(text) => render_user_message(text, theme)
+        TranscriptLine::User(text) => render_user_message(text, theme, max_w)
             .into_iter()
             .map(ListItem::new)
             .collect(),
-        TranscriptLine::AssistantText(text) => render_assistant_message(text, theme)
+        TranscriptLine::AssistantText(text) => render_assistant_message(text, theme, max_w)
             .into_iter()
             .map(ListItem::new)
             .collect(),
@@ -688,7 +699,7 @@ fn items_for_line(
             args,
             collapsed,
         } => {
-            let lines = render_tool_call(name, args, theme);
+            let lines = render_tool_call(name, args, theme, max_w);
             let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
             if *collapsed {
                 if !out.is_empty() {
@@ -706,15 +717,8 @@ fn items_for_line(
             collapsed,
             duration_ms,
         } => {
-            // v0.8.7 (ux-002): pass the actual area width so per-line
-            // truncation accounts for the visible terminal width. When
-            // the renderer is called outside a Frame (tests), area.width
-            // is 0 and we fall back to the legacy 200-byte budget.
-            let max_w = if area_width > 4 {
-                Some(area_width)
-            } else {
-                None
-            };
+            // `max_w` is computed once at the top of this function
+            // (v0.8.9 P1-3) and shared by every arm.
             let lines = render_tool_result(name, *ok, content, *duration_ms, theme, max_w);
             let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
             if *collapsed {
@@ -740,8 +744,16 @@ fn items_for_line(
             collapsed,
             ..
         } => {
-            let lines =
-                render_bash_execution(cmd, output, stderr, *ok, *exit_code, *duration_ms, theme);
+            let lines = render_bash_execution(
+                cmd,
+                output,
+                stderr,
+                *ok,
+                *exit_code,
+                *duration_ms,
+                theme,
+                max_w,
+            );
             let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
             if *collapsed {
                 if !out.is_empty() {

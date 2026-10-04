@@ -13,7 +13,7 @@
 
 use crate::markdown::render_markdown;
 use crate::theme::Theme;
-use crate::width::{display_width, floor_char_boundary};
+use crate::width::{display_width, floor_char_boundary, truncate_cells, truncate_line_cells};
 use ratatui::text::{Line as RLine, Span};
 
 /// Maximum bytes to keep from a single bash-output preview.
@@ -28,7 +28,11 @@ pub const TOOL_RESULT_PREVIEW_MAX_BYTES: usize = 2_000;
 /// If `text` looks like it contains inline ANSI escapes, they're
 /// stripped (Pi behavior — TUI grids can't render 24-bit color
 /// reliably across terminals). Markdown is then applied.
-pub fn render_assistant_message(text: &str, theme: &Theme) -> Vec<RLine<'static>> {
+pub fn render_assistant_message(
+    text: &str,
+    theme: &Theme,
+    max_width: Option<usize>,
+) -> Vec<RLine<'static>> {
     if text.is_empty() {
         return vec![RLine::from(Span::raw(""))];
     }
@@ -37,7 +41,21 @@ pub fn render_assistant_message(text: &str, theme: &Theme) -> Vec<RLine<'static>
     // Auto-link bare URLs into OSC 8 hyperlinks so terminals like
     // iTerm2 / Kitty / WezTerm render them as clickable links.
     let linked = crate::hyperlink::auto_link(&clean);
-    render_markdown(&linked, theme)
+    let lines = render_markdown(&linked, theme);
+    // v0.8.9 (P1-3): clamp to the real terminal width. The markdown
+    // renderer has no idea how wide the screen is — it emitted
+    // arbitrarily long lines and relied on "ratatui will clip anyway",
+    // but the transcript renders through a `List`, and `List` cuts at
+    // the screen edge with no marker. Clamping the finished lines
+    // covers every markdown construct (headings, code fences, tables,
+    // nested lists) without threading a width through markdown.rs.
+    match max_width {
+        Some(w) if w > 0 => lines
+            .into_iter()
+            .map(|l| truncate_line_cells(&l, w))
+            .collect(),
+        _ => lines,
+    }
 }
 
 /// Render a user message: `> ` prefix + plain text.
@@ -45,20 +63,31 @@ pub fn render_assistant_message(text: &str, theme: &Theme) -> Vec<RLine<'static>
 /// v0.8.3: Pi parity — wrap each line with `bg("userMessageBg")` so the
 /// user turn stands out from assistant output. `> ` prefix is rendered
 /// in `userMessageText` color, body text in `userMessageText` too.
-pub fn render_user_message(text: &str, theme: &Theme) -> Vec<RLine<'static>> {
+pub fn render_user_message(
+    text: &str,
+    theme: &Theme,
+    max_width: Option<usize>,
+) -> Vec<RLine<'static>> {
     let bg = theme.bg_style("userMessageBg");
     let fg = theme.color("userMessageText");
     let make_prefix = || Span::styled("> ", bg.fg(fg).add_modifier(ratatui::style::Modifier::BOLD));
     let make_body = |line: &str| Span::styled(line.to_string(), bg.fg(fg));
+    // The `> ` prefix and the two-space continuation indent both cost
+    // cells, so the body budget is narrower than the terminal.
+    let body_budget = max_width.map(|w| w.saturating_sub(2));
     // Break on newline so multi-line user input renders as multi-line.
     let mut out: Vec<RLine<'static>> = Vec::new();
     let mut first = true;
     for line in text.split('\n') {
+        let body = match body_budget {
+            Some(b) if b > 0 => truncate_cells(line, b),
+            _ => line.to_string(),
+        };
         if first {
-            out.push(RLine::from(vec![make_prefix(), make_body(line)]));
+            out.push(RLine::from(vec![make_prefix(), make_body(&body)]));
             first = false;
         } else {
-            out.push(RLine::from(make_body(&format!("  {line}"))));
+            out.push(RLine::from(make_body(&format!("  {body}"))));
         }
     }
     if out.is_empty() {
@@ -67,30 +96,47 @@ pub fn render_user_message(text: &str, theme: &Theme) -> Vec<RLine<'static>> {
     out
 }
 
+/// Cell budget for `args` when the caller has no terminal width (unit
+/// tests, `inspect_*` examples). Sits where the old hard-coded 120
+/// *byte* budget landed for ASCII so existing snapshots barely move —
+/// but it is now the right unit, so CJK no longer overflows.
+pub const TOOL_CALL_ARGS_FALLBACK_CELLS: usize = 100;
+
 /// Render a tool-call announcement: `[tool call] <name>(<args>)`.
 ///
 /// v0.8.3: Wrap the call row with `bg("toolPendingBg")` so it visually
 /// pops as a pending operation (Pi's `ToolExecutionComponent` pattern).
 /// Title color uses `toolTitle` (emphasized); args in `toolOutput`.
-pub fn render_tool_call(name: &str, args: &str, theme: &Theme) -> Vec<RLine<'static>> {
-    // v0.8.4 (bugfix): byte-slicing at a hard index panics on
-    // multi-byte UTF-8 (CJK characters are 3 bytes each). Use a
-    // hand-rolled `floor_char_boundary` to truncate at the
-    // largest byte index ≤ 120 that is a valid character
-    // boundary. We avoid `str::floor_char_boundary` (stable
-    // 1.91) because nini's MSRV is 1.85. Without this guard, a
-    // tool whose `args` happen to land mid-character at byte 120
-    // (very common with Chinese / Japanese / Korean text)
-    // panicked the entire TUI with
-    // `end byte index 120 is not a char boundary; it is inside
-    // '文'`.
-    let args_preview = if args.len() > 120 {
-        let end = floor_char_boundary(args, 120);
-        format!("{}…", &args[..end])
-    } else {
-        args.to_string()
-    };
+///
+/// v0.8.9 (P1-3): the old budget was a flat 120 **bytes** of `args`,
+/// which is wrong twice over. 120 bytes of ASCII is 120 cells — on an
+/// 80-column terminal the `…` we appended landed at column 120, i.e.
+/// *off-screen*, so the truncation marker was itself truncated away and
+/// the user saw a hard cut with no signal. And 120 bytes of CJK is 40
+/// chars = 80 cells, which overflows anything narrower. The unit test
+/// that "covered" this asserted `joined.contains('…')` on the returned
+/// string, so it stayed green while the screen showed no ellipsis at
+/// all. The budget now derives from the actual width minus `▸ ` and
+/// the tool name, so the name is always fully visible and the `…` is
+/// always the last cell on screen.
+pub fn render_tool_call(
+    name: &str,
+    args: &str,
+    theme: &Theme,
+    max_width: Option<usize>,
+) -> Vec<RLine<'static>> {
     let bg = theme.bg_style("toolPendingBg");
+    // "▸ " + name + " " — cells consumed before args start.
+    let fixed: usize = 2 + display_width(name) + 1;
+    let args_budget: usize = match max_width {
+        Some(w) if w > fixed => w - fixed,
+        // No room for args at all (very narrow terminal, or a
+        // pathologically long tool name): keep one cell for the marker
+        // so the line still reads as "there is more here".
+        Some(_) => 1,
+        None => TOOL_CALL_ARGS_FALLBACK_CELLS,
+    };
+    let args_preview = truncate_cells(args, args_budget);
     vec![RLine::from(vec![
         Span::styled("▸ ".to_string(), bg.fg(theme.color("toolTitle"))),
         Span::styled(
@@ -284,12 +330,30 @@ pub fn render_bash_execution(
     exit_code: Option<i32>,
     duration_ms: u64,
     theme: &Theme,
+    max_width: Option<usize>,
 ) -> Vec<RLine<'static>> {
     let header_color = if ok { "success" } else { "error" };
     let exit_str = exit_code
         .map(|c| format!("[exit {c}]"))
         .unwrap_or_else(|| "[no exit]".to_string());
     let header = format!("$ {cmd} {exit_str} {duration_ms}ms");
+
+    // v0.8.9 (P1-3): clamp to the terminal width. The 2 KB / 16-line
+    // budgets below bound *volume*, not *width* — a single 1500-byte
+    // line was rendered whole and then silently cut at the screen edge
+    // by the `List`, with nothing to tell the user it had been clipped.
+    let header_text = match max_width {
+        Some(w) if w > 2 => truncate_cells(&header, w.saturating_sub(2)),
+        _ => header,
+    };
+    // Body lines carry a 2-space indent.
+    let body_budget: Option<usize> = max_width.map(|w| w.saturating_sub(2));
+    let clamp_body = |line: &str| -> String {
+        match body_budget {
+            Some(b) if b > 0 => truncate_cells(line, b),
+            _ => line.to_string(),
+        }
+    };
 
     let mut out: Vec<RLine<'static>> = vec![RLine::from(vec![
         Span::styled(
@@ -298,7 +362,7 @@ pub fn render_bash_execution(
                 .fg_style("warning")
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
-        Span::styled(header, theme.fg_style(header_color)),
+        Span::styled(header_text, theme.fg_style(header_color)),
     ])];
 
     // Strip ANSI from captured output, then cap.
@@ -327,7 +391,7 @@ pub fn render_bash_execution(
     let max_lines = BASH_PREVIEW_MAX_LINES;
     for (i, line) in lines.iter().take(max_lines).enumerate() {
         out.push(RLine::from(Span::styled(
-            format!("  {line}"),
+            format!("  {}", clamp_body(line)),
             theme.fg_style("muted"),
         )));
         if i + 1 < lines.len() && i + 1 == max_lines && lines.len() > max_lines {
@@ -351,7 +415,7 @@ pub fn render_bash_execution(
         )));
         for line in stderr_lines.iter().take(max_lines) {
             out.push(RLine::from(Span::styled(
-                format!("  {line}"),
+                format!("  {}", clamp_body(line)),
                 theme.fg_style("error"),
             )));
         }
@@ -429,13 +493,13 @@ mod tests {
 
     #[test]
     fn render_assistant_message_simple_text() {
-        let lines = render_assistant_message("Hello!", &theme());
+        let lines = render_assistant_message("Hello!", &theme(), None);
         assert!(!lines.is_empty());
     }
 
     #[test]
     fn render_assistant_message_with_markdown() {
-        let lines = render_assistant_message("# Heading\n\n- item 1\n- item 2", &theme());
+        let lines = render_assistant_message("# Heading\n\n- item 1\n- item 2", &theme(), None);
         // Headings + list items render as multiple lines.
         assert!(lines.len() >= 3, "expected >=3 lines, got {}", lines.len());
     }
@@ -443,7 +507,7 @@ mod tests {
     #[test]
     fn render_assistant_message_strips_ansi() {
         // CSI escape sequence; should be stripped before markdown render.
-        let lines = render_assistant_message("\x1b[31mred text\x1b[0m", &theme());
+        let lines = render_assistant_message("\x1b[31mred text\x1b[0m", &theme(), None);
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -454,7 +518,7 @@ mod tests {
 
     #[test]
     fn render_assistant_message_autolinks_urls() {
-        let lines = render_assistant_message("see https://example.com here", &theme());
+        let lines = render_assistant_message("see https://example.com here", &theme(), None);
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -464,7 +528,7 @@ mod tests {
 
     #[test]
     fn render_user_message_single_line() {
-        let lines = render_user_message("hi", &theme());
+        let lines = render_user_message("hi", &theme(), None);
         assert_eq!(lines.len(), 1);
         // Prefix "> "
         assert!(lines[0].spans.iter().any(|s| s.content.contains('>')));
@@ -472,7 +536,7 @@ mod tests {
 
     #[test]
     fn render_user_message_multiline_indents() {
-        let lines = render_user_message("a\nb\nc", &theme());
+        let lines = render_user_message("a\nb\nc", &theme(), None);
         assert_eq!(lines.len(), 3);
         // Lines after the first are indented with two spaces.
         assert!(lines[1].spans.iter().any(|s| s.content.starts_with("  b")));
@@ -481,7 +545,7 @@ mod tests {
     #[test]
     fn render_tool_call_truncates_long_args() {
         let args = "x".repeat(500);
-        let lines = render_tool_call("bash", &args, &theme());
+        let lines = render_tool_call("bash", &args, &theme(), None);
         let joined: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         // Should truncate with ellipsis.
         assert!(joined.contains('…'), "missing ellipsis: {joined}");
@@ -569,7 +633,8 @@ mod tests {
 
     #[test]
     fn render_bash_execution_with_status() {
-        let lines = render_bash_execution("ls", "file1\nfile2", "", true, Some(0), 42, &theme());
+        let lines =
+            render_bash_execution("ls", "file1\nfile2", "", true, Some(0), 42, &theme(), None);
         // Header + output lines.
         assert!(lines.len() >= 2);
         // First line is the banner.
@@ -585,7 +650,7 @@ mod tests {
         for i in 0..100 {
             out.push_str(&format!("line {i}\n"));
         }
-        let lines = render_bash_execution("cat big", &out, "", true, Some(0), 100, &theme());
+        let lines = render_bash_execution("cat big", &out, "", true, Some(0), 100, &theme(), None);
         assert!(lines.len() <= 18); // banner + 16 max + truncation marker
     }
 
@@ -599,6 +664,7 @@ mod tests {
             Some(0),
             5,
             &theme(),
+            None,
         );
         let joined: String = lines
             .iter()
@@ -617,6 +683,7 @@ mod tests {
             Some(0),
             1,
             &theme(),
+            None,
         );
         let joined: String = lines
             .iter()
@@ -709,10 +776,18 @@ mod diff_render_tests {
         // exceeded 120 bytes of multi-byte UTF-8 text.
         // Build a string where byte 120 is mid-character.
         let args = "文".repeat(50); // 50 * 3 = 150 bytes; byte 120 inside char #40 (bytes 119..122)
-        let lines = render_tool_call("bash", &args, &Theme::default());
+        let lines = render_tool_call("bash", &args, &Theme::default(), Some(40));
         let joined: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         // Should not panic and should include an ellipsis to signal truncation.
         assert!(joined.contains('…'), "missing ellipsis: {joined:?}");
+        // v0.8.9 (P1-3): the budget is a cell count derived from the
+        // terminal width, not a flat byte count. 50 CJK chars is 100
+        // cells, so a 40-cell line must cut and fill exactly 40.
+        assert_eq!(
+            display_width(&joined),
+            40,
+            "line must fit the terminal exactly: {joined:?}"
+        );
     }
 }
 
@@ -723,4 +798,200 @@ pub fn render_collapsed_hint(theme: &Theme) -> RLine<'static> {
         "    ▸ Ctrl+O to expand",
         theme.fg_style("dim"),
     ))
+}
+
+/// v0.8.9 (P1-3) — width-budget unit tests.
+///
+/// These pin the *cell arithmetic* of each renderer. They are necessary
+/// but not sufficient: the old `render_tool_call_truncates_long_args`
+/// asserted `contains('…')` on the returned string and stayed green
+/// while the screen showed no ellipsis at all. The frame-level
+/// assertions that actually prove the user sees the marker live in
+/// `tests/transcript_width_e2e.rs`.
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+    use crate::width::display_width;
+
+    fn theme() -> Theme {
+        Theme::default()
+    }
+
+    fn joined(lines: &[RLine<'static>]) -> String {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect()
+    }
+
+    fn line_width(l: &RLine<'static>) -> usize {
+        l.spans
+            .iter()
+            .map(|s| display_width(s.content.as_ref()))
+            .sum()
+    }
+
+    #[test]
+    fn user_message_clamps_to_width_with_ellipsis() {
+        let long = format!("START{}END", "A".repeat(200));
+        let lines = render_user_message(&long, &theme(), Some(40));
+        let text = joined(&lines);
+        assert!(text.contains('…'), "no marker in {text:?}");
+        for l in &lines {
+            assert!(line_width(l) <= 40, "width {} > 40: {l:?}", line_width(l));
+        }
+        // The `> ` prefix must survive so the row still reads as a user turn.
+        assert!(text.starts_with("> "), "lost the prefix: {text:?}");
+    }
+
+    #[test]
+    fn user_message_none_means_no_clamp() {
+        let long = "A".repeat(500);
+        let lines = render_user_message(&long, &theme(), None);
+        assert!(
+            !joined(&lines).contains('…'),
+            "None must mean no width clamp"
+        );
+    }
+
+    #[test]
+    fn user_message_clamps_every_continuation_line() {
+        let text = format!("first\n{}", "b".repeat(300));
+        let lines = render_user_message(&text, &theme(), Some(40));
+        assert_eq!(lines.len(), 2);
+        for l in &lines {
+            assert!(line_width(l) <= 40, "width {} > 40: {l:?}", line_width(l));
+        }
+        assert!(joined(&lines).contains('…'), "second line not marked");
+    }
+
+    #[test]
+    fn tool_call_keeps_the_name_and_marks_the_args() {
+        // The regression this fixes: at 80 columns, 120 bytes of ASCII
+        // args put the `…` at column 120 — off-screen. The user saw a
+        // hard cut with no marker.
+        let args = "x".repeat(200);
+        let lines = render_tool_call("bash", &args, &theme(), Some(80));
+        let text = joined(&lines);
+        assert!(
+            text.starts_with("▸ bash "),
+            "name must stay visible: {text:?}"
+        );
+        assert!(text.contains('…'), "no marker: {text:?}");
+        assert_eq!(line_width(&lines[0]), 80, "must fill exactly: {text:?}");
+    }
+
+    #[test]
+    fn tool_call_respects_cjk_cell_width() {
+        // 60 CJK args = 180 bytes = 120 cells. On an 80-cell line only
+        // 73 cells of args fit after the 7-cell "▸ grep " prefix.
+        let args = "文".repeat(60);
+        let lines = render_tool_call("grep", &args, &theme(), Some(80));
+        let text = joined(&lines);
+        assert!(text.contains('…'), "no marker: {text:?}");
+        assert_eq!(
+            line_width(&lines[0]),
+            80,
+            "CJK must be measured in cells, not bytes: width {} in {text:?}",
+            line_width(&lines[0])
+        );
+    }
+
+    #[test]
+    fn tool_call_at_starvation_width_still_marks_args() {
+        // Terminal narrower than "▸ " + a long tool name: we must not
+        // silently drop the args without a marker.
+        let args = "x".repeat(200);
+        let lines = render_tool_call("a_very_long_tool_name", &args, &theme(), Some(8));
+        assert!(
+            joined(&lines).contains('…'),
+            "no marker: {joined:?}",
+            joined = joined(&lines)
+        );
+    }
+
+    #[test]
+    fn tool_call_short_args_get_no_marker() {
+        let lines = render_tool_call("read", r#"{"path":"a.rs"}"#, &theme(), Some(80));
+        let text = joined(&lines);
+        assert!(
+            !text.contains('…'),
+            "must not mark untruncated args: {text:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_message_clamps_long_paragraphs() {
+        let long = format!("START {} END", "c".repeat(300));
+        let lines = render_assistant_message(&long, &theme(), Some(40));
+        assert!(!lines.is_empty());
+        for l in &lines {
+            assert!(line_width(l) <= 40, "width {} > 40", line_width(l));
+        }
+        assert!(joined(&lines).contains('…'), "no marker");
+    }
+
+    #[test]
+    fn assistant_message_clamps_markdown_constructs() {
+        // Code fences are the widest thing markdown emits; make sure
+        // they get clamped too and don't blow the budget.
+        let md = "```rust\nfn main() { println!(\"hello world, this is long\"); }\n```";
+        let lines = render_assistant_message(md, &theme(), Some(30));
+        for l in &lines {
+            assert!(line_width(l) <= 30, "width {} > 30: {l:?}", line_width(l));
+        }
+    }
+
+    #[test]
+    fn assistant_message_none_means_no_clamp() {
+        let long = "c".repeat(300);
+        let lines = render_assistant_message(&long, &theme(), None);
+        assert!(!joined(&lines).contains('…'), "None must mean no clamp");
+    }
+
+    #[test]
+    fn bash_execution_clamps_header_and_body() {
+        let out = "q".repeat(1500);
+        let lines =
+            render_bash_execution("echo hi", &out, "", true, Some(0), 5, &theme(), Some(40));
+        for l in &lines {
+            assert!(line_width(l) <= 40, "width {} > 40: {l:?}", line_width(l));
+        }
+        assert!(joined(&lines).contains('…'), "no marker");
+    }
+
+    #[test]
+    fn bash_execution_clamps_stderr_too() {
+        let lines = render_bash_execution(
+            "cmd",
+            "ok",
+            &"e".repeat(500),
+            false,
+            Some(1),
+            5,
+            &theme(),
+            Some(40),
+        );
+        for l in &lines {
+            assert!(line_width(l) <= 40, "width {} > 40: {l:?}", line_width(l));
+        }
+    }
+
+    #[test]
+    fn bash_execution_clamps_a_long_command_header() {
+        let lines = render_bash_execution(
+            &"c".repeat(300),
+            "out",
+            "",
+            true,
+            Some(0),
+            1,
+            &theme(),
+            Some(40),
+        );
+        for l in &lines {
+            assert!(line_width(l) <= 40, "width {} > 40: {l:?}", line_width(l));
+        }
+        assert!(joined(&lines).contains('…'), "no marker on the header");
+    }
 }
