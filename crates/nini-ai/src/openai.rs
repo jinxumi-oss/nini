@@ -128,20 +128,37 @@ impl Provider for OpenAiProvider {
 struct StreamState {
     tool_calls: std::collections::HashMap<u32, BuildingToolCall>,
     finish_reason: Option<String>,
+    /// v0.8.9: usage as reported by the server.
+    ///
+    /// `finalize` was called with a hard-coded `None` and the parsed
+    /// `chunk.usage` was thrown away, so every `MessageStop` carried
+    /// `input_tokens: 0, output_tokens: 0` — the status bar's token and
+    /// cost counters were permanently zero for every OpenAI-compatible
+    /// provider, no matter what the model actually used.
+    usage: Option<OpenAiUsage>,
     /// v0.7.4 (UX fix) — strip `<think>...</think>` reasoning blocks
     /// from streaming text. Some OpenAI-compat models (e.g.,
     /// MiniMax-M3) emit reasoning inline; without this filter,
     /// users see the model's "thinking" in the transcript.
     think_filter: ThinkTagFilter,
-    /// v0.8.4 (bugfix): fragments waiting to be emitted on the next
-    /// call. The ThinkTagFilter splits a chunk at the
-    /// `<think>...</think>` boundary into [Thinking, Visible]
-    /// pairs. We drain one fragment per call so we still emit one
-    /// StreamEvent at a time, but stash the rest here instead of
-    /// dropping them on the floor (the previous code `return`-ed
-    /// on the first match, which also skipped the same chunk's
-    /// tool_calls delta).
-    fragments_pending: Vec<ThinkFragment>,
+    /// Fragments waiting to be emitted. The ThinkTagFilter splits a
+    /// chunk at the `<think>...</think>` boundary into [Thinking,
+    /// Visible] pairs; we emit one `StreamEvent` per call, so the rest
+    /// wait here.
+    ///
+    /// v0.8.4 changed the text path from "return the first fragment" to
+    /// "stash the fragments and keep going", because returning early
+    /// skipped the same chunk's `tool_calls` and silently dropped the
+    /// tool call. **It never added the drain that stash was waiting
+    /// for**, so `fragments_pending` had a writer and no reader: every
+    /// `delta.content` was parsed, filtered and then dropped on the
+    /// floor. Symptom: with `--provider openai` / `openai-compat` the
+    /// model ran tools perfectly and said nothing at all — no error,
+    /// exit code 0, empty stdout.
+    ///
+    /// A FIFO queue (not a stack) so fragments keep their wire order —
+    /// a `Thinking` that precedes its `Visible` must be emitted first.
+    fragments_pending: std::collections::VecDeque<ThinkFragment>,
     /// v0.8.4 (bugfix): aiio / Anthropic-translated providers emit
     /// the full function-call body inline on the same chunk that
     /// carries the id+name, with NO separate delta chunk to follow.
@@ -217,6 +234,26 @@ enum ThinkFragment {
 impl ThinkTagFilter {
     fn new() -> Self {
         Self::default()
+    }
+
+    /// v0.8.9: release whatever `push` is still holding back.
+    ///
+    /// `push` keeps a tail in `buffer` because a `<think>` tag can be
+    /// split across chunk boundaries (chunk N ends with `<`, chunk N+1
+    /// starts with `mm:think>`). When the stream ends with that tail
+    /// still buffered, the text is not a tag after all — it is the
+    /// model's last words, and dropping it loses the end of every
+    /// answer that happened to be cut mid-`&`.
+    fn flush(&mut self) -> Option<ThinkFragment> {
+        if self.buffer.is_empty() {
+            return None;
+        }
+        let text = std::mem::take(&mut self.buffer);
+        if self.in_think {
+            Some(ThinkFragment::Thinking(text))
+        } else {
+            Some(ThinkFragment::Visible(text))
+        }
     }
 
     /// Feed a chunk of text and get back a list of fragments to
@@ -335,6 +372,12 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
         Ok(c) => c,
         Err(_) => return None,
     };
+    // v0.8.9: keep the usage the server reported. OpenAI sends it on
+    // the final chunk (and some gateways send it on every chunk, with
+    // `null` in between) — last non-null wins.
+    if let Some(u) = chunk.usage {
+        state.usage = Some(u);
+    }
     let choice = chunk.choices.into_iter().next();
     match choice {
         None => {
@@ -361,7 +404,11 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
                         // call (the common case on aiio / Anthropic-
                         // translated models) silently dropped the tool
                         // call.
-                        state.fragments_pending = frags;
+                        // Append, never overwrite: several chunks can
+                        // be waiting (a long <think> block split across
+                        // chunks, say), and clobbering them would lose
+                        // whatever had not been emitted yet.
+                        state.fragments_pending.extend(frags);
                     }
                 }
                 // v0.8.4 (bugfix): process tool_calls BEFORE draining
@@ -466,6 +513,28 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
             if let Some(fr) = c.finish_reason {
                 state.finish_reason = Some(fr);
             }
+
+            // v0.8.9: drain ONE queued text fragment per call.
+            //
+            // Placement matters and is not arbitrary: this sits *after*
+            // the tool_calls handling above, so a chunk carrying both a
+            // `</think>` close and a tool-call start still emits the
+            // tool call first. That ordering is the v0.8.4 fix and it
+            // has to survive — we drained before it once and lost
+            // every tool call that shared a chunk with text.
+            //
+            // One per call (rather than all at once) is deliberate:
+            // `translate_sse` returns `Option<StreamEvent>`, so it can
+            // only hand back one thing. The rest stay queued for the
+            // next chunk, and `finalize` flushes whatever is left when
+            // the stream ends — without that flush, the last thing the
+            // model said before `[DONE]` would be lost every turn.
+            if let Some(frag) = state.fragments_pending.pop_front() {
+                return Some(match frag {
+                    ThinkFragment::Visible(text) => StreamEvent::TextDelta { text },
+                    ThinkFragment::Thinking(text) => StreamEvent::ThinkingDelta { text },
+                });
+            }
             None
         }
     }
@@ -473,9 +542,47 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
 
 /// Final flush: emit any pending tool calls and a stop event with usage.
 fn finalize(state: &mut StreamState, usage: Option<OpenAiUsage>) -> Vec<StreamEvent> {
+    // v0.8.9: the explicit argument wins when a caller supplies one,
+    // otherwise fall back to what the wire reported.
+    let usage = usage.or_else(|| state.usage.take());
     let mut out = Vec::new();
+
+    // v0.8.9: flush the text queue before the stop event. Whatever the
+    // model said in its last content chunk is still sitting here if no
+    // further chunk arrived to drain it, and the stop event is the last
+    // thing the agent sees — so this ordering is the only way the final
+    // sentence survives. Also flush the filter's own hold-back buffer:
+    // a stream that ends mid-`<think>` (truncated reasoning) would
+    // otherwise discard that text silently.
+    for frag in state.fragments_pending.drain(..) {
+        out.push(match frag {
+            ThinkFragment::Visible(text) => StreamEvent::TextDelta { text },
+            ThinkFragment::Thinking(text) => StreamEvent::ThinkingDelta { text },
+        });
+    }
+    if let Some(tail) = state.think_filter.flush() {
+        out.push(match tail {
+            ThinkFragment::Visible(text) => StreamEvent::TextDelta { text },
+            ThinkFragment::Thinking(text) => StreamEvent::ThinkingDelta { text },
+        });
+    }
+
     let mut to_remove = Vec::new();
     for (idx, call) in state.tool_calls.iter() {
+        // v0.8.9: skip calls whose Stop already went out on the
+        // single-shot inline-args path. `pending_stop_args` emits the
+        // Stop as soon as the body is complete, but leaves the entry in
+        // `tool_calls` — so finalize used to emit a SECOND Stop for the
+        // same id. Observed on the wire:
+        //
+        //     [ToolCallStart, ToolCallStop, ToolCallStop, MessageStop]
+        //
+        // Two Stops for one tool call means two transcript lines and a
+        // `tool_results` entry written twice.
+        if state.pending_stop_emitted.contains(idx) {
+            to_remove.push(*idx);
+            continue;
+        }
         let input_json: serde_json::Value = if call.input_json.is_empty() {
             serde_json::Value::Object(serde_json::Map::new())
         } else {
