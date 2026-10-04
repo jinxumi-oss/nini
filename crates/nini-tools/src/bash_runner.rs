@@ -13,7 +13,6 @@
 //! * Returns `BashResult` with stdout, stderr, exit code, and duration.
 
 use std::io::Read;
-use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -97,33 +96,14 @@ impl BashRunner {
 
         // Spawn child. We use std::process (sync) + a thread for the
         // wait-with-timeout, because the TUI loop is in a sync context.
-        let mut command = Command::new(&shell);
-        command
-            .arg("-c")
-            .arg(cmd)
-            .current_dir(cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::null());
-
-        // On Unix, run the child in its own process group so a timeout can
-        // kill the entire tree (bash + children) via killpg. `Command`
-        // exposes `process_group` on `std::os::unix::process`.
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            // Safety: setsid(2) is always safe to call from a child pre-exec
-            // hook; it just creates a new session and process group.
-            unsafe {
-                command.pre_exec(|| {
-                    // setsid creates a new session; the child becomes the
-                    // process-group leader, which is exactly what we want
-                    // for killpg.
-                    libc_setsid();
-                    Ok(())
-                });
-            }
-        }
+        //
+        // v0.8.9 (P0-1): routed through `procgroup::shell_command` so
+        // this path and `BashTool` share one implementation. They used
+        // to carry separate copies of the same 10 lines, and the copy in
+        // `bash.rs` was missing the `pre_exec(setsid)` — which is how a
+        // whole "kill the process tree on timeout" feature stayed dead
+        // on the LLM's bash path without a single failing test.
+        let mut command = crate::procgroup::shell_command(&shell, cmd, cwd);
 
         let mut child = match command.spawn() {
             Ok(c) => c,
@@ -223,27 +203,6 @@ impl BashRunner {
             ok: matches!(exit_code, Some(0)),
             timed_out,
         }
-    }
-}
-
-// `setsid(2)` wrapper. We isolate the libc dep here so other Unix
-// targets keep building untouched.
-//
-// We use a `//` comment instead of `///` because rustdoc does not
-// generate documentation for `extern` blocks, so the doc comment
-// would be flagged as `unused_doc_comments`.
-#[cfg(unix)]
-unsafe extern "C" {
-    fn setsid() -> i32;
-}
-
-#[cfg(unix)]
-fn libc_setsid() {
-    // Safety: setsid() has no failure mode that affects us here. If it
-    // fails (e.g., already a process-group leader), we fall back to
-    // per-pid kill.
-    unsafe {
-        let _ = setsid();
     }
 }
 

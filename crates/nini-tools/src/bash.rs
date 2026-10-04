@@ -6,6 +6,13 @@
 //! - On timeout: send SIGTERM, wait up to `grace_ms` for graceful exit, then SIGKILL.
 //! - Truncate output if it exceeds `max_output_bytes` (default 1 MiB) or
 //!   `max_output_lines` (default 2000): keep first half + ... + last half.
+//!
+//! **v0.8.9 (P0-1)**: the child is now actually put in its own process
+//! group. It never was — the `pre_exec(setsid)` call that made
+//! `killpg(child_pid, ..)` meaningful lived only in `bash_runner.rs`
+//! (the hook path), while the LLM's `bash` tool call went through this
+//! file. See `crate::procgroup` for the full write-up and the
+//! reproduction.
 #![allow(dead_code)] // Forward-compat fields for future features
 
 use async_trait::async_trait;
@@ -14,17 +21,22 @@ use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 use tokio::time::timeout;
 
 /// Default command timeout in seconds (2 minutes, matching spec).
 pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 /// Grace period between SIGTERM and SIGKILL.
-pub const KILL_GRACE_MS: u64 = 5000;
+///
+/// v0.8.9 (P0-1): was 5000 ms. That number was tuned to cover a
+/// process-group kill that never actually fired (see the module docs
+/// in `crate::procgroup`), so every timeout cost 1 s + 5 s of dead
+/// waiting — measured 6177 ms for a `timeout: 1` call. With
+/// `setsid(2)` in place SIGTERM reaches the whole group immediately,
+/// and anything still alive after 500 ms is not going to cooperate.
+pub const KILL_GRACE_MS: u64 = 500;
 
 /// Hard upper bound on user-supplied timeouts (~24.8 days).
 pub const MAX_TIMEOUT_MS: u64 = 2_147_483_647;
@@ -112,17 +124,14 @@ impl Tool for BashTool {
         let started = std::time::Instant::now();
 
         // Build command. Use $SHELL or /bin/sh.
+        //
+        // v0.8.9 (P0-1): `shell_command` is the single place that puts
+        // the child in its own process group. It used to be duplicated
+        // in `bash_runner.rs` — and this file's copy was missing the
+        // `pre_exec(setsid)` entirely, which silently turned the
+        // process-group kill into a no-op on the LLM's bash path.
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let mut cmd = Command::new(&shell);
-        cmd.arg("-c").arg(&parsed.command);
-        cmd.current_dir(&ctx.cwd);
-        cmd.stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::null());
-        cmd.kill_on_drop(true);
-
-        // Set process group on Unix so we can killpg on timeout. Implemented inline
-        // in execute via pre_exec; nothing to do here.
+        let mut cmd = crate::procgroup::shell_command_tokio(&shell, &parsed.command, &ctx.cwd);
 
         let mut child = cmd
             .spawn()
@@ -422,6 +431,118 @@ mod tests {
         assert!(out.is_error);
         let details: BashDetails = serde_json::from_value(out.details.unwrap()).unwrap();
         assert_eq!(details.signal.as_deref(), Some("timeout"));
+    }
+
+    // ---- v0.8.9 (P0-1) ----------------------------------------------
+    // `timeout_kills_slow_command` above passed while the process-group
+    // kill was dead code, because the child eventually died via
+    // `kill_on_drop`. The two tests below check the parts that actually
+    // regressed: the wall-clock cost of a timeout, and whether the kill
+    // reaches past the direct child.
+
+    /// Scan /proc for a live process whose cmdline contains `needle`.
+    /// Pure std so the test doesn't depend on `pgrep`/`ps` being
+    /// installed (CI runs on macOS too, where /proc doesn't exist —
+    /// hence the `cfg(target_os = "linux")` on the callers).
+    #[cfg(target_os = "linux")]
+    fn pids_with_cmdline_containing(needle: &str) -> Vec<u32> {
+        let mut hits = Vec::new();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return hits;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else {
+                continue;
+            };
+            let cmdline = String::from_utf8_lossy(&raw);
+            if cmdline.contains(needle) {
+                if let Ok(pid) = name.parse::<u32>() {
+                    hits.push(pid);
+                }
+            }
+        }
+        hits
+    }
+
+    #[cfg(target_os = "linux")]
+    fn kill_pids(pids: &[u32]) {
+        for pid in pids {
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(pid.to_string())
+                .status();
+        }
+    }
+
+    /// A timeout used to cost `timeout + KILL_GRACE_MS` unconditionally,
+    /// because `killpg` targeted a process group that didn't exist and
+    /// the shell sat out the whole grace period before `kill_on_drop`
+    /// collected it. Measured 6177 ms for `timeout: 1`.
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn timeout_does_not_sit_out_the_full_grace_period() {
+        let tool = BashTool::new();
+        let started = std::time::Instant::now();
+        let out = tool
+            .execute(
+                json!({"command": "sleep 30", "timeout": 1}),
+                ToolContext::default(),
+            )
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(out.is_error);
+        let details: BashDetails = serde_json::from_value(out.details.unwrap()).unwrap();
+        assert_eq!(details.signal.as_deref(), Some("timeout"));
+
+        // 1 s timeout + 500 ms grace + slack. The old behaviour needed
+        // 1 s + 5000 ms, so this bound fails loudly on a regression.
+        assert!(
+            elapsed < Duration::from_millis(2500),
+            "timeout took {elapsed:?} — SIGTERM is probably not reaching the \
+             process group again (budget 1s timeout + {}ms grace)",
+            KILL_GRACE_MS
+        );
+    }
+
+    /// The process-group kill exists so a timeout reaches *descendants*,
+    /// not just the shell we spawned. Before v0.8.9 only the `sysinfo`
+    /// descendant walk did any work; the group kill was a no-op, and
+    /// anything that escaped the parent chain (or raced the walk) lived
+    /// on. This test uses a grandchild to exercise the group path.
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn timeout_kills_grandchildren_via_process_group() {
+        // A marker unlikely to collide with anything else on the box.
+        const MARKER: &str = "nini-p0-1-marker-4190773";
+        let tool = BashTool::new();
+        let command = format!("sh -c 'sleep 400 # {MARKER}' & wait");
+        let out = tool
+            .execute(
+                json!({"command": command, "timeout": 1}),
+                ToolContext::default(),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+
+        // Give the kernel a beat to reap the group.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let survivors = pids_with_cmdline_containing(MARKER);
+        kill_pids(&survivors);
+
+        assert!(
+            survivors.is_empty(),
+            "timeout left {} grandchild process(es) alive (pids {survivors:?}) — \
+             the process group was not killed",
+            survivors.len()
+        );
     }
 
     #[tokio::test]

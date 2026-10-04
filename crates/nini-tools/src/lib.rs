@@ -12,6 +12,7 @@ pub mod edit;
 pub mod find;
 pub mod grep;
 pub mod operations;
+pub mod procgroup;
 pub mod read;
 pub mod write;
 
