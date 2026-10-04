@@ -522,11 +522,28 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // iteration still produced ALL items when items > visible_height,
     // and ratatui clipped from the top down (so the OLDEST items were
     // visible, not the newest). v0.8.7 fixes both.
+    // v0.8.9 (P1-5): defensive clamp. Every operation that shrinks
+    // `lines` now calls `TranscriptState::reset_view`, but a stale
+    // offset from anywhere else would still be catastrophic: the
+    // user-scroll branch below skips items from the bottom until the
+    // row budget runs out, and past the end the budget never runs out
+    // — so `visible_items` comes back empty and the transcript area
+    // renders as a blank box with only `↓ N more` in the corner.
+    // Clamping costs nothing and caps the damage of a missed reset at
+    // "the user sees the top" instead of "the user sees nothing".
     let lines = &state.transcript_state.lines;
     let total_lines = lines.len();
     let visible_height = area.height as usize;
     let autoscroll = state.transcript_state.autoscroll || total_lines == 0;
-    let scroll_offset = state.transcript_state.scroll_offset;
+    // Clamp rather than mutate: `render_transcript` receives a shared
+    // `&AppState`, and the renderer has no business writing. The real
+    // fix is `TranscriptState::reset_view` at every line-shrinking
+    // call site; this is the cheap guarantee that a missed one degrades
+    // to "shows the top" instead of "shows an empty box".
+    let scroll_offset = state
+        .transcript_state
+        .scroll_offset
+        .min(total_lines.saturating_sub(1));
 
     // First pass: per-line item counts. Used for user-scroll item-space
     // offset translation, and for the overflow indicator count.
@@ -615,6 +632,30 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     if visible_items.is_empty() && total_lines == 0 && state.input.text.is_empty() {
         render_welcome_card(f, theme, area);
         return;
+    }
+
+    // v0.8.9 (P1-5): last-resort backstop. If the transcript is
+    // non-empty but the scroll window resolved to nothing, fall back to
+    // the tail. Unreachable once `clamp_view` is in place, and kept
+    // because the failure mode is an empty screen — cheap insurance
+    // against a future refactor of the item math above.
+    if visible_items.is_empty() && total_lines > 0 {
+        let mut tail: Vec<ListItem> = Vec::with_capacity(visible_height);
+        for line in lines.iter().rev() {
+            let mut items = items_for_line(line, theme, area.width as usize);
+            items.reverse();
+            if items.len() >= visible_height {
+                items.drain(..items.len() - visible_height);
+                tail = items.into_iter().rev().chain(tail).collect();
+                break;
+            }
+            let n = items.len();
+            tail = items.into_iter().chain(tail).collect();
+            if n == 0 {
+                break;
+            }
+        }
+        visible_items = tail;
     }
 
     // (debug prints removed)

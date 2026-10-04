@@ -661,3 +661,163 @@ fn cjk_tool_result_reports_cells_not_bytes() {
         "under-reported the loss ({reported}): {indicator:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 7. Shrinking the transcript must not blank the viewport (v0.8.9 P1-5)
+// ---------------------------------------------------------------------------
+//
+// `scroll_offset` counts lines from the *bottom*. Every operation that
+// removes lines (compaction folding, `/clear`, `/new`, session reload)
+// invalidated it, and the renderer translated the stale value into an
+// item-space skip that ran past the end of the transcript — leaving the
+// whole area blank with a meaningless `↓ 59 more` in the corner.
+//
+// Reproduced at 40x24 with 60 tool-result lines (~5 items each):
+//
+//   before compaction:  ✓ read Took 1ms / row0-0 / row0-1 / ...
+//   after compaction:   (18 empty rows)  ↓ 59 more
+//
+/// Build a transcript long enough that its item count overflows the
+/// viewport, so the autoscroll/scroll math is actually exercised.
+fn long_scrolled_state() -> AppState {
+    let mut s = AppState::new("test-model");
+    for i in 0..60 {
+        let content = (0..4)
+            .map(|j| format!("row{i}-{j}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        s.push_tool_result(&format!("t{i}"), "read", true, content, Some(1));
+    }
+    // Scroll all the way up, the way repeated PageUp would.
+    let ts = Arc::make_mut(&mut s.transcript_state);
+    ts.autoscroll = false;
+    ts.scroll_offset = ts.lines.len().saturating_sub(1);
+    s
+}
+
+/// The visible transcript rows (everything above the input box).
+fn visible_transcript(s: &AppState, w: u16, h: u16) -> Vec<String> {
+    let rows = frame_rows(s, w, h);
+    let end = rows
+        .iter()
+        .position(|r| r.contains("─ input"))
+        .unwrap_or(rows.len());
+    rows[2..end].to_vec()
+}
+
+#[test]
+fn compaction_while_scrolled_up_keeps_content_visible() {
+    let mut s = long_scrolled_state();
+    let before = visible_transcript(&s, NARROW.0, NARROW.1);
+    assert!(
+        before.iter().any(|r| !r.trim().is_empty()),
+        "precondition: the transcript should have content before compaction"
+    );
+
+    let folded = s.auto_compact_local();
+    assert!(folded > 0, "compaction should have folded something");
+
+    let after = visible_transcript(&s, NARROW.0, NARROW.1);
+    assert!(
+        after.iter().any(|r| !r.trim().is_empty()),
+        "compaction while scrolled up left a blank transcript:\n{after:?}"
+    );
+
+    // The summary line itself is folded in at the *front*; restoring
+    // autoscroll means the viewport lands on the tail, so it is
+    // correctly off-screen. Assert it exists in the transcript and
+    // that we are looking at the newest content — not at nothing.
+    assert!(
+        s.transcript_state.lines.iter().any(
+            |l| matches!(l, TranscriptLine::AssistantText(t) if t.contains("CONTEXT SUMMARY"))
+        ),
+        "the compaction summary should be in the transcript"
+    );
+    let tail_visible = after.iter().any(|r| r.contains("row59"));
+    assert!(
+        tail_visible,
+        "after compaction the viewport should sit at the tail (newest content), \
+         got:\n{after:?}"
+    );
+}
+
+#[test]
+fn compaction_resets_the_scroll_viewport() {
+    let mut s = long_scrolled_state();
+    assert!(
+        !s.transcript_state.autoscroll,
+        "precondition: user scrolled up"
+    );
+    assert!(
+        s.transcript_state.scroll_offset > 0,
+        "precondition: offset set"
+    );
+
+    s.auto_compact_local();
+
+    let ts = &s.transcript_state;
+    assert!(
+        ts.autoscroll,
+        "autoscroll should be restored after compaction"
+    );
+    assert_eq!(
+        ts.scroll_offset, 0,
+        "scroll_offset must be reset after the line count changed"
+    );
+}
+
+#[test]
+fn clear_while_scrolled_up_resets_the_viewport() {
+    let mut s = long_scrolled_state();
+    // Same code path as the `action:clear` hook.
+    let ts = Arc::make_mut(&mut s.transcript_state);
+    ts.lines.clear();
+    ts.reset_view();
+    s.push_divider();
+
+    let ts = &s.transcript_state;
+    assert!(ts.autoscroll);
+    assert_eq!(ts.scroll_offset, 0);
+    assert!(
+        !visible_transcript(&s, NARROW.0, NARROW.1)
+            .iter()
+            .all(|r| r.trim().is_empty()),
+        "a freshly cleared transcript must still render its divider"
+    );
+}
+
+#[test]
+fn out_of_range_scroll_offset_degrades_to_the_top_not_to_nothing() {
+    // The renderer's own clamp, tested directly: an offset that could
+    // never be satisfied must not produce a blank area.
+    let mut s = long_scrolled_state();
+    {
+        let ts = Arc::make_mut(&mut s.transcript_state);
+        ts.autoscroll = false;
+        ts.scroll_offset = 999_999;
+    }
+    let rows = visible_transcript(&s, NARROW.0, NARROW.1);
+    assert!(
+        rows.iter().any(|r| !r.trim().is_empty()),
+        "an impossible scroll_offset rendered an empty transcript:\n{rows:?}"
+    );
+}
+
+#[test]
+fn scroll_indicator_does_not_quote_an_impossible_line_count() {
+    // `↓ N more` used to echo the raw offset, so after a stale-offset
+    // blank frame it claimed 999 lines were hidden above a transcript
+    // that has 60.
+    let mut s = long_scrolled_state();
+    {
+        let ts = Arc::make_mut(&mut s.transcript_state);
+        ts.autoscroll = false;
+        ts.scroll_offset = 999_999;
+    }
+    let rows = frame_rows(&s, NARROW.0, NARROW.1);
+    let transcript = transcript_text(&rows);
+    assert!(
+        !transcript.contains("999"),
+        "the indicator quoted an impossible offset:\n{transcript}"
+    );
+}

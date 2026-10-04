@@ -839,7 +839,12 @@ fn cmd_logout(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
 fn cmd_new(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
     // Clear the transcript and create a fresh session.
     let prev_len = state.transcript_state.lines.len();
-    Arc::make_mut(&mut state.transcript_state).lines.clear();
+    // v0.8.9 (P1-5): reset the viewport along with the content — a
+    // stale `scroll_offset` renders the fresh transcript as an empty
+    // box until the user scrolls all the way back down.
+    let ts = Arc::make_mut(&mut state.transcript_state);
+    ts.lines.clear();
+    ts.reset_view();
     state.run_state.tokens = Default::default();
 
     // Derive a session file path: ~/.pi/agent/sessions/<project>/<timestamp>.jsonl
@@ -1057,7 +1062,11 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
             return CommandResult::error(format!("Failed to load session: {e}"));
         }
         // Rebuild transcript from session entries.
-        Arc::make_mut(&mut state.transcript_state).lines.clear();
+        // v0.8.9 (P1-5): same as `/new` — the new session can have far
+        // fewer lines than the one we were scrolled into.
+        let ts = Arc::make_mut(&mut state.transcript_state);
+        ts.lines.clear();
+        ts.reset_view();
         let session_id = state.session_state.session_id.clone().unwrap_or_default();
         // Take ownership of the session Arc so we can lock it without
         // keeping a borrow of state.

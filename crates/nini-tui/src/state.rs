@@ -700,6 +700,16 @@ pub struct AppState {
 /// scroll_offset for the viewport.
 #[derive(Debug)]
 pub struct TranscriptState {
+    // v0.8.9 (P1-5): `scroll_offset` is an index counted from the
+    // bottom of `lines`, so any operation that *shrinks* `lines`
+    // invalidates it. Leaving it behind is not cosmetic — the
+    // renderer's user-scroll branch skips items from the bottom until
+    // the row budget runs out, and with a stale offset the budget
+    // never runs out, so the transcript renders completely blank.
+    // `reset_view` is the single place that snaps the viewport back to
+    // the tail; every line-shrinking operation must call it.
+    // `render_transcript` carries a matching defensive clamp so a missed
+    // call degrades to "shows the top" instead of "shows nothing".
     /// Chat history — Vec of TranscriptLine.
     pub lines: Vec<TranscriptLine>,
     /// Auto-scroll transcript to the bottom on new lines.
@@ -874,6 +884,39 @@ pub struct UiState {
 // satisfied"). So all 5 sub-structs + AppState need manual Clone
 // impls. UiState's selector is reset to None, mirroring the v0.8.0
 // behavior of clone_for_render.
+
+impl TranscriptState {
+    /// v0.8.9 (P1-5): put the viewport back at the tail.
+    ///
+    /// Call this after **any** operation that removes lines from the
+    /// front or middle (compaction folding, `/clear`, session reload).
+    /// A `scroll_offset` carried over from a longer transcript points
+    /// past the new end, and the transcript area renders empty with
+    /// only a misleading `↓ N more` in the corner.
+    pub fn reset_view(&mut self) {
+        self.autoscroll = true;
+        self.scroll_offset = 0;
+    }
+
+    /// Clamp `scroll_offset` to something the current line count can
+    /// actually satisfy. Returns `true` if it had to be corrected.
+    ///
+    /// The renderer's user-scroll path translates `scroll_offset`
+    /// (lines) into an item-space skip. If that skip exceeds the total
+    /// item count, the row budget is never consumed and the transcript
+    /// comes out blank. Clamping here means the worst case of a missed
+    /// `reset_view` is "the user sees the top of the transcript"
+    /// instead of "the user sees an empty box".
+    pub fn clamp_view(&mut self) -> bool {
+        let max = self.lines.len().saturating_sub(1);
+        if self.scroll_offset > max {
+            self.scroll_offset = max;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 impl Clone for TranscriptState {
     fn clone(&self) -> Self {
@@ -1178,6 +1221,10 @@ impl AppState {
         self.session_state.session_id = Some(session.header.id.clone());
         self.session_state.session = Some(Arc::new(Mutex::new(session)));
         self.session_state.session_path = Some(path);
+        // v0.8.9 (P1-5): the caller rebuilds `transcript_state.lines`
+        // from this session, so the current scroll offset refers to a
+        // line count that is about to be replaced.
+        Arc::make_mut(&mut self.transcript_state).reset_view();
         Ok(())
     }
 
@@ -1406,6 +1453,11 @@ impl AppState {
             0,
             TranscriptLine::AssistantText(format!("[CONTEXT SUMMARY]\n\n{summary}")),
         );
+        // v0.8.9 (P1-5): we just cut the line count in half, so a
+        // `scroll_offset` from before is an index past the new end and
+        // the transcript renders blank. Snap back to the tail — which is
+        // also where the user wants to be right after a compaction.
+        Arc::make_mut(&mut self.transcript_state).reset_view();
         prefix_lines.len()
     }
 

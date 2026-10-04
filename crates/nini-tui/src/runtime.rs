@@ -918,7 +918,12 @@ fn apply_selector_result(
                 }
                 "action:clear" => {
                     let mut g = shared.lock().unwrap();
-                    Arc::make_mut(&mut g.transcript_state).lines.clear();
+                    // v0.8.9 (P1-5): a stale `scroll_offset` from a
+                    // longer transcript would survive the clear and
+                    // render an empty box.
+                    let ts = Arc::make_mut(&mut g.transcript_state);
+                    ts.lines.clear();
+                    ts.reset_view();
                     g.push_divider();
                 }
                 "action:exit" => {
