@@ -832,6 +832,14 @@ pub struct SessionState {
     /// Current git branch name, if any. `None` outside a git repo or
     /// before the runtime populates it. Mirrors Pi's footer.
     pub git_branch: Option<String>,
+    /// v0.8.9 (P2-9): how many lines the last session load had to skip.
+    ///
+    /// The reader is now tolerant of malformed lines, which is the right
+    /// behaviour — but tolerance that is invisible is its own kind of
+    /// lie: the user would see a history with a hole in it and no
+    /// explanation. The runtime surfaces this as a `StopNotice` so the
+    /// gap is on screen next to the content it affects.
+    pub skipped_lines_on_load: usize,
 }
 
 // =================================================================
@@ -1012,6 +1020,7 @@ impl Clone for SessionState {
             session_path: self.session_path.clone(),
             cwd: self.cwd.clone(),
             git_branch: self.git_branch.clone(),
+            skipped_lines_on_load: self.skipped_lines_on_load,
         }
     }
 }
@@ -1024,6 +1033,7 @@ impl Default for SessionState {
             session_path: None,
             cwd: None,
             git_branch: None,
+            skipped_lines_on_load: 0,
         }
     }
 }
@@ -1218,6 +1228,10 @@ impl AppState {
     /// Load a session from disk and replace the current session.
     pub fn session_load(&mut self, path: PathBuf) -> Result<(), nini_session::SessionError> {
         let session = nini_session::Session::read_from_file(&path)?;
+        // v0.8.9 (P2-9): record the damage. The caller rebuilds the
+        // transcript from `session.entries` right after this, so this is
+        // the only place that knows what was lost.
+        self.session_state.skipped_lines_on_load = session.skipped_lines;
         self.session_state.session_id = Some(session.header.id.clone());
         self.session_state.session = Some(Arc::new(Mutex::new(session)));
         self.session_state.session_path = Some(path);
@@ -1355,6 +1369,16 @@ impl AppState {
                 collapsed: false,
                 duration_ms,
             });
+    }
+
+    /// v0.8.9 (P2-9): surface a condition the user should know about
+    /// (a damaged session file, a skipped record) inline in the
+    /// transcript, next to the content it affects — not only in a log
+    /// nobody reads.
+    pub fn push_stop_notice(&mut self, msg: impl Into<String>) {
+        Arc::make_mut(&mut self.transcript_state)
+            .lines
+            .push(TranscriptLine::StopNotice(msg.into()));
     }
 
     pub fn push_divider(&mut self) {

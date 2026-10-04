@@ -1092,13 +1092,29 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
             // Restore the Arc.
             state.session_state.session = Some(arc);
         }
+        // v0.8.9 (P2-9): say so when the history has a hole in it. The
+        // reader is deliberately tolerant of malformed lines, but
+        // tolerance the user cannot see is its own kind of lie — a
+        // silently shorter history reads as "that is all there was".
+        let skipped = state.session_state.skipped_lines_on_load;
+        if skipped > 0 {
+            state.push_stop_notice(format!(
+                "skipped {skipped} unreadable line(s) in this session file — \
+                 the history above has gaps"
+            ));
+        }
         state.push_assistant(format!("(loaded session {session_id})"));
         state.push_divider();
         return CommandResult::output(vec![format!(
-            "Resumed: {}",
+            "Resumed: {}{}",
             path.file_name()
                 .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            if skipped > 0 {
+                format!(" (skipped {skipped} damaged line(s))")
+            } else {
+                String::new()
+            }
         )]);
     }
 

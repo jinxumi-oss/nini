@@ -187,6 +187,19 @@ impl SessionHeader {
 pub struct Session {
     pub header: SessionHeader,
     pub entries: Vec<SessionEntry>,
+    /// v0.8.9 (P2-9): how many non-empty lines were skipped because
+    /// they could not be parsed.
+    ///
+    /// A single malformed line used to make the whole session
+    /// unreadable — one hand-edit, one truncated write from a full
+    /// disk, or one future-format field and the entire conversation
+    /// history was gone with no way to get any of it back. The reader
+    /// now salvages what it can and reports the damage here so the TUI
+    /// can tell the user instead of silently showing a partial history.
+    ///
+    /// Not part of the on-disk format: it describes this read, not the
+    /// session. A round-tripped session always reports 0.
+    pub skipped_lines: usize,
 }
 
 impl Session {
@@ -226,6 +239,7 @@ impl Session {
         Self {
             header: SessionHeader::new(cwd),
             entries: Vec::new(),
+            skipped_lines: 0,
         }
     }
 
@@ -305,20 +319,61 @@ impl Codec {
 
     /// Read a session file into a `Session`.
     /// Auto-migrates from older versions (v1, v2) on read.
+    ///
+    /// **v0.8.9 (P2-9) — damaged lines are skipped, not fatal.**
+    ///
+    /// This used to `?` on every `serde_json::from_str`, so one
+    /// malformed line made the entire session unreadable. Session files
+    /// are append-only JSONL; the realistic ways to get a bad line are a
+    /// hand-edit, a disk that filled mid-append, a truncated copy, or a
+    /// field written by a newer nini. None of those are reasons to throw
+    /// away every other line, and losing the whole history is far worse
+    /// than losing one message.
+    ///
+    /// Each skipped line is reported on stderr with its 1-based number so
+    /// the damage is visible in a log, and counted on
+    /// [`Session::skipped_lines`] so the UI can surface it. A line that
+    /// is valid JSON but an unknown `type` is skipped for the same
+    /// reason: we cannot know what it is, but we know it is not
+    /// something we can use.
     pub fn read(&self) -> Result<Session, CoreError> {
         let file = File::open(&self.path)?;
         let reader = BufReader::new(file);
         let mut header: Option<SessionHeader> = None;
         let mut entries = Vec::new();
+        let mut skipped_lines = 0usize;
 
-        for line in reader.lines() {
-            let line = line?;
+        for (idx, line) in reader.lines().enumerate() {
+            // An I/O error mid-file (also a form of truncation) should
+            // not discard everything we already read, so break rather
+            // than propagate. The count already parsed is what matters.
+            let Ok(line) = line else {
+                eprintln!(
+                    "[nini] session {}: I/O error at line {}, keeping the {} \
+                     entries read so far",
+                    self.path.display(),
+                    idx + 1,
+                    entries.len()
+                );
+                skipped_lines += 1;
+                break;
+            };
             if line.trim().is_empty() {
                 continue;
             }
-            let line: Line = serde_json::from_str(&line)
-                .map_err(|e| CoreError::InvalidEntry(format!("line parse: {}", e)))?;
-            match line {
+            let parsed: Line = match serde_json::from_str(&line) {
+                Ok(l) => l,
+                Err(e) => {
+                    skipped_lines += 1;
+                    eprintln!(
+                        "[nini] session {}: skipping malformed line {} ({e})",
+                        self.path.display(),
+                        idx + 1
+                    );
+                    continue;
+                }
+            };
+            match parsed {
                 Line::Session(h) => {
                     // Migrate older versions
                     let migrated = migrate_header(migrated_header(h));
@@ -341,6 +396,7 @@ impl Codec {
                 }
             }),
             entries,
+            skipped_lines,
         })
     }
 
@@ -460,6 +516,146 @@ mod tests {
         assert_eq!(loaded.header.version, 3);
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.entries[0].id(), "msg1");
+    }
+
+    // ---- v0.8.9 (P2-9): damaged lines are salvaged, not fatal -------
+    //
+    // Before this, one malformed line made the whole session
+    // unreadable — a hand-edit, a disk that filled mid-append, a
+    // truncated copy, or a field written by a newer nini all meant the
+    // entire conversation history was gone with no way to recover any
+    // of it. Session files are append-only JSONL; there is no reason
+    // one bad record should cost every other record.
+
+    /// Build a valid session file with `n` messages, then corrupt line
+    /// `bad_idx` (0-based, counting the header as line 0).
+    fn write_session_with_bad_line(path: &std::path::Path, n: usize, bad_idx: usize) {
+        let mut out = String::new();
+        let header = SessionHeader::new("/test/cwd");
+        out.push_str(&serde_json::to_string(&header).unwrap());
+        out.push('\n');
+        for i in 0..n {
+            if i == bad_idx {
+                // Truncated JSON — what a disk-full append leaves behind.
+                out.push_str("{\"type\":\"entry\",\"id\":\"msg");
+                out.push('\n');
+                continue;
+            }
+            let entry = SessionEntry::Message(SessionMessageEntry {
+                id: format!("msg{i}"),
+                parent_id: None,
+                timestamp: "2024-12-03T14:00:01.000Z".to_string(),
+                message: AgentMessage::User(UserMessage {
+                    content: StringOrContentBlocks::String(format!("body {i}")),
+                    timestamp: 1234567890,
+                }),
+            });
+            out.push_str(&serde_json::to_string(&entry).unwrap());
+            out.push('\n');
+        }
+        std::fs::write(path, out).unwrap();
+    }
+
+    #[test]
+    fn a_single_malformed_line_does_not_lose_the_whole_session() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("damaged.jsonl");
+        write_session_with_bad_line(&path, 10, 4);
+
+        let loaded = Codec::new(&path).read().expect("read must not fail");
+
+        assert_eq!(
+            loaded.skipped_lines, 1,
+            "exactly one line was damaged and it should be reported"
+        );
+        // The whole point: the other nine survive, in order.
+        let ids: Vec<&str> = loaded.entries.iter().map(|e| e.id()).collect();
+        assert_eq!(
+            ids,
+            vec!["msg0", "msg1", "msg2", "msg3", "msg5", "msg6", "msg7", "msg8", "msg9"],
+            "every readable entry must survive, in order"
+        );
+    }
+
+    #[test]
+    fn every_line_damaged_still_yields_a_usable_session() {
+        // Worst case: the header line is gone too. We must still hand
+        // back something loadable rather than an error the user can do
+        // nothing with.
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("garbage.jsonl");
+        std::fs::write(&path, b"not json at all\nalso not json\n").unwrap();
+
+        let loaded = Codec::new(&path)
+            .read()
+            .expect("a file of pure garbage must still produce a session");
+        assert_eq!(loaded.skipped_lines, 2);
+        assert!(loaded.entries.is_empty());
+        // A synthesised header so downstream code has an id to work with.
+        assert!(!loaded.header.id.is_empty());
+    }
+
+    #[test]
+    fn valid_session_reports_zero_skipped_lines() {
+        // The counter must not cry wolf, or users learn to ignore it.
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("clean.jsonl");
+        write_session_with_bad_line(&path, 3, 99); // no damage
+        let loaded = Codec::new(&path).read().unwrap();
+        assert_eq!(loaded.skipped_lines, 0);
+        assert_eq!(loaded.entries.len(), 3);
+    }
+
+    #[test]
+    fn blank_lines_are_not_counted_as_damage() {
+        // JSONL files accumulate trailing newlines; those are not
+        // "unreadable lines" and must not inflate the warning.
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("blanks.jsonl");
+        write_session_with_bad_line(&path, 2, 99);
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("\n\n   \n\n");
+        std::fs::write(&path, text).unwrap();
+
+        let loaded = Codec::new(&path).read().unwrap();
+        assert_eq!(loaded.skipped_lines, 0);
+        assert_eq!(loaded.entries.len(), 2);
+    }
+
+    #[test]
+    fn unknown_entry_type_is_skipped_not_fatal() {
+        // Valid JSON that we do not understand — a field written by a
+        // newer nini. Same reasoning: keep what we can use.
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("future.jsonl");
+        let mut text = serde_json::to_string(&SessionHeader::new("/test/cwd")).unwrap();
+        text.push('\n');
+        text.push_str("{\"type\":\"quantum-telemetry\",\"payload\":{}}\n");
+        let entry = SessionEntry::Message(SessionMessageEntry {
+            id: "msg0".to_string(),
+            parent_id: None,
+            timestamp: "2024-12-03T14:00:01.000Z".to_string(),
+            message: AgentMessage::User(UserMessage {
+                content: StringOrContentBlocks::String("hi".to_string()),
+                timestamp: 1,
+            }),
+        });
+        text.push_str(&serde_json::to_string(&entry).unwrap());
+        text.push('\n');
+        std::fs::write(&path, text).unwrap();
+
+        // Depending on how `Line` is tagged this either fails to
+        // deserialize (handled by the parse-skip) or deserializes into
+        // an unknown variant. Either way the good entry must survive.
+        match Codec::new(&path).read() {
+            Ok(loaded) => {
+                assert!(
+                    loaded.entries.iter().any(|e| e.id() == "msg0"),
+                    "the readable entry must survive an unknown type"
+                );
+            }
+            Err(e) => panic!("unknown entry type must not be fatal: {e}"),
+        }
     }
 
     #[test]
