@@ -473,3 +473,191 @@ fn tool_result_still_renders_its_name_after_the_change() {
         "tool result lost its duration: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 6. The truncation indicator must tell the truth (v0.8.9 P1-4)
+// ---------------------------------------------------------------------------
+//
+// The indicator used to subtract a 2 KB budget that nothing applied
+// any more, so it was wrong in both directions:
+//
+//   * 1500-byte single line at 40 cols → ~1460 cells silently dropped
+//     and the indicator said *nothing* (`1500 - 2000` saturates to 0).
+//   * 5 lines x 1000 bytes → reported "2 KB hidden" while really
+//     hiding ~4.7 KB.
+//
+// `transcript_text` is used throughout: the key-hint row has its own
+// `…` and would otherwise satisfy any whole-frame grep.
+
+/// The `…(...)` summary row the tool-result renderer emits, if any.
+fn truncation_indicator(transcript: &str) -> Option<String> {
+    transcript
+        .lines()
+        .find(|l| l.contains("…("))
+        .map(|l| l.to_string())
+}
+
+/// Digits from whichever cell-loss wording the indicator used
+/// ("N more cells" below 1024, "N cells hidden" at or above).
+fn reported_cells(indicator: &str) -> Option<usize> {
+    let cut = indicator
+        .find("more cells")
+        .or_else(|| indicator.find("cells hidden"))?;
+    let head = &indicator[..cut];
+    // Walk back over the separator first — there is always at least a
+    // space (and often a `(`) between the number and the keyword.
+    let digits: String = head
+        .chars()
+        .rev()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.chars().rev().collect::<String>().parse().ok()
+}
+
+#[test]
+fn dropped_chars_are_reported_even_when_total_is_under_2kb() {
+    // 1500 bytes < the old 2000-byte budget, so the old indicator
+    // printed nothing at all. The user saw a 37-cell line and had no
+    // way to know 1460 cells of file content were missing.
+    let s = state_with(TranscriptLine::ToolResult {
+        id: "t1".into(),
+        name: "read".into(),
+        ok: true,
+        content: "y".repeat(1500),
+        collapsed: false,
+        duration_ms: Some(4),
+    });
+    for (w, h) in [NARROW, WIDE] {
+        let rows = frame_rows(&s, w, h);
+        let transcript = transcript_text(&rows);
+        let indicator = truncation_indicator(&transcript).unwrap_or_else(|| {
+            panic!("no truncation indicator at {w} cols despite ~1460 cells dropped:\n{transcript}")
+        });
+        let reported = reported_cells(&indicator)
+            .unwrap_or_else(|| panic!("indicator has no cell count: {indicator:?}"));
+        assert!(
+            reported >= 1000,
+            "at {w} cols the indicator claims only {reported} cells hidden; \
+             the line is 1500 cells long and at most `width` survive"
+        );
+    }
+}
+
+#[test]
+fn reported_hidden_cells_match_reality() {
+    // 5 lines x 1000 cells at 40 cols: each line keeps 38, so
+    // 5 x 962 = 4810 cells are genuinely dropped. The old metric said
+    // "2 KB hidden" (3000) purely from `5000 - 2000`.
+    let body = (0..5)
+        .map(|i| format!("line{i}:{}", "z".repeat(990)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let s = state_with(TranscriptLine::ToolResult {
+        id: "t1".into(),
+        name: "bash".into(),
+        ok: true,
+        content: body,
+        collapsed: false,
+        duration_ms: None,
+    });
+    let rows = frame_rows(&s, NARROW.0, NARROW.1);
+    let transcript = transcript_text(&rows);
+    let indicator =
+        truncation_indicator(&transcript).unwrap_or_else(|| panic!("no indicator:\n{transcript}"));
+    let reported = reported_cells(&indicator)
+        .unwrap_or_else(|| panic!("indicator has no cell count: {indicator:?}"));
+
+    // Each of the 5 lines is ~1000 cells; the budget is 38 (40 - 2
+    // indent). Tolerance absorbs the `\n` joins and the prefix text.
+    let expected = 5 * (1000 - NARROW.0 as usize);
+    let slack = 60;
+    assert!(
+        reported + slack >= expected && reported <= expected + slack,
+        "indicator reports {reported} hidden cells, expected ~{expected}: {indicator:?}"
+    );
+    assert!(
+        !indicator.contains("more bytes"),
+        "the dead byte metric is back: {indicator:?}"
+    );
+}
+
+#[test]
+fn whole_dropped_lines_are_counted_separately() {
+    // 100 lines: 8 shown, 92 dropped. Both facts belong on the one row.
+    let mut body = String::new();
+    for i in 0..100 {
+        body.push_str(&format!("line {i:03}: short\n"));
+    }
+    let s = state_with(TranscriptLine::ToolResult {
+        id: "t1".into(),
+        name: "read".into(),
+        ok: true,
+        content: body,
+        collapsed: false,
+        duration_ms: Some(15),
+    });
+    let transcript = transcript_text(&frame_rows(&s, WIDE.0, WIDE.1));
+    let indicator =
+        truncation_indicator(&transcript).unwrap_or_else(|| panic!("no indicator:\n{transcript}"));
+    assert!(
+        indicator.contains("92 more lines"),
+        "expected the dropped-line count: {indicator:?}"
+    );
+    // One combined row, not two (v0.8.7 behaviour must survive).
+    assert_eq!(
+        transcript
+            .lines()
+            .filter(|l| l.contains("…(") || l.contains("…(truncated"))
+            .count(),
+        1,
+        "indicator must be a single combined row: {transcript}"
+    );
+}
+
+#[test]
+fn short_tool_result_has_no_indicator() {
+    // The other direction — don't invent losses that didn't happen.
+    let s = state_with(TranscriptLine::ToolResult {
+        id: "t1".into(),
+        name: "read".into(),
+        ok: true,
+        content: "a short file body\nsecond line".into(),
+        collapsed: false,
+        duration_ms: Some(1),
+    });
+    let transcript = transcript_text(&frame_rows(&s, WIDE.0, WIDE.1));
+    assert!(
+        truncation_indicator(&transcript).is_none(),
+        "a short tool result must not claim anything is hidden:\n{transcript}"
+    );
+}
+
+#[test]
+fn cjk_tool_result_reports_cells_not_bytes() {
+    // 200 CJK chars = 600 bytes but 400 cells. Quoting bytes here would
+    // overstate the loss by 3x.
+    let s = state_with(TranscriptLine::ToolResult {
+        id: "t1".into(),
+        name: "read".into(),
+        ok: true,
+        content: "文".repeat(200),
+        collapsed: false,
+        duration_ms: Some(1),
+    });
+    let transcript = transcript_text(&frame_rows(&s, NARROW.0, NARROW.1));
+    let indicator =
+        truncation_indicator(&transcript).unwrap_or_else(|| panic!("no indicator:\n{transcript}"));
+    let reported = reported_cells(&indicator)
+        .unwrap_or_else(|| panic!("indicator has no cell count: {indicator:?}"));
+    // 400 cells total, ~38 survive -> ~362 hidden. A byte-based figure
+    // would have said ~1086.
+    assert!(
+        reported <= 500,
+        "CJK loss quoted in bytes instead of cells ({reported}): {indicator:?}"
+    );
+    assert!(
+        reported >= 300,
+        "under-reported the loss ({reported}): {indicator:?}"
+    );
+}

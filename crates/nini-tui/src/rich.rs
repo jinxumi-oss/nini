@@ -20,8 +20,13 @@ use ratatui::text::{Line as RLine, Span};
 pub const BASH_PREVIEW_MAX_BYTES: usize = 2_000;
 /// Maximum lines to keep from a single bash-output preview.
 pub const BASH_PREVIEW_MAX_LINES: usize = 16;
-/// Maximum bytes to keep from a single tool result before truncation.
-pub const TOOL_RESULT_PREVIEW_MAX_BYTES: usize = 2_000;
+// v0.8.9 (P1-4): `TOOL_RESULT_PREVIEW_MAX_BYTES` is gone. It stopped
+// being applied in v0.8.7, when the byte budget was replaced by a
+// per-line cell budget, but the `…(N more bytes)` indicator kept
+// subtracting from it — so the number it displayed was fiction. The
+// real volume cap now lives in the tools layer
+// (`nini_tools::bash::STREAM_CAPTURE_CAP`); the TUI reports what *it*
+// dropped, in the unit it dropped it in.
 
 /// Render an assistant message: Markdown → themed ratatui lines.
 ///
@@ -150,9 +155,10 @@ pub fn render_tool_call(
 
 /// Render a tool-result block.
 ///
-/// Content is ANSI-stripped, hyperlinked, then truncated to
-/// `TOOL_RESULT_PREVIEW_MAX_BYTES`. Pi's `ToolExecutionComponent`
-/// does exactly this for tool outputs.
+/// Content is ANSI-stripped, hyperlinked, then clamped to 8 lines and
+/// to the terminal width, with a single trailing row saying exactly how
+/// much was dropped. Pi's `ToolExecutionComponent` does the same for
+/// tool outputs.
 /// Render a unified diff string (output of `nini_tools::diff::render_unified`)
 /// with +/- coloring. Lines starting with `+` are dim-error (additions
 /// in red/dim context). Lines starting with `-` are green (removals).
@@ -262,32 +268,30 @@ pub fn render_tool_result(
     // visible area. The `floor_char_boundary` guard from v0.8.4 is
     // preserved for the resulting byte slice.
     let max_lines: usize = 8;
-    // Budget accounts for the 2-space indent + 1 cell for the `…`
-    // indicator so the indicator stays inside the visible area when
-    // the terminal width equals the budget exactly.
+    // Budget covers the 2-space indent; `truncate_cells` reserves the
+    // last cell for the `…`, so the result plus the indent always fits.
     let max_chars_per_line: usize = match max_width {
-        Some(n) if n >= 5 => n.saturating_sub(2 + 1),
+        Some(n) if n >= 5 => n.saturating_sub(2),
         _ => 199,
     };
+    // v0.8.9 (P1-4): count what we *actually* drop.
+    //
+    // The old indicator compared `linked.len()` against
+    // `TOOL_RESULT_PREVIEW_MAX_BYTES` (2 KB) — but v0.8.7 had already
+    // replaced that byte budget with this per-line cell budget, so the
+    // 2 KB truncation was never applied anywhere and the number was
+    // fiction. Measured consequences at a 40-column terminal:
+    //
+    //   * 1500-byte single line → per-line cap drops ~1460 cells, but
+    //     1500 < 2000 so the indicator said nothing at all. The user
+    //     saw a short line and assumed that was the whole file.
+    //   * 5 lines x 1000 bytes → reported "2 KB hidden" while actually
+    //     hiding ~4.7 KB.
+    let mut dropped_cells: usize = 0;
     for line in lines.iter().take(max_lines) {
-        let truncated: String = if display_width(line) > max_chars_per_line {
-            // Walk chars accumulating display width, slice at the
-            // boundary that fits in max_chars_per_line cells.
-            let mut consumed = 0usize;
-            let mut cut_byte = line.len();
-            for (byte_idx, c) in line.char_indices() {
-                let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-                if consumed + cw > max_chars_per_line {
-                    cut_byte = byte_idx;
-                    break;
-                }
-                consumed += cw;
-            }
-            let safe = floor_char_boundary(line, cut_byte);
-            format!("{}…", &line[..safe])
-        } else {
-            line.to_string()
-        };
+        let original_w = display_width(line);
+        let truncated = truncate_cells(line, max_chars_per_line);
+        dropped_cells += original_w.saturating_sub(display_width(&truncated));
         out.push(RLine::from(Span::styled(
             format!("  {truncated}"),
             bg.fg(fg_output),
@@ -296,18 +300,20 @@ pub fn render_tool_result(
     // v0.8.7 (ux-002): combined truncation indicator. Old behavior
     // produced two rows ("more lines" then "more bytes") which was
     // visually noisy. Single combined row keeps the tail tidy.
-    let hidden_lines = lines.len().saturating_sub(max_lines);
-    let hidden_bytes = linked.len().saturating_sub(TOOL_RESULT_PREVIEW_MAX_BYTES);
-    if hidden_lines > 0 || hidden_bytes > 0 {
+    let dropped_lines = lines.len().saturating_sub(max_lines);
+    if dropped_lines > 0 || dropped_cells > 0 {
         let mut parts: Vec<String> = Vec::new();
-        if hidden_lines > 0 {
-            parts.push(format!("{hidden_lines} more lines"));
+        if dropped_lines > 0 {
+            parts.push(format!("{dropped_lines} more lines"));
         }
-        if hidden_bytes > 0 {
-            if hidden_bytes >= 1024 {
-                parts.push(format!("{} KB hidden", hidden_bytes / 1024));
+        if dropped_cells > 0 {
+            // Reported in cells, because that is the unit the cut was
+            // made in — "N more bytes" for a CJK payload would have
+            // quoted a number 3x larger than the text the user lost.
+            if dropped_cells >= 1024 {
+                parts.push(format!("{} cells hidden", dropped_cells));
             } else {
-                parts.push(format!("{hidden_bytes} more bytes"));
+                parts.push(format!("{dropped_cells} more cells"));
             }
         }
         out.push(RLine::from(Span::styled(
