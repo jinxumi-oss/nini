@@ -1106,6 +1106,200 @@ mod parallel_ceiling_tests {
 }
 
 // =====================================================================
+// v0.8.9 (P0-5): interleaved parallel tool calls must keep their args.
+//
+// The agent used to accumulate tool calls in a single `current_call`
+// slot: every `ToolCallStart` pushed the previous call out (with its
+// `input_json` still empty) and every `ToolCallStop` discarded whatever
+// did not match. That is fine for a strictly serial Start→Stop→Start
+// sequence, which is exactly what the `fixture` provider emits and
+// therefore exactly what all 900-odd tests exercised.
+//
+// Real models interleave. Driving the real TUI against MiniMax-M3 with
+// "read these four files in parallel" produced:
+//
+//     ▸ read {"path":"/tmp/nini-e2e/target1.rs"}
+//     ▸ read {"path":"/tmp/nini-e2e/target2.rs"}
+//     ...
+//     ✗ read Took 0ms
+//       invalid arguments: invalid type: null, expected struct ReadArgs
+//
+// The transcript looked perfect — the TUI sink tracks each line by id
+// independently — while every tool received `Value::Null`.
+// =====================================================================
+mod interleaved_tool_calls {
+    use super::*;
+    use async_trait::async_trait;
+    use nini_core::provider::{Capabilities, ProviderError, Request, StreamEvent};
+    use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
+    use nini_core::AgentMessage;
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A provider that emits tool-call events in an arbitrary
+    /// interleaving — all Starts first, then the bodies, then the
+    /// Stops. This is the shape that broke the single-slot accumulator.
+    struct InterleavingProvider {
+        events: Vec<StreamEvent>,
+        cursor: Arc<AtomicUsize>,
+    }
+
+    impl InterleavingProvider {
+        fn new() -> Self {
+            let paths = ["/a/one.rs", "/a/two.rs", "/a/three.rs", "/a/four.rs"];
+            let mut events = vec![StreamEvent::MessageStart {
+                id: "msg".to_string(),
+                model: "test-model".to_string(),
+            }];
+            // All four starts up front, before any body arrives.
+            for (i, p) in paths.iter().enumerate() {
+                events.push(StreamEvent::ToolCallStart {
+                    id: format!("call_{i}"),
+                    name: "echo".to_string(),
+                });
+                let _ = p;
+            }
+            // Then each body, split in two, out of order.
+            for (i, p) in paths.iter().enumerate() {
+                let full = format!("{{\"path\":\"{p}\"}}");
+                let (head, tail) = full.split_at(full.len() / 2);
+                events.push(StreamEvent::ToolCallDelta {
+                    id: format!("call_{i}"),
+                    input_json_delta: head.to_string(),
+                });
+                events.push(StreamEvent::ToolCallDelta {
+                    id: format!("call_{i}"),
+                    input_json_delta: tail.to_string(),
+                });
+            }
+            // Stops, in a different order again.
+            for i in [2usize, 0, 3, 1] {
+                events.push(StreamEvent::ToolCallStop {
+                    id: format!("call_{i}"),
+                    input_json: serde_json::json!({
+                        "path": format!("/a/{}.rs", ["one", "two", "three", "four"][i])
+                    }),
+                });
+            }
+            events.push(StreamEvent::MessageStop {
+                stop_reason: "tool_use".to_string(),
+                usage: Usage::default(),
+            });
+            Self {
+                events,
+                cursor: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl nini_core::Provider for InterleavingProvider {
+        fn name(&self) -> &'static str {
+            "interleaving"
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                streaming: true,
+                tool_use: true,
+                vision: false,
+            }
+        }
+
+        fn stream(
+            &self,
+            _req: Request,
+        ) -> std::pin::Pin<
+            Box<
+                dyn futures_core::Stream<Item = Result<StreamEvent, ProviderError>>
+                    + Send
+                    + 'static,
+            >,
+        > {
+            // Turn 0: the interleaved batch. Turn 1: a plain end_turn so
+            // the agent loop terminates after the tools have run.
+            let turn = self.cursor.fetch_add(1, Ordering::SeqCst);
+            if turn == 0 {
+                let events = self.events.clone();
+                Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
+            } else {
+                Box::pin(futures_util::stream::iter(vec![Ok(
+                    StreamEvent::MessageStop {
+                        stop_reason: "end_turn".to_string(),
+                        usage: Usage::default(),
+                    },
+                )]))
+            }
+        }
+    }
+
+    /// A tool that just echoes back the `path` it was handed, so the
+    /// test can see exactly what the agent parsed.
+    struct EchoTool;
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "echo".to_string(),
+                description: "echo the path".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"]
+                }),
+            }
+        }
+        async fn execute(&self, args: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidArgs("no path".to_string()))?;
+            Ok(ToolOutput::ok(format!("echo:{path}")))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn interleaved_parallel_tool_calls_keep_their_args() {
+        let provider = Arc::new(InterleavingProvider::new());
+        let tools = ToolRegistry::new().register(Arc::new(EchoTool) as Arc<dyn Tool>);
+        let mut agent = Agent::new(
+            provider as Arc<dyn nini_core::Provider>,
+            tools,
+            RunConfig::new("test-model"),
+        );
+
+        let mut results: Vec<(String, String, bool)> = Vec::new();
+        {
+            let mut stream = Box::pin(agent.run(AgentMessage::user("read them all")));
+            use futures_util::StreamExt;
+            while let Some(ev) = stream.next().await {
+                if let Ok(nini_core::AgentEvent::ToolResult { id, name, output }) = ev {
+                    results.push((id, name, output.is_error));
+                }
+            }
+        }
+
+        assert_eq!(results.len(), 4, "expected 4 results, got {results:?}");
+        for (id, name, is_error) in &results {
+            assert!(!is_error, "tool call {id} ({name}) failed — args were lost");
+            assert_eq!(name, "echo", "wrong tool name for {id}");
+        }
+        let mut ids: Vec<&String> = results.iter().map(|(id, _, _)| id).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["call_0", "call_1", "call_2", "call_3"],
+            "every parallel call must be executed exactly once"
+        );
+    }
+}
+
+// =====================================================================
 // v0.8.6: length-stop tool_call reject gate.
 //
 // When stop_reason == "length" and tool_calls is non-empty, the assistant

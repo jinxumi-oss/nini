@@ -859,7 +859,34 @@ impl Agent {
                 // and tracking pending tool calls.
                 let mut assistant_text = String::new();
                 let mut tool_calls: Vec<PendingToolCall> = Vec::new();
-                let mut current_call: Option<PendingToolCall> = None;
+                // v0.8.9 (P0-5): tool calls are accumulated in a map
+                // keyed by id, not in a single `current_call` slot.
+                //
+                // The single slot only works if Start/Delta/Stop arrive
+                // in strict sequence per call — which is what the
+                // `fixture` provider does, and what every test in this
+                // repo exercises. Real models interleave. A turn with
+                // four parallel `read` calls arrives as:
+                //
+                //     Start(0) Start(1) Stop(0) Start(2) Stop(1) ...
+                //
+                // and the old code did `current_call.take()` on every
+                // Start (pushing the previous call with its `input_json`
+                // still EMPTY) and again on every Stop (discarding
+                // whichever call did not match). The result: most tool
+                // calls reached `run_single_tool` with `input_json: ""`,
+                // `serde_json::from_str("")` failed, and the tool was
+                // handed `Value::Null`:
+                //
+                //     ✗ read Took 0ms
+                //       invalid arguments: invalid type: null, expected struct ReadArgs
+                //
+                // The transcript still looked right, because the TUI sink
+                // tracks each line by id independently (v0.8.8) — so the
+                // args rendered fine while the tool got nothing. Found by
+                // driving the real TUI against MiniMax-M3.
+                let mut in_flight: std::collections::HashMap<String, PendingToolCall> =
+                    std::collections::HashMap::new();
                 let mut last_usage = Usage::default();
                 let mut stop_reason = "end_turn".to_string();
 
@@ -891,30 +918,66 @@ impl Agent {
                                 yield AgentEvent::ThinkingDelta { text };
                             }
                             Some(Ok(StreamEvent::ToolCallStart { id, name })) => {
-                                if let Some(c) = current_call.take() {
-                                    tool_calls.push(c);
+                                // A second Start for the same id would
+                                // otherwise strand the first one's
+                                // accumulated args, so close it out
+                                // first rather than overwriting.
+                                if let Some(orphan) =
+                                    in_flight.remove(&id)
+                                {
+                                    eprintln!(
+                                        "[nini] provider sent a second \
+                                         ToolCallStart for id {id}; flushing \
+                                         the first with its partial args"
+                                    );
+                                    tool_calls.push(orphan);
                                 }
-                                current_call = Some(PendingToolCall {
-                                    id: id.clone(),
-                                    name: name.clone(),
-                                    input_json: String::new(),
-                                });
+                                in_flight.insert(
+                                    id.clone(),
+                                    PendingToolCall {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        input_json: String::new(),
+                                    },
+                                );
                                 yield AgentEvent::ToolCallStart { id, name };
                             }
                             Some(Ok(StreamEvent::ToolCallDelta { id, input_json_delta })) => {
-                                if let Some(c) = current_call.as_mut() {
-                                    if c.id == id {
-                                        c.input_json.push_str(&input_json_delta);
-                                        yield AgentEvent::ToolCallDelta { id, input_json_delta };
-                                    }
+                                if let Some(c) = in_flight.get_mut(&id) {
+                                    c.input_json.push_str(&input_json_delta);
+                                    yield AgentEvent::ToolCallDelta { id, input_json_delta };
                                 }
                             }
                             Some(Ok(StreamEvent::ToolCallStop { id, input_json })) => {
-                                if let Some(mut c) = current_call.take() {
-                                    if c.id == id {
+                                // Keyed by id, so a Stop that arrives
+                                // for call 0 while call 1 is still
+                                // streaming no longer strands call 1.
+                                match in_flight.remove(&id) {
+                                    Some(mut c) => {
                                         c.input_json = serde_json::to_string(&input_json)
                                             .unwrap_or_else(|_| "null".to_string());
                                         tool_calls.push(c);
+                                    }
+                                    None => {
+                                        // Stop without a matching
+                                        // Start. Not fatal — some
+                                        // providers send the body
+                                        // without an id we ever saw —
+                                        // but it has to be visible
+                                        // rather than silently
+                                        // dropping a tool call the
+                                        // model asked for.
+                                        eprintln!(
+                                            "[nini] ToolCallStop for unknown id \
+                                             {id}; keeping it with the body the \
+                                             provider sent"
+                                        );
+                                        tool_calls.push(PendingToolCall {
+                                            id: id.clone(),
+                                            name: String::new(),
+                                            input_json: serde_json::to_string(&input_json)
+                                                .unwrap_or_else(|_| "null".to_string()),
+                                        });
                                     }
                                 }
                                 yield AgentEvent::ToolCallStop { id, input_json };
@@ -1028,7 +1091,25 @@ impl Agent {
                         continue;
                     }
                 }
-                if let Some(c) = current_call.take() {
+                // Anything still in flight when the stream ended never
+                // got a Stop. Push it with whatever args it accumulated
+                // so the tools still run instead of the call vanishing.
+                //
+                // Ordering note: closed calls are already in `tool_calls`
+                // in Stop order. Stragglers are appended in `HashMap`
+                // order, which is arbitrary — but the invariant that
+                // actually matters is that every `tool_use` in the
+                // assistant message has a matching `tool_result`, and
+                // that holds regardless of the order the results are
+                // written into the tool message.
+                let mut stragglers: Vec<PendingToolCall> = in_flight.drain().map(|(_, c)| c).collect();
+                stragglers.sort_by(|a, b| a.id.cmp(&b.id));
+                for c in stragglers {
+                    eprintln!(
+                        "[nini] tool call {} ({}) never received a Stop; \
+                         running it with the args accumulated so far",
+                        c.id, c.name
+                    );
                     tool_calls.push(c);
                 }
 
