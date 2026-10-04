@@ -9,13 +9,17 @@ pub fn strip_ansi(s: &str) -> String {
                 chars.next();
                 while let Some(&c2) = chars.peek() {
                     chars.next();
-                    if c2.is_ascii_alphabetic() || c2 == '~' { break; }
+                    if c2.is_ascii_alphabetic() || c2 == '~' {
+                        break;
+                    }
                 }
             } else if chars.peek() == Some(&']') {
                 chars.next();
                 let mut term = false;
                 while let Some(c2) = chars.next() {
-                    if c2 == '\x07' { break; }
+                    if c2 == '\x07' {
+                        break;
+                    }
                     if c2 == '\x1b' && chars.peek() == Some(&'\\') {
                         chars.next();
                         term = true;
@@ -40,9 +44,19 @@ pub fn strip_ansi(s: &str) -> String {
 pub fn truncate(s: &str, max: usize, _max_lines: usize) -> (String, bool, u32, u32) {
     use crate::width::floor_char_boundary;
     if s.len() <= max {
-        (s.to_string(), false, s.len() as u32, s.lines().count() as u32)
+        (
+            s.to_string(),
+            false,
+            s.len() as u32,
+            s.lines().count() as u32,
+        )
     } else {
         let end = floor_char_boundary(s, max);
-        (format!("{}…", &s[..end]), true, s.len() as u32, s.lines().count() as u32)
+        (
+            format!("{}…", &s[..end]),
+            true,
+            s.len() as u32,
+            s.lines().count() as u32,
+        )
     }
 }

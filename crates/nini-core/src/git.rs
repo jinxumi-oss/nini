@@ -18,7 +18,13 @@ use std::process::Command;
 /// TUI launch (cached by `init`).
 pub fn git_branch(cwd: &Path) -> Option<String> {
     let output = Command::new("git")
-        .args(["-C", &cwd.to_string_lossy(), "rev-parse", "--abbrev-ref", "HEAD"])
+        .args([
+            "-C",
+            &cwd.to_string_lossy(),
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {

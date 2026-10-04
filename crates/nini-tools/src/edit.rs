@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec, ToolSystemPrompt};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 use crate::diff;
@@ -147,7 +147,8 @@ impl Tool for EditTool {
             snippet: "Apply a targeted text replacement to a file.".into(),
             guidelines: vec![
                 "`old_text` must match EXACTLY ONCE — include enough \
-                 surrounding context for uniqueness.".into(),
+                 surrounding context for uniqueness."
+                    .into(),
                 "For whole-file rewrites use `write`, not edit.".into(),
             ],
         })
@@ -230,7 +231,8 @@ mod tests {
         assert!(
             word_count <= 10,
             "edit snippet too long: {} words — {}",
-            word_count, contrib.snippet,
+            word_count,
+            contrib.snippet,
         );
         let spec = tool.spec();
         assert!(
@@ -260,7 +262,7 @@ mod tests {
 
 #[cfg(test)]
 mod diff_integration_tests {
-    
+
     use crate::diff::{diff_summary, render_unified};
 
     #[test]

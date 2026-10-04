@@ -20,6 +20,6 @@ pub mod status_lines;
 pub use dispatch::dispatch;
 pub use html_export::render_transcript_html;
 pub use parse::parse;
-pub use registry::{CommandDef, CommandId, REGISTRY, by_name, complete};
+pub use registry::{by_name, complete, CommandDef, CommandId, REGISTRY};
 pub use result::{CommandOutcome, CommandResult};
 pub use status_lines::build_status_lines;

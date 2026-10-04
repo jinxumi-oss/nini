@@ -770,7 +770,9 @@ pub fn serialize_session_entries(entries: &[SessionEntry]) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     for entry in entries {
-        let SessionEntry::Message(m) = entry else { continue };
+        let SessionEntry::Message(m) = entry else {
+            continue;
+        };
         match &m.message {
             EAM::User(u) => {
                 let mut text_buf = String::new();
@@ -798,7 +800,9 @@ pub fn serialize_session_entries(entries: &[SessionEntry]) -> String {
                         EntriesBlock::Thinking { thinking } => {
                             thinking_parts.push(thinking.clone());
                         }
-                        EntriesBlock::ToolCall { name, arguments, .. } => {
+                        EntriesBlock::ToolCall {
+                            name, arguments, ..
+                        } => {
                             tool_calls.push(format_tool_call(name, arguments));
                         }
                         EntriesBlock::Text { text } => {
@@ -813,7 +817,10 @@ pub fn serialize_session_entries(entries: &[SessionEntry]) -> String {
                 }
 
                 if !thinking_parts.is_empty() {
-                    parts.push(format!("[Assistant thinking]: {}", thinking_parts.join("\n")));
+                    parts.push(format!(
+                        "[Assistant thinking]: {}",
+                        thinking_parts.join("\n")
+                    ));
                 }
                 if !tool_calls.is_empty() {
                     parts.push(format!("[Assistant tool calls]: {}", tool_calls.join("; ")));
@@ -869,7 +876,7 @@ pub fn serialize_session_entries(entries: &[SessionEntry]) -> String {
 mod tests {
     use super::*;
     use crate::provider::Message;
-use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
+    use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
 
     fn make_user_entry(id: &str, text: &str, parent: Option<&str>, seq: u64) -> Entry {
         Entry {
@@ -1412,7 +1419,10 @@ use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
             timestamp: 0,
         }];
         let s = serialize_conversation(&msgs);
-        assert!(s.is_empty(), "empty assistant text should be dropped, got: {s:?}");
+        assert!(
+            s.is_empty(),
+            "empty assistant text should be dropped, got: {s:?}"
+        );
     }
 
     #[test]
@@ -1451,13 +1461,11 @@ use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
             },
             Message {
                 role: Role::Assistant,
-                content: vec![
-                    ContentBlock::ToolUse {
-                        id: "t1".into(),
-                        name: "read".into(),
-                        input: serde_json::json!({"path": "/auth.rs"}),
-                    },
-                ],
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"path": "/auth.rs"}),
+                }],
                 timestamp: 1,
             },
             Message {
@@ -1486,7 +1494,9 @@ use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
     #[test]
     fn serialize_session_entries_thinking_and_tool_call() {
         use crate::entries::AgentMessage as EAM;
-        use crate::entries::{AssistantMessage, SessionEntry, SessionMessageEntry, StopReason, Usage};
+        use crate::entries::{
+            AssistantMessage, SessionEntry, SessionMessageEntry, StopReason, Usage,
+        };
 
         let entries = vec![SessionEntry::Message(SessionMessageEntry {
             id: "m1".into(),
@@ -1532,27 +1542,27 @@ use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
         let s = serialize_session_entries(&entries);
         assert!(s.contains("[Assistant thinking]: User wants JWT removed."));
         // Keys are alphabetized by serde_json's BTreeMap-backed Map.
-        assert!(s.contains("[Assistant tool calls]: edit(newText=\"y\", oldText=\"x\", path=\"/a.rs\")"));
+        assert!(s.contains(
+            "[Assistant tool calls]: edit(newText=\"y\", oldText=\"x\", path=\"/a.rs\")"
+        ));
         assert!(s.contains("[Assistant]: Done."));
     }
 
     #[test]
     fn serialize_session_entries_user_string_and_blocks() {
         use crate::entries::AgentMessage as EAM;
-        use crate::entries::{SessionEntry, SessionMessageEntry, UserMessage};
         use crate::entries::StringOrContentBlocks;
+        use crate::entries::{SessionEntry, SessionMessageEntry, UserMessage};
 
-        let entries = vec![
-            SessionEntry::Message(SessionMessageEntry {
-                id: "u1".into(),
-                parent_id: None,
-                timestamp: "t".into(),
-                message: EAM::User(UserMessage {
-                    content: StringOrContentBlocks::String("plain user msg".into()),
-                    timestamp: 0,
-                }),
+        let entries = vec![SessionEntry::Message(SessionMessageEntry {
+            id: "u1".into(),
+            parent_id: None,
+            timestamp: "t".into(),
+            message: EAM::User(UserMessage {
+                content: StringOrContentBlocks::String("plain user msg".into()),
+                timestamp: 0,
             }),
-        ];
+        })];
 
         let s = serialize_session_entries(&entries);
         assert_eq!(s, "[User]: plain user msg");
@@ -1588,12 +1598,12 @@ use crate::{AgentMessage, ContentBlock, Entry, LegacyEntryType, Role};
 #[cfg(test)]
 mod demo {
     use super::*;
+    use crate::entries::ContentBlock as ECB;
+    use crate::entries::Cost as ECost;
     use crate::entries::{
         AgentMessage as EAM, AssistantMessage, SessionEntry, SessionMessageEntry,
         StopReason as ESR, StringOrContentBlocks, ToolResultMessage, Usage, UserMessage,
     };
-    use crate::entries::ContentBlock as ECB;
-    use crate::entries::Cost as ECost;
 
     #[test]
     fn demo_real_world_pi_format() {
@@ -1670,7 +1680,9 @@ mod demo {
         ];
 
         let s = serialize_session_entries(&entries);
-        eprintln!("\n--- DEMO: real-world Pi-format conversation serialization ---\n{s}\n--- END ---\n");
+        eprintln!(
+            "\n--- DEMO: real-world Pi-format conversation serialization ---\n{s}\n--- END ---\n"
+        );
         // Sanity assertions
         assert!(s.contains("[User]: 用 sqlx"));
         assert!(s.contains("[Assistant thinking]: User wants sqlx"));

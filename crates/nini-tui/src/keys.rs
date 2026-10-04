@@ -436,9 +436,7 @@ pub fn resolve(keymap: &[KeyBinding], key: Key) -> KeyAction {
     // letters and most editors (bash, readline, Pi) accept it as a plain
     // letter. This matches what `Pi` does and lets typed text reach the
     // input buffer when the user types uppercase letters.
-    if !key.modifiers.contains(KeyModifiers::CTRL)
-        && !key.modifiers.contains(KeyModifiers::ALT)
-    {
+    if !key.modifiers.contains(KeyModifiers::CTRL) && !key.modifiers.contains(KeyModifiers::ALT) {
         if let KeyCode::Char(c) = key.code {
             return KeyAction::Insert(c);
         }

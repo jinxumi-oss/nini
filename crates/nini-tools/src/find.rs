@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use ignore::WalkBuilder;
 use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec, ToolSystemPrompt};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 #[derive(Debug, Deserialize)]
@@ -124,11 +124,9 @@ impl Tool for FindTool {
     fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
         Some(ToolSystemPrompt {
             snippet: "Enumerate files matching a glob (e.g. `*.rs`).".into(),
-            guidelines: vec![
-                "Use this to find which files EXIST; not to list \
+            guidelines: vec!["Use this to find which files EXIST; not to list \
                  directory contents — use bash (`ls`) for that."
-                    .into(),
-            ],
+                .into()],
         })
     }
 }
@@ -221,7 +219,8 @@ mod tests {
         assert!(
             word_count <= 10,
             "find snippet too long: {} words — {}",
-            word_count, contrib.snippet,
+            word_count,
+            contrib.snippet,
         );
         let spec = tool.spec();
         assert!(

@@ -252,7 +252,9 @@ fn libc_setsid() {
 #[cfg(unix)]
 fn kill_tree(pid: Option<u32>) {
     let Some(pid) = pid else { return };
-    let Ok(pid_i32) = i32::try_from(pid) else { return };
+    let Ok(pid_i32) = i32::try_from(pid) else {
+        return;
+    };
     // Safety: killpg with a positive i32 targets the named process group.
     // SIGTERM first; after grace, SIGKILL.
     unsafe {
@@ -352,19 +354,23 @@ mod tests {
         let mut r = BashRunner::new();
         let res = r.run_blocking_with_timeout("sleep 30", std::path::Path::new("/tmp"), 500);
         assert!(res.timed_out, "expected timed_out, got: {:?}", res);
-        assert!(res.duration_ms < 2000, "timeout didn't fire promptly: {:?}", res);
+        assert!(
+            res.duration_ms < 2000,
+            "timeout didn't fire promptly: {:?}",
+            res
+        );
     }
 
     #[test]
     fn stderr_captured_separately() {
         let mut r = BashRunner::new();
-        let res = r.run_blocking_with_timeout(
-            "echo OOPS >&2",
-            std::path::Path::new("/tmp"),
-            5000,
-        );
+        let res = r.run_blocking_with_timeout("echo OOPS >&2", std::path::Path::new("/tmp"), 5000);
         assert!(res.stderr.contains("OOPS"), "stderr was: {:?}", res.stderr);
-        assert!(res.output.is_empty(), "stdout leaked stderr: {:?}", res.output);
+        assert!(
+            res.output.is_empty(),
+            "stdout leaked stderr: {:?}",
+            res.output
+        );
     }
 
     #[test]

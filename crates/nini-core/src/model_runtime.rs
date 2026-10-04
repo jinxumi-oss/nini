@@ -25,41 +25,60 @@ const BUILTIN_CATALOG: &[(&str, &str)] = &[
 ];
 
 impl ModelRuntime {
-    pub fn new() -> Self { Self { models: Vec::new() } }
+    pub fn new() -> Self {
+        Self { models: Vec::new() }
+    }
     pub fn with_defaults() -> Self {
-        let models = BUILTIN_CATALOG.iter().map(|(id, _)| {
-            let (provider, model) = id.split_once('/').unwrap_or(("unknown", id));
-            ModelSpec {
-                id: id.to_string(),
-                provider: provider.to_string(),
-                context_window: 128_000,
-            }
-            ._set_model_id(model)
-        }).collect();
+        let models = BUILTIN_CATALOG
+            .iter()
+            .map(|(id, _)| {
+                let (provider, model) = id.split_once('/').unwrap_or(("unknown", id));
+                ModelSpec {
+                    id: id.to_string(),
+                    provider: provider.to_string(),
+                    context_window: 128_000,
+                }
+                ._set_model_id(model)
+            })
+            .collect();
         Self { models }
     }
-    pub fn from_models_json<T>(_json: T) -> Self { Self::with_defaults() }
-    pub fn from_models_value(_json: &serde_json::Value) -> Self { Self::with_defaults() }
-    pub fn list(&self) -> Vec<ModelSpec> { self.models.clone() }
-    pub fn all(&self) -> Vec<ModelSpec> { self.models.clone() }
+    pub fn from_models_json<T>(_json: T) -> Self {
+        Self::with_defaults()
+    }
+    pub fn from_models_value(_json: &serde_json::Value) -> Self {
+        Self::with_defaults()
+    }
+    pub fn list(&self) -> Vec<ModelSpec> {
+        self.models.clone()
+    }
+    pub fn all(&self) -> Vec<ModelSpec> {
+        self.models.clone()
+    }
     pub fn find_by_id(&self, id: &str) -> Option<ModelSpec> {
         self.models.iter().find(|m| m.id == id).cloned()
     }
 }
 
 impl Default for ModelRuntime {
-    fn default() -> Self { Self::with_defaults() }
+    fn default() -> Self {
+        Self::with_defaults()
+    }
 }
 
 impl ModelSpec {
-    fn _set_model_id(self, _id: &str) -> Self { self }
+    fn _set_model_id(self, _id: &str) -> Self {
+        self
+    }
 }
 
 pub fn available_models() -> Vec<ModelSpec> {
     ModelRuntime::with_defaults().list()
 }
 
-pub fn resolve(_provider: &str, _model: &str) -> Option<ModelSpec> { None }
+pub fn resolve(_provider: &str, _model: &str) -> Option<ModelSpec> {
+    None
+}
 
 pub fn resolve_pattern(runtime: &ModelRuntime, pattern: &str) -> Vec<ModelSpec> {
     if pattern.is_empty() {
@@ -68,10 +87,19 @@ pub fn resolve_pattern(runtime: &ModelRuntime, pattern: &str) -> Vec<ModelSpec> 
     // Support simple glob: '*' → wildcard, otherwise substring.
     if pattern.contains('*') {
         let parts: Vec<&str> = pattern.split('*').filter(|s| !s.is_empty()).collect();
-        runtime.all().into_iter().filter(|m| {
-            parts.iter().all(|p| m.id.contains(p)) || m.id.starts_with(parts.first().copied().unwrap_or(""))
-        }).collect()
+        runtime
+            .all()
+            .into_iter()
+            .filter(|m| {
+                parts.iter().all(|p| m.id.contains(p))
+                    || m.id.starts_with(parts.first().copied().unwrap_or(""))
+            })
+            .collect()
     } else {
-        runtime.all().into_iter().filter(|m| m.id.contains(pattern)).collect()
+        runtime
+            .all()
+            .into_iter()
+            .filter(|m| m.id.contains(pattern))
+            .collect()
     }
 }

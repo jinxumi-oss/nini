@@ -49,9 +49,15 @@ pub struct Settings {
     pub keep_recent_tokens: u32,
 }
 
-fn default_context_window() -> u32 { DEFAULT_CONTEXT_WINDOW }
-fn default_reserve_tokens() -> u32 { DEFAULT_RESERVE_TOKENS }
-fn default_keep_recent_tokens() -> u32 { DEFAULT_KEEP_RECENT_TOKENS }
+fn default_context_window() -> u32 {
+    DEFAULT_CONTEXT_WINDOW
+}
+fn default_reserve_tokens() -> u32 {
+    DEFAULT_RESERVE_TOKENS
+}
+fn default_keep_recent_tokens() -> u32 {
+    DEFAULT_KEEP_RECENT_TOKENS
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -120,7 +126,10 @@ impl SettingsManager {
 
     pub fn settings_path(&self) -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_default();
-        PathBuf::from(home).join(".pi").join("agent").join("settings.json")
+        PathBuf::from(home)
+            .join(".pi")
+            .join("agent")
+            .join("settings.json")
     }
 
     /// Persist the in-memory settings to disk. Best-effort: a failed
@@ -133,8 +142,7 @@ impl SettingsManager {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
         }
-        std::fs::write(&path, json)
-            .map_err(|e| format!("settings write {}: {e}", path.display()))
+        std::fs::write(&path, json).map_err(|e| format!("settings write {}: {e}", path.display()))
     }
 
     /// Load settings from disk. Returns a default `SettingsManager` if
@@ -151,7 +159,12 @@ impl SettingsManager {
                 let theme = settings.theme.clone();
                 let default_model = settings.default_model.clone();
                 let default_thinking_level = settings.default_thinking_level.clone();
-                Self { theme, default_model, default_thinking_level, settings }
+                Self {
+                    theme,
+                    default_model,
+                    default_thinking_level,
+                    settings,
+                }
             }
             Err(_) => Self::default(),
         }
@@ -162,7 +175,9 @@ impl SettingsManager {
 
 impl std::ops::Deref for SettingsManager {
     type Target = Settings;
-    fn deref(&self) -> &Settings { &self.settings }
+    fn deref(&self) -> &Settings {
+        &self.settings
+    }
 }
 
 #[cfg(test)]
@@ -191,7 +206,10 @@ mod tests {
     fn set_default_model_round_trip() {
         let mut m = SettingsManager::default();
         m.set_default_model("anthropic/claude-opus-4-7");
-        assert_eq!(m.default_model.as_deref(), Some("anthropic/claude-opus-4-7"));
+        assert_eq!(
+            m.default_model.as_deref(),
+            Some("anthropic/claude-opus-4-7")
+        );
         assert_eq!(
             m.settings.default_model.as_deref(),
             Some("anthropic/claude-opus-4-7")
@@ -220,6 +238,9 @@ mod tests {
             std::env::remove_var("HOME");
         }
         assert!(result.is_ok(), "flush failed: {:?}", result);
-        assert!(contents.contains("\"context_window\": 100000"), "got: {contents}");
+        assert!(
+            contents.contains("\"context_window\": 100000"),
+            "got: {contents}"
+        );
     }
 }

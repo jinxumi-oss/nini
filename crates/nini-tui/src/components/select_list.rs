@@ -178,7 +178,8 @@ impl SelectList {
         // Pick the primary column width: 32 by default, shrink if
         // there's not enough space.
         let primary_width = if has_any_desc {
-            width.saturating_sub(PRIMARY_COLUMN_GAP + MIN_DESCRIPTION_WIDTH)
+            width
+                .saturating_sub(PRIMARY_COLUMN_GAP + MIN_DESCRIPTION_WIDTH)
                 .min(DEFAULT_PRIMARY_COLUMN_WIDTH)
                 .max(8)
         } else {
@@ -198,7 +199,9 @@ impl SelectList {
             row.push(Span::styled(
                 prefix.to_string(),
                 if is_selected {
-                    theme.fg_style(selected_color).add_modifier(ratatui::style::Modifier::BOLD)
+                    theme
+                        .fg_style(selected_color)
+                        .add_modifier(ratatui::style::Modifier::BOLD)
                 } else {
                     theme.fg_style(prefix_color)
                 },
@@ -221,7 +224,8 @@ impl SelectList {
             // Description (if present).
             if let Some(desc) = &item.description {
                 // Pad to align columns (cells, not chars).
-                let pad = primary_width.saturating_sub(crate::width::display_width(&item.label)) + PRIMARY_COLUMN_GAP;
+                let pad = primary_width.saturating_sub(crate::width::display_width(&item.label))
+                    + PRIMARY_COLUMN_GAP;
                 row.push(Span::raw(" ".repeat(pad)));
                 let desc_disp = if crate::width::display_width(desc)
                     > width.saturating_sub(primary_width + 6)
@@ -253,7 +257,11 @@ impl SelectList {
     }
 
     /// Helper: consume the scroll_info and return it as an Option<Vec<Span>>.
-    pub fn scroll_info_span(&self, theme: &crate::theme::Theme, color: &str) -> Option<Vec<Span<'static>>> {
+    pub fn scroll_info_span(
+        &self,
+        theme: &crate::theme::Theme,
+        color: &str,
+    ) -> Option<Vec<Span<'static>>> {
         if self.items.is_empty() {
             return None;
         }
@@ -358,7 +366,10 @@ mod tests {
             .collect();
         let list = SelectList::new(many, 5);
         let scroll = list.scroll_info_span(&Theme::dark(), "muted");
-        assert!(scroll.is_some(), "expected scroll info when items > max_visible");
+        assert!(
+            scroll.is_some(),
+            "expected scroll info when items > max_visible"
+        );
         let s = scroll.unwrap();
         let joined: String = s.iter().map(|sp| sp.content.as_ref()).collect();
         assert!(joined.contains("(1/20)"));

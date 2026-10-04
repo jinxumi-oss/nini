@@ -45,8 +45,8 @@ pub(crate) fn build_provider(
         // but the actual env var is `OPENAI_BASE_URL`, not
         // `OPENAI_API_KEY_BASE_URL`. Inline the read instead.
         "openai" => {
-            let key = std::env::var("OPENAI_API_KEY")
-                .context("OPENAI_API_KEY required for openai")?;
+            let key =
+                std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY required for openai")?;
             let provider = match std::env::var("OPENAI_BASE_URL").ok() {
                 Some(base) => nini_ai::openai::OpenAiProvider::new(key).with_base_url(base),
                 None => nini_ai::openai::OpenAiProvider::new(key),
@@ -65,9 +65,9 @@ pub(crate) fn build_provider(
                 .context("OPENAI_API_KEY required for openai-compat")?;
             let base = std::env::var("OPENAI_BASE_URL")
                 .context("OPENAI_BASE_URL required for openai-compat")?;
-            Ok(Arc::new(
-                nini_ai::openai_compat::OpenAiCompatProvider::new(base, key),
-            ))
+            Ok(Arc::new(nini_ai::openai_compat::OpenAiCompatProvider::new(
+                base, key,
+            )))
         }
         "google" => build_with_optional_base_url(
             "GOOGLE_API_KEY (or GEMINI_API_KEY)",
@@ -96,8 +96,7 @@ pub(crate) fn build_provider(
             Ok(Arc::new(provider))
         }
         "groq" => {
-            let key = std::env::var("GROQ_API_KEY")
-                .context("GROQ_API_KEY required for groq")?;
+            let key = std::env::var("GROQ_API_KEY").context("GROQ_API_KEY required for groq")?;
             let provider = match std::env::var("GROQ_BASE_URL").ok() {
                 Some(base) => nini_ai::groq::GroqProvider::with_base_url(base, key),
                 None => nini_ai::groq::GroqProvider::new(key),
@@ -105,8 +104,8 @@ pub(crate) fn build_provider(
             Ok(Arc::new(provider))
         }
         "mistral" => {
-            let key = std::env::var("MISTRAL_API_KEY")
-                .context("MISTRAL_API_KEY required for mistral")?;
+            let key =
+                std::env::var("MISTRAL_API_KEY").context("MISTRAL_API_KEY required for mistral")?;
             let provider = match std::env::var("MISTRAL_BASE_URL").ok() {
                 Some(base) => nini_ai::mistral::MistralProvider::with_base_url(base, key),
                 None => nini_ai::mistral::MistralProvider::new(key),
@@ -114,8 +113,8 @@ pub(crate) fn build_provider(
             Ok(Arc::new(provider))
         }
         "cohere" => {
-            let key = std::env::var("COHERE_API_KEY")
-                .context("COHERE_API_KEY required for cohere")?;
+            let key =
+                std::env::var("COHERE_API_KEY").context("COHERE_API_KEY required for cohere")?;
             let provider = match std::env::var("COHERE_BASE_URL").ok() {
                 Some(base) => nini_ai::cohere::CohereProvider::with_base_url(base, key),
                 None => nini_ai::cohere::CohereProvider::new(key),
@@ -135,8 +134,8 @@ fn build_anthropic_with_fallbacks(
     fallback_keys: &[String],
     fallback_base_urls: &[String],
 ) -> Result<Arc<dyn Provider>> {
-    let key = std::env::var("ANTHROPIC_API_KEY")
-        .context("ANTHROPIC_API_KEY required for anthropic")?;
+    let key =
+        std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY required for anthropic")?;
     let base = std::env::var("ANTHROPIC_BASE_URL").ok();
 
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
@@ -157,7 +156,9 @@ fn build_anthropic_with_fallbacks(
     if providers.len() == 1 {
         Ok(providers.remove(0))
     } else {
-        Ok(Arc::new(nini_ai::fallback::FallbackProvider::new(providers)))
+        Ok(Arc::new(nini_ai::fallback::FallbackProvider::new(
+            providers,
+        )))
     }
 }
 
@@ -192,7 +193,10 @@ where
 }
 
 /// Construct an `AnthropicProvider` with optional base URL override.
-pub(crate) fn make_anthropic(key: &str, base: Option<&str>) -> nini_ai::anthropic::AnthropicProvider {
+pub(crate) fn make_anthropic(
+    key: &str,
+    base: Option<&str>,
+) -> nini_ai::anthropic::AnthropicProvider {
     let mut p = nini_ai::anthropic::AnthropicProvider::new(key);
     if let Some(b) = base {
         if !b.trim().is_empty() {

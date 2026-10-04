@@ -10,10 +10,10 @@
 
 use async_trait::async_trait;
 use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec, ToolSystemPrompt};
-use nix::sys::signal::{Signal, killpg};
+use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -228,10 +228,12 @@ impl Tool for BashTool {
             snippet: "Run shell commands (ls, grep, cat, cargo test, ...).".into(),
             guidelines: vec![
                 "Default for any shell operation; pick this unless a more \
-                 specific tool (read, grep, find, edit) clearly fits.".into(),
+                 specific tool (read, grep, find, edit) clearly fits."
+                    .into(),
                 "Set `timeout` for anything that could run unboundedly.".into(),
                 "Confirm with the user before destructive commands \
-                 (`rm -rf`, `git push --force`).".into(),
+                 (`rm -rf`, `git push --force`)."
+                    .into(),
             ],
         })
     }
@@ -373,12 +375,17 @@ mod tests {
         // each other, and snippet must be short (Pi-style: 4–7 words).
         let tool = BashTool::new();
         let contrib = tool.system_prompt_contribution().unwrap();
-        assert!(contrib.snippet.split_whitespace().count() <= 10,
-                "bash snippet too long: {} words — {}",
-                contrib.snippet.split_whitespace().count(), contrib.snippet);
+        assert!(
+            contrib.snippet.split_whitespace().count() <= 10,
+            "bash snippet too long: {} words — {}",
+            contrib.snippet.split_whitespace().count(),
+            contrib.snippet
+        );
         let spec = tool.spec();
-        assert!(!spec.description.contains("via $SHELL -c"),
-                "bash description should not duplicate the snippet's mechanics");
+        assert!(
+            !spec.description.contains("via $SHELL -c"),
+            "bash description should not duplicate the snippet's mechanics"
+        );
     }
 
     #[tokio::test]

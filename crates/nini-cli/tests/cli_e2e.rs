@@ -184,7 +184,14 @@ fn cli_provider_error_visible_in_print_mode() {
     // ignore `OPENAI_BASE_URL`, which is a separate bug — tracked
     // separately — so we use openai-compat here.
     let (_out, err, code) = run_nini_with_env(
-        &["-p", "say hi", "--provider", "openai-compat", "--model", "regression-model"],
+        &[
+            "-p",
+            "say hi",
+            "--provider",
+            "openai-compat",
+            "--model",
+            "regression-model",
+        ],
         b"",
         &[
             ("OPENAI_API_KEY", Some("sk-regression-invalid-key")),
@@ -338,7 +345,10 @@ fn cli_list_models_prints_catalog() {
         &[("HOME", Some(tmp.path().to_str().unwrap()))],
     );
     assert_eq!(code, 0);
-    assert!(!out.trim().is_empty(), "list should produce at least one model");
+    assert!(
+        !out.trim().is_empty(),
+        "list should produce at least one model"
+    );
     assert!(out.contains("anthropic/claude-opus-4-7"));
     assert!(out.contains("openai/gpt-5"));
 }
@@ -395,9 +405,15 @@ fn cli_help_includes_new_tool_flags() {
     assert_eq!(code, 0);
     // Spot-check tool filtering flags.
     assert!(out.contains("--tools"), "missing --tools in help");
-    assert!(out.contains("--exclude-tools"), "missing --exclude-tools in help");
+    assert!(
+        out.contains("--exclude-tools"),
+        "missing --exclude-tools in help"
+    );
     assert!(out.contains("--no-tools"), "missing --no-tools in help");
-    assert!(out.contains("--no-builtin-tools"), "missing --no-builtin-tools in help");
+    assert!(
+        out.contains("--no-builtin-tools"),
+        "missing --no-builtin-tools in help"
+    );
 }
 
 #[test]
@@ -434,9 +450,15 @@ fn cli_help_flag_lists_all_flags() {
     let (out, _err, code) = run_nini(&["--help"], b"");
     assert_eq!(code, 0);
     // Spot-check a few of the new flags appear in help.
-    assert!(out.contains("--list-models"), "missing --list-models in help");
+    assert!(
+        out.contains("--list-models"),
+        "missing --list-models in help"
+    );
     assert!(out.contains("--thinking"), "missing --thinking in help");
-    assert!(out.contains("--session-dir"), "missing --session-dir in help");
+    assert!(
+        out.contains("--session-dir"),
+        "missing --session-dir in help"
+    );
     assert!(out.contains("--offline"), "missing --offline in help");
     assert!(out.contains("--export"), "missing --export in help");
 }

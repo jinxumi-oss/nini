@@ -28,15 +28,16 @@ impl ModelSelector {
             .map(|m| SelectorItem {
                 value: m.id.clone(),
                 label: m.id.clone(),
-                description: Some(format!("{} • context: {}k", m.provider, m.context_window / 1024)),
+                description: Some(format!(
+                    "{} • context: {}k",
+                    m.provider,
+                    m.context_window / 1024
+                )),
                 is_current: m.id == current_id,
             })
             .collect();
         // Select the current model by default.
-        let selected = items
-            .iter()
-            .position(|i| i.is_current)
-            .unwrap_or(0);
+        let selected = items.iter().position(|i| i.is_current).unwrap_or(0);
         Self {
             result: None,
             items,
@@ -46,10 +47,18 @@ impl ModelSelector {
 }
 
 impl SelectorState for ModelSelector {
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
-    fn state_items(&self) -> Vec<SelectorItem> { self.items.clone() }
-    fn state_title(&self) -> String { "Switch model".to_string() }
-    fn state_selected(&self) -> usize { self.selected }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn state_items(&self) -> Vec<SelectorItem> {
+        self.items.clone()
+    }
+    fn state_title(&self) -> String {
+        "Switch model".to_string()
+    }
+    fn state_selected(&self) -> usize {
+        self.selected
+    }
     fn state_set_selected(&mut self, idx: usize) {
         if idx < self.items.len() {
             self.selected = idx;

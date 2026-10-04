@@ -37,10 +37,6 @@ pub fn is_context_overflow(
 
 /// Returns true if the model hit `length` stop with output_tokens
 /// below `desired_max` — caller can retry after compaction.
-pub fn is_recoverable_length(
-    stop_reason: &str,
-    output_tokens: u32,
-    desired_max: u32,
-) -> bool {
+pub fn is_recoverable_length(stop_reason: &str, output_tokens: u32, desired_max: u32) -> bool {
     stop_reason == "length" && output_tokens < desired_max
 }

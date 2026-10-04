@@ -29,7 +29,12 @@ pub fn key_hint_spans<'a>(theme: &Theme, key: &str, description: &str) -> Vec<Sp
 
 /// Concatenated form (for snapshot tests).
 pub fn key_hint_string(theme: &Theme, key: &str, description: &str) -> String {
-    format!("{}{} {}", theme.fg("dim", key), theme.fg("muted", description), "")
+    format!(
+        "{}{} {}",
+        theme.fg("dim", key),
+        theme.fg("muted", description),
+        ""
+    )
 }
 
 /// Trim a hint list to fit within `max_width`. When truncation happens,
@@ -39,7 +44,11 @@ pub fn key_hint_string(theme: &Theme, key: &str, description: &str) -> String {
 ///
 /// Width is computed via [`crate::width::display_width`] so wide
 /// characters (CJK, emoji) are counted as 2 cells, not 1.
-pub fn trim_to_width(hints: &[(&str, &str)], max_width: usize, theme: &Theme) -> Vec<(String, String)> {
+pub fn trim_to_width(
+    hints: &[(&str, &str)],
+    max_width: usize,
+    theme: &Theme,
+) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut used = 0usize;
     for (key, desc) in hints {
@@ -92,7 +101,10 @@ mod tests {
         // Width 20 — only " F1  help" + ellipsis fits.
         let out = trim_to_width(&hints, 20, &Theme::dark());
         let last = out.last().unwrap();
-        assert!(last.0.contains('\u{2026}'), "expected ellipsis, got {last:?}");
+        assert!(
+            last.0.contains('\u{2026}'),
+            "expected ellipsis, got {last:?}"
+        );
     }
 
     #[test]
@@ -109,8 +121,8 @@ mod tests {
         // (looks like it fits in 14 cells) when it actually takes 7
         // cells, and the trim would silently keep it past max.
         let hints = vec![
-            (" F1 ", "help"),       // 4 + 1 + 4 = 9 cells
-            (" \u{1F4AD} ", "hi"),  // 4 + 1 + 2 = 7 cells
+            (" F1 ", "help"),      // 4 + 1 + 4 = 9 cells
+            (" \u{1F4AD} ", "hi"), // 4 + 1 + 2 = 7 cells
         ];
         // After hint 1, used = 10. Adding hint 2 (line_w 7) = 17 > 14
         // -> trim with ellipsis.

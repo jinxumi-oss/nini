@@ -118,8 +118,7 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         let cfg = shared_cfg.clone();
         let mut agent = Agent::new(provider, tools, cfg);
         tokio::spawn(async move {
-            let mut stream =
-                Box::pin(agent.run(nini_core::AgentMessage::user(user_msg.clone())));
+            let mut stream = Box::pin(agent.run(nini_core::AgentMessage::user(user_msg.clone())));
             while let Some(ev) = stream.next().await {
                 let lite = match ev {
                     Ok(AgentEvent::TextDelta { text }) => {
@@ -163,21 +162,15 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
                         // normally. `end_turn` / `tool_use` are the happy
                         // path so we don't emit anything.
                         match stop_reason.as_str() {
-                            "length" => sink.push(
-                                nini_tui::runtime::AgentEventLite::StopReason(
-                                    "Response was truncated before completion.".to_string()
-                                )
-                            ),
-                            "aborted" => sink.push(
-                                nini_tui::runtime::AgentEventLite::StopReason(
-                                    "Operation aborted.".to_string()
-                                )
-                            ),
-                            "error" => sink.push(
-                                nini_tui::runtime::AgentEventLite::StopReason(
-                                    "Error during generation.".to_string()
-                                )
-                            ),
+                            "length" => sink.push(nini_tui::runtime::AgentEventLite::StopReason(
+                                "Response was truncated before completion.".to_string(),
+                            )),
+                            "aborted" => sink.push(nini_tui::runtime::AgentEventLite::StopReason(
+                                "Operation aborted.".to_string(),
+                            )),
+                            "error" => sink.push(nini_tui::runtime::AgentEventLite::StopReason(
+                                "Error during generation.".to_string(),
+                            )),
                             _ => {}
                         }
                         nini_tui::runtime::AgentEventLite::TurnEnd
@@ -218,7 +211,10 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
 /// Run the TUI itself with the given `AgentDriver`. This is the part
 /// that requires a real TTY; if there isn't one, we print the
 /// "no TTY detected" help and exit 2.
-async fn run_tui_bootstrap(agent_driver: nini_tui::runtime::AgentDriver, cfg: &AppConfig) -> Result<()> {
+async fn run_tui_bootstrap(
+    agent_driver: nini_tui::runtime::AgentDriver,
+    cfg: &AppConfig,
+) -> Result<()> {
     use nini_tui::run as run_tui_inner;
 
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
@@ -231,7 +227,10 @@ async fn run_tui_bootstrap(agent_driver: nini_tui::runtime::AgentDriver, cfg: &A
         eprintln!("  nini demo [task]             scripted autonomous demo");
         eprintln!("  nini info                    show loaded skills/settings");
         eprintln!();
-        eprintln!("Provider: {} (override with NINI_PROVIDER env or --provider)", cfg.provider);
+        eprintln!(
+            "Provider: {} (override with NINI_PROVIDER env or --provider)",
+            cfg.provider
+        );
         std::process::exit(2);
     }
 
@@ -243,10 +242,7 @@ async fn run_tui_bootstrap(agent_driver: nini_tui::runtime::AgentDriver, cfg: &A
         |state| {
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let dir = cwd.clone();
-            state.set_status_bar_metadata(
-                Some(dir.clone()),
-                nini_core::git::git_branch(&dir),
-            );
+            state.set_status_bar_metadata(Some(dir.clone()), nini_core::git::git_branch(&dir));
             // v0.8.1: surface the provider name in the status bar
             // (Pi-style `(provider) model`). Helps users tell which
             // backend is active.
@@ -254,16 +250,13 @@ async fn run_tui_bootstrap(agent_driver: nini_tui::runtime::AgentDriver, cfg: &A
                 state.model_state.provider = Some(cfg.provider.clone());
             }
             // Seed initial thinking level from settings.
-            if let Some(t) = nini_core::settings::load_settings(&cwd)
-                .thinking_level
-            {
+            if let Some(t) = nini_core::settings::load_settings(&cwd).thinking_level {
                 state.model_state.thinking_level = Some(t);
             }
             let skills = nini_core::skills::load_skills(&cwd);
             if !skills.skills.is_empty() {
                 let count = skills.skills.len();
-                state.run_state.status =
-                    format!("loaded {count} skills — type to begin");
+                state.run_state.status = format!("loaded {count} skills — type to begin");
             }
         },
         agent_driver,

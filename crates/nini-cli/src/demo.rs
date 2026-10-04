@@ -44,14 +44,10 @@ pub(crate) async fn run_demo(
     } else {
         demo_simple_turns(task)
     };
-    let provider_impl = provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
+    let provider_impl =
+        provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
     let tools = tool_registry::build_tools();
-    let system = prompt_setup::settings_to_system_prompt(
-        &settings,
-        &cwd,
-        &tools,
-        &skills_prompt,
-    );
+    let system = prompt_setup::settings_to_system_prompt(&settings, &cwd, &tools, &skills_prompt);
     let config = RunConfig {
         model: model.to_string(),
         system: Some(system),
@@ -127,14 +123,10 @@ pub(crate) async fn run_print(
             usage: nini_core::provider::Usage::default(),
         },
     ]];
-    let provider_impl = provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
+    let provider_impl =
+        provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
     let tools = tool_registry::build_tools();
-    let system = prompt_setup::settings_to_system_prompt(
-        &settings,
-        &cwd,
-        &tools,
-        &skills_prompt,
-    );
+    let system = prompt_setup::settings_to_system_prompt(&settings, &cwd, &tools, &skills_prompt);
     let config = RunConfig {
         model: model.to_string(),
         system: Some(system),
@@ -232,9 +224,9 @@ pub(crate) fn find_first_file_with_todo(cwd: &Path) -> Option<String> {
         if content.contains("TODO") {
             return path
                 .strip_prefix(cwd)
-                    .ok()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .or_else(|| Some(path.to_string_lossy().into_owned()));
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+                .or_else(|| Some(path.to_string_lossy().into_owned()));
         }
     }
     None

@@ -13,8 +13,8 @@ use async_stream::try_stream;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Notify;
 
@@ -35,7 +35,10 @@ pub enum AgentPhase {
     Working,
     /// Compacting context. Carries the trigger reason ("manual",
     /// "overflow") and an optional 0..=100 progress estimate.
-    Compacting { reason: String, progress: Option<u8> },
+    Compacting {
+        reason: String,
+        progress: Option<u8>,
+    },
     /// Retrying after a transient failure. Carries the attempt index
     /// (0 = first attempt, 1 = first retry, …).
     Retrying { attempt: u32 },
@@ -249,7 +252,10 @@ pub fn inline_llm_summary(
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     let provider = provider.clone();
     std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
             Ok(rt) => rt,
             Err(e) => {
                 let _ = tx.send(Err(format!("runtime: {e}")));
@@ -269,7 +275,8 @@ pub fn inline_llm_summary(
         });
         let _ = tx.send(result.map_err(|e| e.to_string()));
     });
-    rx.recv().map_err(|_| "summarizer thread died".to_string())?
+    rx.recv()
+        .map_err(|_| "summarizer thread died".to_string())?
 }
 
 /// Determine if a stop reason indicates the assistant message hit a
@@ -569,10 +576,11 @@ impl Agent {
     ///   (e.g., fixture provider or aborted turn).
     pub fn estimated_tokens(&self) -> u32 {
         if let Some(usage) = &self.last_usage {
-            crate::provider::context_tokens_from_usage(usage)
-                .saturating_add(crate::compaction::estimate_provider_messages_tokens(
+            crate::provider::context_tokens_from_usage(usage).saturating_add(
+                crate::compaction::estimate_provider_messages_tokens(
                     &self.messages_after_last_usage(),
-                ))
+                ),
+            )
         } else {
             crate::compaction::estimate_provider_messages_tokens(&self.messages)
         }
@@ -597,9 +605,10 @@ impl Agent {
         if window == 0 {
             return None;
         }
-        let tokens = self.last_usage.as_ref().map(|u| {
-            crate::provider::context_tokens_from_usage(u)
-        });
+        let tokens = self
+            .last_usage
+            .as_ref()
+            .map(|u| crate::provider::context_tokens_from_usage(u));
         let percent = tokens.map(|t| (t as f64 / window as f64) * 100.0);
         // When no usage yet, percent is unknown until next LLM response
         // (matches Pi's behavior).
@@ -647,16 +656,21 @@ impl Agent {
         let out =
             crate::compaction::compact(&entries, &self.config.compaction, None, |es, prev| {
                 // Compute prefix length from the (in-progress) entries.
-                let keep_from =
-                    crate::compaction::find_cut_point(es, self.config.compaction.keep_recent_tokens)
-                        .keep_from;
+                let keep_from = crate::compaction::find_cut_point(
+                    es,
+                    self.config.compaction.keep_recent_tokens,
+                )
+                .keep_from;
                 let prefix_len = keep_from.min(msgs_snapshot.len());
                 summary_fn(&msgs_snapshot[..prefix_len], prev)
             });
 
         // Splice: prepend summary message, retain suffix.
         let prefix_len = out.keep_from;
-        let new_summary_msg = Message { role: Role::User, timestamp: 0, content: vec![ContentBlock::Text {
+        let new_summary_msg = Message {
+            role: Role::User,
+            timestamp: 0,
+            content: vec![ContentBlock::Text {
                 text: format!("[CONTEXT SUMMARY]\n\n{}", out.summary),
             }],
         };
@@ -1260,7 +1274,6 @@ impl Agent {
     }
 }
 
-
 /// v0.8.5: extract the per-tool-call execution body so it can be
 /// spawned as a `Send` future inside a `FuturesUnordered`. Mirrors
 /// the v0.7 (M2) 4-phase lifecycle (prepare → before → execute →
@@ -1277,18 +1290,16 @@ async fn run_single_tool(
         Some(t) => t,
         None => return ToolOutput::err(format!("tool not found: {}", spec.name)),
     };
-    let mut args: serde_json::Value = serde_json::from_str(&spec.input_json)
-        .unwrap_or(serde_json::Value::Null);
+    let mut args: serde_json::Value =
+        serde_json::from_str(&spec.input_json).unwrap_or(serde_json::Value::Null);
 
     // Phase 2: before-execute hook.
     let mut denied: Option<String> = None;
     if let Some(b) = tool.before() {
         use futures_util::FutureExt;
-        match std::panic::AssertUnwindSafe(
-            b.run(args.clone(), &config.tool_context),
-        )
-        .catch_unwind()
-        .await
+        match std::panic::AssertUnwindSafe(b.run(args.clone(), &config.tool_context))
+            .catch_unwind()
+            .await
         {
             Ok(Ok(Some(replaced))) => args = replaced,
             Ok(Ok(None)) => { /* pass through */ }
@@ -1321,11 +1332,9 @@ async fn run_single_tool(
     // Phase 4: after-execute hook.
     if let Some(a) = tool.after() {
         use futures_util::FutureExt;
-        match std::panic::AssertUnwindSafe(
-            a.run(raw_out, &config.tool_context),
-        )
-        .catch_unwind()
-        .await
+        match std::panic::AssertUnwindSafe(a.run(raw_out, &config.tool_context))
+            .catch_unwind()
+            .await
         {
             Ok(Ok(out)) => return out,
             Ok(Err(e)) => {
@@ -1352,12 +1361,17 @@ mod phase_state_machine_tests {
     /// Stub provider that returns a synthetic "stop" after a TextDelta.
     struct ShortResponse;
     impl Provider for ShortResponse {
-        fn name(&self) -> &'static str { "short" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "short"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             Box::pin(futures_util::stream::iter(vec![
                 Ok(StreamEvent::MessageStart {
                     id: "msg-1".into(),
@@ -1473,12 +1487,17 @@ mod abort_controller_tests {
         use std::pin::Pin;
         struct Stub;
         impl Provider for Stub {
-            fn name(&self) -> &'static str { "stub" }
-            fn capabilities(&self) -> Capabilities { Capabilities::default() }
+            fn name(&self) -> &'static str {
+                "stub"
+            }
+            fn capabilities(&self) -> Capabilities {
+                Capabilities::default()
+            }
             fn stream(
                 &self,
                 _req: Request,
-            ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+            ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+            {
                 Box::pin(futures_util::stream::empty())
             }
         }
@@ -1557,11 +1576,7 @@ fn panic_msg(payload: &Box<dyn std::any::Any + Send>) -> String {
     "<opaque panic payload>".to_string()
 }
 
-fn build_request(
-    config: &RunConfig,
-    messages: &[Message],
-    tools: &[ToolSpec],
-) -> Request {
+fn build_request(config: &RunConfig, messages: &[Message], tools: &[ToolSpec]) -> Request {
     Request {
         model: config.model.clone(),
         messages: messages.to_vec(),
@@ -1580,14 +1595,8 @@ fn build_request(
 /// aggregated tool `system_prompt_contribution`s to the user's
 /// `RunConfig.system` base. Centralized so the loop has a
 /// single chokepoint for system-prompt construction (Pi hook #9).
-fn build_system_prompt(
-    config: &RunConfig,
-    registry: &ToolRegistry,
-) -> Option<String> {
-    crate::tool::build_system_prompt_with_contributions(
-        config.system.as_deref(),
-        registry,
-    )
+fn build_system_prompt(config: &RunConfig, registry: &ToolRegistry) -> Option<String> {
+    crate::tool::build_system_prompt_with_contributions(config.system.as_deref(), registry)
 }
 
 /// Convert an `nini_core::AgentMessage` (which has `timestamp`) to the
@@ -1595,15 +1604,18 @@ fn build_system_prompt(
 fn to_nini_message(m: &AgentMessage) -> Message {
     // Reuse the agent-core role directly — it's already in the provider's
     // canonical shape (User/Assistant/Tool/System).
-    Message { role: m.role, content: m.content.clone(), timestamp: 0,
-     }
+    Message {
+        role: m.role,
+        content: m.content.clone(),
+        timestamp: 0,
+    }
 }
 
 #[cfg(test)]
 mod inline_llm_summary_tests {
     use super::*;
-    use Message;
     use std::sync::Arc;
+    use Message;
 
     fn stub_agent() -> Agent {
         // Minimal stub provider that returns empty stream.
@@ -1612,12 +1624,17 @@ mod inline_llm_summary_tests {
         use std::pin::Pin;
         struct Empty;
         impl Provider for Empty {
-            fn name(&self) -> &'static str { "empty" }
-            fn capabilities(&self) -> Capabilities { Capabilities::default() }
+            fn name(&self) -> &'static str {
+                "empty"
+            }
+            fn capabilities(&self) -> Capabilities {
+                Capabilities::default()
+            }
             fn stream(
                 &self,
                 _req: Request,
-            ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+            ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+            {
                 Box::pin(futures_util::stream::empty())
             }
         }
@@ -1633,7 +1650,9 @@ mod inline_llm_summary_tests {
         let agent = stub_agent();
         let messages = vec![Message {
             role: Role::User,
-            content: vec![ContentBlock::Text { text: "hello".into() }],
+            content: vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
             timestamp: 0,
         }];
         let result = inline_llm_summary(&agent.provider, "test-model", &messages);
@@ -1660,12 +1679,17 @@ mod phase_lifecycle_tests {
     fn stub_agent() -> Agent {
         struct Empty;
         impl Provider for Empty {
-            fn name(&self) -> &'static str { "empty" }
-            fn capabilities(&self) -> Capabilities { Capabilities::default() }
+            fn name(&self) -> &'static str {
+                "empty"
+            }
+            fn capabilities(&self) -> Capabilities {
+                Capabilities::default()
+            }
             fn stream(
                 &self,
                 _req: Request,
-            ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+            ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+            {
                 Box::pin(futures_util::stream::empty())
             }
         }
@@ -1712,18 +1736,25 @@ mod llm_summary_in_run_loop_tests {
     /// metadata. Simulates the LLM-summarizer's output behavior.
     struct MockSummaryProvider;
     impl Provider for MockSummaryProvider {
-        fn name(&self) -> &'static str { "mock-summary" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "mock-summary"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             Box::pin(futures_util::stream::iter(vec![
                 Ok(StreamEvent::MessageStart {
                     id: "msg-1".into(),
                     model: "test".into(),
                 }),
-                Ok(StreamEvent::TextDelta { text: "# Summary\n\nFiles: a.rs b.rs".into() }),
+                Ok(StreamEvent::TextDelta {
+                    text: "# Summary\n\nFiles: a.rs b.rs".into(),
+                }),
                 Ok(StreamEvent::MessageStop {
                     stop_reason: "stop".into(),
                     usage: Usage {
@@ -1768,7 +1799,10 @@ mod llm_summary_in_run_loop_tests {
                 }
             }
         }
-        assert!(saw_summary, "auto-compaction should run and emit summary event");
+        assert!(
+            saw_summary,
+            "auto-compaction should run and emit summary event"
+        );
         // Should transition Working → Compacting → Working.
         let compactions: Vec<_> = phases
             .iter()
@@ -1804,12 +1838,17 @@ mod branch_summary_lifecycle_tests {
 
     struct Stub;
     impl Provider for Stub {
-        fn name(&self) -> &'static str { "stub" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             Box::pin(futures_util::stream::empty())
         }
     }
@@ -1862,18 +1901,24 @@ mod retry_loop_tests {
         failures_left: u32,
     }
     impl Provider for FlakyStream {
-        fn name(&self) -> &'static str { "flaky" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "flaky"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             let _failures_left = self.failures_left;
             // Simple line-style stream: produce `failures_left` errors
             // then one success event. Re-create the Vec per call (it's
             // not in the hot path for retry tests).
             let failures = self.failures_left;
-            let mut events: Vec<Result<StreamEvent, ProviderError>> = Vec::with_capacity(failures as usize + 1);
+            let mut events: Vec<Result<StreamEvent, ProviderError>> =
+                Vec::with_capacity(failures as usize + 1);
             for _ in 0..failures {
                 events.push(Ok(StreamEvent::Error {
                     message: "service unavailable: 503".into(),
@@ -1890,12 +1935,17 @@ mod retry_loop_tests {
     /// Provider that ALWAYS errors with a transient message.
     struct AlwaysFails;
     impl Provider for AlwaysFails {
-        fn name(&self) -> &'static str { "always-fails" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "always-fails"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             Box::pin(futures_util::stream::once(async {
                 Ok(StreamEvent::Error {
                     message: "rate limit exceeded".into(),
@@ -1907,12 +1957,17 @@ mod retry_loop_tests {
     /// Provider that fails with a fatal (non-retryable) error.
     struct FatalError;
     impl Provider for FatalError {
-        fn name(&self) -> &'static str { "fatal" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "fatal"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             Box::pin(futures_util::stream::once(async {
                 Ok(StreamEvent::Error {
                     message: "context window exceeded".into(),
@@ -1947,11 +2002,17 @@ mod retry_loop_tests {
             .iter()
             .filter(|p| matches!(p, AgentPhase::Retrying { .. }))
             .count();
-        assert!(retries >= 2, "expected >= 2 retries, got {retries} phases={phases:?}");
+        assert!(
+            retries >= 2,
+            "expected >= 2 retries, got {retries} phases={phases:?}"
+        );
         // Should have recovered (errors <= 2 retries).
         assert!(errors >= 2);
         // Final state is Working or Idle (not stuck).
-        assert!(matches!(agent.phase(), AgentPhase::Working | AgentPhase::Idle));
+        assert!(matches!(
+            agent.phase(),
+            AgentPhase::Working | AgentPhase::Idle
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2038,12 +2099,17 @@ mod abort_during_retry_tests {
     /// Provider that always errors with a transient message.
     struct AlwaysRetrying;
     impl Provider for AlwaysRetrying {
-        fn name(&self) -> &'static str { "always-retrying" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "always-retrying"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             Box::pin(futures_util::stream::once(async {
                 Ok(StreamEvent::Error {
                     message: "service unavailable: 503".into(),
@@ -2093,7 +2159,10 @@ mod abort_during_retry_tests {
         }
         // Either the abort triggered during the retry sleep, or the abort
         // triggered between attempts — both are valid abort paths.
-        assert!(aborted, "expected Aborted event when abort fires during retry");
+        assert!(
+            aborted,
+            "expected Aborted event when abort fires during retry"
+        );
         // If we never saw Retrying, the abort happened too fast.
         // The test still passes if aborted is true.
         let _ = saw_retrying; // suppress unused warning
@@ -2112,12 +2181,17 @@ mod llm_summary_in_compaction_entry_tests {
     /// Mirrors the LLM-backed summarizer behavior for testing.
     struct LlmSummaryProvider;
     impl Provider for LlmSummaryProvider {
-        fn name(&self) -> &'static str { "llm-summary" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "llm-summary"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             // First call: regular text (model response)
             // Second call: summary text (for compaction)
             // We can't distinguish, but the canned text works for both.
@@ -2143,11 +2217,7 @@ mod llm_summary_in_compaction_entry_tests {
         let mut cfg = RunConfig::new("test-model");
         cfg.compaction.context_window = 100;
         cfg.compaction.reserve_tokens = 50;
-        let mut agent = Agent::new(
-            Arc::new(LlmSummaryProvider),
-            ToolRegistry::new(),
-            cfg,
-        );
+        let mut agent = Agent::new(Arc::new(LlmSummaryProvider), ToolRegistry::new(), cfg);
         // Seed messages past the budget so compaction fires.
         for i in 0..5 {
             agent.seed(vec![Message {
@@ -2198,7 +2268,9 @@ mod llm_summary_in_compaction_entry_tests {
 mod steering_followup_hook_tests {
     use super::*;
     use crate::agent_hooks::{AgentLoopHooks, NoopHooks};
-    use crate::provider::{Capabilities, ContentBlock, Provider, ProviderError, Request, StreamEvent};
+    use crate::provider::{
+        Capabilities, ContentBlock, Provider, ProviderError, Request, StreamEvent,
+    };
     use futures_core::Stream;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2208,18 +2280,25 @@ mod steering_followup_hook_tests {
     /// path.
     struct TextOnlyProvider;
     impl Provider for TextOnlyProvider {
-        fn name(&self) -> &'static str { "text-only" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "text-only"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             Box::pin(futures_util::stream::iter(vec![
                 Ok(StreamEvent::MessageStart {
                     id: "msg-1".into(),
                     model: "test".into(),
                 }),
-                Ok(StreamEvent::TextDelta { text: "hi back".into() }),
+                Ok(StreamEvent::TextDelta {
+                    text: "hi back".into(),
+                }),
                 Ok(StreamEvent::MessageStop {
                     stop_reason: "stop".into(),
                     usage: Usage::default(),
@@ -2234,12 +2313,17 @@ mod steering_followup_hook_tests {
         tool_name: String,
     }
     impl Provider for ToolCallProvider {
-        fn name(&self) -> &'static str { "tool-call" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "tool-call"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             let name = self.tool_name.clone();
             Box::pin(futures_util::stream::iter(vec![
                 Ok(StreamEvent::MessageStart {
@@ -2441,9 +2525,7 @@ mod steering_followup_hook_tests {
         let has_steering = agent.messages().iter().any(|m| {
             m.role == Role::User
                 && m.content.iter().any(|c| match c {
-                    ContentBlock::Text { text } => {
-                        text == "(steering) please retry with care"
-                    }
+                    ContentBlock::Text { text } => text == "(steering) please retry with care",
                     _ => false,
                 })
         });
@@ -2579,7 +2661,9 @@ mod tool_lifecycle_hook_tests {
 
     #[async_trait]
     impl Tool for ControllableTool {
-        fn name(&self) -> &'static str { "ctrl" }
+        fn name(&self) -> &'static str {
+            "ctrl"
+        }
         fn spec(&self) -> ToolSpec {
             ToolSpec {
                 name: "ctrl".into(),
@@ -2587,11 +2671,7 @@ mod tool_lifecycle_hook_tests {
                 input_schema: serde_json::json!({"type": "object"}),
             }
         }
-        async fn execute(
-            &self,
-            _args: Value,
-            _ctx: ToolContext,
-        ) -> Result<ToolOutput, ToolError> {
+        async fn execute(&self, _args: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
             self.execute_calls.fetch_add(1, Ordering::SeqCst);
             Ok(ToolOutput::ok("base output"))
         }
@@ -2624,11 +2704,7 @@ mod tool_lifecycle_hook_tests {
     }
     #[async_trait]
     impl BeforeExecute for CountingBefore {
-        async fn run(
-            &self,
-            args: Value,
-            _ctx: &ToolContext,
-        ) -> Result<Option<Value>, ToolError> {
+        async fn run(&self, args: Value, _ctx: &ToolContext) -> Result<Option<Value>, ToolError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             *self.last_args.lock().unwrap() = Some(args.clone());
             match &self.response {
@@ -2671,12 +2747,17 @@ mod tool_lifecycle_hook_tests {
     /// input `{"x": 1}`.
     struct OneToolCallProvider;
     impl Provider for OneToolCallProvider {
-        fn name(&self) -> &'static str { "one-tool" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "one-tool"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             Box::pin(futures_util::stream::iter(vec![
                 Ok(StreamEvent::MessageStart {
                     id: "msg-1".into(),
@@ -2702,9 +2783,7 @@ mod tool_lifecycle_hook_tests {
         }
     }
 
-    fn agent_with_tool(
-        tool: Arc<dyn Tool>,
-    ) -> Agent {
+    fn agent_with_tool(tool: Arc<dyn Tool>) -> Agent {
         Agent::with_hooks(
             Arc::new(OneToolCallProvider),
             ToolRegistry::new().register(tool),
@@ -2752,10 +2831,7 @@ mod tool_lifecycle_hook_tests {
             last_output: Arc::new(std::sync::Mutex::new(None)),
             response: AfterResponse::Identity,
         });
-        let tool = Arc::new(
-            ControllableTool::new()
-                .with_hooks(before.clone(), after.clone()),
-        );
+        let tool = Arc::new(ControllableTool::new().with_hooks(before.clone(), after.clone()));
         let mut agent = agent_with_tool(tool);
         use futures_util::StreamExt;
         {
@@ -2788,10 +2864,7 @@ mod tool_lifecycle_hook_tests {
             last_output: Arc::new(std::sync::Mutex::new(None)),
             response: AfterResponse::ReplaceContent("[REDACTED]".into()),
         });
-        let tool = Arc::new(
-            ControllableTool::new()
-                .with_hooks(before.clone(), after.clone()),
-        );
+        let tool = Arc::new(ControllableTool::new().with_hooks(before.clone(), after.clone()));
         let mut agent = agent_with_tool(tool);
         use futures_util::StreamExt;
         {
@@ -2840,7 +2913,9 @@ mod tool_lifecycle_hook_tests {
         struct CountedTool(Arc<AtomicUsize>);
         #[async_trait]
         impl Tool for CountedTool {
-            fn name(&self) -> &'static str { "ctrl2" }
+            fn name(&self) -> &'static str {
+                "ctrl2"
+            }
             fn spec(&self) -> ToolSpec {
                 ToolSpec {
                     name: "ctrl2".into(),
@@ -2848,11 +2923,7 @@ mod tool_lifecycle_hook_tests {
                     input_schema: serde_json::json!({}),
                 }
             }
-            async fn execute(
-                &self,
-                _a: Value,
-                _c: ToolContext,
-            ) -> Result<ToolOutput, ToolError> {
+            async fn execute(&self, _a: Value, _c: ToolContext) -> Result<ToolOutput, ToolError> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(ToolOutput::ok("ran"))
             }
@@ -2908,10 +2979,7 @@ mod tool_lifecycle_hook_tests {
             last_output: Arc::new(std::sync::Mutex::new(None)),
             response: AfterResponse::Panic,
         });
-        let tool = Arc::new(
-            ControllableTool::new()
-                .with_hooks(before.clone(), after.clone()),
-        );
+        let tool = Arc::new(ControllableTool::new().with_hooks(before.clone(), after.clone()));
         let mut agent = agent_with_tool(tool);
         use futures_util::StreamExt;
         // If the panic weren't contained, this would either
@@ -2928,8 +2996,7 @@ mod tool_lifecycle_hook_tests {
             }
         }
         assert!(completed);
-
-}
+    }
 }
 
 /// v0.7 (M3b) — integration tests for the 3 context hooks
@@ -2943,26 +3010,34 @@ mod tool_lifecycle_hook_tests {
 mod context_hook_tests {
     use super::*;
     use crate::agent_hooks::{AgentLoopHooks, NoopHooks, TransformResult};
-    use crate::provider::{Capabilities, ContentBlock, Provider, ProviderError, Request, StreamEvent};
+    use crate::provider::{
+        Capabilities, ContentBlock, Provider, ProviderError, Request, StreamEvent,
+    };
     use futures_core::Stream;
     use std::pin::Pin;
-    
 
     /// Minimal text-only provider. Same as M1's tests.
     struct TextOnlyProvider;
     impl Provider for TextOnlyProvider {
-        fn name(&self) -> &'static str { "text-only-m3b" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "text-only-m3b"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             Box::pin(futures_util::stream::iter(vec![
                 Ok(StreamEvent::MessageStart {
                     id: "msg-1".into(),
                     model: "test".into(),
                 }),
-                Ok(StreamEvent::TextDelta { text: "hi back".into() }),
+                Ok(StreamEvent::TextDelta {
+                    text: "hi back".into(),
+                }),
                 Ok(StreamEvent::MessageStop {
                     stop_reason: "stop".into(),
                     usage: Usage::default(),
@@ -2974,12 +3049,17 @@ mod context_hook_tests {
     /// Repeating-tool provider that triggers max_iterations.
     struct RepeatingToolProvider;
     impl Provider for RepeatingToolProvider {
-        fn name(&self) -> &'static str { "repeat-tool" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "repeat-tool"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
         fn stream(
             &self,
             _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             Box::pin(futures_util::stream::iter(vec![
                 Ok(StreamEvent::MessageStart {
                     id: "msg-1".into(),
@@ -3020,10 +3100,7 @@ mod context_hook_tests {
         }
     }
 
-    fn agent_with(
-        provider: Arc<dyn Provider>,
-        hooks: Arc<dyn AgentLoopHooks>,
-    ) -> Agent {
+    fn agent_with(provider: Arc<dyn Provider>, hooks: Arc<dyn AgentLoopHooks>) -> Agent {
         Agent::with_hooks(
             provider,
             ToolRegistry::new(),
@@ -3043,10 +3120,7 @@ mod context_hook_tests {
                 true
             }
         }
-        let mut agent = agent_with(
-            Arc::new(TextOnlyProvider),
-            Arc::new(AlwaysStop),
-        );
+        let mut agent = agent_with(Arc::new(TextOnlyProvider), Arc::new(AlwaysStop));
         use futures_util::StreamExt;
         {
             let s = agent.run(crate::AgentMessage::user("hi"));
@@ -3068,10 +3142,7 @@ mod context_hook_tests {
                 false
             }
         }
-        let mut agent = agent_with(
-            Arc::new(RepeatingToolProvider),
-            Arc::new(NeverStop),
-        );
+        let mut agent = agent_with(Arc::new(RepeatingToolProvider), Arc::new(NeverStop));
         use futures_util::StreamExt;
         {
             let s = agent.run(crate::AgentMessage::user("hi"));
@@ -3093,10 +3164,7 @@ mod context_hook_tests {
                 panic!("stop hook explosion");
             }
         }
-        let mut agent = agent_with(
-            Arc::new(RepeatingToolProvider),
-            Arc::new(PanicStop),
-        );
+        let mut agent = agent_with(Arc::new(RepeatingToolProvider), Arc::new(PanicStop));
         use futures_util::StreamExt;
         {
             let s = agent.run(crate::AgentMessage::user("hi"));
@@ -3123,10 +3191,7 @@ mod context_hook_tests {
                 )
             }
         }
-        let mut agent = agent_with(
-            Arc::new(TextOnlyProvider),
-            Arc::new(TrimToFirst),
-        );
+        let mut agent = agent_with(Arc::new(TextOnlyProvider), Arc::new(TrimToFirst));
         use futures_util::StreamExt;
         {
             let s = agent.run(crate::AgentMessage::user("hi"));
@@ -3149,10 +3214,7 @@ mod context_hook_tests {
                 Vec::new()
             }
         }
-        let mut agent = agent_with(
-            Arc::new(TextOnlyProvider),
-            Arc::new(FilterAll),
-        );
+        let mut agent = agent_with(Arc::new(TextOnlyProvider), Arc::new(FilterAll));
         use futures_util::StreamExt;
         {
             let s = agent.run(crate::AgentMessage::user("hi"));
@@ -3169,10 +3231,7 @@ mod context_hook_tests {
     /// through to the LLM.
     #[tokio::test(flavor = "current_thread")]
     async fn noop_hooks_identity_throughout() {
-        let mut agent = agent_with(
-            Arc::new(TextOnlyProvider),
-            Arc::new(NoopHooks),
-        );
+        let mut agent = agent_with(Arc::new(TextOnlyProvider), Arc::new(NoopHooks));
         use futures_util::StreamExt;
         {
             let s = agent.run(crate::AgentMessage::user("hi"));
@@ -3189,17 +3248,11 @@ mod context_hook_tests {
     async fn panicking_transform_context_does_not_crash() {
         struct PanicTransform;
         impl AgentLoopHooks for PanicTransform {
-            fn transform_context(
-                &self,
-                _: &[Message],
-            ) -> TransformResult {
+            fn transform_context(&self, _: &[Message]) -> TransformResult {
                 panic!("transform hook explosion");
             }
         }
-        let mut agent = agent_with(
-            Arc::new(TextOnlyProvider),
-            Arc::new(PanicTransform),
-        );
+        let mut agent = agent_with(Arc::new(TextOnlyProvider), Arc::new(PanicTransform));
         use futures_util::StreamExt;
         {
             let s = agent.run(crate::AgentMessage::user("hi"));
@@ -3222,10 +3275,7 @@ mod context_hook_tests {
                 panic!("convert hook explosion");
             }
         }
-        let mut agent = agent_with(
-            Arc::new(TextOnlyProvider),
-            Arc::new(PanicConvert),
-        );
+        let mut agent = agent_with(Arc::new(TextOnlyProvider), Arc::new(PanicConvert));
         use futures_util::StreamExt;
         {
             let s = agent.run(crate::AgentMessage::user("hi"));
@@ -3244,14 +3294,10 @@ mod context_hook_tests {
         struct StopAfterFirst;
         impl AgentLoopHooks for StopAfterFirst {
             fn should_stop_after_turn(&self, msgs: &[Message]) -> bool {
-                msgs.iter()
-                    .any(|m| m.role == Role::Assistant)
+                msgs.iter().any(|m| m.role == Role::Assistant)
             }
         }
-        let mut agent = agent_with(
-            Arc::new(RepeatingToolProvider),
-            Arc::new(StopAfterFirst),
-        );
+        let mut agent = agent_with(Arc::new(RepeatingToolProvider), Arc::new(StopAfterFirst));
         use futures_util::StreamExt;
         {
             let s = agent.run(crate::AgentMessage::user("hi"));

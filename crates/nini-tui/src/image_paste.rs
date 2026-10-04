@@ -62,7 +62,11 @@ pub fn save_image_to_temp(bytes: &[u8]) -> io::Result<PathBuf> {
             .map(|d| d.as_micros())
             .unwrap_or(0)
     );
-    tmp.push(if ext.is_empty() { unique } else { format!("{unique}.{ext}") });
+    tmp.push(if ext.is_empty() {
+        unique
+    } else {
+        format!("{unique}.{ext}")
+    });
     std::fs::write(&tmp, bytes)?;
     Ok(tmp)
 }
@@ -155,16 +159,15 @@ mod tests {
 /// (text-only — the caller can fall through to a text-paste handler).
 /// Returns `Err` if a real I/O or arboard error occurs.
 pub fn paste_image_from_clipboard() -> io::Result<Option<String>> {
-    
-
     let mut cb = arboard::Clipboard::new()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clipboard open: {e}")))?;
     let img = match cb.get_image() {
         Ok(img) => img,
         // arboard returns this when the clipboard has no image (only
         // text). Treat as a non-error: caller decides what to do next.
-        Err(arboard::Error::ClipboardNotSupported)
-        | Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+        Err(arboard::Error::ClipboardNotSupported) | Err(arboard::Error::ContentNotAvailable) => {
+            return Ok(None)
+        }
         Err(e) => {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -216,9 +219,7 @@ mod paste_flow_tests {
         // We propagate that as Ok(None) so the caller can fall
         // through to a text-paste path.
         // Skip this test in environments without a clipboard server.
-        if std::env::var_os("DISPLAY").is_none()
-            && std::env::var_os("WAYLAND_DISPLAY").is_none()
-        {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
             // CI without a display server: arboard will fail to
             // open the clipboard. That's also handled as a soft
             // failure (no image).
@@ -231,8 +232,7 @@ mod paste_flow_tests {
             Err(e) => {
                 // Acceptable in headless env: arboard can't open clipboard.
                 assert!(
-                    e.to_string().contains("clipboard")
-                        || e.to_string().contains("Clipboard"),
+                    e.to_string().contains("clipboard") || e.to_string().contains("Clipboard"),
                     "unexpected error: {e}"
                 );
             }
@@ -248,14 +248,13 @@ mod paste_flow_tests {
 /// Returns `None` if the clipboard has no image (or is unavailable).
 /// Returns `Err` on I/O / arboard errors.
 pub fn paste_image_with_size_from_clipboard() -> io::Result<Option<(PathBuf, u64)>> {
-    
-
     let mut cb = arboard::Clipboard::new()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clipboard open: {e}")))?;
     let img = match cb.get_image() {
         Ok(img) => img,
-        Err(arboard::Error::ClipboardNotSupported)
-        | Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+        Err(arboard::Error::ClipboardNotSupported) | Err(arboard::Error::ContentNotAvailable) => {
+            return Ok(None)
+        }
         Err(e) => {
             return Err(io::Error::new(
                 io::ErrorKind::Other,

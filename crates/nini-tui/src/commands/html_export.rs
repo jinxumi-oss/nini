@@ -7,7 +7,9 @@ use crate::state::TranscriptLine;
 
 /// Escape HTML special characters: `&`, `<`, `>`.
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Render the transcript as a minimal HTML document.
@@ -24,7 +26,10 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
     for l in lines {
         match l {
             TranscriptLine::User(t) => {
-                out.push_str(&format!("<p class=\"user\"><b>&gt;</b> {}</p>\n", html_escape(t)));
+                out.push_str(&format!(
+                    "<p class=\"user\"><b>&gt;</b> {}</p>\n",
+                    html_escape(t)
+                ));
             }
             TranscriptLine::AssistantText(t) => {
                 out.push_str(&format!("<p class=\"assistant\">{}</p>\n", html_escape(t)));
@@ -34,7 +39,15 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
                     "<p class=\"tool\">[tool call] {name} {args}</p>\n"
                 ));
             }
-            TranscriptLine::BashExecution { cmd, output, stderr, ok, exit_code, duration_ms, .. } => {
+            TranscriptLine::BashExecution {
+                cmd,
+                output,
+                stderr,
+                ok,
+                exit_code,
+                duration_ms,
+                ..
+            } => {
                 let status = if *ok { "ok" } else { "fail" };
                 let escaped_output = output
                     .replace('&', "&amp;")
@@ -57,8 +70,11 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
             TranscriptLine::ToolResult { ok, content, .. } => {
                 let cls = "tool";
                 let label = if *ok { "tool result" } else { "tool error" };
-                out.push_str(&format!("<p class=\"{cls}\">[{label}] {}</p>
-", html_escape(content)));
+                out.push_str(&format!(
+                    "<p class=\"{cls}\">[{label}] {}</p>
+",
+                    html_escape(content)
+                ));
             }
             TranscriptLine::Divider => {
                 out.push_str("<hr class=\"divider\">\n");
@@ -82,8 +98,6 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
     out.push_str("</body></html>\n");
     out
 }
-
-
 
 #[cfg(test)]
 mod tests {

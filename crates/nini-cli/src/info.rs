@@ -39,7 +39,6 @@ pub(crate) async fn run_info() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    
 
     #[test]
     fn run_info_doesnt_panic_in_empty_cwd() {

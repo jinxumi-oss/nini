@@ -255,8 +255,8 @@ impl Theme {
     /// Parse a theme from a JSON string. Unknown top-level keys and
     /// unknown color names are ignored.
     pub fn parse(s: &str) -> Result<Self, String> {
-        let raw: serde_json::Value = serde_json::from_str(s)
-            .map_err(|e| format!("invalid theme JSON: {e}"))?;
+        let raw: serde_json::Value =
+            serde_json::from_str(s).map_err(|e| format!("invalid theme JSON: {e}"))?;
         let obj = raw
             .as_object()
             .ok_or_else(|| "theme JSON must be an object".to_string())?;
@@ -327,13 +327,23 @@ impl Theme {
     /// string. Mirrors Pi's `theme.fg("name", text)`. Bold is auto-applied
     /// for emphatic slots (accent, success, error, etc.).
     pub fn fg(&self, name: &str, text: &str) -> String {
-        format!("{}{}{}", style_to_ansi(self.fg_style(name)), text, RESET_FMT)
+        format!(
+            "{}{}{}",
+            style_to_ansi(self.fg_style(name)),
+            text,
+            RESET_FMT
+        )
     }
 
     /// Convenience: apply background color to text. Mirrors Pi's
     /// `theme.bg("name", text)`.
     pub fn bg(&self, name: &str, text: &str) -> String {
-        format!("{}{}{}", style_to_ansi(self.bg_style(name)), text, RESET_FMT)
+        format!(
+            "{}{}{}",
+            style_to_ansi(self.bg_style(name)),
+            text,
+            RESET_FMT
+        )
     }
 
     /// Convenience: bold. Mirrors Pi's `theme.bold(text)`.
@@ -343,7 +353,12 @@ impl Theme {
 
     /// Convenience: italic. Mirrors Pi's `theme.italic(text)`.
     pub fn italic(&self, text: &str) -> String {
-        format!("{}{}{}", modifier_to_ansi(Modifier::ITALIC), text, RESET_FMT)
+        format!(
+            "{}{}{}",
+            modifier_to_ansi(Modifier::ITALIC),
+            text,
+            RESET_FMT
+        )
     }
 
     /// Convenience: underline. Mirrors Pi's `theme.underline(text)`.
@@ -402,17 +417,9 @@ fn default_color(name: &str) -> Color {
         "text" | "header" => Color::White,
         // Backgrounds
         "background" => Color::Black,
-        "selectedBg"
-        | "scrollbarThumb"
-        | "searchMatchBg"
-        | "userMessageBg"
-        | "customMessageBg"
-        | "toolPendingBg"
-        | "toolSuccessBg"
-        | "toolErrorBg" => Color::DarkGray,
-        "searchMatchText" | "userMessageText" | "customMessageText" | "toolOutput" => {
-            Color::White
-        }
+        "selectedBg" | "scrollbarThumb" | "searchMatchBg" | "userMessageBg" | "customMessageBg"
+        | "toolPendingBg" | "toolSuccessBg" | "toolErrorBg" => Color::DarkGray,
+        "searchMatchText" | "userMessageText" | "customMessageText" | "toolOutput" => Color::White,
         "customMessageLabel" | "toolTitle" => Color::Cyan,
         // Markdown
         "mdHeading" => Color::Yellow,
@@ -696,9 +703,15 @@ mod tests {
 
     #[test]
     fn parse_color_accepts_short_and_long_hex() {
-        assert!(matches!(parse_color("#fff"), Some(Color::Rgb(255, 255, 255))));
+        assert!(matches!(
+            parse_color("#fff"),
+            Some(Color::Rgb(255, 255, 255))
+        ));
         assert!(matches!(parse_color("#000"), Some(Color::Rgb(0, 0, 0))));
-        assert!(matches!(parse_color("#1e1e1e"), Some(Color::Rgb(30, 30, 30))));
+        assert!(matches!(
+            parse_color("#1e1e1e"),
+            Some(Color::Rgb(30, 30, 30))
+        ));
         assert!(matches!(
             parse_color("#569cd6"),
             Some(Color::Rgb(86, 156, 214))
@@ -716,7 +729,10 @@ mod tests {
     #[test]
     fn parse_color_accepts_ansi_names() {
         assert!(matches!(parse_color("red"), Some(Color::Indexed(1))));
-        assert!(matches!(parse_color("bright_blue"), Some(Color::Indexed(12))));
+        assert!(matches!(
+            parse_color("bright_blue"),
+            Some(Color::Indexed(12))
+        ));
         assert!(matches!(parse_color("BLACK"), Some(Color::Indexed(0))));
     }
 
@@ -729,9 +745,18 @@ mod tests {
         assert!(!t.fg_style("dim").add_modifier.contains(Modifier::BOLD));
         assert!(!t.fg_style("muted").add_modifier.contains(Modifier::BOLD));
         // New emphatic slots
-        assert!(t.fg_style("borderAccent").add_modifier.contains(Modifier::BOLD));
-        assert!(t.fg_style("toolTitle").add_modifier.contains(Modifier::BOLD));
-        assert!(t.fg_style("mdHeading").add_modifier.contains(Modifier::BOLD));
+        assert!(t
+            .fg_style("borderAccent")
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(t
+            .fg_style("toolTitle")
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(t
+            .fg_style("mdHeading")
+            .add_modifier
+            .contains(Modifier::BOLD));
     }
 
     #[test]

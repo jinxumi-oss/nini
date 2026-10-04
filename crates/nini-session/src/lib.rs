@@ -22,19 +22,17 @@ pub enum SessionError {
     Other(String),
 }
 
-
 use chrono::{DateTime, Utc};
-pub use nini_core::SessionEntry;
 pub use nini_core::entries::AgentMessage;
 use nini_core::CoreError;
+pub use nini_core::SessionEntry;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-
 fn convert_to_pi_message(msg: nini_core::AgentMessage) -> nini_core::entries::AgentMessage {
     use nini_core::entries::{
-        AssistantMessage, ContentBlock as PiContentBlock, StringOrContentBlocks,
-        ToolResultMessage, UserMessage,
+        AssistantMessage, ContentBlock as PiContentBlock, StringOrContentBlocks, ToolResultMessage,
+        UserMessage,
     };
     // v0.7.1 — use the actual Assistant / ToolResult variants
     // (previously this function mapped both to Pi::Custom which
@@ -115,8 +113,9 @@ fn convert_to_pi_message(msg: nini_core::AgentMessage) -> nini_core::entries::Ag
 
 /// Convert provider ContentBlock list to entries ContentBlock list.
 /// Inverse of `nini_core::conversion::assistant_content_to_blocks`.
-fn provider_to_pi_blocks(blocks: Vec<nini_core::ContentBlock>) -> Vec<nini_core::entries::ContentBlock> {
-    
+fn provider_to_pi_blocks(
+    blocks: Vec<nini_core::ContentBlock>,
+) -> Vec<nini_core::entries::ContentBlock> {
     blocks.into_iter().map(provider_block_to_pi).collect()
 }
 
@@ -151,7 +150,11 @@ pub struct SessionHeader {
     pub id: String,
     pub timestamp: String, // ISO 8601
     pub cwd: String,
-    #[serde(rename = "parentSession", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "parentSession",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub parent_session: Option<String>,
 }
 
@@ -188,7 +191,11 @@ pub struct Session {
 
 impl Session {
     /// Push a legacy AgentMessage into the session (returns the new entry id).
-    pub fn push_message(&mut self, parent_id: Option<String>, msg: nini_core::AgentMessage) -> String {
+    pub fn push_message(
+        &mut self,
+        parent_id: Option<String>,
+        msg: nini_core::AgentMessage,
+    ) -> String {
         let id = format!("msg_{}", uuid::Uuid::new_v4());
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let entry = nini_core::SessionEntry::Message(nini_core::SessionMessageEntry {
@@ -203,12 +210,16 @@ impl Session {
 
     /// Write session to disk atomically (alias for Codec::write).
     pub fn write_to_file(&self, path: &std::path::Path) -> Result<(), SessionError> {
-        Codec::new(path).write(self).map_err(|e| SessionError::Other(e.to_string()))
+        Codec::new(path)
+            .write(self)
+            .map_err(|e| SessionError::Other(e.to_string()))
     }
 
     /// Read session from disk (alias for Codec::read).
     pub fn read_from_file(path: &std::path::Path) -> Result<Self, SessionError> {
-        Codec::new(path).read().map_err(|e| SessionError::Other(e.to_string()))
+        Codec::new(path)
+            .read()
+            .map_err(|e| SessionError::Other(e.to_string()))
     }
 
     pub fn new(cwd: impl Into<String>) -> Self {
@@ -409,11 +420,11 @@ pub fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, CoreError> {
 mod tests {
     use super::*;
     use nini_core::entries::{
-        AgentMessage, BranchSummaryEntry, CompactionEntry, LabelEntry,
-        ModelChangeEntry, SessionInfoEntry, SessionMessageEntry,
-        StringOrContentBlocks, ThinkingLevelChangeEntry, UserMessage,
+        AgentMessage, BranchSummaryEntry, CompactionEntry, LabelEntry, ModelChangeEntry,
+        SessionInfoEntry, SessionMessageEntry, StringOrContentBlocks, ThinkingLevelChangeEntry,
+        UserMessage,
     };
-    
+
     use tempfile::tempdir;
 
     #[test]
@@ -566,7 +577,11 @@ mod tests {
         let h = SessionHeader::new("/test");
         let s = serde_json::to_string(&h).unwrap();
         // pi's exact field names
-        assert!(s.contains("\"type\":\"session\""), "should have type=session: {}", s);
+        assert!(
+            s.contains("\"type\":\"session\""),
+            "should have type=session: {}",
+            s
+        );
         assert!(s.contains("\"version\":3"), "should have version=3: {}", s);
         assert!(s.contains("\"cwd\":\"/test\""), "should have cwd: {}", s);
     }
@@ -613,10 +628,14 @@ mod tests {
             },
         );
 
-        let pi_msgs: Vec<_> = sess.entries.iter().filter_map(|e| match e {
+        let pi_msgs: Vec<_> = sess
+            .entries
+            .iter()
+            .filter_map(|e| match e {
                 nini_core::SessionEntry::Message(m) => Some(m.message.clone()),
                 _ => None,
-            }).collect();
+            })
+            .collect();
         let msgs = nini_core::conversion::default_session_to_llm(&pi_msgs);
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].role, nini_core::Role::User);

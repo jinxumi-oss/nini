@@ -18,8 +18,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod ansi;
 
 pub mod clipboard;
-pub mod commands;
 pub mod command_palette;
+pub mod commands;
 pub mod components;
 pub mod dynamic_border;
 pub mod editor;
@@ -28,8 +28,8 @@ pub mod file_completion;
 pub mod help_overlay;
 pub mod hyperlink;
 pub mod image_paste;
-pub mod keyhint;
 pub mod keybindings_manager;
+pub mod keyhint;
 pub mod keys;
 pub mod markdown;
 pub mod render;
@@ -45,11 +45,11 @@ pub mod theme_watcher;
 pub mod width;
 
 pub use commands::{
-    CommandId, CommandOutcome, CommandResult, REGISTRY, by_name, complete, dispatch, parse,
+    by_name, complete, dispatch, parse, CommandId, CommandOutcome, CommandResult, REGISTRY,
 };
 pub use keybindings_manager::KeybindingsManager;
-pub use keys::{Key, KeyAction, KeyBinding, KeyModifiers, default_keymap, resolve};
+pub use keys::{default_keymap, resolve, Key, KeyAction, KeyBinding, KeyModifiers};
 pub use runtime::run;
 pub use state::{AppState, InputBuffer, RunMode, TokenStats, TranscriptLine};
-pub use theme::{COLOR_NAMES, Theme};
+pub use theme::{Theme, COLOR_NAMES};
 pub use width::{display_width, display_width_clamped};

@@ -187,7 +187,11 @@ fn parallel_tool_results_keep_distinct_names() {
     let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
     // Three different tool types in parallel.
-    let tools = [("bash", "echo 1"), ("read", "{\"path\":\"/x\"}"), ("grep", "{\"pattern\":\"y\"}")];
+    let tools = [
+        ("bash", "echo 1"),
+        ("read", "{\"path\":\"/x\"}"),
+        ("grep", "{\"pattern\":\"y\"}"),
+    ];
     for (i, (name, args)) in tools.iter().enumerate() {
         let id = format!("toolu_{i}");
         sink.push(AgentEventLite::ToolCallStart {

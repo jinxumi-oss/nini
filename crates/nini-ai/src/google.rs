@@ -15,8 +15,7 @@ use nini_core::provider::{Capabilities, Provider, ProviderError, Request, Stream
 use std::pin::Pin;
 
 /// Default Gemini OpenAI-compat base URL.
-pub const GEMINI_BASE_URL: &str =
-    "https://generativelanguage.googleapis.com/v1beta/openai";
+pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 
 /// Provider for Google's Gemini family via the OpenAI-compat endpoint.
 pub struct GoogleProvider {

@@ -7,7 +7,7 @@
 //!   into the shared state via [`AgentSink`].
 #![allow(unused_mut)] // render/runtime use mut bindings for future hook points
 
-use crate::keys::{Key, KeyAction, resolve};
+use crate::keys::{resolve, Key, KeyAction};
 use crate::render::render_frame_with_theme;
 use crate::selector::SelectorItem;
 use crate::state::{AppState, RunMode, TranscriptLine};
@@ -15,12 +15,12 @@ use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyEvent};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures_util::StreamExt;
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use std::io::{Stdout, stdout};
+use ratatui::Terminal;
+use std::io::{stdout, Stdout};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -115,23 +115,18 @@ impl AgentSink {
     ///     per-iteration `Notify` that was wired to the wrong handle
     ///     and never fired).
     pub fn push(&self, ev: AgentEventLite) {
-        let phase_status: Option<String> =
-            if let AgentEventLite::PhaseChanged(phase) = &ev {
-                Some(phase.clone())
-            } else {
-                None
-            };
+        let phase_status: Option<String> = if let AgentEventLite::PhaseChanged(phase) = &ev {
+            Some(phase.clone())
+        } else {
+            None
+        };
         if let Ok(mut s) = self.state.lock() {
             if let Some(phase) = phase_status {
                 s.run_state.status = phase;
             }
             match ev {
-                AgentEventLite::TextDelta(text) => {
-                    s.push_assistant_raw(text)
-                }
-                AgentEventLite::ThinkingDelta(text) => {
-                    s.push_thinking_raw(text)
-                }
+                AgentEventLite::TextDelta(text) => s.push_assistant_raw(text),
+                AgentEventLite::ThinkingDelta(text) => s.push_thinking_raw(text),
                 AgentEventLite::ToolCallStart { id, name } => s.push_tool_call(id, name, ""),
                 AgentEventLite::ToolCallStop { id, args } => {
                     // v0.8.8 (tool-identity): update the SPECIFIC tool
@@ -145,7 +140,10 @@ impl AgentSink {
                         let mut found_idx: Option<usize> = None;
                         let lines = Arc::make_mut(&mut s.transcript_state);
                         for (i, line) in lines.lines.iter().enumerate().rev() {
-                            if let TranscriptLine::ToolCall { id: existing_id, .. } = line {
+                            if let TranscriptLine::ToolCall {
+                                id: existing_id, ..
+                            } = line
+                            {
                                 if existing_id == &id {
                                     found_idx = Some(i);
                                     break;
@@ -156,7 +154,8 @@ impl AgentSink {
                     };
                     if let Some(idx) = found {
                         let lines = Arc::make_mut(&mut s.transcript_state);
-                        if let Some(TranscriptLine::ToolCall { args: a, .. }) = lines.lines.get_mut(idx)
+                        if let Some(TranscriptLine::ToolCall { args: a, .. }) =
+                            lines.lines.get_mut(idx)
                         {
                             *a = args;
                         }
@@ -168,13 +167,20 @@ impl AgentSink {
                         s.push_tool_call(id, String::new(), args);
                     }
                 }
-                AgentEventLite::ToolResult { id, name, ok, content, details, duration_ms } => {
+                AgentEventLite::ToolResult {
+                    id,
+                    name,
+                    ok,
+                    content,
+                    details,
+                    duration_ms,
+                } => {
                     // Capture edit-tool diff stats for the status bar pill.
                     if let Some(d) = &details {
-                        if let (Some(adds), Some(dels)) =
-                            (d.get("additions").and_then(|v| v.as_u64()),
-                             d.get("deletions").and_then(|v| v.as_u64()))
-                        {
+                        if let (Some(adds), Some(dels)) = (
+                            d.get("additions").and_then(|v| v.as_u64()),
+                            d.get("deletions").and_then(|v| v.as_u64()),
+                        ) {
                             s.ui_state.last_diff = Some((adds as usize, dels as usize));
                         }
                     }
@@ -195,7 +201,9 @@ impl AgentSink {
                     s.push_assistant_raw(format!("[error] {message}"));
                 }
                 AgentEventLite::StopReason(label) => {
-                    Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::StopNotice(label));
+                    Arc::make_mut(&mut s.transcript_state)
+                        .lines
+                        .push(TranscriptLine::StopNotice(label));
                 }
                 AgentEventLite::Usage(input, output, cost) => {
                     s.run_state.tokens.input += input as u64;
@@ -247,11 +255,7 @@ pub type AgentDriver = Arc<dyn Fn(String, AgentSink, Arc<Notify>) -> JoinHandle<
 /// Previously this was hardcoded to `"test-model"` and the user's `--model`
 /// flag was silently ignored at the TUI layer (cf. v0.7.2 ux-report #7).
 /// `bootstrap` may override the model again if the caller needs to.
-pub async fn run<F>(
-    bootstrap: F,
-    agent_driver: AgentDriver,
-    initial_model: &str,
-) -> Result<()>
+pub async fn run<F>(bootstrap: F, agent_driver: AgentDriver, initial_model: &str) -> Result<()>
 where
     F: FnOnce(&mut AppState),
 {
@@ -361,7 +365,9 @@ async fn run_loop(
                 selector_visible = crate::selector::fuzzy_filter(&selector_query, &items);
             }
         }
-        let selector_title = active_selector.as_ref().map(|s| s.state_title().to_string());
+        let selector_title = active_selector
+            .as_ref()
+            .map(|s| s.state_title().to_string());
         let selector_items: Vec<SelectorItem> = active_selector
             .as_ref()
             .map(|s| s.state_items())
@@ -424,7 +430,8 @@ async fn run_loop(
                 let current_model = shared.lock().unwrap().model_state.model.clone();
                 match kind {
                     "model" => {
-                        let sel = Box::new(crate::selectors::ModelSelector::new(Some(&current_model)));
+                        let sel =
+                            Box::new(crate::selectors::ModelSelector::new(Some(&current_model)));
                         active_selector = Some(sel);
                         selector_query.clear();
                     }
@@ -481,9 +488,15 @@ async fn run_loop(
                             .map(|p| p.to_string_lossy().into_owned())
                             .unwrap_or_default();
                         let home = std::env::var("HOME").ok();
-                        let trust_path = home
-                            .as_deref()
-                            .and_then(|h| nini_core::project_trust::ProjectTrustStore::load(&std::path::PathBuf::from(h).join(".pi").join("agent").join("trust.json")).ok());
+                        let trust_path = home.as_deref().and_then(|h| {
+                            nini_core::project_trust::ProjectTrustStore::load(
+                                &std::path::PathBuf::from(h)
+                                    .join(".pi")
+                                    .join("agent")
+                                    .join("trust.json"),
+                            )
+                            .ok()
+                        });
                         let current = trust_path.as_ref().and_then(|t| t.get(&cwd_str));
                         let sel = Box::new(crate::selectors::TrustSelector::new(cwd_str, current));
                         active_selector = Some(sel);
@@ -687,7 +700,8 @@ fn handle_selector_key(
                 selector.state_on_select()
             };
             match outcome {
-                crate::selector::SelectorOutcome::Picked(_) | crate::selector::SelectorOutcome::Back => {
+                crate::selector::SelectorOutcome::Picked(_)
+                | crate::selector::SelectorOutcome::Back => {
                     query.clear();
                     visible.clear();
                 }
@@ -746,8 +760,8 @@ fn apply_selector_result(
     // persist via SettingsManager / ProjectTrustStore / etc.
     use crate::selectors::model::ModelSelector;
     use crate::selectors::session::SessionSelector;
-    use crate::selectors::thinking::ThinkingSelector;
     use crate::selectors::settings::SettingsSelector;
+    use crate::selectors::thinking::ThinkingSelector;
     use crate::selectors::tree::TreeSelector;
     use crate::selectors::trust::TrustSelector;
     use crate::settings::SettingsManager;
@@ -760,7 +774,10 @@ fn apply_selector_result(
         }
         return model;
     }
-    if let Some(think_sel) = selector.state_as_any_mut().downcast_mut::<ThinkingSelector>() {
+    if let Some(think_sel) = selector
+        .state_as_any_mut()
+        .downcast_mut::<ThinkingSelector>()
+    {
         if let Some(level) = &think_sel.result {
             let mut settings = SettingsManager::default();
             settings.set_default_thinking_level(level.clone());
@@ -776,15 +793,18 @@ fn apply_selector_result(
                     .join(".pi")
                     .join("agent")
                     .join("trust.json");
-                let mut store = nini_core::project_trust::ProjectTrustStore::load(&path)
-                    .unwrap_or_default();
+                let mut store =
+                    nini_core::project_trust::ProjectTrustStore::load(&path).unwrap_or_default();
                 store.set(&cwd, decision);
                 let _ = store.save(&path);
             }
         }
         return None;
     }
-    if let Some(session_sel) = selector.state_as_any_mut().downcast_mut::<SessionSelector>() {
+    if let Some(session_sel) = selector
+        .state_as_any_mut()
+        .downcast_mut::<SessionSelector>()
+    {
         if let Some(path_str) = session_sel.result.clone() {
             // Load the session file into AppState.
             let path = std::path::PathBuf::from(&path_str);
@@ -820,15 +840,12 @@ fn apply_selector_result(
                     };
                     let len = truncated.len();
                     let mut g = shared.lock().unwrap();
-                    g.push_assistant(format!(
-                        "(branch summary: {len} chars)\n{truncated}",
-                    ));
+                    g.push_assistant(format!("(branch summary: {len} chars)\n{truncated}",));
                     g.push_divider();
                     // (b) Queue full summary for next turn.
-                    g.run_state.pending_next_turn_messages.push(format!(
-                        "[BRANCH SUMMARY]\n\n{}",
-                        s,
-                    ));
+                    g.run_state
+                        .pending_next_turn_messages
+                        .push(format!("[BRANCH SUMMARY]\n\n{}", s,));
                 }
                 shared.lock().unwrap().run_state.status = prev_status;
             }
@@ -841,7 +858,9 @@ fn apply_selector_result(
     {
         // Apply the toggle/cycle. The settings manager inside the selector
         // persists to disk via its internal mechanism.
-        let new_model = settings_sel.apply(0).map(|_| settings_sel.settings.model_name());
+        let new_model = settings_sel
+            .apply(0)
+            .map(|_| settings_sel.settings.model_name());
         new_model.and_then(|s| if s.is_empty() { None } else { Some(s) })
     } else if let Some(palette) = selector
         .state_as_any_mut()
@@ -871,12 +890,8 @@ fn apply_selector_result(
                     if let Some((cmd_id, args)) = crate::commands::parse(&cmd_line) {
                         let mut g2 = shared.lock().unwrap();
                         let mut settings = crate::settings::SettingsManager::default();
-                        let result = crate::commands::dispatch(
-                            &mut g2,
-                            &mut settings,
-                            cmd_id,
-                            &args,
-                        );
+                        let result =
+                            crate::commands::dispatch(&mut g2, &mut settings, cmd_id, &args);
                         // Mirror the runtime's submit_user_input Output
                         // branch so palette-dispatched commands actually
                         // show their output.
@@ -912,10 +927,7 @@ fn apply_selector_result(
                 }
                 _ => {
                     let mut g = shared.lock().unwrap();
-                    g.push_assistant(format!(
-                        "[palette] unknown action id: {}",
-                        id
-                    ));
+                    g.push_assistant(format!("[palette] unknown action id: {}", id));
                     g.push_divider();
                     let _ = label;
                 }
@@ -937,7 +949,6 @@ fn clear_status_after_selector(shared: &SharedState) {
             || g.run_state.status == "switch model (not yet implemented)"
         {
             g.run_state.status = "ready".to_string();
-
         }
     }
 }
@@ -1039,7 +1050,8 @@ fn cycle_model(state: &mut crate::state::AppState, direction: i32) {
     }
     // Find current model in cycle; advance by `direction`.
     let current_pos = state
-        .model_state.models_cycle
+        .model_state
+        .models_cycle
         .iter()
         .position(|m| m == &state.model_state.model)
         .unwrap_or(0);
@@ -1065,13 +1077,12 @@ fn cycle_model(state: &mut crate::state::AppState, direction: i32) {
 
 /// Cycle thinking level through the standard set.
 fn cycle_thinking(state: &mut crate::state::AppState, direction: i32) {
-    const LEVELS: &[&str] = &[
-        "off", "minimal", "low", "medium", "high", "xhigh", "max",
-    ];
+    const LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
     // Read current level from dedicated state field; fall back to "medium"
     // if never set.
-    let current = state.model_state.thinking_level
-        
+    let current = state
+        .model_state
+        .thinking_level
         .as_deref()
         .unwrap_or("medium");
     let current_pos = LEVELS.iter().position(|l| *l == current).unwrap_or(3);
@@ -1127,7 +1138,12 @@ fn handle_key(
                 if let Some(search) = state.ui_state.search.as_mut() {
                     search.query.push(c);
                 }
-                let q = state.ui_state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
+                let q = state
+                    .ui_state
+                    .search
+                    .as_ref()
+                    .map(|s| s.query.clone())
+                    .unwrap_or_default();
                 state.update_search_query(q);
                 return;
             }
@@ -1203,7 +1219,12 @@ fn handle_key(
                 if let Some(search) = state.ui_state.search.as_mut() {
                     search.query.pop();
                 }
-                let q = state.ui_state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
+                let q = state
+                    .ui_state
+                    .search
+                    .as_ref()
+                    .map(|s| s.query.clone())
+                    .unwrap_or_default();
                 state.update_search_query(q);
                 return;
             }
@@ -1355,8 +1376,8 @@ fn handle_key(
             // first press sets a pending flag + a status message; the
             // second press within `QUIT_CONFIRM_WINDOW_MS` exits. After
             // the window elapses without confirmation, the pending flag
-        // clears and Ctrl+D is a no-op again. This prevents losing
-        // a half-written prompt or in-flight work to a stray Ctrl+D.
+            // clears and Ctrl+D is a no-op again. This prevents losing
+            // a half-written prompt or in-flight work to a stray Ctrl+D.
             use std::time::{Duration, Instant};
             const QUIT_CONFIRM_WINDOW_MS: u64 = 3000;
             let now = Instant::now();
@@ -1367,7 +1388,8 @@ fn handle_key(
                 } else {
                     // Window expired; treat this as the first tap again.
                     state.run_state.pending_quit = Some(now);
-                    state.run_state.status = "Press Ctrl+D again to quit, or Esc to cancel".to_string();
+                    state.run_state.status =
+                        "Press Ctrl+D again to quit, or Esc to cancel".to_string();
                 }
             } else {
                 state.run_state.pending_quit = Some(now);
@@ -1531,10 +1553,7 @@ fn submit_user_input_inner(
                 // For timeout, append a clear suffix so users know output
                 // may be incomplete.
                 let output = if result.timed_out {
-                    format!(
-                        "{output}\n…(timed out after {} ms)",
-                        result.duration_ms
-                    )
+                    format!("{output}\n…(timed out after {} ms)", result.duration_ms)
                 } else {
                     output
                 };
@@ -1546,16 +1565,18 @@ fn submit_user_input_inner(
                 } else {
                     cmd.to_string()
                 };
-                Arc::make_mut(&mut g.transcript_state).lines.push(TranscriptLine::BashExecution {
-                    id,
-                    cmd: cmd_display,
-                    output: output.clone(),
-                    stderr: crate::ansi::strip_ansi(&result.stderr),
-                    ok: result.ok,
-                    exit_code: result.exit_code,
-                    duration_ms: result.duration_ms,
-                    collapsed: false,
-                });
+                Arc::make_mut(&mut g.transcript_state)
+                    .lines
+                    .push(TranscriptLine::BashExecution {
+                        id,
+                        cmd: cmd_display,
+                        output: output.clone(),
+                        stderr: crate::ansi::strip_ansi(&result.stderr),
+                        ok: result.ok,
+                        exit_code: result.exit_code,
+                        duration_ms: result.duration_ms,
+                        collapsed: false,
+                    });
                 g.push_divider();
                 // For `!cmd`, also inject the output as a user message so
                 // the agent sees it on the next turn. For `!!cmd` the
@@ -1804,7 +1825,12 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                 if let Some(search) = state.ui_state.search.as_mut() {
                     search.query.pop();
                 }
-                let q = state.ui_state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
+                let q = state
+                    .ui_state
+                    .search
+                    .as_ref()
+                    .map(|s| s.query.clone())
+                    .unwrap_or_default();
                 state.update_search_query(q);
                 return;
             }
@@ -1959,8 +1985,8 @@ fn _typecheck_handle_is_used() {
 /// from `~/.pi/agent/keybindings.json`. The override file is loaded
 /// once on first use and cached for the process lifetime.
 pub fn resolve_with_user_overrides(key: Key) -> KeyAction {
-    use std::sync::OnceLock;
     use crate::keybindings_manager::load_user_overrides;
+    use std::sync::OnceLock;
 
     static OVERRIDES: OnceLock<Vec<(KeyAction, Key)>> = OnceLock::new();
     let overrides = OVERRIDES.get_or_init(load_user_overrides);

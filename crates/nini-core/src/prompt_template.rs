@@ -109,7 +109,12 @@ pub struct LoadResult {
 /// Default user-level prompt templates directory: `~/.pi/agent/prompts/`.
 pub fn user_prompts_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".pi").join("agent").join("prompts"))
+    Some(
+        PathBuf::from(home)
+            .join(".pi")
+            .join("agent")
+            .join("prompts"),
+    )
 }
 
 /// Default project-level prompt templates directory: `./.pi/prompts/`.
@@ -149,14 +154,21 @@ where
                 let mut paths = Vec::new();
                 for entry in entries.flatten() {
                     let p = entry.path();
-                    if p.extension().and_then(|e| e.to_str()).map_or(false, |e| e.eq_ignore_ascii_case("md")) {
+                    if p.extension()
+                        .and_then(|e| e.to_str())
+                        .map_or(false, |e| e.eq_ignore_ascii_case("md"))
+                    {
                         paths.push(p);
                     }
                 }
                 paths
             }
             Ok(m) if m.is_file() => {
-                if path.extension().and_then(|e| e.to_str()).map_or(false, |e| e.eq_ignore_ascii_case("md")) {
+                if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map_or(false, |e| e.eq_ignore_ascii_case("md"))
+                {
                     vec![path.to_path_buf()]
                 } else {
                     continue;
@@ -280,8 +292,7 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
     static RE_AT: OnceLock<regex::Regex> = OnceLock::new();
 
     let re_dollar = RE_DOLLAR_NUM.get_or_init(|| regex::Regex::new(r"\$(\d+)").unwrap());
-    let re_args = RE_ARGUMENTS
-        .get_or_init(|| regex::Regex::new(r"\$ARGUMENTS").unwrap());
+    let re_args = RE_ARGUMENTS.get_or_init(|| regex::Regex::new(r"\$ARGUMENTS").unwrap());
     let re_at = RE_AT.get_or_init(|| regex::Regex::new(r"\$@").unwrap());
 
     let mut out = content.to_string();
@@ -415,8 +426,7 @@ tags:
 
     #[test]
     fn substitute_args_at_and_arguments() {
-        let result =
-            substitute_args("[$@] [$ARGUMENTS]", &["a".into(), "b".into(), "c".into()]);
+        let result = substitute_args("[$@] [$ARGUMENTS]", &["a".into(), "b".into(), "c".into()]);
         assert_eq!(result, "[a b c] [a b c]");
     }
 
@@ -544,8 +554,7 @@ tags:
             content: "Hello $1, welcome to $2!".to_string(),
             path: std::path::PathBuf::from("/dev/null"),
         };
-        let result =
-            format_invocation(&template, &["Alice".to_string(), "Wonderland".to_string()]);
+        let result = format_invocation(&template, &["Alice".to_string(), "Wonderland".to_string()]);
         assert_eq!(result, "Hello Alice, welcome to Wonderland!");
     }
 
@@ -563,9 +572,6 @@ tags:
     #[test]
     fn project_prompts_dir_under_cwd() {
         let dir = project_prompts_dir(std::path::Path::new("/some/cwd"));
-        assert_eq!(
-            dir,
-            Some(std::path::PathBuf::from("/some/cwd/.pi/prompts"))
-        );
+        assert_eq!(dir, Some(std::path::PathBuf::from("/some/cwd/.pi/prompts")));
     }
 }

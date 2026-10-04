@@ -369,11 +369,16 @@ impl InputBuffer {
             if self.cursor >= len {
                 // Back up by last-yank length to restore the prior state.
                 // (Approximation: works for the common case.)
-                self.text.replace_range((self.cursor - len)..self.cursor, "");
+                self.text
+                    .replace_range((self.cursor - len)..self.cursor, "");
                 self.cursor -= len;
             }
         }
-        let prev = if cur == 0 { self.kill_ring.len() - 1 } else { cur - 1 };
+        let prev = if cur == 0 {
+            self.kill_ring.len() - 1
+        } else {
+            cur - 1
+        };
         let text = self.kill_ring[prev].clone();
         self.text.insert_str(self.cursor, &text);
         self.cursor += text.len();
@@ -882,7 +887,11 @@ impl Clone for TranscriptState {
 
 impl Default for TranscriptState {
     fn default() -> Self {
-        Self { lines: Vec::new(), autoscroll: true, scroll_offset: 0 }
+        Self {
+            lines: Vec::new(),
+            autoscroll: true,
+            scroll_offset: 0,
+        }
     }
 }
 
@@ -1053,22 +1062,13 @@ pub struct SearchState {
 impl AppState {
     /// Update session-level metadata shown in the status bar.
     /// All fields are optional: pass `None` to clear.
-    pub fn set_status_bar_metadata(
-        &mut self,
-        cwd: Option<PathBuf>,
-        git_branch: Option<String>,
-    ) {
+    pub fn set_status_bar_metadata(&mut self, cwd: Option<PathBuf>, git_branch: Option<String>) {
         self.session_state.cwd = cwd;
         self.session_state.git_branch = git_branch;
     }
 
     /// Update cost + context usage shown in the status bar.
-    pub fn set_status_bar_usage(
-        &mut self,
-        cost_usd: f64,
-        context_window: u32,
-        context_used: u32,
-    ) {
+    pub fn set_status_bar_usage(&mut self, cost_usd: f64, context_window: u32, context_used: u32) {
         self.run_state.cost_usd = cost_usd;
         self.run_state.context_window = context_window;
         self.run_state.context_used = context_used;
@@ -1106,7 +1106,11 @@ impl AppState {
     /// Construct with an explicit context-window size AND a snapshot of
     /// the user-editable settings. The auto-compaction trigger reads
     /// `reserve_tokens` from the snapshot.
-    pub fn with_settings(model: String, context_window: u32, settings: crate::settings::Settings) -> Self {
+    pub fn with_settings(
+        model: String,
+        context_window: u32,
+        settings: crate::settings::Settings,
+    ) -> Self {
         let mut s = Self::default();
         s.model_state.model = model;
         s.model_state.settings_snapshot = settings;
@@ -1129,8 +1133,15 @@ impl AppState {
 
     /// Append a user or assistant message to the session. Call this BEFORE
     /// pushing to the transcript so the entry and transcript stay in sync.
-    pub fn session_append(&mut self, parent_id: Option<String>, role: nini_core::Role, content: String) {
-        let Some(ref arc) = self.session_state.session else { return };
+    pub fn session_append(
+        &mut self,
+        parent_id: Option<String>,
+        role: nini_core::Role,
+        content: String,
+    ) {
+        let Some(ref arc) = self.session_state.session else {
+            return;
+        };
         let msg = nini_core::AgentMessage {
             role,
             content: vec![nini_core::ContentBlock::Text { text: content }],
@@ -1144,7 +1155,10 @@ impl AppState {
     /// Flush pending entries to disk (atomic: temp file + rename).
     /// Logs errors but does not propagate — IO failures must not break the TUI.
     pub fn session_flush(&self) {
-        let (path, session) = match (&self.session_state.session_path, &self.session_state.session) {
+        let (path, session) = match (
+            &self.session_state.session_path,
+            &self.session_state.session,
+        ) {
             (Some(p), Some(s)) => (p.clone(), s.clone()),
             _ => return,
         };
@@ -1169,7 +1183,9 @@ impl AppState {
 
     pub fn push_user(&mut self, text: impl Into<String>) {
         let s = text.into();
-        Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::User(s.clone()));
+        Arc::make_mut(&mut self.transcript_state)
+            .lines
+            .push(TranscriptLine::User(s.clone()));
         self.session_append(None, nini_core::Role::User, s);
     }
 
@@ -1215,7 +1231,9 @@ impl AppState {
                 return;
             }
         }
-        Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::AssistantText(s));
+        Arc::make_mut(&mut self.transcript_state)
+            .lines
+            .push(TranscriptLine::AssistantText(s));
     }
 
     /// v0.8: push reasoning content. Rendered dim/italic.
@@ -1231,10 +1249,14 @@ impl AppState {
         if s.is_empty() {
             return;
         }
-        if let Some(TranscriptLine::ThinkingText(existing)) = Arc::make_mut(&mut self.transcript_state).lines.last_mut() {
+        if let Some(TranscriptLine::ThinkingText(existing)) =
+            Arc::make_mut(&mut self.transcript_state).lines.last_mut()
+        {
             existing.push_str(&s);
         } else {
-            Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::ThinkingText(s));
+            Arc::make_mut(&mut self.transcript_state)
+                .lines
+                .push(TranscriptLine::ThinkingText(s));
         }
     }
 
@@ -1244,12 +1266,14 @@ impl AppState {
         name: impl Into<String>,
         args: impl Into<String>,
     ) {
-        Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::ToolCall {
-            id: id.into(),
-            name: name.into(),
-            args: args.into(),
-            collapsed: false,
-        });
+        Arc::make_mut(&mut self.transcript_state)
+            .lines
+            .push(TranscriptLine::ToolCall {
+                id: id.into(),
+                name: name.into(),
+                args: args.into(),
+                collapsed: false,
+            });
     }
 
     pub fn push_tool_result(
@@ -1274,24 +1298,27 @@ impl AppState {
         content: impl Into<String>,
         duration_ms: Option<u64>,
     ) {
-        Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::ToolResult {
-            id: id.into(),
-            name: name.into(),
-            ok,
-            content: content.into(),
-            collapsed: false,
-            duration_ms,
-        });
+        Arc::make_mut(&mut self.transcript_state)
+            .lines
+            .push(TranscriptLine::ToolResult {
+                id: id.into(),
+                name: name.into(),
+                ok,
+                content: content.into(),
+                collapsed: false,
+                duration_ms,
+            });
     }
 
     pub fn push_divider(&mut self) {
-        Arc::make_mut(&mut self.transcript_state).lines.push(TranscriptLine::Divider);
+        Arc::make_mut(&mut self.transcript_state)
+            .lines
+            .push(TranscriptLine::Divider);
     }
 
     pub fn transcript_len(&self) -> usize {
         self.transcript_state.lines.len()
     }
-
 
     /// Cheap heuristic: estimate the transcript's token usage and decide
     /// whether auto-compaction should fire before the next user prompt.
@@ -1307,8 +1334,9 @@ impl AppState {
         if self.run_state.context_window == 0 {
             return false;
         }
-        let budget = self.run_state.context_window
-            
+        let budget = self
+            .run_state
+            .context_window
             .saturating_sub(settings.reserve_tokens);
         let estimated = self.estimate_transcript_tokens();
         estimated > budget
@@ -1356,7 +1384,10 @@ impl AppState {
             return 0;
         }
         let cut_at = total / 2;
-        let prefix_lines: Vec<TranscriptLine> = Arc::make_mut(&mut self.transcript_state).lines.drain(..cut_at).collect();
+        let prefix_lines: Vec<TranscriptLine> = Arc::make_mut(&mut self.transcript_state)
+            .lines
+            .drain(..cut_at)
+            .collect();
         // Build a short textual summary from the prefix. We don't have
         // direct access to `nini_core::Entry` from the prefix, but
         // `generate_local_summary` works on `Vec<Entry>` — so we
@@ -1366,21 +1397,26 @@ impl AppState {
         for (i, line) in prefix_lines.iter().enumerate() {
             summary.push_str(&format!("{i:>3}. {}\n", line_summary_text(line)));
         }
-        summary.push_str(&format!("\n({} entries folded into this summary.)\n", prefix_lines.len()));
+        summary.push_str(&format!(
+            "\n({} entries folded into this summary.)\n",
+            prefix_lines.len()
+        ));
         // Replace prefix with a single AssistantText.
-        Arc::make_mut(&mut self.transcript_state).lines
-            .insert(0, TranscriptLine::AssistantText(format!(
-                "[CONTEXT SUMMARY]\n\n{summary}"
-            )));
+        Arc::make_mut(&mut self.transcript_state).lines.insert(
+            0,
+            TranscriptLine::AssistantText(format!("[CONTEXT SUMMARY]\n\n{summary}")),
+        );
         prefix_lines.len()
     }
-
 
     /// Toggle the `collapsed` flag on the transcript line at `index` if
     /// that line is collapsible (ToolCall / ToolResult / BashExecution).
     /// Returns true if the toggle changed the line's state.
     pub fn toggle_collapsed(&mut self, index: usize) -> bool {
-        if let Some(line) = Arc::make_mut(&mut self.transcript_state).lines.get_mut(index) {
+        if let Some(line) = Arc::make_mut(&mut self.transcript_state)
+            .lines
+            .get_mut(index)
+        {
             match line {
                 TranscriptLine::ToolCall { collapsed, .. }
                 | TranscriptLine::ToolResult { collapsed, .. }
@@ -1433,7 +1469,8 @@ impl AppState {
             } else {
                 let new_names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
                 let prev_selected_name = self
-                    .ui_state.completion
+                    .ui_state
+                    .completion
                     .as_ref()
                     .and_then(|p| p.current())
                     .map(|i| i.name.clone());
@@ -1451,10 +1488,9 @@ impl AppState {
             return;
         }
         // @ file-path completion.
-        if let Some(path_prefix) = crate::file_completion::extract_at_prefix(
-            &self.input.text,
-            self.input.cursor,
-        ) {
+        if let Some(path_prefix) =
+            crate::file_completion::extract_at_prefix(&self.input.text, self.input.cursor)
+        {
             let cwd = std::env::current_dir().unwrap_or_default();
             let files = crate::file_completion::search_files_as_struct(&cwd, &path_prefix);
             if files.is_empty() {
@@ -1524,7 +1560,9 @@ impl AppState {
     /// Update the search query and recompute matches against the
     /// current transcript. Case-insensitive substring match.
     pub fn update_search_query(&mut self, q: String) {
-        let Some(s) = self.ui_state.search.as_mut() else { return };
+        let Some(s) = self.ui_state.search.as_mut() else {
+            return;
+        };
         s.query = q.clone();
         let q_lower = q.to_lowercase();
         let mut new_matches: Vec<usize> = Vec::new();
@@ -1570,7 +1608,6 @@ impl AppState {
     }
 }
 
-
 fn chars_to_tokens(s: &str) -> u32 {
     ((s.chars().count() as u32) + 3) / 4
 }
@@ -1592,7 +1629,9 @@ pub(crate) fn line_summary_text_impl(line: &crate::state::TranscriptLine) -> Str
         TranscriptLine::ToolCall { name, args, .. } => {
             format!("[tool-call] {name}({})", truncate(args, 40))
         }
-        TranscriptLine::ToolResult { content, .. } => format!("[tool-result] {}", truncate(content, 60)),
+        TranscriptLine::ToolResult { content, .. } => {
+            format!("[tool-result] {}", truncate(content, 60))
+        }
         TranscriptLine::BashExecution { cmd, output, .. } => {
             format!("[bash] {cmd} -> {}", truncate(output, 40))
         }
@@ -1801,16 +1840,18 @@ mod tests {
         s.push_tool_call("t2", "read", "{}");
         // Append a bash via the underlying TranscriptLine constructor
         // since we don't have a public push_bash helper yet.
-        Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::BashExecution {
-            id: "b1".to_string(),
-            cmd: "ls".to_string(),
-            output: "file1\nfile2".to_string(),
-            stderr: String::new(),
-            ok: true,
-            exit_code: Some(0),
-            duration_ms: 5,
-            collapsed: false,
-        });
+        Arc::make_mut(&mut s.transcript_state)
+            .lines
+            .push(TranscriptLine::BashExecution {
+                id: "b1".to_string(),
+                cmd: "ls".to_string(),
+                output: "file1\nfile2".to_string(),
+                stderr: String::new(),
+                ok: true,
+                exit_code: Some(0),
+                duration_ms: 5,
+                collapsed: false,
+            });
         // Indexes: 0=ToolResult, 1=ToolCall, 2=BashExecution.
         assert!(s.toggle_collapsed(0));
         assert!(s.toggle_collapsed(1));
@@ -1846,12 +1887,11 @@ mod tests {
         assert!(!s.toggle_collapsed(99));
     }
 
-
     #[test]
     fn estimate_transcript_tokens_sums_text_lines() {
         let mut s = AppState::new("m");
-        s.push_user("hello");   // 5 chars -> 2 tokens
-        s.push_assistant("world this is longer");  // 21 -> 6 tokens
+        s.push_user("hello"); // 5 chars -> 2 tokens
+        s.push_assistant("world this is longer"); // 21 -> 6 tokens
         s.push_tool_result("t1", "bash", true, "out", None);
         // total chars / 4 rounded up
         assert!(s.estimate_transcript_tokens() > 0);
@@ -1896,7 +1936,10 @@ mod tests {
         let before = s.transcript_state.lines.len();
         let folded = s.auto_compact_local();
         assert!(folded >= 4, "should fold at least half");
-        assert!(s.transcript_state.lines.len() < before, "transcript should shrink");
+        assert!(
+            s.transcript_state.lines.len() < before,
+            "transcript should shrink"
+        );
         // The new head should be a CONTEXT SUMMARY line.
         match &s.transcript_state.lines[0] {
             TranscriptLine::AssistantText(t) => assert!(t.starts_with("[CONTEXT SUMMARY]")),
@@ -1922,16 +1965,18 @@ mod tests {
         s.push_user("hi");
         s.push_assistant("hello");
         // Index 5: a bash via direct TranscriptLine.
-        Arc::make_mut(&mut s.transcript_state).lines.push(TranscriptLine::BashExecution {
-            id: "b2".to_string(),
-            cmd: "ls".to_string(),
-            output: "out".to_string(),
-            stderr: String::new(),
-            ok: true,
-            exit_code: Some(0),
-            duration_ms: 1,
-            collapsed: false,
-        });
+        Arc::make_mut(&mut s.transcript_state)
+            .lines
+            .push(TranscriptLine::BashExecution {
+                id: "b2".to_string(),
+                cmd: "ls".to_string(),
+                output: "out".to_string(),
+                stderr: String::new(),
+                ok: true,
+                exit_code: Some(0),
+                duration_ms: 1,
+                collapsed: false,
+            });
         let folded = s.collapse_all();
         // 3 collapsible lines were folded.
         assert_eq!(folded, 3);
@@ -2106,7 +2151,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod sub_struct_tests {
     //! v0.8.1: per-sub-struct unit tests. Verifies each sub-struct
@@ -2129,8 +2173,12 @@ mod sub_struct_tests {
     fn transcript_state_estimate_tokens_simple() {
         let mut ts = TranscriptState::default();
         // 8 chars / 4 = 2 tokens (round up)
-        ts.lines.push(TranscriptLine::AssistantText("abcdefgh".into()));
-        let app = AppState { transcript_state: Arc::new(ts), ..AppState::default() };
+        ts.lines
+            .push(TranscriptLine::AssistantText("abcdefgh".into()));
+        let app = AppState {
+            transcript_state: Arc::new(ts),
+            ..AppState::default()
+        };
         assert_eq!(app.estimate_transcript_tokens(), 2);
     }
 
@@ -2202,7 +2250,7 @@ mod sub_struct_tests {
     #[test]
     fn appstate_default_has_six_fields() {
         let s = AppState::default();
-        assert_eq!(s.input.text, "");           // InputBuffer::new()
+        assert_eq!(s.input.text, ""); // InputBuffer::new()
         assert!(s.transcript_state.lines.is_empty());
         assert_eq!(s.run_state.mode, RunMode::Editing);
         assert_eq!(s.model_state.model, "");

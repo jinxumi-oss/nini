@@ -463,7 +463,13 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
                 }
             }
             Ok(AgentEvent::ToolResult { id, name, output }) => {
-                state.push_tool_result(id.clone(), name.clone(), !output.is_error, output.content, None);
+                state.push_tool_result(
+                    id.clone(),
+                    name.clone(),
+                    !output.is_error,
+                    output.content,
+                    None,
+                );
             }
             Ok(AgentEvent::TurnEnd { usage, .. }) => {
                 total_tokens += usage.input_tokens + usage.output_tokens;
@@ -723,7 +729,13 @@ async fn full_demo_pipeline_through_tui_state() {
                 *args = input_json.to_string();
             }
         } else if let Ok(AgentEvent::ToolResult { id, name, output }) = ev {
-            state.push_tool_result(id.clone(), name.clone(), !output.is_error, output.content, None);
+            state.push_tool_result(
+                id.clone(),
+                name.clone(),
+                !output.is_error,
+                output.content,
+                None,
+            );
         } else if let Ok(AgentEvent::TurnEnd { .. }) = ev {
             state.push_divider();
         }

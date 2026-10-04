@@ -8,9 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::{
-    CommandHandler, CommandSpec, ExtensionAPI, Tool,
-};
+use crate::{CommandHandler, CommandSpec, ExtensionAPI, Tool};
 
 /// Records the side-effects extensions want to take. Held inside an
 /// `Arc<Mutex<…>>` so the extension code can borrow it through the
@@ -146,7 +144,9 @@ mod tests {
     struct DummyTool;
     #[async_trait::async_trait]
     impl Tool for DummyTool {
-        fn name(&self) -> &'static str { "dummy" }
+        fn name(&self) -> &'static str {
+            "dummy"
+        }
         fn spec(&self) -> nini_core::tool::ToolSpec {
             nini_core::tool::ToolSpec {
                 name: "dummy".to_string(),
@@ -154,8 +154,17 @@ mod tests {
                 input_schema: serde_json::json!({}),
             }
         }
-        async fn execute(&self, _input: serde_json::Value, _ctx: ToolContext) -> Result<ToolOutput, nini_core::tool::ToolError> {
-            Ok(ToolOutput { content: String::new(), is_error: false, details: None, duration_ms: 0 })
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: ToolContext,
+        ) -> Result<ToolOutput, nini_core::tool::ToolError> {
+            Ok(ToolOutput {
+                content: String::new(),
+                is_error: false,
+                details: None,
+                duration_ms: 0,
+            })
         }
     }
 

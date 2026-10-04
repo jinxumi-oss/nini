@@ -92,19 +92,13 @@ pub fn render_tool_call(name: &str, args: &str, theme: &Theme) -> Vec<RLine<'sta
     };
     let bg = theme.bg_style("toolPendingBg");
     vec![RLine::from(vec![
-        Span::styled(
-            "▸ ".to_string(),
-            bg.fg(theme.color("toolTitle")),
-        ),
+        Span::styled("▸ ".to_string(), bg.fg(theme.color("toolTitle"))),
         Span::styled(
             name.to_string(),
             bg.fg(theme.color("toolTitle"))
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" {args_preview}"),
-            bg.fg(theme.color("toolOutput")),
-        ),
+        Span::styled(format!(" {args_preview}"), bg.fg(theme.color("toolOutput"))),
     ])]
 }
 
@@ -140,10 +134,7 @@ pub fn render_diff(diff: &str, theme: &Theme) -> Vec<RLine<'static>> {
             _ => theme.fg_style("text"),
         };
         // Preserve the leading sign character so it lines up visually.
-        out.push(RLine::from(Span::styled(
-            line.to_string(),
-            style,
-        )));
+        out.push(RLine::from(Span::styled(line.to_string(), style)));
         // Suppress unused-variable warning on `rest` (kept for clarity
         // / future per-token coloring).
         let _ = rest;
@@ -166,10 +157,10 @@ pub fn render_tool_result(
     let fg_title = theme.color("toolTitle");
     let fg_output = theme.color("toolOutput");
     // v0.8.4 (ux-001): replace the bracketed labels with icon glyphs so
-        // the tool boundary reads instantly without parsing ASCII. The
-        // triangle / check / cross are standard in IDEs and are also
-        // what most TUI dashboards (lazystart, github-cli) use.
-        // v0.8.8 (tool-identity): show the tool name in the result
+    // the tool boundary reads instantly without parsing ASCII. The
+    // triangle / check / cross are standard in IDEs and are also
+    // what most TUI dashboards (lazystart, github-cli) use.
+    // v0.8.8 (tool-identity): show the tool name in the result
     // header so the user can tell which of N parallel results this
     // belongs to. Renders as `✓ bash` or `✗ read` (Pi parity).
     let label = if ok {
@@ -197,10 +188,7 @@ pub fn render_tool_result(
         } else {
             format!("Took {ms}ms ")
         };
-        first_spans.push(Span::styled(
-            dur_label,
-            bg.fg(theme.color("muted")),
-        ));
+        first_spans.push(Span::styled(dur_label, bg.fg(theme.color("muted"))));
     }
     out.push(RLine::from(first_spans));
 
@@ -216,7 +204,7 @@ pub fn render_tool_result(
         }
     }
 
-// v0.8.7 (ux-002): when caller passes `max_width`, budget
+    // v0.8.7 (ux-002): when caller passes `max_width`, budget
     // per-line to `max_width - 2` cells (subtracting the 2-space
     // indent) so the `…` indicator stays visible. Otherwise fall
     // back to the legacy 200-byte budget.
@@ -304,7 +292,12 @@ pub fn render_bash_execution(
     let header = format!("$ {cmd} {exit_str} {duration_ms}ms");
 
     let mut out: Vec<RLine<'static>> = vec![RLine::from(vec![
-        Span::styled("! ", theme.fg_style("warning").add_modifier(ratatui::style::Modifier::BOLD)),
+        Span::styled(
+            "! ",
+            theme
+                .fg_style("warning")
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
         Span::styled(header, theme.fg_style(header_color)),
     ])];
 
@@ -352,7 +345,9 @@ pub fn render_bash_execution(
         let stderr_lines: Vec<&str> = stderr_trim.lines().collect();
         out.push(RLine::from(Span::styled(
             "  stderr:".to_string(),
-            theme.fg_style("error").add_modifier(ratatui::style::Modifier::BOLD),
+            theme
+                .fg_style("error")
+                .add_modifier(ratatui::style::Modifier::BOLD),
         )));
         for line in stderr_lines.iter().take(max_lines) {
             out.push(RLine::from(Span::styled(
@@ -472,10 +467,7 @@ mod tests {
         let lines = render_user_message("hi", &theme());
         assert_eq!(lines.len(), 1);
         // Prefix "> "
-        assert!(lines[0]
-            .spans
-            .iter()
-            .any(|s| s.content.contains('>')));
+        assert!(lines[0].spans.iter().any(|s| s.content.contains('>')));
     }
 
     #[test]
@@ -490,11 +482,7 @@ mod tests {
     fn render_tool_call_truncates_long_args() {
         let args = "x".repeat(500);
         let lines = render_tool_call("bash", &args, &theme());
-        let joined: String = lines[0]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
+        let joined: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         // Should truncate with ellipsis.
         assert!(joined.contains('…'), "missing ellipsis: {joined}");
         assert!(joined.len() < 200, "should be truncated");
@@ -510,10 +498,7 @@ mod tests {
     #[test]
     fn render_tool_result_error_label() {
         let lines = render_tool_result("bash", false, "fail", None, &theme(), None);
-        assert!(lines[0]
-            .spans
-            .iter()
-            .any(|s| s.content.contains("✗ ")));
+        assert!(lines[0].spans.iter().any(|s| s.content.contains("✗ ")));
     }
 
     #[test]
@@ -522,13 +507,19 @@ mod tests {
         // first line of the tool result.
         let lines = render_tool_result("bash", true, "ok", Some(1230), &theme(), None);
         assert!(
-            lines[0].spans.iter().any(|s| s.content.contains("Took 1.23s")),
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.content.contains("Took 1.23s")),
             "expected 'Took 1.23s' pill, got: {:?}",
             lines[0].spans,
         );
         let lines_ms = render_tool_result("bash", true, "ok", Some(850), &theme(), None);
         assert!(
-            lines_ms[0].spans.iter().any(|s| s.content.contains("Took 850ms")),
+            lines_ms[0]
+                .spans
+                .iter()
+                .any(|s| s.content.contains("Took 850ms")),
             "expected 'Took 850ms' pill, got: {:?}",
             lines_ms[0].spans,
         );
@@ -540,7 +531,10 @@ mod tests {
         // (duration_ms = None), no "Took ..." pill appears.
         let lines = render_tool_result("bash", true, "ok", None, &theme(), None);
         assert!(
-            !lines[0].spans.iter().any(|s| s.content.starts_with("Took ")),
+            !lines[0]
+                .spans
+                .iter()
+                .any(|s| s.content.starts_with("Took ")),
             "unexpected duration pill, got: {:?}",
             lines[0].spans,
         );
@@ -551,9 +545,9 @@ mod tests {
         let content = "[pasted image: /tmp/abc.png]\nsome more text";
         let lines = render_tool_result("bash", true, content, None, &theme(), None);
         // Image line should appear prominently (accent color).
-        assert!(lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content.contains("pasted image"))
-        }));
+        assert!(lines
+            .iter()
+            .any(|l| { l.spans.iter().any(|s| s.content.contains("pasted image")) }));
     }
 
     #[test]
@@ -575,16 +569,11 @@ mod tests {
 
     #[test]
     fn render_bash_execution_with_status() {
-        let lines =
-            render_bash_execution("ls", "file1\nfile2", "", true, Some(0), 42, &theme());
+        let lines = render_bash_execution("ls", "file1\nfile2", "", true, Some(0), 42, &theme());
         // Header + output lines.
         assert!(lines.len() >= 2);
         // First line is the banner.
-        let header: String = lines[0]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
+        let header: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(header.contains("$ ls"));
         assert!(header.contains("[exit 0]"));
         assert!(header.contains("42ms"));
@@ -596,8 +585,7 @@ mod tests {
         for i in 0..100 {
             out.push_str(&format!("line {i}\n"));
         }
-        let lines =
-            render_bash_execution("cat big", &out, "", true, Some(0), 100, &theme());
+        let lines = render_bash_execution("cat big", &out, "", true, Some(0), 100, &theme());
         assert!(lines.len() <= 18); // banner + 16 max + truncation marker
     }
 
@@ -642,11 +630,7 @@ mod tests {
     #[test]
     fn render_divider_is_sixty_dashes() {
         let line = render_divider(&theme());
-        let joined: String = line
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined.chars().count(), 60);
     }
 
@@ -685,11 +669,7 @@ mod diff_render_tests {
         // Each line preserves its prefix; colors come from the theme.
         // We can at least assert the prefix text is unchanged.
         for (i, line) in lines.iter().enumerate() {
-            let joined: String = line
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert_eq!(joined, d.lines().nth(i).unwrap(), "line {i} mismatch");
         }
     }
@@ -730,16 +710,11 @@ mod diff_render_tests {
         // Build a string where byte 120 is mid-character.
         let args = "文".repeat(50); // 50 * 3 = 150 bytes; byte 120 inside char #40 (bytes 119..122)
         let lines = render_tool_call("bash", &args, &Theme::default());
-        let joined: String = lines[0]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
+        let joined: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         // Should not panic and should include an ellipsis to signal truncation.
         assert!(joined.contains('…'), "missing ellipsis: {joined:?}");
     }
 }
-
 
 /// Render a dim "[Ctrl+O to expand]" hint shown under a collapsed
 /// tool-output / tool-call / bash-execution block.

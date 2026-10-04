@@ -84,7 +84,7 @@ pub const REGISTRY: &[CommandDef] = &[
         "Set thinking level",
         Some("<level>"),
     ),
-        CommandDef::new(
+    CommandDef::new(
         CommandId::ScopedModels,
         "scoped-models",
         "Show models in the current scope",
@@ -96,24 +96,14 @@ pub const REGISTRY: &[CommandDef] = &[
         "Show current session status",
         None,
     ),
-    CommandDef::new(
-        CommandId::Help,
-        "help",
-        "Show help for all commands",
-        None,
-    ),
+    CommandDef::new(CommandId::Help, "help", "Show help for all commands", None),
     CommandDef::new(
         CommandId::Hotkeys,
         "hotkeys",
         "Show keyboard shortcuts",
         None,
     ),
-    CommandDef::new(
-        CommandId::Debug,
-        "debug",
-        "Toggle debug logging",
-        None,
-    ),
+    CommandDef::new(CommandId::Debug, "debug", "Toggle debug logging", None),
     CommandDef::new(
         CommandId::Editor,
         "editor",
@@ -138,24 +128,9 @@ pub const REGISTRY: &[CommandDef] = &[
         "Share the current session (export)",
         None,
     ),
-    CommandDef::new(
-        CommandId::Changelog,
-        "changelog",
-        "Show changelog",
-        None,
-    ),
-    CommandDef::new(
-        CommandId::Trust,
-        "trust",
-        "Toggle project trust mode",
-        None,
-    ),
-    CommandDef::new(
-        CommandId::New,
-        "new",
-        "Start a new session",
-        None,
-    ),
+    CommandDef::new(CommandId::Changelog, "changelog", "Show changelog", None),
+    CommandDef::new(CommandId::Trust, "trust", "Toggle project trust mode", None),
+    CommandDef::new(CommandId::New, "new", "Start a new session", None),
     CommandDef::new(
         CommandId::Resume,
         "resume",
@@ -174,12 +149,7 @@ pub const REGISTRY: &[CommandDef] = &[
         "Import a session from JSONL",
         Some("<path>"),
     ),
-    CommandDef::new(
-        CommandId::Fork,
-        "fork",
-        "Fork the current session",
-        None,
-    ),
+    CommandDef::new(CommandId::Fork, "fork", "Fork the current session", None),
     CommandDef::new(
         CommandId::Clone,
         "clone",
@@ -192,13 +162,8 @@ pub const REGISTRY: &[CommandDef] = &[
         "Compact the current session",
         None,
     ),
+    CommandDef::new(CommandId::Session, "session", "Show session info", None),
     CommandDef::new(
-        CommandId::Session,
-        "session",
-        "Show session info",
-        None,
-    ),
-CommandDef::new(
         CommandId::Name,
         "name",
         "Name the current session",
@@ -222,12 +187,7 @@ CommandDef::new(
         "Run a prompt template",
         Some("<name> [args]"),
     ),
-    CommandDef::new(
-        CommandId::Quit,
-        "quit",
-        "Quit (with confirmation)",
-        None,
-    ),
+    CommandDef::new(CommandId::Quit, "quit", "Quit (with confirmation)", None),
 ];
 
 /// Look up a `CommandDef` by its slash-command name (without the leading `/`).
@@ -317,7 +277,10 @@ mod tests {
     fn complete_prefix_match_wins() {
         let r = complete("mo", 8);
         assert!(r.iter().any(|c| c.name == "model"));
-        assert!(r[0].name == "model", "model should be first for prefix 'mo'");
+        assert!(
+            r[0].name == "model",
+            "model should be first for prefix 'mo'"
+        );
     }
 
     #[test]

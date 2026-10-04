@@ -54,8 +54,8 @@ pub(crate) fn settings_to_system_prompt(
     // "Available tools: bash, read, write, edit, grep, find" line is
     // replaced with Pi-style "## Tool self-descriptions" + "## Tool usage
     // guidelines" sections built from the live registry.
-    let mut s = nini_core::tool::build_system_prompt_with_contributions(Some(&s), tools)
-        .unwrap_or(s);
+    let mut s =
+        nini_core::tool::build_system_prompt_with_contributions(Some(&s), tools).unwrap_or(s);
     s.push_str(skills_prompt);
     s
 }
@@ -64,7 +64,7 @@ pub(crate) fn settings_to_system_prompt(
 mod tests {
     use super::*;
     use nini_core::settings::Settings;
-use nini_core::tool::ToolRegistry;
+    use nini_core::tool::ToolRegistry;
 
     #[test]
     fn model_for_cfg_prefers_model_over_provider() {
@@ -105,7 +105,8 @@ use nini_core::tool::ToolRegistry;
         let s = Settings::default();
         let skills = "\n\n[Skills] foo, bar";
         let tools = ToolRegistry::new();
-        let prompt = settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), &tools, skills);
+        let prompt =
+            settings_to_system_prompt(&s, std::path::Path::new("/tmp/proj"), &tools, skills);
         assert!(prompt.ends_with(skills));
     }
 

@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use nini_core::tool::*;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::Path;
 use tokio::fs;
 
@@ -136,7 +136,8 @@ mod tests {
         assert!(
             word_count <= 10,
             "read snippet too long: {} words — {}",
-            word_count, contrib.snippet,
+            word_count,
+            contrib.snippet,
         );
         let spec = tool.spec();
         assert!(

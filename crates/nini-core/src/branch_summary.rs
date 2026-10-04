@@ -24,8 +24,8 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 
 use crate::entries::BranchSummaryMessage;
-use crate::Entry;
 use crate::provider::{Provider, Request, StreamEvent, Usage};
+use crate::Entry;
 
 /// Default 6-section prompt used for LLM-backed branch summarization.
 ///
@@ -112,7 +112,9 @@ pub fn extract_file_operations(entries: &[Entry]) -> (Vec<String>, Vec<String>) 
             for block in &m.content {
                 if let crate::provider::ContentBlock::Text { text } = block {
                     for token in text.split_whitespace() {
-                        let s = token.trim_matches(|c: char| c == '"' || c == '\'' || c == '<' || c == '>' || c == ',');
+                        let s = token.trim_matches(|c: char| {
+                            c == '"' || c == '\'' || c == '<' || c == '>' || c == ','
+                        });
                         if is_path_like(s) {
                             reads.insert(s.to_string());
                         }
@@ -130,7 +132,9 @@ fn is_path_like(s: &str) -> bool {
             || s.starts_with("~/")
             || s.starts_with("./")
             || s.starts_with("../")
-            || (s.contains('/') && !s.contains(' ') && s.chars().any(|c| c.is_ascii_alphanumeric())))
+            || (s.contains('/')
+                && !s.contains(' ')
+                && s.chars().any(|c| c.is_ascii_alphanumeric())))
 }
 
 /// Serialize entries to a single string suitable for inclusion in a prompt.
@@ -244,10 +248,11 @@ pub async fn summarize_branch_with_llm(
     read_files: Vec<String>,
     modified_files: Vec<String>,
 ) -> BranchSummaryMessage {
-    let (summary, _usage) = match try_summarize(entries, &provider, model, &read_files, &modified_files).await {
-        Ok(s) => s,
-        Err(_e) => (summarize_branch(entries), None),
-    };
+    let (summary, _usage) =
+        match try_summarize(entries, &provider, model, &read_files, &modified_files).await {
+            Ok(s) => s,
+            Err(_e) => (summarize_branch(entries), None),
+        };
     BranchSummaryMessage {
         summary,
         read_files,
@@ -264,9 +269,7 @@ async fn try_summarize(
 ) -> Result<(String, Option<Usage>), String> {
     let transcript = serialize_entries_for_prompt(entries);
     let files = format_file_operations(read_files, modified_files);
-    let system = format!(
-        "{BRANCH_SUMMARY_PROMPT}\n\nFiles touched on this branch:\n{files}\n"
-    );
+    let system = format!("{BRANCH_SUMMARY_PROMPT}\n\nFiles touched on this branch:\n{files}\n");
     let req = Request {
         model: model.to_string(),
         messages: vec![crate::provider::Message {
@@ -285,14 +288,15 @@ async fn try_summarize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn user_entry(id: &str, content: &str) -> Entry {
         let mut e = Entry::default();
         e.id = id.to_string();
         e.message = Some(crate::provider::Message {
             role: crate::provider::Role::User,
-            content: vec![crate::provider::ContentBlock::Text { text: content.to_string() }],
+            content: vec![crate::provider::ContentBlock::Text {
+                text: content.to_string(),
+            }],
             timestamp: 0,
         });
         e
@@ -303,7 +307,9 @@ mod tests {
         e.id = id.to_string();
         e.message = Some(crate::provider::Message {
             role: crate::provider::Role::Assistant,
-            content: vec![crate::provider::ContentBlock::Text { text: content.to_string() }],
+            content: vec![crate::provider::ContentBlock::Text {
+                text: content.to_string(),
+            }],
             timestamp: 0,
         });
         e
@@ -407,7 +413,7 @@ mod tests {
         }
         let prompt = serialize_entries_for_prompt(&entries);
         assert!(prompt.len() <= MAX_INPUT_CHARS + 200); // small slack
-        // Should include at least the last entries
+                                                        // Should include at least the last entries
         assert!(prompt.contains("1999"));
     }
 

@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::keys::{Key, KeyAction, KeyModifiers};
 
-
 /// Raw user-supplied override file format.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserKeybindings {
@@ -155,8 +154,7 @@ impl KeybindingsManager {
             }
         }
         // Fallback: printable char with no Ctrl/Alt.
-        if !key.modifiers.contains(KeyModifiers::CTRL)
-            && !key.modifiers.contains(KeyModifiers::ALT)
+        if !key.modifiers.contains(KeyModifiers::CTRL) && !key.modifiers.contains(KeyModifiers::ALT)
         {
             if let crossterm::event::KeyCode::Char(c) = key.code {
                 return KeyAction::Insert(c);
@@ -169,7 +167,12 @@ impl KeybindingsManager {
 /// Default path: `~/.pi/agent/keybindings.json`.
 pub fn user_keybindings_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".pi").join("agent").join("keybindings.json"))
+    Some(
+        PathBuf::from(home)
+            .join(".pi")
+            .join("agent")
+            .join("keybindings.json"),
+    )
 }
 
 /// Parse `"Ctrl+L"`, `"Shift+Tab"`, `"F1"`, etc. into a `Key`.
@@ -334,11 +337,7 @@ mod tests {
     fn load_unknown_action_warns_but_doesnt_crash() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("kb.json");
-        std::fs::write(
-            &path,
-            r#"{ "bindings": { "NonExistent": "Ctrl+X" } }"#,
-        )
-        .unwrap();
+        std::fs::write(&path, r#"{ "bindings": { "NonExistent": "Ctrl+X" } }"#).unwrap();
         let mut mgr = KeybindingsManager::new();
         mgr.load_file(&path).unwrap();
         assert_eq!(mgr.len(), 0);
@@ -391,8 +390,12 @@ pub fn load_user_overrides() -> Vec<(KeyAction, Key)> {
     };
     let mut out = Vec::new();
     for (key_spec, action_name) in &map {
-        let Some(key) = parse_key_spec(key_spec) else { continue };
-        let Some(action) = parse_action(action_name) else { continue };
+        let Some(key) = parse_key_spec(key_spec) else {
+            continue;
+        };
+        let Some(action) = parse_action(action_name) else {
+            continue;
+        };
         out.push((action, key));
     }
     out

@@ -35,7 +35,11 @@ impl SettingsSelector {
         let snapshot = SettingsSnapshot {
             model: manager.settings.default_model.clone().unwrap_or_default(),
             theme: manager.theme.clone(),
-            thinking: manager.settings.default_thinking_level.clone().unwrap_or_default(),
+            thinking: manager
+                .settings
+                .default_thinking_level
+                .clone()
+                .unwrap_or_default(),
         };
         Self::with_snapshot(snapshot)
     }
@@ -77,10 +81,18 @@ impl SettingsSelector {
 }
 
 impl SelectorState for SettingsSelector {
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
-    fn state_items(&self) -> Vec<SelectorItem> { self.items.clone() }
-    fn state_title(&self) -> String { "Settings".to_string() }
-    fn state_selected(&self) -> usize { self.selected }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn state_items(&self) -> Vec<SelectorItem> {
+        self.items.clone()
+    }
+    fn state_title(&self) -> String {
+        "Settings".to_string()
+    }
+    fn state_selected(&self) -> usize {
+        self.selected
+    }
     fn state_set_selected(&mut self, idx: usize) {
         if idx < self.items.len() {
             self.selected = idx;

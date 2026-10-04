@@ -6,9 +6,9 @@
 use futures_util::StreamExt;
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::Usage;
+use nini_core::tool::ToolOutput;
 use nini_core::tool::ToolRegistry;
 use nini_core::{Agent, AgentEvent, AgentMessage, RunConfig};
-use nini_core::tool::ToolOutput;
 use nini_tools::BashTool;
 use std::sync::Arc;
 
@@ -165,7 +165,7 @@ mod parallel_tool_tests {
     use async_trait::async_trait;
     use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
     use nini_core::AgentMessage;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -185,20 +185,18 @@ mod parallel_tool_tests {
                 call_count: Arc::new(AtomicU32::new(0)),
             }
         }
-        pub fn call_count(&self) -> Arc<AtomicU32> {
-            self.call_count.clone()
-        }
     }
 
     #[async_trait]
     impl Tool for SleeperTool {
-        fn name(&self) -> &'static str { "sleeper" }
+        fn name(&self) -> &'static str {
+            "sleeper"
+        }
 
         fn spec(&self) -> ToolSpec {
             ToolSpec {
                 name: "sleeper".to_string(),
-                description: "Sleeps for a configured duration (test only)."
-                    .to_string(),
+                description: "Sleeps for a configured duration (test only).".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -208,11 +206,7 @@ mod parallel_tool_tests {
             }
         }
 
-        async fn execute(
-            &self,
-            args: Value,
-            _ctx: ToolContext,
-        ) -> Result<ToolOutput, ToolError> {
+        async fn execute(&self, args: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
             let label = args
                 .get("label")
                 .and_then(|v| v.as_str())
@@ -307,7 +301,9 @@ mod parallel_tool_tests {
         }
         #[async_trait]
         impl Tool for VarSleeper {
-            fn name(&self) -> &'static str { "var_sleeper" }
+            fn name(&self) -> &'static str {
+                "var_sleeper"
+            }
             fn spec(&self) -> ToolSpec {
                 ToolSpec {
                     name: "var_sleeper".to_string(),
@@ -423,7 +419,7 @@ mod slot_order_tests {
     use nini_core::provider::{Capabilities, Provider, ProviderError, Request, StreamEvent};
     use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
     use nini_core::{AgentMessage, ProviderMessage as Message};
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
     use std::pin::Pin;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -449,13 +445,18 @@ mod slot_order_tests {
     }
 
     impl Provider for CapturingProvider {
-        fn name(&self) -> &'static str { "capturing" }
-        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        fn name(&self) -> &'static str {
+            "capturing"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
 
         fn stream(
             &self,
             req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+        {
             // Count calls so we can distinguish turn 0 from turn 1.
             let call_n = {
                 let mut c = self.call_count.lock().unwrap();
@@ -465,21 +466,17 @@ mod slot_order_tests {
             let captured = self.captured.clone();
             if call_n >= 2 {
                 *captured.lock().unwrap() = Some(req);
-                Box::pin(stream::iter(vec![
-                    Ok(StreamEvent::MessageStop {
-                        stop_reason: "end_turn".to_string(),
-                        usage: Usage::default(),
-                    }),
-                ]))
+                Box::pin(stream::iter(vec![Ok(StreamEvent::MessageStop {
+                    stop_reason: "end_turn".to_string(),
+                    usage: Usage::default(),
+                })]))
             } else {
                 // Turn 0: emit 4 parallel tool calls with id-prefixed
                 // labels so we can verify ordering in the captured req.
-                let mut events = vec![
-                    StreamEvent::MessageStart {
-                        id: "msg_0".to_string(),
-                        model: "capturing".to_string(),
-                    },
-                ];
+                let mut events = vec![StreamEvent::MessageStart {
+                    id: "msg_0".to_string(),
+                    model: "capturing".to_string(),
+                }];
                 for i in 0..4 {
                     let id = format!("toolu_t0_{i}");
                     events.push(StreamEvent::ToolCallStart {
@@ -508,7 +505,9 @@ mod slot_order_tests {
     pub struct TaggedTool;
     #[async_trait]
     impl Tool for TaggedTool {
-        fn name(&self) -> &'static str { "tagged" }
+        fn name(&self) -> &'static str {
+            "tagged"
+        }
         fn spec(&self) -> ToolSpec {
             ToolSpec {
                 name: "tagged".to_string(),
@@ -519,11 +518,7 @@ mod slot_order_tests {
                 }),
             }
         }
-        async fn execute(
-            &self,
-            args: Value,
-            _ctx: ToolContext,
-        ) -> Result<ToolOutput, ToolError> {
+        async fn execute(&self, args: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
             // Variable delay so completion order ≠ launch order.
             let label = args
                 .get("label")
@@ -598,13 +593,19 @@ mod slot_order_tests {
             .content
             .iter()
             .filter_map(|b| match b {
-                nini_core::ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                nini_core::ContentBlock::ToolResult { tool_use_id, .. } => {
+                    Some(tool_use_id.clone())
+                }
                 _ => None,
             })
             .collect();
 
         assert_eq!(call_ids.len(), 4, "expected 4 tool calls, got {call_ids:?}");
-        assert_eq!(result_ids.len(), 4, "expected 4 tool results, got {result_ids:?}");
+        assert_eq!(
+            result_ids.len(),
+            4,
+            "expected 4 tool results, got {result_ids:?}"
+        );
         assert_eq!(
             call_ids, result_ids,
             "tool_results must be in the SAME order as tool_calls (Anthropic API contract).\n\
@@ -613,7 +614,6 @@ mod slot_order_tests {
         );
     }
 }
-
 
 // =====================================================================
 // v0.8.5: abort during parallel tool execution cancels cleanly.
@@ -627,8 +627,8 @@ mod abort_parallel_tests {
     use super::*;
     use async_trait::async_trait;
     use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
-    use nini_core::{AbortHandle, AgentMessage};
-    use serde_json::{Value, json};
+    use nini_core::AgentMessage;
+    use serde_json::{json, Value};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -640,7 +640,9 @@ mod abort_parallel_tests {
 
     #[async_trait]
     impl Tool for SlowTool {
-        fn name(&self) -> &'static str { "slow" }
+        fn name(&self) -> &'static str {
+            "slow"
+        }
         fn spec(&self) -> ToolSpec {
             ToolSpec {
                 name: "slow".to_string(),
@@ -648,11 +650,7 @@ mod abort_parallel_tests {
                 input_schema: json!({"type": "object"}),
             }
         }
-        async fn execute(
-            &self,
-            _args: Value,
-            _ctx: ToolContext,
-        ) -> Result<ToolOutput, ToolError> {
+        async fn execute(&self, _args: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
             tokio::time::sleep(self.delay).await;
             self.completed.fetch_add(1, Ordering::SeqCst);
             Ok(ToolOutput::ok("done".to_string()))
@@ -688,7 +686,6 @@ mod abort_parallel_tests {
         let agent_handle = tokio::spawn(async move {
             let mut stream = Box::pin(agent.run(AgentMessage::user("test abort")));
             use futures_util::StreamExt;
-            let mut stream = stream;
             while let Some(_ev) = stream.next().await {}
         });
 

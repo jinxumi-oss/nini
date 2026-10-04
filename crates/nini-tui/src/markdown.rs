@@ -29,9 +29,7 @@
 //! - Tables (basic)
 //! - HTML pass-through (raw text)
 
-use pulldown_cmark::{
-    Event, HeadingLevel, Options, Parser, Tag, TagEnd,
-};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -144,7 +142,9 @@ impl<'a> MdState<'a> {
                 StyleMod::Bold => s.add_modifier(Modifier::BOLD),
                 StyleMod::Italic => s.add_modifier(Modifier::ITALIC),
                 StyleMod::Strikethrough => s.add_modifier(Modifier::CROSSED_OUT),
-                StyleMod::Code => s.patch(self.theme.fg_style("mdCode")).add_modifier(Modifier::DIM),
+                StyleMod::Code => s
+                    .patch(self.theme.fg_style("mdCode"))
+                    .add_modifier(Modifier::DIM),
             };
         }
         if self.heading_underline {
@@ -165,7 +165,8 @@ impl<'a> MdState<'a> {
             self.code_buf.push(text.to_string());
             return;
         }
-        self.pending.push(Span::styled(text.to_string(), self.base_style()));
+        self.pending
+            .push(Span::styled(text.to_string(), self.base_style()));
     }
 
     fn flush_pending(&mut self) {
@@ -253,9 +254,8 @@ impl<'a> MdState<'a> {
                 self.push_list_bullet();
             }
             Tag::FootnoteDefinition(_) => { /* skip */ }
-            Tag::DefinitionList
-            | Tag::DefinitionListTitle
-            | Tag::DefinitionListDefinition => { /* skip — uncommonly used */ }
+            Tag::DefinitionList | Tag::DefinitionListTitle | Tag::DefinitionListDefinition => { /* skip — uncommonly used */
+            }
             Tag::Table(_) => {
                 self.ensure_block_gap();
                 self.flush_pending();
@@ -330,10 +330,7 @@ impl<'a> MdState<'a> {
             TagEnd::DefinitionList
             | TagEnd::DefinitionListTitle
             | TagEnd::DefinitionListDefinition => {}
-            TagEnd::Table
-            | TagEnd::TableHead
-            | TagEnd::TableRow
-            | TagEnd::TableCell => {
+            TagEnd::Table | TagEnd::TableHead | TagEnd::TableRow | TagEnd::TableCell => {
                 self.flush_pending();
             }
             TagEnd::Emphasis
@@ -449,10 +446,8 @@ impl<'a> MdState<'a> {
         } else {
             format!("{}• ", indent)
         };
-        self.pending.push(Span::styled(
-            marker,
-            self.theme.fg_style("mdListBullet"),
-        ));
+        self.pending
+            .push(Span::styled(marker, self.theme.fg_style("mdListBullet")));
         // Add quote border if nested in a quote.
         if self.quote_depth > 0 {
             for _ in 0..self.quote_depth {
@@ -469,10 +464,8 @@ impl<'a> MdState<'a> {
         // Use the full terminal width \u2014 but we don't know it here, so use a
         // generous default. ratatui's wrap will clip anyway.
         let rule = "\u{2500}".repeat(60);
-        self.out.push(Line::from(Span::styled(
-            rule,
-            self.theme.fg_style("mdHr"),
-        )));
+        self.out
+            .push(Line::from(Span::styled(rule, self.theme.fg_style("mdHr"))));
         self.last_was_block_end = true;
     }
 
@@ -511,11 +504,13 @@ impl<'a> MdState<'a> {
         // raw bytes), so split on \n to render each line separately.
         let raw = std::mem::take(&mut self.code_buf).concat();
         for line in raw.split('\n') {
-            let content = if line.is_empty() { " ".to_string() } else { line.to_string() };
-            self.out.push(Line::from(Span::styled(
-                format!("  {content}"),
-                body_style,
-            )));
+            let content = if line.is_empty() {
+                " ".to_string()
+            } else {
+                line.to_string()
+            };
+            self.out
+                .push(Line::from(Span::styled(format!("  {content}"), body_style)));
         }
         // Bottom border
         self.out.push(Line::from(Span::styled(
@@ -625,7 +620,10 @@ mod tests {
             .unwrap();
         let mods = title_span.style.add_modifier;
         assert!(mods.contains(Modifier::BOLD), "H1 should be bold");
-        assert!(mods.contains(Modifier::UNDERLINED), "H1 should be underlined");
+        assert!(
+            mods.contains(Modifier::UNDERLINED),
+            "H1 should be underlined"
+        );
     }
 
     #[test]
@@ -713,9 +711,15 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
         assert!(joined.contains("rust"), "lang label missing: {joined}");
-        assert!(joined.contains("fn main() {}"), "code body missing: {joined}");
+        assert!(
+            joined.contains("fn main() {}"),
+            "code body missing: {joined}"
+        );
         // Body should have 2-space indent
-        assert!(joined.contains("  fn main() {}"), "missing indent: {joined}");
+        assert!(
+            joined.contains("  fn main() {}"),
+            "missing indent: {joined}"
+        );
     }
 
     #[test]
@@ -752,7 +756,10 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("deleted"))
             .unwrap();
-        assert!(strike_span.style.add_modifier.contains(Modifier::CROSSED_OUT));
+        assert!(strike_span
+            .style
+            .add_modifier
+            .contains(Modifier::CROSSED_OUT));
     }
 
     #[test]
@@ -777,11 +784,7 @@ mod tests {
             .collect();
         assert!(joined.contains("bold"));
         assert!(joined.contains("italic"));
-        let bold_span = lines[0]
-            .spans
-            .iter()
-            .find(|s| s.content == "bold")
-            .unwrap();
+        let bold_span = lines[0].spans.iter().find(|s| s.content == "bold").unwrap();
         assert!(bold_span.style.add_modifier.contains(Modifier::BOLD));
         let italic_span = lines[0]
             .spans
@@ -822,11 +825,7 @@ mod tests {
         // Find body text line index.
         let body_idx = lines
             .iter()
-            .position(|l| {
-                l.spans
-                    .iter()
-                    .any(|s| s.content.contains("body text"))
-            })
+            .position(|l| l.spans.iter().any(|s| s.content.contains("body text")))
             .unwrap();
         // Some line between Title and body should be empty.
         assert!(body_idx > 1);

@@ -2,7 +2,6 @@
 //! eyeball the new Pi-style 2-line footer alongside the markdown/prompt
 //! rendering. Snapshots go to /tmp/nini-snapshots/.
 
-use std::sync::Arc;
 use nini_tui::render::render_frame_with_theme;
 use nini_tui::state::{AppState, RunMode, TranscriptLine};
 use nini_tui::theme::Theme;
@@ -10,6 +9,7 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn frame_text(terminal: &Terminal<TestBackend>) -> String {
     let buffer = terminal.backend().buffer().clone();
@@ -97,7 +97,9 @@ fn snapshot_conversation() {
     );
     state.push_divider();
     state.push_tool_call("t1", "read", "{\"path\": \"src/middleware/auth.rs\"}");
-    state.push_tool_result("t1", "read",
+    state.push_tool_result(
+        "t1",
+        "read",
         true,
         "use actix_web::*;\n\npub async fn auth(req: ServiceRequest) -> ...",
         Some(23),

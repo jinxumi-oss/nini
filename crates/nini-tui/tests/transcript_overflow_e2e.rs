@@ -241,14 +241,12 @@ fn parallel_8_reads_at_200x50_keeps_all_headers_visible() {
             let gap = r - c;
             assert_eq!(
                 gap, 1,
-                "call→result gap = {}, expected 1 (adjacent rows)", gap
+                "call→result gap = {}, expected 1 (adjacent rows)",
+                gap
             );
             // Body rows must follow the result header.
             let body_rows_after = transcript.len().saturating_sub(r + 1);
-            assert!(
-                body_rows_after >= 1,
-                "no body lines after result header"
-            );
+            assert!(body_rows_after >= 1, "no body lines after result header");
         }
         (Some(_), None) => panic!("▸ read visible but no ✓ result visible"),
         (None, Some(_)) => {

@@ -2,17 +2,17 @@
 
 use serde::{Deserialize, Serialize};
 
-pub mod branch_summary;
 pub mod agent;
 pub mod agent_hooks;
+pub mod branch_summary;
 pub mod conversion;
 
+pub mod compaction;
 pub mod entries;
 pub mod git;
 pub mod model_runtime;
 pub mod overflow;
 pub mod project_trust;
-pub mod compaction;
 pub mod prompt_template;
 pub mod provider;
 pub mod settings;
@@ -28,8 +28,8 @@ pub use entries::{
     ToolResultMessage, Usage, UserMessage,
 };
 pub use provider::{
-    ContentBlock, Message as ProviderMessage, Provider, ProviderError, Request, Role,
-    StreamEvent, ToolCall, ToolResult, Usage as ProviderUsage,
+    ContentBlock, Message as ProviderMessage, Provider, ProviderError, Request, Role, StreamEvent,
+    ToolCall, ToolResult, Usage as ProviderUsage,
 };
 
 /// Legacy alias for `Message` — keeps existing call sites working.
@@ -38,9 +38,9 @@ pub type LegacyContentBlock = ContentBlock;
 
 /// Library version, mirrors workspace version.
 pub use compaction::{
-    CompactionOutput, CompactionPreparation, CompactionSettings, CutPoint, CutReason, compact,
-    estimate_entries_tokens, estimate_message_tokens, find_cut_point, generate_local_summary,
-    make_compaction_entry, prepare_compaction, should_compact,
+    compact, estimate_entries_tokens, estimate_message_tokens, find_cut_point,
+    generate_local_summary, make_compaction_entry, prepare_compaction, should_compact,
+    CompactionOutput, CompactionPreparation, CompactionSettings, CutPoint, CutReason,
 };
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -161,9 +161,13 @@ impl From<Entry> for SessionEntry {
                             name,
                             arguments: input,
                         },
-                        ContentBlock::ToolResult { tool_use_id, content, .. } => {
-                            PiContentBlock::Text { text: format!("[tool {}]: {}", tool_use_id, content) }
-                        }
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => PiContentBlock::Text {
+                            text: format!("[tool {}]: {}", tool_use_id, content),
+                        },
                     })
                     .collect();
                 let pi_msg = match msg.role {
@@ -205,18 +209,16 @@ impl From<Entry> for SessionEntry {
                     message: pi_msg,
                 })
             }
-            LegacyEntryType::BranchSummary => {
-                SessionEntry::BranchSummary(BranchSummaryEntry {
-                    id: e.id,
-                    parent_id: e.parent_id,
-                    timestamp: ts_iso,
-                    from_id: e.from_id.unwrap_or_default(),
-                    summary: e.summary.unwrap_or_default(),
-                    usage: None,
-                    details: e.data,
-                    from_hook: None,
-                })
-            }
+            LegacyEntryType::BranchSummary => SessionEntry::BranchSummary(BranchSummaryEntry {
+                id: e.id,
+                parent_id: e.parent_id,
+                timestamp: ts_iso,
+                from_id: e.from_id.unwrap_or_default(),
+                summary: e.summary.unwrap_or_default(),
+                usage: None,
+                details: e.data,
+                from_hook: None,
+            }),
             LegacyEntryType::Compaction => SessionEntry::Compaction(CompactionEntry {
                 id: e.id,
                 parent_id: e.parent_id,
@@ -256,10 +258,9 @@ impl From<SessionEntry> for Entry {
                             StringOrContentBlocks::String(s) => {
                                 vec![ContentBlock::Text { text: s }]
                             }
-                            StringOrContentBlocks::Blocks(bs) => bs
-                                .into_iter()
-                                .map(legacy_from_block)
-                                .collect(),
+                            StringOrContentBlocks::Blocks(bs) => {
+                                bs.into_iter().map(legacy_from_block).collect()
+                            }
                         };
                         (Role::User, blocks)
                     }
@@ -276,7 +277,11 @@ impl From<SessionEntry> for Entry {
                     seq: 0,
                     timestamp: ts,
                     entry_type: LegacyEntryType::Message,
-                    message: Some(AgentMessage { role, content: blocks, timestamp: ts }),
+                    message: Some(AgentMessage {
+                        role,
+                        content: blocks,
+                        timestamp: ts,
+                    }),
                     summary: None,
                     from_id: None,
                     custom_type: None,
@@ -338,9 +343,15 @@ impl From<SessionEntry> for Entry {
 fn legacy_from_block(b: PiContentBlock) -> ContentBlock {
     match b {
         PiContentBlock::Text { text } => ContentBlock::Text { text },
-        PiContentBlock::Image { .. } => ContentBlock::Text { text: "[image]".to_string() },
+        PiContentBlock::Image { .. } => ContentBlock::Text {
+            text: "[image]".to_string(),
+        },
         PiContentBlock::Thinking { thinking } => ContentBlock::Text { text: thinking },
-        PiContentBlock::ToolCall { id, name, arguments } => ContentBlock::ToolUse {
+        PiContentBlock::ToolCall {
+            id,
+            name,
+            arguments,
+        } => ContentBlock::ToolUse {
             id,
             name,
             input: arguments,
@@ -358,4 +369,5 @@ mod tests {
         let session: SessionEntry = entry.into();
         assert_eq!(session.id(), "01JABCDEFGH");
     }
-}pub type AgentMessage = provider::Message;
+}
+pub type AgentMessage = provider::Message;

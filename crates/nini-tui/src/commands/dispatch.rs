@@ -6,10 +6,10 @@
 //! for commands that persist). Each helper has unit tests in this
 //! module.
 
-use std::sync::Arc;
 use crate::commands::{build_status_lines, render_transcript_html};
 use crate::settings::SettingsManager;
 use crate::state::{AppState, RunMode, TranscriptLine};
+use std::sync::Arc;
 
 use super::registry::CommandId;
 use super::result::CommandResult;
@@ -896,7 +896,10 @@ fn cmd_compact(
     }
     let cut_at = total / 2;
     // Drain prefix out, convert TranscriptLine → legacy Entry.
-    let prefix_lines: Vec<_> = Arc::make_mut(&mut state.transcript_state).lines.drain(..cut_at).collect();
+    let prefix_lines: Vec<_> = Arc::make_mut(&mut state.transcript_state)
+        .lines
+        .drain(..cut_at)
+        .collect();
     let prefix_entries: Vec<Entry> = prefix_lines
         .iter()
         .enumerate()

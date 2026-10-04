@@ -217,11 +217,7 @@ pub trait Tool: Send + Sync {
 /// through unchanged. See `Tool::before()` for the contract.
 #[async_trait]
 pub trait BeforeExecute: Send + Sync {
-    async fn run(
-        &self,
-        args: Value,
-        ctx: &ToolContext,
-    ) -> Result<Option<Value>, ToolError>;
+    async fn run(&self, args: Value, ctx: &ToolContext) -> Result<Option<Value>, ToolError>;
 }
 
 /// v0.7 (M2) hook trait — runs AFTER `Tool::execute()` succeeds.
@@ -230,8 +226,7 @@ pub trait BeforeExecute: Send + Sync {
 /// contract.
 #[async_trait]
 pub trait AfterExecute: Send + Sync {
-    async fn run(&self, output: ToolOutput, ctx: &ToolContext)
-        -> Result<ToolOutput, ToolError>;
+    async fn run(&self, output: ToolOutput, ctx: &ToolContext) -> Result<ToolOutput, ToolError>;
 }
 
 /// Registry of tools, indexed by name.
@@ -329,11 +324,7 @@ impl Tool for WrappedTool {
     fn spec(&self) -> ToolSpec {
         self.inner.spec()
     }
-    async fn execute(
-        &self,
-        args: Value,
-        ctx: ToolContext,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
         self.inner.execute(args, ctx).await
     }
     fn before(&self) -> Option<Box<dyn BeforeExecute>> {
@@ -356,11 +347,7 @@ impl Tool for WrappedTool {
 struct ArcBoxAdapter(Arc<dyn BeforeExecute>);
 #[async_trait]
 impl BeforeExecute for ArcBoxAdapter {
-    async fn run(
-        &self,
-        args: Value,
-        ctx: &ToolContext,
-    ) -> Result<Option<Value>, ToolError> {
+    async fn run(&self, args: Value, ctx: &ToolContext) -> Result<Option<Value>, ToolError> {
         self.0.run(args, ctx).await
     }
 }
@@ -371,11 +358,7 @@ impl BeforeExecute for ArcBoxAdapter {
 pub struct ArcBoxAdapterBefore(pub Arc<dyn BeforeExecute>);
 #[async_trait]
 impl BeforeExecute for ArcBoxAdapterBefore {
-    async fn run(
-        &self,
-        args: Value,
-        ctx: &ToolContext,
-    ) -> Result<Option<Value>, ToolError> {
+    async fn run(&self, args: Value, ctx: &ToolContext) -> Result<Option<Value>, ToolError> {
         self.0.run(args, ctx).await
     }
 }
@@ -383,11 +366,7 @@ impl BeforeExecute for ArcBoxAdapterBefore {
 struct ArcBoxAdapterAfter(Arc<dyn AfterExecute>);
 #[async_trait]
 impl AfterExecute for ArcBoxAdapterAfter {
-    async fn run(
-        &self,
-        output: ToolOutput,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn run(&self, output: ToolOutput, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         self.0.run(output, ctx).await
     }
 }
@@ -396,11 +375,7 @@ impl AfterExecute for ArcBoxAdapterAfter {
 pub struct ArcBoxAdapterAfterTool(pub Arc<dyn AfterExecute>);
 #[async_trait]
 impl AfterExecute for ArcBoxAdapterAfterTool {
-    async fn run(
-        &self,
-        output: ToolOutput,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn run(&self, output: ToolOutput, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         self.0.run(output, ctx).await
     }
 }
@@ -483,7 +458,9 @@ mod system_prompt_tests {
     }
     #[async_trait]
     impl Tool for ContribTool {
-        fn name(&self) -> &'static str { self.name }
+        fn name(&self) -> &'static str {
+            self.name
+        }
         fn spec(&self) -> ToolSpec {
             ToolSpec {
                 name: self.name.into(),
@@ -491,11 +468,7 @@ mod system_prompt_tests {
                 input_schema: serde_json::json!({}),
             }
         }
-        async fn execute(
-            &self,
-            _a: Value,
-            _c: ToolContext,
-        ) -> Result<ToolOutput, ToolError> {
+        async fn execute(&self, _a: Value, _c: ToolContext) -> Result<ToolOutput, ToolError> {
             unreachable!("test tool not executed")
         }
         fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
@@ -619,7 +592,9 @@ mod system_prompt_tests {
         struct Plain;
         #[async_trait]
         impl Tool for Plain {
-            fn name(&self) -> &'static str { "plain" }
+            fn name(&self) -> &'static str {
+                "plain"
+            }
             fn spec(&self) -> ToolSpec {
                 ToolSpec {
                     name: "plain".into(),
@@ -627,11 +602,7 @@ mod system_prompt_tests {
                     input_schema: serde_json::json!({}),
                 }
             }
-            async fn execute(
-                &self,
-                _a: Value,
-                _c: ToolContext,
-            ) -> Result<ToolOutput, ToolError> {
+            async fn execute(&self, _a: Value, _c: ToolContext) -> Result<ToolOutput, ToolError> {
                 unreachable!()
             }
         }
@@ -668,7 +639,9 @@ mod tool_under_test {
     pub struct BashStub;
     #[async_trait]
     impl Tool for BashStub {
-        fn name(&self) -> &'static str { "bash" }
+        fn name(&self) -> &'static str {
+            "bash"
+        }
         fn spec(&self) -> ToolSpec {
             ToolSpec {
                 name: "bash".into(),
@@ -676,11 +649,7 @@ mod tool_under_test {
                 input_schema: serde_json::json!({}),
             }
         }
-        async fn execute(
-            &self,
-            _a: Value,
-            _c: ToolContext,
-        ) -> Result<ToolOutput, ToolError> {
+        async fn execute(&self, _a: Value, _c: ToolContext) -> Result<ToolOutput, ToolError> {
             unreachable!()
         }
         fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {

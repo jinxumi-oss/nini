@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -59,7 +59,8 @@ impl Tool for WriteTool {
                 .to_string(),
             guidelines: vec![
                 "For whole-file rewrites use write, not edit (which is for \
-                 targeted patches).".to_string(),
+                 targeted patches)."
+                    .to_string(),
                 "Creates parent directories as needed; do NOT mkdir \
                  beforehand."
                     .to_string(),

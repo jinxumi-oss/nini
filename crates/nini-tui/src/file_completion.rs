@@ -161,10 +161,7 @@ fn is_path_separator_boundary(b: u8) -> bool {
 /// Honors the module-level `MAX_DEPTH` and `SKIP_DIRS` constants. Results
 /// are NOT cached here — callers should pass a `CompletionCache` or wrap
 /// the call themselves when keystroke-frequency matters.
-pub fn search_files_as_struct<P: AsRef<Path>>(
-    dir: P,
-    prefix: &str,
-) -> Vec<FileEntry> {
+pub fn search_files_as_struct<P: AsRef<Path>>(dir: P, prefix: &str) -> Vec<FileEntry> {
     let dir = dir.as_ref();
     // Canonicalize so strip_prefix works when callers pass a relative
     // path (WalkDir yields absolute paths otherwise).
@@ -182,7 +179,9 @@ pub fn search_files_as_struct<P: AsRef<Path>>(
             break;
         }
         let abs = entry.path();
-        let Ok(rel) = abs.strip_prefix(&abs_dir) else { continue };
+        let Ok(rel) = abs.strip_prefix(&abs_dir) else {
+            continue;
+        };
         let rel_str = rel.to_string_lossy().to_string();
         if rel_str.is_empty() {
             // The root entry itself.
@@ -200,7 +199,10 @@ pub fn search_files_as_struct<P: AsRef<Path>>(
     results.sort_by(|a, b| match (a.is_dir, b.is_dir) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
-        _ => a.relative_path.to_lowercase().cmp(&b.relative_path.to_lowercase()),
+        _ => a
+            .relative_path
+            .to_lowercase()
+            .cmp(&b.relative_path.to_lowercase()),
     });
     results
 }
@@ -291,13 +293,15 @@ mod tests {
     #[test]
     fn extract_at_prefix_cursor_past_end() {
         // cursor may equal line.len() (end-of-line).
-        assert_eq!(extract_at_prefix_pair("@Car", 4), Some((0, "Car".to_string())));
+        assert_eq!(
+            extract_at_prefix_pair("@Car", 4),
+            Some((0, "Car".to_string()))
+        );
     }
 
     #[test]
     fn extract_at_prefix_pair_returns_offset() {
-        let (off, prefix) =
-            extract_at_prefix_pair("see @src/foo.rs", 15).expect("must extract");
+        let (off, prefix) = extract_at_prefix_pair("see @src/foo.rs", 15).expect("must extract");
         assert_eq!(off, 4);
         assert_eq!(prefix, "src/foo.rs");
     }

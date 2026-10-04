@@ -46,10 +46,7 @@ impl ExtensionLoader {
                 .and_then(|s| s.to_str())
                 .unwrap_or_default();
             // Accept the conventional extension suffixes.
-            let is_ext = matches!(
-                ext,
-                "so" | "dylib" | "dll" | "ext" | "nini_ext"
-            );
+            let is_ext = matches!(ext, "so" | "dylib" | "dll" | "ext" | "nini_ext");
             if !is_ext {
                 continue;
             }
@@ -69,7 +66,11 @@ impl ExtensionLoader {
                     format!("mtime-{secs}")
                 })
                 .unwrap_or_else(|| "0".to_string());
-            out.push(ExtensionInfo { name, path, version });
+            out.push(ExtensionInfo {
+                name,
+                path,
+                version,
+            });
         }
         Ok(out)
     }
@@ -80,10 +81,7 @@ impl ExtensionLoader {
     /// Extensions that fail to load are silently skipped. This matches
     /// pi's permissive behaviour: one broken extension should not
     /// break the whole toolchain.
-    pub fn load_all(
-        dir: &Path,
-        api: &mut dyn ExtensionAPI,
-    ) -> Vec<Arc<dyn Extension>> {
+    pub fn load_all(dir: &Path, api: &mut dyn ExtensionAPI) -> Vec<Arc<dyn Extension>> {
         let infos = match Self::discover(dir) {
             Ok(v) => v,
             Err(_) => return Vec::new(),
@@ -119,7 +117,8 @@ impl ExtensionLoader {
         // cast through `*mut c_void` so the function pointer doesn't
         // capture a non-static trait-object lifetime).
         type ActivateFn = unsafe extern "C" fn(*mut std::ffi::c_void);
-        let activate: libloading::Symbol<ActivateFn> = unsafe { lib.get(b"nini_ext_activate\0") }.ok()?;
+        let activate: libloading::Symbol<ActivateFn> =
+            unsafe { lib.get(b"nini_ext_activate\0") }.ok()?;
 
         // Each extension creates its own concrete Extension type. We
         // don't expose a stable FFI yet — extensions register commands
@@ -131,7 +130,6 @@ impl ExtensionLoader {
         unsafe { activate(api_ptr as *mut std::ffi::c_void) };
         Some(Arc::new(LoadedHandle::new(lib.clone())))
     }
-
 }
 
 /// Trivial extension handle returned by `load_one`. The real extension
@@ -182,7 +180,8 @@ mod tests {
 
     #[test]
     fn discover_on_missing_dir_returns_empty() {
-        let infos = ExtensionLoader::discover(std::path::Path::new("/nonexistent/path/xyz")).unwrap();
+        let infos =
+            ExtensionLoader::discover(std::path::Path::new("/nonexistent/path/xyz")).unwrap();
         assert!(infos.is_empty());
     }
 
@@ -194,11 +193,21 @@ mod tests {
         let (_temp, dir) = fake_extension_dir();
         struct NoopApi;
         impl crate::ExtensionAPI for NoopApi {
-            fn register_command(&mut self, _: &str, _: crate::CommandSpec, _: crate::CommandHandler) {}
+            fn register_command(
+                &mut self,
+                _: &str,
+                _: crate::CommandSpec,
+                _: crate::CommandHandler,
+            ) {
+            }
             fn register_tool(&mut self, _: Arc<dyn crate::Tool>) {}
             fn send_user_message(&self, _: &str) {}
-            fn get_active_model(&self) -> String { String::new() }
-            fn get_current_cwd(&self) -> PathBuf { PathBuf::new() }
+            fn get_active_model(&self) -> String {
+                String::new()
+            }
+            fn get_current_cwd(&self) -> PathBuf {
+                PathBuf::new()
+            }
             fn set_status(&self, _: &str) {}
         }
         let mut api = NoopApi;

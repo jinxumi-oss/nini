@@ -120,10 +120,7 @@ impl Widget for SelectorPanel {
         // Split inner into: [input field 1 row] [list n rows].
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(1),
-            ])
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
             .split(inner);
 
         // Input prompt.
@@ -156,8 +153,11 @@ impl Widget for SelectorPanel {
         }
 
         // Build the SelectList from the visible slice.
-        let visible_items: Vec<crate::components::select_list::SelectItem> =
-            self.visible.iter().map(|&i| self.items[i].clone()).collect();
+        let visible_items: Vec<crate::components::select_list::SelectItem> = self
+            .visible
+            .iter()
+            .map(|&i| self.items[i].clone())
+            .collect();
         let mut list = crate::components::select_list::SelectList::new(
             visible_items,
             list_area.height as usize,
@@ -178,11 +178,7 @@ impl Widget for SelectorPanel {
             "dim",
             "muted",
         );
-        let mut lines: Vec<RLine> = rendered
-            .lines
-            .into_iter()
-            .map(RLine::from)
-            .collect();
+        let mut lines: Vec<RLine> = rendered.lines.into_iter().map(RLine::from).collect();
         // Append (N/M) scroll indicator if items overflow.
         if let Some(scroll_spans) = list.scroll_info_span(&self.theme, "muted") {
             lines.push(RLine::from(scroll_spans));
@@ -199,7 +195,9 @@ pub trait SelectorState: Any + Send + std::fmt::Debug {
     fn state_set_selected(&mut self, idx: usize);
     fn state_on_select(&mut self) -> SelectorOutcome;
     /// Optional: read the current fuzzy-filter query. Default empty.
-    fn state_query(&self) -> String { String::new() }
+    fn state_query(&self) -> String {
+        String::new()
+    }
     /// Optional: set the fuzzy-filter query. Default no-op.
     fn state_set_query(&mut self, _q: String) {}
     /// Back-compat alias used by the runtime layer's downcast helper.
@@ -344,11 +342,7 @@ mod tests {
         use ratatui::Terminal;
         let backend = TestBackend::new(60, 10);
         let mut term = Terminal::new(backend).unwrap();
-        let items = vec![
-            item("a", "apple"),
-            item("b", "banana"),
-            item("c", "cherry"),
-        ];
+        let items = vec![item("a", "apple"), item("b", "banana"), item("c", "cherry")];
         let visible = vec![0usize, 1, 2];
         term.draw(|f| {
             render_selector_panel(

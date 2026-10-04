@@ -8,7 +8,9 @@ pub enum AppEvent {
 pub struct EventBus;
 
 impl EventBus {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
     pub fn emit(&self, _event: AppEvent) {}
 }
 

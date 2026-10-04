@@ -33,10 +33,7 @@ impl ThinkingSelector {
                 is_current: *id == current_id,
             })
             .collect();
-        let selected = items
-            .iter()
-            .position(|i| i.is_current)
-            .unwrap_or(0);
+        let selected = items.iter().position(|i| i.is_current).unwrap_or(0);
         Self {
             result: None,
             items,
@@ -46,10 +43,18 @@ impl ThinkingSelector {
 }
 
 impl SelectorState for ThinkingSelector {
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
-    fn state_items(&self) -> Vec<SelectorItem> { self.items.clone() }
-    fn state_title(&self) -> String { "Thinking level".to_string() }
-    fn state_selected(&self) -> usize { self.selected }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn state_items(&self) -> Vec<SelectorItem> {
+        self.items.clone()
+    }
+    fn state_title(&self) -> String {
+        "Thinking level".to_string()
+    }
+    fn state_selected(&self) -> usize {
+        self.selected
+    }
     fn state_set_selected(&mut self, idx: usize) {
         if idx < self.items.len() {
             self.selected = idx;

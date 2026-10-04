@@ -7,9 +7,9 @@
 //! v0.8 because it requires cross-task async user confirmation
 //! (see `docs/plans/v0.7-hook-parity.md` §M2).
 
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
-use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustLevel {
@@ -20,7 +20,9 @@ pub enum TrustLevel {
 }
 
 impl Default for TrustLevel {
-    fn default() -> Self { Self::Ask }
+    fn default() -> Self {
+        Self::Ask
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -36,15 +38,25 @@ impl TrustDecision {
     // renamed, because the API is consumed at multiple call sites
     // (see dispatch.rs `complete_trust`).
     #[allow(non_upper_case_globals)]
-    pub const Trusted: Self = Self { level: TrustLevel::Trusted };
+    pub const Trusted: Self = Self {
+        level: TrustLevel::Trusted,
+    };
     #[allow(non_upper_case_globals)]
-    pub const Distrusted: Self = Self { level: TrustLevel::Distrusted };
+    pub const Distrusted: Self = Self {
+        level: TrustLevel::Distrusted,
+    };
     #[allow(non_upper_case_globals)]
-    pub const Ask: Self = Self { level: TrustLevel::Ask };
+    pub const Ask: Self = Self {
+        level: TrustLevel::Ask,
+    };
     #[allow(non_upper_case_globals)]
-    pub const Never: Self = Self { level: TrustLevel::Never };
+    pub const Never: Self = Self {
+        level: TrustLevel::Never,
+    };
 
-    pub fn new(level: TrustLevel) -> Self { Self { level } }
+    pub fn new(level: TrustLevel) -> Self {
+        Self { level }
+    }
 
     /// v0.7 (M2) — collapse the 4-state trust model to a 2-state
     /// decision suitable for the before-execute hook. The rule:
@@ -100,7 +112,9 @@ impl ProjectTrustStore {
         Some(std::path::PathBuf::from(".pi/agent/trust.json"))
     }
 
-    pub fn save(&self, _path: &Path) -> Result<(), std::io::Error> { Ok(()) }
+    pub fn save(&self, _path: &Path) -> Result<(), std::io::Error> {
+        Ok(())
+    }
     pub fn clear(&mut self, _cwd: &str) {}
 
     pub fn set(&mut self, cwd: &str, decision: TrustDecision) {
@@ -109,10 +123,7 @@ impl ProjectTrustStore {
 
     /// v0.7 (M2) — look up the per-cwd decision.
     pub fn get_for_cwd(&self, cwd: &str) -> TrustDecision {
-        self.cwd_map
-            .get(cwd)
-            .copied()
-            .unwrap_or(self.decision)
+        self.cwd_map.get(cwd).copied().unwrap_or(self.decision)
     }
 
     /// v0.7 (M2) — combined per-cwd + per-tool decision.
@@ -174,10 +185,7 @@ mod tests {
     fn to_binary_collapses_four_to_two() {
         assert_eq!(TrustDecision::Trusted.to_binary(), BinaryDecision::Allow);
         assert_eq!(TrustDecision::Ask.to_binary(), BinaryDecision::Allow);
-        assert_eq!(
-            TrustDecision::Distrusted.to_binary(),
-            BinaryDecision::Deny
-        );
+        assert_eq!(TrustDecision::Distrusted.to_binary(), BinaryDecision::Deny);
         assert_eq!(TrustDecision::Never.to_binary(), BinaryDecision::Deny);
     }
 

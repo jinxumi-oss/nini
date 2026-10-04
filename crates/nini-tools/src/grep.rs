@@ -4,12 +4,12 @@
 //! `.gitignore`-aware file walking. Output is `file:line:content` per line.
 
 use async_trait::async_trait;
-use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
+use ignore::WalkBuilder;
 use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolSpec, ToolSystemPrompt};
 use regex::Regex;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 #[derive(Debug, Deserialize)]
@@ -146,7 +146,8 @@ impl Tool for GrepTool {
             snippet: "Regex search file CONTENTS (not file names).".into(),
             guidelines: vec![
                 "Use `include` to scope to specific file types (e.g. `*.rs`) \
-                 — unrestricted searches are slow.".into(),
+                 — unrestricted searches are slow."
+                    .into(),
                 "For finding files by NAME (not contents), use `find` instead.".into(),
             ],
         })
@@ -169,7 +170,8 @@ mod tests {
         assert!(
             word_count <= 10,
             "grep snippet too long: {} words — {}",
-            word_count, contrib.snippet,
+            word_count,
+            contrib.snippet,
         );
         let spec = tool.spec();
         assert!(

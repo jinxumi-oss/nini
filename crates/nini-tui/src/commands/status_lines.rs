@@ -8,14 +8,20 @@ use crate::state::AppState;
 /// line per row). Used by `/status` and the `nini info` debug path.
 pub fn build_status_lines(state: &AppState) -> Vec<String> {
     let mut out = Vec::new();
-    let cwd = state.session_state.cwd
+    let cwd = state
+        .session_state
+        .cwd
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "<unset>".to_string());
-    let branch = state.session_state.git_branch
+    let branch = state
+        .session_state
+        .git_branch
         .as_deref()
         .unwrap_or("<not a git repo>");
-    let sid = state.session_state.session_id
+    let sid = state
+        .session_state
+        .session_id
         .as_deref()
         .unwrap_or("<no session>");
     let transcript_lines = state.transcript_state.lines.len();
@@ -27,7 +33,8 @@ pub fn build_status_lines(state: &AppState) -> Vec<String> {
     out.push(format!("tokens     : in={in_tok} out={out_tok}"));
     out.push(format!("cost       : ${:.4}", state.run_state.cost_usd));
     if state.run_state.context_window > 0 {
-        let pct = (state.run_state.context_used as f64 / state.run_state.context_window as f64) * 100.0;
+        let pct =
+            (state.run_state.context_used as f64 / state.run_state.context_window as f64) * 100.0;
         out.push(format!(
             "context    : {:.0}% of {} (used {})",
             pct, state.run_state.context_window, state.run_state.context_used

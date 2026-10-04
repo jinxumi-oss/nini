@@ -85,11 +85,7 @@ mod tests {
     fn render_fills_full_width() {
         let b = DynamicBorder::new("borderMuted");
         let line = b.render(40, &Theme::dark());
-        let joined: String = line
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined.chars().count(), 40);
         assert!(joined.chars().all(|c| c == '\u{2500}'));
     }
@@ -98,11 +94,7 @@ mod tests {
     fn render_min_width_is_one() {
         let b = DynamicBorder::new("borderMuted");
         let line = b.render(0, &Theme::dark());
-        let joined: String = line
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined.chars().count(), 1);
     }
 
@@ -110,11 +102,7 @@ mod tests {
     fn render_with_label_centers_text() {
         let b = DynamicBorder::new("mdCodeBlockBorder");
         let line = b.render_with_label(20, "rust", &Theme::dark());
-        let joined: String = line
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         // Format: "─── rust ──────────" — dashed sides around centered label
         assert!(joined.starts_with('\u{2500}'));
         assert!(joined.contains(" rust "));

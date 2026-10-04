@@ -11,7 +11,7 @@
 
 use std::any::Any;
 
-use crate::commands::{REGISTRY, by_name};
+use crate::commands::{by_name, REGISTRY};
 use crate::selector::{SelectorItem, SelectorOutcome, SelectorState};
 use crate::theme::Theme;
 
@@ -108,16 +108,17 @@ impl SelectorState for HelpSelector {
 /// Render the right-pane detail for the currently-highlighted command.
 /// Pulled out so the runtime can render this alongside the selector list
 /// if there's room on wide terminals.
-pub fn render_detail_lines(theme: &Theme, detail: &(String, String, Option<&str>)) -> Vec<ratatui::text::Line<'static>> {
+pub fn render_detail_lines(
+    theme: &Theme,
+    detail: &(String, String, Option<&str>),
+) -> Vec<ratatui::text::Line<'static>> {
     use ratatui::style::Modifier;
     use ratatui::text::{Line, Span};
     let (name, description, hint) = detail;
     let mut out = Vec::new();
     out.push(Line::from(Span::styled(
         name.clone(),
-        theme
-            .fg_style("accent")
-            .add_modifier(Modifier::BOLD),
+        theme.fg_style("accent").add_modifier(Modifier::BOLD),
     )));
     out.push(Line::from(Span::styled(
         description.clone(),

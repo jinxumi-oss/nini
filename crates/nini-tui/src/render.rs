@@ -26,11 +26,11 @@ use crate::rich::{
 use crate::selector::{SelectorItem, SelectorPanel};
 use crate::state::{AppState, RunMode, TranscriptLine};
 use crate::theme::Theme;
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as RLine, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap};
+use ratatui::Frame;
 
 /// Render the full TUI frame.
 pub fn render_frame(f: &mut Frame, state: &AppState) {
@@ -44,14 +44,16 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     // When a completion popup is showing, we steal one row from the
     // transcript area so the popup floats above the prompt.
     let popup_height = if state
-        .ui_state.completion
+        .ui_state
+        .completion
         .as_ref()
         .map(|p| !p.is_empty())
         .unwrap_or(false)
     {
         // Up to 8 lines + 2 (border)
         let n = state
-            .ui_state.completion
+            .ui_state
+            .completion
             .as_ref()
             .map(|p| p.items.len())
             .unwrap_or(0);
@@ -66,10 +68,7 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
         // newlines + ceil(first_line_width / inner_width), then 2
         // for top/bottom border, clamped to [3, area.height/3].
         let padding_x: u16 = 1;
-        let inner_width = area
-            .width
-            .saturating_sub(2 + 2 * padding_x + 2)
-            .max(1) as usize;
+        let inner_width = area.width.saturating_sub(2 + 2 * padding_x + 2).max(1) as usize;
         let explicit_lines = state.input.text.matches('\n').count() as u16;
         let first_line_width = state
             .input
@@ -96,7 +95,11 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2), // footer (Pi-style 2-row: pwd line + stats/model line)
-            Constraint::Length(if state.ui_state.search.is_some() { 1 } else { 0 }), // search bar (only when active)
+            Constraint::Length(if state.ui_state.search.is_some() {
+                1
+            } else {
+                0
+            }), // search bar (only when active)
             Constraint::Min(3),    // transcript
             Constraint::Length(if popup_height > 0 { popup_height } else { 3 }), // prompt OR popup
             Constraint::Length(1), // key hints
@@ -129,7 +132,8 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     };
     render_transcript(f, state, theme, transcript_chunk);
     if state
-        .ui_state.completion
+        .ui_state
+        .completion
         .as_ref()
         .map(|p| !p.is_empty())
         .unwrap_or(false)
@@ -149,8 +153,6 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
 }
 
 fn render_footer(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    
-
     // v0.8: Pi-style 2-line footer.
     //   Line 1: cwd ⎇ branch • [session_id]                (env context, dim)
     //   Line 2: " nini " badge • phase • diff • ctx% • tokens • cost  ...............  (provider) model • thinking • [theme]
@@ -180,10 +182,7 @@ fn render_pwd_line(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     let mut pushed = 0;
 
     if let Some(cwd) = &state.session_state.cwd {
-        spans.push(Span::styled(
-            shorten_home(cwd),
-            theme.fg_style("dim"),
-        ));
+        spans.push(Span::styled(shorten_home(cwd), theme.fg_style("dim")));
         pushed += 1;
     }
     if let Some(branch) = &state.session_state.git_branch {
@@ -267,9 +266,8 @@ fn render_stats_line(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
 
     // Context-window segment (Pi-style: "ctx 42% [████░░░░]").
     if state.run_state.context_window > 0 {
-        let pct = (state.run_state.context_used as f64
-            / state.run_state.context_window as f64)
-            * 100.0;
+        let pct =
+            (state.run_state.context_used as f64 / state.run_state.context_window as f64) * 100.0;
         let bar = context_bar(pct);
         let color_name = if pct > 90.0 {
             "error"
@@ -333,17 +331,9 @@ fn render_stats_line(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
             theme.fg_style("dim"),
         ));
     }
-    if let Some(name) = state
-        .ui_state
-        .theme_name
-        .as_ref()
-        .filter(|n| !n.is_empty())
-    {
+    if let Some(name) = state.ui_state.theme_name.as_ref().filter(|n| !n.is_empty()) {
         right.push(Span::raw("  "));
-        right.push(Span::styled(
-            format!("[{name}]"),
-            theme.fg_style("accent"),
-        ));
+        right.push(Span::styled(format!("[{name}]"), theme.fg_style("accent")));
     }
 
     // ---- Compose with right-alignment ----
@@ -376,7 +366,11 @@ fn context_bar(pct: f64) -> String {
     let filled = ((pct / 100.0) * width as f64).round() as usize;
     let filled = filled.min(width);
     let empty = width - filled;
-    format!("[{}{}]", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty))
+    format!(
+        "[{}{}]",
+        "\u{2588}".repeat(filled),
+        "\u{2591}".repeat(empty)
+    )
 }
 
 /// Format `1234567` as `"1.2M"` for compact status display.
@@ -406,7 +400,9 @@ fn shorten_home(path: &std::path::Path) -> String {
 fn render_search_bar(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     use ratatui::style::Modifier;
     use ratatui::text::{Line, Span};
-    let Some(search) = &state.ui_state.search else { return };
+    let Some(search) = &state.ui_state.search else {
+        return;
+    };
     let total = search.matches.len();
     let current = if total == 0 { 0 } else { search.current + 1 };
     let counter = if total == 0 {
@@ -418,10 +414,7 @@ fn render_search_bar(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         "/".to_string(),
         theme.fg_style("accent").add_modifier(Modifier::BOLD),
     );
-    let query = Span::styled(
-        search.query.clone(),
-        theme.fg_style("text"),
-    );
+    let query = Span::styled(search.query.clone(), theme.fg_style("text"));
     let counter_span = Span::styled(
         format!("  {counter}"),
         theme.fg_style(if total == 0 { "error" } else { "dim" }),
@@ -462,10 +455,17 @@ fn wrap_thinking_block(text: &str) -> Vec<String> {
             if rest.is_empty() {
                 break;
             }
-            let (prefix, pw) = if first { (FIRST_PREFIX, FIRST_W) } else { (CONT_PREFIX, CONT_W) };
+            let (prefix, pw) = if first {
+                (FIRST_PREFIX, FIRST_W)
+            } else {
+                (CONT_PREFIX, CONT_W)
+            };
             first = false;
             let total_w: usize = pw
-                + rest.chars().map(|c| UnicodeWidthChar::width(c).unwrap_or(0)).sum::<usize>();
+                + rest
+                    .chars()
+                    .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+                    .sum::<usize>();
             if total_w <= INNER_MAX {
                 out.push(format!("{prefix}{rest}"));
                 break;
@@ -565,7 +565,8 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 // Single line bigger than entire visible area — tail-truncate.
                 let mut line_items = items_for_line(&lines[i], theme, area.width as usize);
                 let start = line_items.len() - budget;
-                visible_items = line_items.split_off(start)
+                visible_items = line_items
+                    .split_off(start)
                     .into_iter()
                     .chain(visible_items.into_iter())
                     .collect();
@@ -598,7 +599,8 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
             let take = take_from_line.min(budget);
             let mut line_items = items_for_line(&lines[i], theme, area.width as usize);
             let start = line_items.len() - take;
-            visible_items = line_items.split_off(start)
+            visible_items = line_items
+                .split_off(start)
                 .into_iter()
                 .chain(visible_items.into_iter())
                 .collect();
@@ -644,8 +646,8 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         let x = area.x + area.width.saturating_sub(width);
         let y = area.y + area.height.saturating_sub(1);
         let ind_area = Rect::new(x, y, width, 1);
-        let ind = Paragraph::new(Span::styled(label, style))
-            .alignment(ratatui::layout::Alignment::Right);
+        let ind =
+            Paragraph::new(Span::styled(label, style)).alignment(ratatui::layout::Alignment::Right);
         f.render_widget(ind, ind_area);
     }
 }
@@ -676,13 +678,16 @@ fn items_for_line(
             .map(|line| {
                 ListItem::new(RLine::from(Span::styled(
                     line,
-                    theme
-                        .fg_style("dim")
-                        .add_modifier(Modifier::ITALIC),
+                    theme.fg_style("dim").add_modifier(Modifier::ITALIC),
                 )))
             })
             .collect(),
-        TranscriptLine::ToolCall { id: _, name, args, collapsed } => {
+        TranscriptLine::ToolCall {
+            id: _,
+            name,
+            args,
+            collapsed,
+        } => {
             let lines = render_tool_call(name, args, theme);
             let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
             if *collapsed {
@@ -693,12 +698,23 @@ fn items_for_line(
             }
             out
         }
-        TranscriptLine::ToolResult { id: _, name, ok, content, collapsed, duration_ms } => {
+        TranscriptLine::ToolResult {
+            id: _,
+            name,
+            ok,
+            content,
+            collapsed,
+            duration_ms,
+        } => {
             // v0.8.7 (ux-002): pass the actual area width so per-line
             // truncation accounts for the visible terminal width. When
             // the renderer is called outside a Frame (tests), area.width
             // is 0 and we fall back to the legacy 200-byte budget.
-            let max_w = if area_width > 4 { Some(area_width) } else { None };
+            let max_w = if area_width > 4 {
+                Some(area_width)
+            } else {
+                None
+            };
             let lines = render_tool_result(name, *ok, content, *duration_ms, theme, max_w);
             let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
             if *collapsed {
@@ -724,15 +740,8 @@ fn items_for_line(
             collapsed,
             ..
         } => {
-            let lines = render_bash_execution(
-                cmd,
-                output,
-                stderr,
-                *ok,
-                *exit_code,
-                *duration_ms,
-                theme,
-            );
+            let lines =
+                render_bash_execution(cmd, output, stderr, *ok, *exit_code, *duration_ms, theme);
             let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
             if *collapsed {
                 if !out.is_empty() {
@@ -745,7 +754,6 @@ fn items_for_line(
     }
 }
 
-
 /// v0.8.4 (ux-001): cold-start welcome card. Renders into the empty
 /// transcript area with the title centred on the vertical midline and
 /// a short list of example commands. Avoids the dead-space look that
@@ -756,9 +764,7 @@ fn render_welcome_card(f: &mut Frame, theme: &Theme, area: Rect) {
 
     let title = Paragraph::new(Span::styled(
         " nini \u{2014} interactive coding agent ".to_string(),
-        theme
-            .fg_style("accent")
-            .add_modifier(Modifier::BOLD),
+        theme.fg_style("accent").add_modifier(Modifier::BOLD),
     ))
     .alignment(Alignment::Center);
 
@@ -787,10 +793,7 @@ fn render_welcome_card(f: &mut Frame, theme: &Theme, area: Rect) {
             key.to_string(),
             theme.fg_style("keyHint").add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled(
-            format!("  {desc}"),
-            theme.fg_style("muted"),
-        ));
+        spans.push(Span::styled(format!("  {desc}"), theme.fg_style("muted")));
         example_lines.push(RLine::from(spans));
     }
     let examples_widget = Paragraph::new(example_lines).alignment(Alignment::Center);
@@ -845,8 +848,16 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
         line_widgets.push(RLine::from(Span::raw(" ")));
     } else {
         for (i, l) in lines.iter().enumerate() {
-            let prefix_char = if is_first_line(i) { prompt_symbol } else { "❯" };
-            let prefix_style = if is_first_line(i) { prompt_style_bold } else { prompt_style_dim };
+            let prefix_char = if is_first_line(i) {
+                prompt_symbol
+            } else {
+                "❯"
+            };
+            let prefix_style = if is_first_line(i) {
+                prompt_style_bold
+            } else {
+                prompt_style_dim
+            };
             line_widgets.push(RLine::from(vec![
                 Span::styled(format!("{prefix_char} "), prefix_style),
                 Span::raw(l.as_str()),
@@ -874,10 +885,13 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
         && area.width >= 2 + padding_x + 2
     {
         let left_inset: u16 = 1 /* border */ + padding_x + 2 /* "❯ " */;
-        let inner_width = area.width.saturating_sub(1 /* right border */ + padding_x + left_inset);
+        let inner_width = area
+            .width
+            .saturating_sub(1 /* right border */ + padding_x + left_inset);
         let cursor_x = area.x + left_inset + (cursor_char as u16 % inner_width.max(1));
         let line_idx = (cursor_char as u16) / inner_width.max(1);
-        let cursor_y = area.y + 1 /* top border */ + line_idx.min(area.height.saturating_sub(2) - 1);
+        let cursor_y =
+            area.y + 1 /* top border */ + line_idx.min(area.height.saturating_sub(2) - 1);
         f.set_cursor_position((cursor_x, cursor_y));
     }
 }
@@ -931,14 +945,8 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
             (" Ctrl+L ", "model"),
             (" Ctrl+C ", "quit"),
         ],
-        RunMode::Running => vec![
-            (" Esc ", "abort"),
-            (" Ctrl+C ", "force-quit"),
-        ],
-        RunMode::Aborted => vec![
-            (" Enter ", "retry"),
-            (" Esc ", "clear"),
-        ],
+        RunMode::Running => vec![(" Esc ", "abort"), (" Ctrl+C ", "force-quit")],
+        RunMode::Aborted => vec![(" Enter ", "retry"), (" Esc ", "clear")],
         RunMode::Quitting => vec![(" Ctrl+C ", "force-quit")],
     };
 
@@ -985,9 +993,7 @@ fn render_completion_popup(f: &mut Frame, state: &AppState, theme: &Theme, area:
                     .fg(Color::Black)
                     .add_modifier(Modifier::BOLD)
             } else {
-                theme
-                    .fg_style("accent")
-                    .add_modifier(Modifier::BOLD)
+                theme.fg_style("accent").add_modifier(Modifier::BOLD)
             };
             let mut spans = vec![Span::styled(format!("/{}", item.name), name_style)];
             if let Some(hint) = &item.argument_hint {
@@ -1170,7 +1176,10 @@ mod status_tests {
         let mut state = AppState::new("m");
         state.ui_state.theme_name = Some("light".to_string());
         let text = footer_text(&state);
-        assert!(text.contains("[light]"), "expected [light] pill, got: {text}");
+        assert!(
+            text.contains("[light]"),
+            "expected [light] pill, got: {text}"
+        );
     }
 
     #[test]
@@ -1179,8 +1188,10 @@ mod status_tests {
         let mut state = AppState::new("m");
         let text = footer_text(&state);
         // No [theme] pill when theme_name is None.
-        assert!(!text.contains("[light]") && !text.contains("[dark]"),
-            "unexpected theme pill: {text}");
+        assert!(
+            !text.contains("[light]") && !text.contains("[dark]"),
+            "unexpected theme pill: {text}"
+        );
     }
 
     #[test]
@@ -1190,8 +1201,10 @@ mod status_tests {
         state.model_state.provider = Some("anthropic".to_string());
         let text = footer_text(&state);
         // v0.8: Pi-style (provider) prefix on the stats line.
-        assert!(text.contains("(anthropic)"),
-                "expected (anthropic) prefix, got: {text}");
+        assert!(
+            text.contains("(anthropic)"),
+            "expected (anthropic) prefix, got: {text}"
+        );
         assert!(text.contains("MiniMax-M3"));
     }
 
@@ -1201,8 +1214,10 @@ mod status_tests {
         let mut state = AppState::new("m");
         let text = footer_text(&state);
         // No (provider) prefix when state.model_state.provider is None.
-        assert!(!text.contains("(anthropic)") && !text.contains("(openai)"),
-                "unexpected provider prefix: {text}");
+        assert!(
+            !text.contains("(anthropic)") && !text.contains("(openai)"),
+            "unexpected provider prefix: {text}"
+        );
     }
 
     #[test]
@@ -1212,8 +1227,10 @@ mod status_tests {
         state.model_state.thinking_level = Some("medium".to_string());
         let text = footer_text(&state);
         // v0.8: Pi-style '• level' on the stats line.
-        assert!(text.contains("• medium"),
-                "expected '• medium' indicator, got: {text}");
+        assert!(
+            text.contains("• medium"),
+            "expected '• medium' indicator, got: {text}"
+        );
     }
 
     // ---- new Pi-style 2-line layout assertions ----
@@ -1228,7 +1245,10 @@ mod status_tests {
         let line = pwd_line_text(&state);
         assert!(line.contains("~/nini"), "expected tilde-path, got: {line}");
         assert!(line.contains("⎇ main"), "expected git branch, got: {line}");
-        assert!(line.contains("[a1b2c3d4]"), "expected session id pill, got: {line}");
+        assert!(
+            line.contains("[a1b2c3d4]"),
+            "expected session id pill, got: {line}"
+        );
     }
 
     #[test]
@@ -1248,8 +1268,10 @@ mod status_tests {
         let mut state = AppState::new("m");
         state.session_state.cwd = Some(std::path::PathBuf::from("/tmp"));
         let line = pwd_line_text(&state);
-        assert!(line.contains("no session"),
-                "expected placeholder, got: {line}");
+        assert!(
+            line.contains("no session"),
+            "expected placeholder, got: {line}"
+        );
     }
 
     #[test]
@@ -1262,8 +1284,10 @@ mod status_tests {
         // The " nini " badge is leftmost; the model is rightmost.
         let nini_pos = line.find(" nini ").expect("brand badge missing");
         let model_pos = line.rfind("MiniMax-M3").expect("model missing");
-        assert!(model_pos > nini_pos,
-                "model should appear to the right of the badge, got: {line}");
+        assert!(
+            model_pos > nini_pos,
+            "model should appear to the right of the badge, got: {line}"
+        );
         // Provider + model + thinking should all appear on the stats line.
         assert!(line.contains("(anthropic)"));
         assert!(line.contains("• medium"));
@@ -1274,8 +1298,10 @@ mod status_tests {
         use crate::state::AppState;
         let mut state = AppState::new("m");
         let line = stats_line_text(&state);
-        assert!(!line.contains('$'),
-                "cost should be hidden when cost_usd == 0, got: {line}");
+        assert!(
+            !line.contains('$'),
+            "cost should be hidden when cost_usd == 0, got: {line}"
+        );
     }
 
     #[test]
@@ -1296,8 +1322,10 @@ mod status_tests {
         let mut state = AppState::new("m");
         state.run_state.mode = RunMode::Running;
         let text = footer_text(&state);
-        assert!(text.contains("working"),
-                "running mode should show 'working' phase, got: {text}");
+        assert!(
+            text.contains("working"),
+            "running mode should show 'working' phase, got: {text}"
+        );
     }
 
     #[test]
@@ -1306,8 +1334,10 @@ mod status_tests {
         let mut state = AppState::new("m");
         state.ui_state.last_diff = Some((3, 1));
         let line = stats_line_text(&state);
-        assert!(line.contains("[edit +3 -1]"),
-                "expected edit diff pill, got: {line}");
+        assert!(
+            line.contains("[edit +3 -1]"),
+            "expected edit diff pill, got: {line}"
+        );
     }
 
     #[test]
@@ -1316,8 +1346,12 @@ mod status_tests {
         let state = AppState::new("m");
         let text = footer_text(&state);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2,
-                  "footer must render exactly 2 rows, got {}: {:?}",
-                  lines.len(), lines);
+        assert_eq!(
+            lines.len(),
+            2,
+            "footer must render exactly 2 rows, got {}: {:?}",
+            lines.len(),
+            lines
+        );
     }
 }

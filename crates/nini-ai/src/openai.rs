@@ -65,62 +65,62 @@ impl Provider for OpenAiProvider {
         let api_key = self.api_key.clone();
 
         Box::pin(try_stream! {
-            let body = build_request_body(&req)?;
-            let url = format!("{base_url}{}/chat/completions",
-    if base_url.ends_with("/v1") { "" } else { "/v1" });
-            let response = client
-                .post(&url)
-                .bearer_auth(&api_key)
-                .header("content-type", "application/json")
-                .body(body)
-                .send()
-                .await?;
+                let body = build_request_body(&req)?;
+                let url = format!("{base_url}{}/chat/completions",
+        if base_url.ends_with("/v1") { "" } else { "/v1" });
+                let response = client
+                    .post(&url)
+                    .bearer_auth(&api_key)
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .send()
+                    .await?;
 
-            let status = response.status();
-            if status.is_success() {
-                let mut byte_stream = response.bytes_stream();
-                let mut parser = SseParser::new();
-                let mut state = StreamState::default();
+                let status = response.status();
+                if status.is_success() {
+                    let mut byte_stream = response.bytes_stream();
+                    let mut parser = SseParser::new();
+                    let mut state = StreamState::default();
 
-                while let Some(chunk_result) = byte_stream.next().await {
-                    let chunk = chunk_result?;
-                    for sse_event in parser.feed(&chunk).map_err(|e| ProviderError::Sse(e.to_string()))? {
-                        if let Some(ev) = translate_sse(&sse_event, &mut state) {
+                    while let Some(chunk_result) = byte_stream.next().await {
+                        let chunk = chunk_result?;
+                        for sse_event in parser.feed(&chunk).map_err(|e| ProviderError::Sse(e.to_string()))? {
+                            if let Some(ev) = translate_sse(&sse_event, &mut state) {
+                                yield ev;
+                            }
+                        }
+                    }
+                    for ev in parser.flush() {
+                        if let Some(ev) = translate_sse(&ev, &mut state) {
                             yield ev;
                         }
                     }
-                }
-                for ev in parser.flush() {
-                    if let Some(ev) = translate_sse(&ev, &mut state) {
+                    // v0.8.4 (bugfix): the previous version finished here,
+                    // so the agent loop saw `None` from the stream and
+                    // broke out *without* ever observing a
+                    // `MessageStop`. With no Stop event, agent.rs had no
+                    // way to know the model had finished its turn: tool
+                    // calls stayed half-built (no Stop line in the
+                    // transcript), and on the next iteration the agent
+                    // returned Idle without the model ever producing a
+                    // visible assistant message after running a tool.
+                    //
+                    // `finalize` flushes any remaining queued
+                    // ToolCallStop bodies AND emits the terminal
+                    // MessageStop with the recorded finish_reason (or
+                    // "stop" as a default if the model never sent one).
+                    // Yield every event it produces so the agent loop
+                    // sees the full turn boundary.
+                    for ev in finalize(&mut state, None) {
                         yield ev;
                     }
+                } else {
+                    Err(ProviderError::Api {
+                        status: status.as_u16(),
+                        message: format!("request failed: {}", status),
+                    })?;
                 }
-                // v0.8.4 (bugfix): the previous version finished here,
-                // so the agent loop saw `None` from the stream and
-                // broke out *without* ever observing a
-                // `MessageStop`. With no Stop event, agent.rs had no
-                // way to know the model had finished its turn: tool
-                // calls stayed half-built (no Stop line in the
-                // transcript), and on the next iteration the agent
-                // returned Idle without the model ever producing a
-                // visible assistant message after running a tool.
-                //
-                // `finalize` flushes any remaining queued
-                // ToolCallStop bodies AND emits the terminal
-                // MessageStop with the recorded finish_reason (or
-                // "stop" as a default if the model never sent one).
-                // Yield every event it produces so the agent loop
-                // sees the full turn boundary.
-                for ev in finalize(&mut state, None) {
-                    yield ev;
-                }
-            } else {
-                Err(ProviderError::Api {
-                    status: status.as_u16(),
-                    message: format!("request failed: {}", status),
-                })?;
-            }
-        })
+            })
     }
 }
 
@@ -306,7 +306,11 @@ fn hold_back(work: &str, i: usize) -> String {
         None => {
             let keep = 7;
             let start = work.len().saturating_sub(keep);
-            if start >= i { work[start..].to_string() } else { String::new() }
+            if start >= i {
+                work[start..].to_string()
+            } else {
+                String::new()
+            }
         }
     }
 }
@@ -387,11 +391,7 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
                         // subsequent chunks arrive as plain deltas,
                         // Continuation accumulates, finalize emits
                         // Stop from `input_json`.
-                        let initial_args = tc
-                            .function
-                            .arguments
-                            .clone()
-                            .unwrap_or_default();
+                        let initial_args = tc.function.arguments.clone().unwrap_or_default();
                         state.tool_calls.insert(
                             tc.index,
                             BuildingToolCall {
@@ -448,7 +448,12 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
             // ToolCallStart) drains the queued body into a Stop event
             // and marks the index emitted, so the streaming path's
             // Continuation does not re-append the same body.
-            if let Some((idx, input_json)) = state.pending_stop_args.iter().next().map(|(k, v)| (*k, v.clone())) {
+            if let Some((idx, input_json)) = state
+                .pending_stop_args
+                .iter()
+                .next()
+                .map(|(k, v)| (*k, v.clone()))
+            {
                 state.pending_stop_args.remove(&idx);
                 state.pending_stop_emitted.insert(idx);
                 if let Some(call) = state.tool_calls.get(&idx) {
@@ -698,24 +703,30 @@ mod url_construction_tests {
     #[test]
     fn appends_v1_when_missing() {
         let base_url = "https://api.openai.com";
-        let url = format!("{base_url}{}/chat/completions",
-            if base_url.ends_with("/v1") { "" } else { "/v1" });
+        let url = format!(
+            "{base_url}{}/chat/completions",
+            if base_url.ends_with("/v1") { "" } else { "/v1" }
+        );
         assert_eq!(url, "https://api.openai.com/v1/chat/completions");
     }
 
     #[test]
     fn skips_v1_when_already_present() {
         let base_url = "https://m.aiio.chat/v1";
-        let url = format!("{base_url}{}/chat/completions",
-            if base_url.ends_with("/v1") { "" } else { "/v1" });
+        let url = format!(
+            "{base_url}{}/chat/completions",
+            if base_url.ends_with("/v1") { "" } else { "/v1" }
+        );
         assert_eq!(url, "https://m.aiio.chat/v1/chat/completions");
     }
 
     #[test]
     fn handles_trailing_slash() {
         let base_url = "https://example.com/v1/";
-        let url = format!("{base_url}{}/chat/completions",
-            if base_url.ends_with("/v1") { "" } else { "/v1" });
+        let url = format!(
+            "{base_url}{}/chat/completions",
+            if base_url.ends_with("/v1") { "" } else { "/v1" }
+        );
         // Trailing slash on /v1/ means we DON'T recognize it as the
         // /v1 suffix, so we append /v1 again. This is a known minor
         // quirk — users shouldn't add trailing slashes.
@@ -821,8 +832,8 @@ mod tool_call_inline_args_tests {
         // `pending_stop_args` so the NEXT `translate_sse` call drains
         // it into ToolCallStop. Call translate_sse twice to simulate
         // the runtime polling the stream.
-        let first = translate_sse(&ev, &mut state)
-            .expect("translate_sse returned None on first call");
+        let first =
+            translate_sse(&ev, &mut state).expect("translate_sse returned None on first call");
         match first {
             StreamEvent::ToolCallStart { id, name } => {
                 assert_eq!(id, "call_abc123");
@@ -831,8 +842,8 @@ mod tool_call_inline_args_tests {
             }
             other => panic!("expected ToolCallStart first, got {other:?}"),
         }
-        let second = translate_sse(&ev, &mut state)
-            .expect("translate_sse returned None on second call");
+        let second =
+            translate_sse(&ev, &mut state).expect("translate_sse returned None on second call");
         match second {
             StreamEvent::ToolCallStop { id, input_json } => {
                 assert_eq!(id, "call_abc123");
@@ -842,9 +853,13 @@ mod tool_call_inline_args_tests {
         }
         // A third call should drain everything and return None.
         let third = translate_sse(&ev, &mut state);
-        assert!(third.is_none(),
-            "third call should drain pending_stop_args and return None, got {third:?}");
-        let stored = state.tool_calls.get(&0)
+        assert!(
+            third.is_none(),
+            "third call should drain pending_stop_args and return None, got {third:?}"
+        );
+        let stored = state
+            .tool_calls
+            .get(&0)
             .expect("BuildingToolCall for index 0 missing");
         assert_eq!(stored.id, "call_abc123");
         assert_eq!(stored.name, "bash");
@@ -864,8 +879,7 @@ mod tool_call_inline_args_tests {
         }"#;
         let ev = make_chunk(raw);
         let mut state = StreamState::default();
-        let out = translate_sse(&ev, &mut state)
-            .expect("returned None");
+        let out = translate_sse(&ev, &mut state).expect("returned None");
         match out {
             StreamEvent::ToolCallStart { id, name } => {
                 assert_eq!(id, "call_empty");
@@ -881,24 +895,30 @@ mod tool_call_inline_args_tests {
         // append to `input_json` so the eventual stop carries the
         // full command.
         let mut state = StreamState::default();
-        let start = make_chunk(r#"{
+        let start = make_chunk(
+            r#"{
             "choices": [{"delta": {"tool_calls": [{
                 "index": 0, "id": "call_xyz", "type": "function",
                 "function": { "name": "bash", "arguments": "" }
             }]}}]
-        }"#);
+        }"#,
+        );
         let _ = translate_sse(&start, &mut state);
         assert_eq!(state.tool_calls.get(&0).unwrap().input_json, "");
-        let delta = make_chunk(r#"{
+        let delta = make_chunk(
+            r#"{
             "choices": [{"delta": {"tool_calls": [{
                 "index": 0,
                 "function": { "arguments": "{\"command\":\"ls\"}" }
             }]}}]
-        }"#);
-        let out = translate_sse(&delta, &mut state)
-            .expect("returned None");
+        }"#,
+        );
+        let out = translate_sse(&delta, &mut state).expect("returned None");
         match out {
-            StreamEvent::ToolCallDelta { id, input_json_delta } => {
+            StreamEvent::ToolCallDelta {
+                id,
+                input_json_delta,
+            } => {
                 assert_eq!(id, "call_xyz");
                 assert_eq!(input_json_delta, "{\"command\":\"ls\"}");
             }
@@ -916,19 +936,18 @@ mod tool_call_inline_args_tests {
 mod think_filter_tests {
     use super::*;
 
-/// v0.8 helper for tests: flatten fragments to only their `Visible` text.
-/// Existing tests compare string outputs; this lets them keep their
-/// assertions without rewriting each one.
-fn visible_only(frags: Vec<ThinkFragment>) -> String {
-    let mut s = String::new();
-    for f in frags {
-        if let ThinkFragment::Visible(t) = f {
-            s.push_str(&t);
+    /// v0.8 helper for tests: flatten fragments to only their `Visible` text.
+    /// Existing tests compare string outputs; this lets them keep their
+    /// assertions without rewriting each one.
+    fn visible_only(frags: Vec<ThinkFragment>) -> String {
+        let mut s = String::new();
+        for f in frags {
+            if let ThinkFragment::Visible(t) = f {
+                s.push_str(&t);
+            }
         }
+        s
     }
-    s
-}
-
 
     #[test]
     fn passes_through_text_without_tags() {
@@ -980,7 +999,10 @@ fn visible_only(frags: Vec<ThinkFragment>) -> String {
         // the opening tag in chunk 2, then drop the reasoning.
         let mut f = ThinkTagFilter::new();
         assert_eq!(visible_only(f.push("before<")), "before");
-        assert_eq!(visible_only(f.push("think>reasoning</think>clean")), "clean");
+        assert_eq!(
+            visible_only(f.push("think>reasoning</think>clean")),
+            "clean"
+        );
     }
 
     #[test]

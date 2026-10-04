@@ -88,7 +88,11 @@ pub struct BashExecutionMessage {
     pub exit_code: Option<i32>,
     pub cancelled: bool,
     pub truncated: bool,
-    #[serde(rename = "fullOutputPath", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "fullOutputPath",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub full_output_path: Option<String>,
     pub timestamp: i64,
 }
@@ -359,8 +363,6 @@ pub enum StopReason {
     Aborted,
 }
 
-
-
 // Helper accessors used by nini-session — these work for any variant.
 impl SessionEntry {
     pub fn id(&self) -> &str {
@@ -444,11 +446,11 @@ impl AgentMessage {
     }
 }
 
-
-
 // Manual PartialEq/Eq/Hash for SessionEntry based on id only
 impl PartialEq for SessionEntry {
-    fn eq(&self, other: &Self) -> bool { self.id() == other.id() }
+    fn eq(&self, other: &Self) -> bool {
+        self.id() == other.id()
+    }
 }
 impl Eq for SessionEntry {}
 
@@ -466,7 +468,9 @@ mod m3a_message_variant_tests {
     //! `convert_to_llm` (M3b) uses to filter them out.
     use super::*;
 
-    fn ts() -> i64 { 1_700_000_000_000 }
+    fn ts() -> i64 {
+        1_700_000_000_000
+    }
 
     fn sample_notification() -> AgentMessage {
         AgentMessage::Notification(NotificationMessage {

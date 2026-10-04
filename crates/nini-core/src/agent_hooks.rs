@@ -48,7 +48,7 @@ use crate::provider::Message;
 /// LLM view before reaching the model. M3b wires this filtering into
 /// the default `convert_to_llm` impl via
 /// `AgentMessage::is_internal_only`.
-pub trait AgentLoopHooks: Send +Sync {
+pub trait AgentLoopHooks: Send + Sync {
     /// Inject messages **after** a round of tool execution, **before**
     /// the next LLM call.
     ///
@@ -260,9 +260,7 @@ where
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(v) => v,
         Err(_) => {
-            eprintln!(
-                "[nini] hook {label} panicked; falling back to default (R::default())"
-            );
+            eprintln!("[nini] hook {label} panicked; falling back to default (R::default())");
             R::default()
         }
     }
@@ -334,22 +332,20 @@ mod tests {
 
     #[test]
     fn catch_hook_panic_returns_value_on_success() {
-        let result: Vec<Message> = catch_hook_panic("test", || {
-            vec![user_msg("from hook")]
-        });
+        let result: Vec<Message> = catch_hook_panic("test", || vec![user_msg("from hook")]);
         assert_eq!(result.len(), 1);
         assert_eq!(
             result[0].content[0],
-            ContentBlock::Text { text: "from hook".to_string() }
+            ContentBlock::Text {
+                text: "from hook".to_string()
+            }
         );
     }
 
     #[tokio::test]
     async fn catch_hook_panic_async_returns_value_on_success() {
-        let result: Vec<Message> = catch_hook_panic_async("test", || async {
-            vec![user_msg("async hook output")]
-        })
-        .await;
+        let result: Vec<Message> =
+            catch_hook_panic_async("test", || async { vec![user_msg("async hook output")] }).await;
         assert_eq!(result.len(), 1);
     }
 
@@ -400,10 +396,7 @@ mod tests {
     /// the entries→provider boundary in M3b.
     #[test]
     fn filter_internal_only_skeleton_passes_through_provider_messages() {
-        let msgs = vec![
-            user_msg("a"),
-            user_msg("b"),
-        ];
+        let msgs = vec![user_msg("a"), user_msg("b")];
         let out = filter_internal_only_messages(msgs.clone());
         assert_eq!(out.len(), msgs.len());
         assert_eq!(out[0].content[0], msgs[0].content[0]);

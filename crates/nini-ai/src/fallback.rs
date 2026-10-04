@@ -27,15 +27,13 @@
 //! after it has produced at least one event.
 
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 use async_stream::stream;
 use futures_core::Stream;
 use futures_util::StreamExt;
-use nini_core::provider::{
-    Capabilities, Provider, ProviderError, Request, StreamEvent,
-};
+use nini_core::provider::{Capabilities, Provider, ProviderError, Request, StreamEvent};
 
 /// Provider that tries each child in sequence, falling back on
 /// retryable errors BEFORE any event has been emitted.
@@ -208,7 +206,9 @@ mod tests {
     use async_stream::stream;
 
     fn mk_text(text: &str) -> Result<StreamEvent, ProviderError> {
-        Ok(StreamEvent::TextDelta { text: text.to_string() })
+        Ok(StreamEvent::TextDelta {
+            text: text.to_string(),
+        })
     }
 
     fn mk_stop() -> Result<StreamEvent, ProviderError> {
@@ -246,18 +246,26 @@ mod tests {
     /// Build a stub provider that emits a single fixed sequence.
     /// Events are stored in `Arc<[...]>` so the stub is Clone even though
     /// `Result<StreamEvent, ProviderError>` is not.
-    fn stub(name: &'static str, events: Vec<Result<StreamEvent, ProviderError>>) -> Arc<dyn Provider> {
+    fn stub(
+        name: &'static str,
+        events: Vec<Result<StreamEvent, ProviderError>>,
+    ) -> Arc<dyn Provider> {
         struct StubProvider {
             name: &'static str,
             events: Arc<[Result<StreamEvent, ProviderError>]>,
         }
         impl Provider for StubProvider {
-            fn name(&self) -> &'static str { self.name }
-            fn capabilities(&self) -> Capabilities { Capabilities::default() }
+            fn name(&self) -> &'static str {
+                self.name
+            }
+            fn capabilities(&self) -> Capabilities {
+                Capabilities::default()
+            }
             fn stream(
                 &self,
                 _req: Request,
-            ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>> {
+            ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
+            {
                 let events = self.events.clone();
                 Box::pin(stream! {
                     // events is Arc<[Result<...>]> which is Clone.
@@ -309,10 +317,7 @@ mod tests {
 
     #[test]
     fn primary_succeeds_immediately_no_fallback() {
-        let fb = FallbackProvider::new(vec![stub(
-            "primary",
-            vec![mk_text("hi"), mk_stop()],
-        )]);
+        let fb = FallbackProvider::new(vec![stub("primary", vec![mk_text("hi"), mk_stop()])]);
         let out = collect(&fb);
         assert_eq!(out.len(), 2);
         assert!(matches!(&out[0], Ok(StreamEvent::TextDelta { text }) if text == "hi"));
@@ -325,8 +330,13 @@ mod tests {
             stub("secondary", vec![mk_text("recovered"), mk_stop()]),
         ]);
         let out = collect(&fb);
-        let has_recovered = out.iter().any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "recovered"));
-        assert!(has_recovered, "expected fallback to secondary; got: {out:?}");
+        let has_recovered = out
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "recovered"));
+        assert!(
+            has_recovered,
+            "expected fallback to secondary; got: {out:?}"
+        );
     }
 
     #[test]
@@ -336,7 +346,9 @@ mod tests {
             stub("secondary", vec![mk_text("ok"), mk_stop()]),
         ]);
         let out = collect(&fb);
-        let has_ok = out.iter().any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "ok"));
+        let has_ok = out
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "ok"));
         assert!(has_ok);
     }
 
@@ -347,7 +359,9 @@ mod tests {
             stub("secondary", vec![mk_text("ok"), mk_stop()]),
         ]);
         let out = collect(&fb);
-        let has_ok = out.iter().any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "ok"));
+        let has_ok = out
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "ok"));
         assert!(has_ok);
     }
 
@@ -359,7 +373,9 @@ mod tests {
         ]);
         let out = collect(&fb);
         assert!(out.iter().any(|e| matches!(e, Err(_))));
-        let no_secondary = !out.iter().any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "should-not-appear"));
+        let no_secondary = !out.iter().any(
+            |e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "should-not-appear"),
+        );
         assert!(no_secondary, "401 should not fall back to secondary");
     }
 
@@ -370,9 +386,13 @@ mod tests {
             stub("secondary", vec![mk_text("should-not-appear"), mk_stop()]),
         ]);
         let out = collect(&fb);
-        let has_partial = out.iter().any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "partial"));
+        let has_partial = out
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "partial"));
         assert!(has_partial, "partial content must be preserved");
-        let no_secondary = !out.iter().any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "should-not-appear"));
+        let no_secondary = !out.iter().any(
+            |e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "should-not-appear"),
+        );
         assert!(no_secondary, "no fallback after partial response");
     }
 
@@ -380,7 +400,9 @@ mod tests {
     fn empty_provider_list_errors() {
         let fb = FallbackProvider::new(vec![]);
         let out = collect(&fb);
-        assert!(out.iter().any(|e| matches!(e, Err(ProviderError::NotImplemented(_)))));
+        assert!(out
+            .iter()
+            .any(|e| matches!(e, Err(ProviderError::NotImplemented(_)))));
     }
 
     #[test]

@@ -244,8 +244,14 @@ mod tests {
         };
         let out = format_skills_for_prompt(&[skill]);
         assert!(out.contains("<available_skills>"), "missing wrapper: {out}");
-        assert!(out.contains("<name>firecrawl</name>"), "missing name: {out}");
-        assert!(out.contains("Search &amp; scrape"), "missing escaped desc: {out}");
+        assert!(
+            out.contains("<name>firecrawl</name>"),
+            "missing name: {out}"
+        );
+        assert!(
+            out.contains("Search &amp; scrape"),
+            "missing escaped desc: {out}"
+        );
         assert!(
             out.contains("<location>/home/jin/.pi/agent/skills/firecrawl/SKILL.md</location>"),
             "missing location path: {out}"

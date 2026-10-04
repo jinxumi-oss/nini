@@ -53,12 +53,7 @@ pub trait BashOperations: Send + Sync {
     /// Run `cmd` synchronously in `cwd`. Blocks the caller for up
     /// to `timeout_ms` milliseconds. Pass `0` to disable the
     /// timeout (use with care — the TUI will hang).
-    fn exec(
-        &self,
-        cmd: &str,
-        cwd: &Path,
-        timeout_ms: u64,
-    ) -> io::Result<ExecOutcome>;
+    fn exec(&self, cmd: &str, cwd: &Path, timeout_ms: u64) -> io::Result<ExecOutcome>;
 
     /// Resolve `name` on `$PATH`. Returns the absolute path to
     /// the executable, or `None` if it isn't found. Used by the
@@ -82,12 +77,7 @@ pub trait BashOperations: Send + Sync {
 pub struct DefaultBashOperations;
 
 impl BashOperations for DefaultBashOperations {
-    fn exec(
-        &self,
-        cmd: &str,
-        cwd: &Path,
-        timeout_ms: u64,
-    ) -> io::Result<ExecOutcome> {
+    fn exec(&self, cmd: &str, cwd: &Path, timeout_ms: u64) -> io::Result<ExecOutcome> {
         let mut runner = crate::bash_runner::BashRunner::new();
         let r = runner.run_blocking_with_timeout(cmd, cwd, timeout_ms);
         Ok(ExecOutcome {
@@ -125,7 +115,11 @@ impl BashOperations for DefaultBashOperations {
 pub fn bash_which(name: &str) -> Option<PathBuf> {
     let p = Path::new(name);
     if p.components().count() > 1 {
-        return if p.exists() { Some(p.to_path_buf()) } else { None };
+        return if p.exists() {
+            Some(p.to_path_buf())
+        } else {
+            None
+        };
     }
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
@@ -211,9 +205,7 @@ mod tests {
     fn default_bash_operations_captures_nonzero_exit() {
         let ops = DefaultBashOperations;
         let cwd = std::path::PathBuf::from("/tmp");
-        let outcome = ops
-            .exec("exit 7", &cwd, 5000)
-            .expect("exec should succeed");
+        let outcome = ops.exec("exit 7", &cwd, 5000).expect("exec should succeed");
         assert_eq!(outcome.exit_code, Some(7));
         assert!(!outcome.ok);
     }
@@ -273,12 +265,7 @@ mod tests {
         canned_exit: Option<i32>,
     }
     impl BashOperations for MockBash {
-        fn exec(
-            &self,
-            _cmd: &str,
-            _cwd: &Path,
-            _timeout_ms: u64,
-        ) -> io::Result<ExecOutcome> {
+        fn exec(&self, _cmd: &str, _cwd: &Path, _timeout_ms: u64) -> io::Result<ExecOutcome> {
             Ok(ExecOutcome {
                 output: self.canned_output.clone(),
                 stderr: String::new(),
@@ -288,7 +275,9 @@ mod tests {
                 timed_out: false,
             })
         }
-        fn which(&self, _name: &str) -> Option<PathBuf> { None }
+        fn which(&self, _name: &str) -> Option<PathBuf> {
+            None
+        }
         fn kill_pg(&self, _pid: u32) {}
     }
 
@@ -323,10 +312,15 @@ mod tests {
 
     #[test]
     fn mock_read_operations_returns_canned_content() {
-        let mock = MockRead { canned: "synthetic content".into() };
+        let mock = MockRead {
+            canned: "synthetic content".into(),
+        };
         let path = std::path::PathBuf::from("/tmp/anything");
         assert_eq!(mock.read(&path).unwrap(), "synthetic content");
-        assert_eq!(mock.stat_size(&path).unwrap(), "synthetic content".len() as u64);
+        assert_eq!(
+            mock.stat_size(&path).unwrap(),
+            "synthetic content".len() as u64
+        );
     }
 
     #[test]

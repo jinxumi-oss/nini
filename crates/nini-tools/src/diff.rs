@@ -252,7 +252,9 @@ mod tests {
         // Should contain a `-` for line2 and a `+` for modified,
         // plus context lines.
         assert!(diff.iter().any(|l| l.sign == '-' && l.content == "line2"));
-        assert!(diff.iter().any(|l| l.sign == '+' && l.content == "modified"));
+        assert!(diff
+            .iter()
+            .any(|l| l.sign == '+' && l.content == "modified"));
         assert!(diff.iter().any(|l| l.sign == ' ' && l.content == "line1"));
         assert!(diff.iter().any(|l| l.sign == ' ' && l.content == "line3"));
     }
@@ -291,8 +293,16 @@ mod tests {
         let old = "a\nb\nc\nd\ne\n";
         let new = "a\nB1\nB2\nc\nd\ne\n";
         let diff = unified_diff(old, new, 1);
-        let adds: Vec<&str> = diff.iter().filter(|l| l.sign == '+').map(|l| l.content.as_str()).collect();
-        let dels: Vec<&str> = diff.iter().filter(|l| l.sign == '-').map(|l| l.content.as_str()).collect();
+        let adds: Vec<&str> = diff
+            .iter()
+            .filter(|l| l.sign == '+')
+            .map(|l| l.content.as_str())
+            .collect();
+        let dels: Vec<&str> = diff
+            .iter()
+            .filter(|l| l.sign == '-')
+            .map(|l| l.content.as_str())
+            .collect();
         assert_eq!(adds, vec!["B1", "B2"]);
         assert_eq!(dels, vec!["b"]);
     }
@@ -306,7 +316,11 @@ mod tests {
     #[test]
     fn add_to_empty() {
         let diff = unified_diff("", "new content\n", 3);
-        let adds: Vec<&str> = diff.iter().filter(|l| l.sign == '+').map(|l| l.content.as_str()).collect();
+        let adds: Vec<&str> = diff
+            .iter()
+            .filter(|l| l.sign == '+')
+            .map(|l| l.content.as_str())
+            .collect();
         assert_eq!(adds, vec!["new content"]);
     }
 }

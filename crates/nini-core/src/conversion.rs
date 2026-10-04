@@ -121,9 +121,9 @@ pub fn session_message_to_llm(msg: &PiMsg) -> Option<Message> {
                     // Image/Image/ToolCall → empty text placeholder.
                     // Tool call args aren't useful in a tool result
                     // message; the model needs the result string.
-                    PiBlock::Image { .. }
-                    | PiBlock::Thinking { .. }
-                    | PiBlock::ToolCall { .. } => String::new(),
+                    PiBlock::Image { .. } | PiBlock::Thinking { .. } | PiBlock::ToolCall { .. } => {
+                        String::new()
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join("");
@@ -169,9 +169,7 @@ fn user_content_to_blocks(content: &StringOrContentBlocks) -> Vec<ContentBlock> 
                 PiBlock::Text { text } => Some(ContentBlock::Text { text: text.clone() }),
                 // Image/Thinking/ToolCall → empty text placeholders,
                 // matching the previous nini-tui/nini-cli behavior.
-                PiBlock::Image { .. }
-                | PiBlock::Thinking { .. }
-                | PiBlock::ToolCall { .. } => None,
+                PiBlock::Image { .. } | PiBlock::Thinking { .. } | PiBlock::ToolCall { .. } => None,
             })
             .collect(),
     }
@@ -203,9 +201,9 @@ fn assistant_content_to_blocks(blocks: &[PiBlock]) -> Vec<ContentBlock> {
 mod tests {
     use super::*;
     use crate::entries::{
-        AssistantMessage, BashExecutionMessage, BranchSummaryMessage,
+        AppMessage, AssistantMessage, BashExecutionMessage, BranchSummaryMessage,
         CompactionSummaryMessage, CustomMessage, NotificationMessage, SessionMessageEntry,
-        ToolResultMessage, UiMessage, AppMessage, UserMessage,
+        ToolResultMessage, UiMessage, UserMessage,
     };
 
     fn user_msg(text: &str, ts: i64) -> PiMsg {
@@ -232,7 +230,9 @@ mod tests {
         PiMsg::ToolResult(ToolResultMessage {
             tool_call_id: id.into(),
             tool_name: "bash".into(),
-            content: vec![PiBlock::Text { text: content.into() }],
+            content: vec![PiBlock::Text {
+                text: content.into(),
+            }],
             details: None,
             usage: None,
             is_error: is_err,
@@ -471,8 +471,12 @@ mod tests {
     fn user_with_blocks_format_works() {
         let msg = PiMsg::User(UserMessage {
             content: StringOrContentBlocks::Blocks(vec![
-                PiBlock::Text { text: "first".into() },
-                PiBlock::Text { text: "second".into() },
+                PiBlock::Text {
+                    text: "first".into(),
+                },
+                PiBlock::Text {
+                    text: "second".into(),
+                },
             ]),
             timestamp: 0,
         });
@@ -485,7 +489,9 @@ mod tests {
         let msg = PiMsg::User(UserMessage {
             content: StringOrContentBlocks::Blocks(vec![
                 PiBlock::Text { text: "ok".into() },
-                PiBlock::Image { image: "data:...".into() },
+                PiBlock::Image {
+                    image: "data:...".into(),
+                },
             ]),
             timestamp: 0,
         });
@@ -498,7 +504,9 @@ mod tests {
     fn assistant_with_tool_call_becomes_tool_use() {
         let msg = PiMsg::Assistant(AssistantMessage {
             content: vec![
-                PiBlock::Text { text: "I'll run a command".into() },
+                PiBlock::Text {
+                    text: "I'll run a command".into(),
+                },
                 PiBlock::ToolCall {
                     id: "tc-1".into(),
                     name: "bash".into(),
@@ -531,8 +539,12 @@ mod tests {
             tool_call_id: "tc-1".into(),
             tool_name: "bash".into(),
             content: vec![
-                PiBlock::Text { text: "first\n".into() },
-                PiBlock::Text { text: "second".into() },
+                PiBlock::Text {
+                    text: "first\n".into(),
+                },
+                PiBlock::Text {
+                    text: "second".into(),
+                },
             ],
             details: None,
             usage: None,
@@ -560,7 +572,9 @@ mod tests {
         let pi = PiMsg::ToolResult(ToolResultMessage {
             tool_call_id: "tc-xyz".into(),
             tool_name: "bash".into(),
-            content: vec![PiBlock::Text { text: "exit code 0\n".into() }],
+            content: vec![PiBlock::Text {
+                text: "exit code 0\n".into(),
+            }],
             details: None,
             usage: None,
             is_error: false,
@@ -570,7 +584,11 @@ mod tests {
         assert_eq!(back.role, Role::Tool);
         assert_eq!(back.timestamp, 12345);
         match &back.content[0] {
-            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
                 assert_eq!(tool_use_id, "tc-xyz");
                 assert_eq!(content, "exit code 0\n");
                 assert!(!is_error);

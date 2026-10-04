@@ -29,9 +29,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      # Style + correctness + suspicious catch real bugs without churning
-      # on pedantic style nits. Tighten as the codebase stabilizes.
-      - run: cargo clippy --workspace --all-targets -- -D clippy::style -D clippy::correctness -D clippy::suspicious -A clippy::pedantic -A clippy::nursery -A clippy::style -A clippy::correctness -A clippy::suspicious -A clippy::perf -A clippy::complexity
+      # Deny the lints that catch real bugs; allow only the purely
+      # stylistic groups we don't gate on.
+      #
+      # v0.8.9: the previous flag list had `-D clippy::style -D
+      # clippy::correctness -D clippy::suspicious` followed by `-A` for
+      # the *same* three lints. rustc takes the last flag for a given
+      # lint, so every `-D` was cancelled out and this job had been
+      # allowing everything — a gate that gated nothing. Deny wins are
+      # now listed after the allows so they actually take effect.
+      - run: >-
+          cargo clippy --workspace --all-targets --
+          -A clippy::pedantic
+          -A clippy::nursery
+          -A clippy::perf
+          -A clippy::complexity
+          -D warnings
 
   test:
     name: test (${{ matrix.os }})

@@ -14,12 +14,12 @@ pub mod startup_ui;
 // v0.8.2: split from main.rs into focused submodules. The order of
 // `mod` declarations matters because some types cross-reference
 // (`provider_factory` uses `tool_registry`, `app` uses everything).
+pub(crate) mod app;
+pub(crate) mod demo;
+pub(crate) mod info;
 pub(crate) mod prompt_setup;
 pub(crate) mod provider_factory;
 pub(crate) mod tool_registry;
-pub(crate) mod info;
-pub(crate) mod demo;
-pub(crate) mod app;
 
 #[derive(Parser, Debug)]
 #[command(name = "nini", about = "Pi-compatible Rust coding agent", version)]
@@ -249,7 +249,14 @@ async fn main() -> Result<()> {
     match cmd {
         Some(Cmd::Demo { task }) => {
             let task = task.unwrap_or_else(|| "find TODOs and fix them".to_string());
-            demo::run_demo(&task, &provider, &model, &fallback_keys, &fallback_base_urls).await
+            demo::run_demo(
+                &task,
+                &provider,
+                &model,
+                &fallback_keys,
+                &fallback_base_urls,
+            )
+            .await
         }
         Some(Cmd::Info) => info::run_info().await,
         _ if list_models.is_some() => {
@@ -288,15 +295,8 @@ async fn main() -> Result<()> {
                 no_tools,
                 no_builtin_tools,
                 use_theme: use_theme.clone(),
-            }).await
+            })
+            .await
         }
     }
 }
-
-
-
-
-
-
-
-

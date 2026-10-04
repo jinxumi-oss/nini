@@ -174,7 +174,8 @@ impl SettingsList {
 
             // Optional description.
             if let Some(desc) = &item.description {
-                let used = bullet.len() + label_len + 2 + crate::width::display_width(&item.current_value);
+                let used =
+                    bullet.len() + label_len + 2 + crate::width::display_width(&item.current_value);
                 let avail = col_width.saturating_sub(used);
                 if avail > 4 {
                     let mut d = desc.clone();
@@ -182,10 +183,7 @@ impl SettingsList {
                         d = d.chars().take(avail.saturating_sub(1)).collect();
                         d.push('\u{2026}');
                     }
-                    row.push(Span::styled(
-                        format!("  {d}"),
-                        theme.fg_style("dim"),
-                    ));
+                    row.push(Span::styled(format!("  {d}"), theme.fg_style("dim")));
                 }
             }
 
@@ -199,7 +197,9 @@ impl SettingsList {
 /// `SettingsSelector` to render via `SettingsList` instead of going
 /// through the generic `SelectorPanel` path. Returns `None` if any
 /// item has no description (which we treat as the "value" column).
-pub fn from_select_items(items: &[crate::components::select_list::SelectItem]) -> Option<Vec<SettingItem>> {
+pub fn from_select_items(
+    items: &[crate::components::select_list::SelectItem],
+) -> Option<Vec<SettingItem>> {
     items
         .iter()
         .map(|item| {
@@ -239,9 +239,7 @@ mod tests {
         let list = SettingsList::new(vec![]);
         let rows = list.render_spans(80, &Theme::dark());
         assert_eq!(rows.len(), 1);
-        assert!(rows[0]
-            .iter()
-            .any(|s| s.content.contains("No settings")));
+        assert!(rows[0].iter().any(|s| s.content.contains("No settings")));
     }
 
     #[test]
