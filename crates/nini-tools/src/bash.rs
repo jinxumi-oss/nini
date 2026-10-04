@@ -52,13 +52,20 @@ struct BashArgs {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct BashDetails {
     exit_code: Option<i32>,
     signal: Option<String>,
     duration_ms: u64,
     truncated: bool,
+    /// What the command *actually* printed, not what we kept. Can
+    /// exceed the capture cap.
     original_bytes: usize,
     original_lines: usize,
+    /// v0.8.9 (P0-2): true when a stream hit [`STREAM_CAPTURE_CAP`] and
+    /// stopped accumulating (while still counting). Tells the caller the
+    /// content is a prefix, not the whole thing.
+    stream_capped: bool,
 }
 
 /// `BashTool` runs shell commands via the user's `$SHELL` (or `/bin/sh`).
@@ -141,17 +148,24 @@ impl Tool for BashTool {
             .id()
             .ok_or_else(|| ToolError::Internal("no child pid".to_string()))?;
 
-        // Capture output concurrently with timeout
+        // Capture output concurrently with timeout.
+        //
+        // v0.8.9 (P0-2): both readers used to be unbounded
+        // `read_to_end`. A `yes` / `find /` / noisy build would fill
+        // RAM until the process died, and only then would `truncate`
+        // run and throw 99.99% of it away. Now each stream keeps at
+        // most `capture_cap` bytes while still counting everything it
+        // saw, and keeps draining the pipe past the cap so the child
+        // never blocks on a full buffer.
+        let capture_cap = ctx.max_output_bytes.max(64 * 1024).min(STREAM_CAPTURE_CAP);
         let mut stdout = child.stdout.take().expect("piped");
         let mut stderr = child.stderr.take().expect("piped");
-        let stdout_task = tokio::spawn(async move {
-            let mut buf = Vec::with_capacity(4096);
-            stdout.read_to_end(&mut buf).await.map(|_| buf)
-        });
-        let stderr_task = tokio::spawn(async move {
-            let mut buf = Vec::with_capacity(4096);
-            stderr.read_to_end(&mut buf).await.map(|_| buf)
-        });
+        let stdout_cap = capture_cap;
+        let stdout_task =
+            tokio::spawn(async move { read_stream_capped(&mut stdout, stdout_cap).await });
+        let stderr_cap = capture_cap;
+        let stderr_task =
+            tokio::spawn(async move { read_stream_capped(&mut stderr, stderr_cap).await });
 
         // Wait for child with timeout
         let wait_result = timeout(timeout_duration, child.wait()).await;
@@ -181,17 +195,21 @@ impl Tool for BashTool {
             }
         };
 
-        // Join output tasks
-        let stdout_bytes = stdout_task
+        // Join output tasks. Each returns (kept, total_bytes,
+        // total_lines, capped) — the totals are what the stream really
+        // carried, which can exceed `kept.len()` when the capture cap
+        // kicked in.
+        let (stdout_bytes, stdout_total_b, stdout_total_l, stdout_capped) = stdout_task
             .await
-            .map_err(|e| ToolError::Internal(e.to_string()))??;
-        let stderr_bytes = stderr_task
+            .map_err(|e| ToolError::Internal(e.to_string()))?;
+        let (stderr_bytes, stderr_total_b, stderr_total_l, stderr_capped) = stderr_task
             .await
-            .map_err(|e| ToolError::Internal(e.to_string()))??;
+            .map_err(|e| ToolError::Internal(e.to_string()))?;
 
         // Compose output: stdout + stderr (stderr after stdout for clarity)
         let mut raw = stdout_bytes;
-        if !stderr_bytes.is_empty() {
+        let has_stderr = !stderr_bytes.is_empty();
+        if has_stderr {
             if !raw.is_empty() && !raw.ends_with(b"\n") {
                 raw.push(b'\n');
             }
@@ -199,9 +217,20 @@ impl Tool for BashTool {
             raw.extend_from_slice(&stderr_bytes);
         }
 
-        // Truncate
-        let (truncated_content, truncated, original_bytes, original_lines) =
-            truncate(&raw, ctx.max_output_bytes, ctx.max_output_lines);
+        // Truncate. The `[stderr]\n` separator contributes bytes and a
+        // line to the composed stream, so fold them into the totals
+        // rather than letting the markers under-report.
+        let total_bytes = stdout_total_b + stderr_total_b + usize::from(has_stderr);
+        let total_lines = stdout_total_l + stderr_total_l + usize::from(has_stderr);
+        let stream_capped = stdout_capped || stderr_capped;
+        let (truncated_content, truncated) = truncate(
+            &raw,
+            ctx.max_output_bytes,
+            ctx.max_output_lines,
+            total_bytes,
+            total_lines,
+            stream_capped,
+        );
 
         let duration_ms = started.elapsed().as_millis() as u64;
 
@@ -210,8 +239,9 @@ impl Tool for BashTool {
             signal: signal_name,
             duration_ms,
             truncated,
-            original_bytes,
-            original_lines,
+            original_bytes: total_bytes,
+            original_lines: total_lines,
+            stream_capped,
         };
 
         let is_error = !matches!(exit_code, Some(0));
@@ -305,56 +335,182 @@ fn kill_process_tree(_pid: u32) {
     // Windows: not yet implemented in nini v1.
 }
 
+/// Largest byte count we will ever hold in memory for one stream.
+///
+/// The *content* budget is `ToolContext::max_output_bytes` (1 MiB by
+/// default); this is a hard ceiling on the capture buffer so a runaway
+/// command (`yes`, `find /`, a noisy build) cannot exhaust memory before
+/// truncation gets a chance to run.
+///
+/// v0.8.9 (P0-2): the reader used to call `read_to_end` with no bound,
+/// so the "1 MiB budget" was a purely cosmetic post-hoc number.
+pub const STREAM_CAPTURE_CAP: usize = 8 * 1024 * 1024;
+
 /// Truncate output to fit within `max_bytes` and `max_lines`. Keeps the first
 /// and last halves equally, separated by a marker.
-fn truncate(raw: &[u8], max_bytes: usize, max_lines: usize) -> (String, bool, usize, usize) {
-    let original_bytes = raw.len();
-    let original_lines = bytecount_lines(raw);
+///
+/// `total_bytes` / `total_lines` are what the stream *actually* carried
+/// (measured while reading, which may exceed `raw.len()` when the reader
+/// hit [`STREAM_CAPTURE_CAP`]). `capped` says whether it did.
+///
+/// **v0.8.9 (P0-3)**: the byte-level cut used to be a raw `&kept[..half]`
+/// on a `String`. Any multi-byte output over the byte budget panicked:
+///
+/// ```text
+/// panicked at src/bash.rs: end byte index 524288 is not a char
+/// boundary; it is inside '文' (bytes 524286..524289 of string)
+/// ```
+///
+/// This is the same class of bug fixed in v0.8.4 for `render_tool_call`
+/// and `render_bash_execution` — `truncate` was simply missed both times,
+/// and unlike those two it lives on the tool-execution path, so a large
+/// CJK `bash` result took the whole agent down. Every slice below now goes
+/// through [`floor_char_boundary`].
+///
+/// The function is also single-pass now: it used to `lines().collect()`
+/// the entire output into a `Vec<&str>` just to take two halves, which
+/// for a 6-million-line capture is ~50 MB of pointers on its own.
+fn truncate(
+    raw: &[u8],
+    max_bytes: usize,
+    max_lines: usize,
+    total_bytes: usize,
+    total_lines: usize,
+    capped: bool,
+) -> (String, bool) {
+    let truncated = capped || total_bytes > max_bytes || total_lines > max_lines;
 
-    // Fast path: no truncation needed
-    if original_bytes <= max_bytes && original_lines <= max_lines {
-        return (
-            String::from_utf8_lossy(raw).into_owned(),
-            false,
-            original_bytes,
-            original_lines,
-        );
+    // Fast path: nothing was dropped.
+    if !truncated {
+        return (String::from_utf8_lossy(raw).into_owned(), false);
     }
 
-    // Truncate by lines first, then by bytes
     let initial = String::from_utf8_lossy(raw).into_owned();
-    let mut kept = if initial.lines().count() > max_lines {
-        let lines: Vec<&str> = initial.lines().collect();
-        let half = max_lines / 2;
-        let first: Vec<&str> = lines[..half].to_vec();
-        let last: Vec<&str> = lines[lines.len() - half..].to_vec();
-        let marker = format!(
-            "\n[... {} lines omitted ...]\n",
-            original_lines - first.len() - last.len()
-        );
-        let mut s = first.join("\n");
-        s.push_str(&marker);
-        s.push_str(&last.join("\n"));
+    let mut kept = if total_lines > max_lines {
+        // Single pass: keep the head, and a bounded rolling tail.
+        // `max_lines` can be 0 or 1 — clamp so the arithmetic below
+        // never underflows.
+        let half = (max_lines / 2).max(1);
+        let mut head: Vec<&str> = Vec::with_capacity(half.min(initial.len()));
+        let mut tail: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
+        for line in initial.lines() {
+            if head.len() < half {
+                head.push(line);
+            } else {
+                if tail.len() == half {
+                    tail.pop_front();
+                }
+                tail.push_back(line);
+            }
+        }
+        let omitted = total_lines.saturating_sub(head.len() + tail.len());
+        let mut s = head.join("\n");
+        s.push_str(&format!("\n[... {omitted} lines omitted ...]\n"));
+        s.push_str(&tail.iter().copied().collect::<Vec<_>>().join("\n"));
         s
     } else {
         initial
     };
 
-    // If still too large by bytes, hard-truncate with a tail marker
+    // If still too large by bytes, hard-truncate with a tail marker.
     if kept.len() > max_bytes {
-        let half = max_bytes / 2;
+        let half = (max_bytes / 2).max(1);
+        let head_end = floor_char_boundary(&kept, half);
+        let tail_start = floor_char_boundary(&kept, kept.len().saturating_sub(half));
+        // `if kept.len() > max_bytes` guarantees `head_end < tail_start`
+        // for any budget of at least 2, so the two slices never overlap.
+        let kept_bytes = head_end + (kept.len() - tail_start);
         let mut out = String::with_capacity(max_bytes + 128);
-        out.push_str(&kept[..half]);
+        out.push_str(&kept[..head_end]);
         out.push_str(&format!(
             "\n[... {} bytes omitted ...]\n",
-            original_bytes - max_bytes
+            total_bytes.saturating_sub(kept_bytes)
         ));
-        let tail_start = kept.len().saturating_sub(half);
         out.push_str(&kept[tail_start..]);
         kept = out;
     }
 
-    (kept, true, original_bytes, original_lines)
+    (kept, true)
+}
+
+/// Largest byte index <= `at` that is a UTF-8 character boundary in `s`.
+///
+/// Same contract as `nini_tui::width::floor_char_boundary` (which is why
+/// that one exists — v0.8.4 added it after `render_tool_call` panicked on
+/// CJK args). Duplicated rather than shared because `nini-tui` depends on
+/// `nini-tools`, not the other way round; if this ever grows a third
+/// copy, promote it to `nini-core`.
+#[inline]
+fn floor_char_boundary(s: &str, at: usize) -> usize {
+    if at >= s.len() {
+        return s.len();
+    }
+    let mut i = at;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Read `r` to EOF, keeping at most `cap` bytes in memory while still
+/// counting every byte and line that went past.
+///
+/// Stopping *capture* is not the same as stopping *reading*: once the
+/// cap is hit we keep draining the pipe (discarding) so the child never
+/// blocks on a full pipe and never has to be killed for being chatty.
+/// The returned totals stay honest, which is what the `…N bytes
+/// omitted` markers report.
+async fn read_stream_capped<R>(r: &mut R, cap: usize) -> (Vec<u8>, usize, usize, bool)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut kept: Vec<u8> = Vec::with_capacity(8192.min(cap));
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut total_bytes = 0usize;
+    let mut total_lines = 0usize;
+    let mut last_byte: Option<u8> = None;
+
+    loop {
+        let n = match r.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        total_bytes += n;
+        total_lines += chunk[..n].iter().filter(|&&c| c == b'\n').count();
+        last_byte = Some(chunk[n - 1]);
+        if kept.len() < cap {
+            let take = (cap - kept.len()).min(n);
+            kept.extend_from_slice(&chunk[..take]);
+        }
+    }
+
+    // Mirror `bytecount_lines`: a trailing partial line still counts.
+    if total_bytes > 0 && last_byte != Some(b'\n') {
+        total_lines += 1;
+    }
+    let capped = total_bytes > kept.len();
+
+    // Don't hand `from_utf8_lossy` a chunk we cut mid-character — it
+    // would render as U+FFFD instead of truncating cleanly.
+    if capped {
+        let mut cut = kept.len();
+        while cut > 0 && !is_utf8_boundary(&kept[..cut]) {
+            cut -= 1;
+        }
+        kept.truncate(cut);
+    }
+
+    (kept, total_bytes, total_lines, capped)
+}
+
+/// Is `bytes` a valid UTF-8 prefix boundary? We can't use `str` here
+/// because the buffer may not be valid UTF-8 at all, so walk back over
+/// continuation bytes (0b10xxxxxx) to find a lead byte.
+fn is_utf8_boundary(bytes: &[u8]) -> bool {
+    match bytes.last() {
+        None => true,
+        Some(&b) => (b & 0b1100_0000) != 0b1000_0000,
+    }
 }
 
 /// Count lines in a byte slice (counts trailing newline as a line terminator).
@@ -558,7 +714,8 @@ mod tests {
 
     #[test]
     fn truncate_short_input_passes_through() {
-        let (out, truncated, _orig_b, _orig_l) = truncate(b"hello\nworld\n", 1024, 100);
+        let raw = b"hello\nworld\n";
+        let (out, truncated) = truncate(raw, 1024, 100, raw.len(), bytecount_lines(raw), false);
         assert_eq!(out, "hello\nworld\n");
         assert!(!truncated);
     }
@@ -569,12 +726,174 @@ mod tests {
         for i in 0..1000 {
             input.push_str(&format!("line {i}\n"));
         }
-        let (out, truncated, _orig_b, _orig_l) = truncate(input.as_bytes(), 1024 * 1024, 100);
+        let (out, truncated) = truncate(
+            input.as_bytes(),
+            1024 * 1024,
+            100,
+            input.len(),
+            bytecount_lines(input.as_bytes()),
+            false,
+        );
         assert!(truncated);
         assert!(out.contains("omitted"));
         assert!(out.contains("line 0"));
         assert!(out.contains("line 999"));
         assert!(!out.contains("line 500"));
+    }
+
+    // ---- v0.8.9 (P0-3) regression guards ------------------------------
+    // `truncate` used to cut the byte budget with a raw `&kept[..half]`.
+    // On any multi-byte output over the budget that lands inside a
+    // character and panics:
+    //
+    //     panicked at src/bash.rs: end byte index 524288 is not a char
+    //     boundary; it is inside '文' (bytes 524286..524289 of string)
+    //
+    // Same class as the v0.8.4 `render_tool_call` / `render_bash_execution`
+    // panics, except this one is on the tool-execution path — a >1 MiB
+    // CJK bash result unwound the entire agent, and none of the 812
+    // tests caught it because every fixture was ASCII.
+
+    #[test]
+    fn truncate_multibyte_output_does_not_panic() {
+        // 3 MiB of 3-byte CJK against a 1 MiB budget, i.e. the exact
+        // shape that panicked before.
+        let cjk = "文";
+        let count = (3 * 1024 * 1024) / cjk.len();
+        let input: String = std::iter::repeat_n(cjk, count).collect();
+        let raw = input.as_bytes();
+        let (out, truncated) = truncate(
+            raw,
+            1024 * 1024,
+            2000,
+            raw.len(),
+            bytecount_lines(raw),
+            false,
+        );
+        assert!(truncated);
+        assert!(
+            out.contains("bytes omitted"),
+            "got: {}",
+            &out[..out.len().min(200)]
+        );
+        // Must be valid UTF-8 end to end — `truncate` returns a String
+        // so this is really a "did we cut mid-char" assertion.
+        assert!(out.len() > 0);
+    }
+
+    #[test]
+    fn truncate_multibyte_output_at_every_byte_budget_does_not_panic() {
+        // Walk the budget across a range that lands `half` on both sides
+        // of every character boundary — a single size would only prove
+        // that one size is lucky.
+        let input = "文".repeat(5000);
+        for budget in 1..600usize {
+            let raw = input.as_bytes();
+            let (_out, truncated) =
+                truncate(raw, budget, 2000, raw.len(), bytecount_lines(raw), false);
+            if budget < raw.len() {
+                assert!(truncated, "budget {budget} should have truncated");
+            }
+        }
+    }
+
+    #[test]
+    fn floor_char_boundary_lands_on_boundaries() {
+        let s = "a文b";
+        assert_eq!(floor_char_boundary(s, 0), 0);
+        assert_eq!(floor_char_boundary(s, 1), 1); // 'a'
+        assert_eq!(floor_char_boundary(s, 2), 1); // inside '文' → back to 1
+        assert_eq!(floor_char_boundary(s, 4), 4); // 'b'
+        assert_eq!(floor_char_boundary(s, 99), s.len());
+    }
+
+    // ---- v0.8.9 (P0-2) regression guards ------------------------------
+
+    #[tokio::test]
+    async fn read_stream_capped_bounds_memory_but_keeps_counting() {
+        // 4 MiB through a 64 KiB cap: the buffer must stay tiny while
+        // the reported totals stay honest.
+        let data = vec![b'x'; 4 * 1024 * 1024];
+        let mut cursor = std::io::Cursor::new(data.clone());
+        let (kept, total_bytes, _lines, capped) = read_stream_capped(&mut cursor, 64 * 1024).await;
+
+        assert!(capped, "4 MiB through a 64 KiB cap must report capped");
+        assert!(
+            kept.len() <= 64 * 1024,
+            "kept {} bytes, cap was 64 KiB",
+            kept.len()
+        );
+        assert_eq!(
+            total_bytes,
+            data.len(),
+            "total must reflect the real stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_stream_capped_drains_past_the_cap() {
+        // The reader must keep consuming after the cap so the child
+        // never blocks on a full pipe. A 1 MiB stream through a 4 KiB cap
+        // completing at all is the evidence.
+        let data = vec![b'y'; 1024 * 1024];
+        let mut cursor = std::io::Cursor::new(data.clone());
+        let (kept, total_bytes, _lines, capped) = read_stream_capped(&mut cursor, 4096).await;
+        assert!(capped);
+        assert_eq!(kept.len(), 4096);
+        assert_eq!(total_bytes, 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn read_stream_capped_counts_lines_like_bytecount_lines() {
+        for input in [
+            "".to_string(),
+            "a".to_string(),
+            "a\n".to_string(),
+            "a\nb".to_string(),
+            "a\nb\n".to_string(),
+            "\n\n\n".to_string(),
+        ] {
+            let mut cursor = std::io::Cursor::new(input.clone().into_bytes());
+            let (_kept, _bytes, lines, _capped) =
+                read_stream_capped(&mut cursor, 1024 * 1024).await;
+            assert_eq!(
+                lines,
+                bytecount_lines(input.as_bytes()),
+                "line count mismatch for {input:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn huge_command_output_is_capped_not_buffered() {
+        // End-to-end: a 64 MB single-line stream with the default
+        // 64 KiB-ish floor. Before v0.8.9 this came back reporting
+        // original_bytes=67108864 while holding all of it in RAM.
+        let tool = BashTool::new();
+        let mut ctx = ToolContext::default();
+        ctx.max_output_bytes = 128 * 1024;
+        let out = tool
+            .execute(
+                json!({"command": "yes ABCDEFGHIJKLMNOP | head -c 67108864", "timeout": 60}),
+                ctx,
+            )
+            .await
+            .unwrap();
+        let details: BashDetails = serde_json::from_value(out.details.unwrap()).unwrap();
+
+        assert!(details.truncated);
+        assert!(details.stream_capped, "64 MB should have hit the cap");
+        assert_eq!(
+            details.original_bytes, 67_108_864,
+            "the reported total must be the real stream size, not the kept size"
+        );
+        // The whole point: the content we hand back is budgeted, not the
+        // whole stream.
+        assert!(
+            out.content.len() < 512 * 1024,
+            "returned {} bytes for a 128 KiB budget",
+            out.content.len()
+        );
     }
 
     #[test]
