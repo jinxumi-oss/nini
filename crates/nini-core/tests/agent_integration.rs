@@ -705,6 +705,174 @@ mod abort_parallel_tests {
             "abort should cancel in-flight futures, but {n}/6 completed"
         );
     }
+
+    /// v0.8.9 (P2-11): every `ToolCallStart` must be followed by a
+    /// `ToolResult`, including on the abort path.
+    ///
+    /// The TUI draws a `▸ <name>` row the moment a `ToolCallStart`
+    /// arrives and only resolves it when the matching `ToolResult`
+    /// shows up. Before this fix the abort branch returned without
+    /// emitting results, so every in-flight tool call stayed pending
+    /// on screen for the rest of the session — the user could not tell
+    /// whether the tool was still running, and the only escape was
+    /// restarting. Pi emits a cancelled result per outstanding call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn abort_closes_out_every_started_tool_call() {
+        use nini_core::AgentEvent;
+        use std::collections::HashSet;
+
+        let completed = Arc::new(AtomicU32::new(0));
+        let mut turn0: Vec<FixtureTurn> = Vec::with_capacity(7);
+        for _ in 0..6 {
+            turn0.push(FixtureTurn::ToolCall {
+                name: "slow".to_string(),
+                args: json!({}),
+            });
+        }
+        turn0.push(FixtureTurn::Stop {
+            stop_reason: "tool_use".to_string(),
+            usage: Usage::default(),
+        });
+        let provider: Arc<dyn nini_core::Provider> =
+            Arc::new(ProgrammedProvider::from_turns(vec![turn0]));
+
+        let tool = Arc::new(SlowTool {
+            delay: Duration::from_millis(500),
+            completed: completed.clone(),
+        });
+        let tools = ToolRegistry::new().register(tool as Arc<dyn Tool>);
+        let mut agent = Agent::new(provider, tools, RunConfig::new("test-model"));
+
+        let abort = agent.abort_handle();
+        let agent_handle = tokio::spawn(async move {
+            let events: Vec<AgentEvent> = {
+                let mut stream = Box::pin(agent.run(AgentMessage::user("test abort")));
+                use futures_util::StreamExt;
+                let mut acc = Vec::new();
+                while let Some(ev) = stream.next().await {
+                    // The stream is `Result<AgentEvent, AgentError>`.
+                    acc.push(ev.expect("agent stream yielded an error"));
+                }
+                acc
+            };
+            events
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        abort.abort();
+        let events = tokio::time::timeout(Duration::from_millis(2_000), agent_handle)
+            .await
+            .expect("agent task did not finish within 2s of abort")
+            .expect("agent task panicked");
+
+        // The invariant: no dangling ToolCallStart.
+        let mut started: HashSet<String> = HashSet::new();
+        let mut resolved: HashSet<String> = HashSet::new();
+        for ev in &events {
+            match ev {
+                AgentEvent::ToolCallStart { id, .. } => {
+                    started.insert(id.clone());
+                }
+                AgentEvent::ToolResult { id, .. } => {
+                    resolved.insert(id.clone());
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            !started.is_empty(),
+            "precondition: the fixture should have started tool calls, got {events:?}"
+        );
+        let dangling: Vec<&String> = started.difference(&resolved).collect();
+        assert!(
+            dangling.is_empty(),
+            "{} tool call(s) left permanently pending after abort: {dangling:?}\n\
+             The TUI draws a row per ToolCallStart and only resolves it on \
+             ToolResult, so these would stay pending for the rest of the session.",
+            dangling.len()
+        );
+
+        // The abort must still be signalled, and it must be the last
+        // thing that happens.
+        assert!(
+            matches!(events.last(), Some(AgentEvent::Aborted)),
+            "stream should end with Aborted, got {:?}",
+            events.last()
+        );
+    }
+
+    /// A resolved-by-abort result should say so, so the model and the
+    /// user can tell a cancellation from a genuine tool failure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn abort_results_are_labelled_as_aborted() {
+        use nini_core::AgentEvent;
+
+        let completed = Arc::new(AtomicU32::new(0));
+        let turn0 = vec![
+            FixtureTurn::ToolCall {
+                name: "slow".to_string(),
+                args: json!({}),
+            },
+            FixtureTurn::Stop {
+                stop_reason: "tool_use".to_string(),
+                usage: Usage::default(),
+            },
+        ];
+        let provider: Arc<dyn nini_core::Provider> =
+            Arc::new(ProgrammedProvider::from_turns(vec![turn0]));
+        let tool = Arc::new(SlowTool {
+            delay: Duration::from_millis(400),
+            completed: completed.clone(),
+        });
+        let tools = ToolRegistry::new().register(tool as Arc<dyn Tool>);
+        let mut agent = Agent::new(provider, tools, RunConfig::new("test-model"));
+
+        let abort = agent.abort_handle();
+        let agent_handle = tokio::spawn(async move {
+            let events: Vec<AgentEvent> = {
+                let mut stream = Box::pin(agent.run(AgentMessage::user("abort me")));
+                use futures_util::StreamExt;
+                let mut acc = Vec::new();
+                while let Some(ev) = stream.next().await {
+                    // The stream is `Result<AgentEvent, AgentError>`.
+                    acc.push(ev.expect("agent stream yielded an error"));
+                }
+                acc
+            };
+            events
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        abort.abort();
+        let events = tokio::time::timeout(Duration::from_millis(2_000), agent_handle)
+            .await
+            .expect("agent did not finish")
+            .expect("agent panicked");
+
+        let results: Vec<&AgentEvent> = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolResult { .. }))
+            .collect();
+        assert_eq!(
+            results.len(),
+            1,
+            "expected one closed-out result: {events:?}"
+        );
+        match results[0] {
+            AgentEvent::ToolResult { output, .. } => {
+                assert!(
+                    output.is_error,
+                    "an aborted call should be an error, not a success"
+                );
+                assert!(
+                    output.content.contains("abort"),
+                    "aborted result should say so: {:?}",
+                    output.content
+                );
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
 }
 // =====================================================================
 // v0.8.6: length-stop tool_call reject gate.

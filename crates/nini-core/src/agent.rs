@@ -1164,6 +1164,14 @@ impl Agent {
                     // the future (the registry + config are & references;
                     // we need to clone the strings we want to keep alive).
                     let specs: Vec<PendingToolCall> = tool_calls.clone();
+                    // v0.8.9 (P2-11): `specs` is consumed by the loop
+                    // below, so keep a cheap (id, name) copy for the
+                    // abort path that has to close out the calls that
+                    // never produced a result.
+                    let batch_identities: Vec<(String, String)> = specs
+                        .iter()
+                        .map(|s| (s.id.clone(), s.name.clone()))
+                        .collect();
 
                     let mut futures = FuturesUnordered::new();
                 for (idx, spec) in specs.into_iter().enumerate() {
@@ -1217,6 +1225,37 @@ impl Agent {
                 drop(futures); // cancel any still-pending futures
 
                 if aborted {
+                    // v0.8.9 (P2-11): close out every tool call that
+                    // never produced a result.
+                    //
+                    // The `ToolCallStart` events for this batch were
+                    // already emitted while streaming the assistant
+                    // turn, so the TUI has a `▸ read` / `▸ bash` row on
+                    // screen waiting for its matching result. On abort
+                    // we used to bail out with nothing more, leaving
+                    // those rows pending forever — the user could not
+                    // tell whether the tool was still running, and the
+                    // only way out was restarting the session. Pi emits
+                    // a cancelled result for each outstanding call.
+                    //
+                    // `tool_results_slots[idx]` is `None` exactly for the
+                    // calls that were dropped mid-flight, so it is the
+                    // authoritative list of what's outstanding.
+                    for (idx, slot) in tool_results_slots.iter().enumerate() {
+                        if slot.is_some() {
+                            continue;
+                        }
+                        let Some((id, name)) = batch_identities.get(idx) else {
+                            continue;
+                        };
+                        yield AgentEvent::ToolResult {
+                            id: id.clone(),
+                            name: name.clone(),
+                            output: ToolOutput::err(
+                                "[aborted] user interrupted before this tool finished".to_string(),
+                            ),
+                        };
+                    }
                     self.set_phase(AgentPhase::Idle);
                     yield AgentEvent::PhaseChanged(AgentPhase::Idle);
                     yield AgentEvent::Aborted;
