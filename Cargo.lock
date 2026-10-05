@@ -1433,10 +1433,12 @@ dependencies = [
 name = "nini-conformance"
 version = "0.9.1"
 dependencies = [
+ "futures-util",
  "nini-core",
  "nini-session",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
