@@ -2,27 +2,28 @@
 
 > A Pi-compatible coding agent, rewritten in Rust.
 
-[![Status](https://img.shields.io/badge/status-v0.8.4-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.8.9-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-816%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-920%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
 the AI coding agent by Mario Zechner. It reads the same `~/.pi/agent/`
 configuration, produces the same session JSONL v4, and exposes the same
-23 slash commands. Drop it in alongside Pi and your existing skills,
+28 slash commands. Drop it in alongside Pi and your existing skills,
 settings, and models.json keep working.
 
 ## Why nini?
 
-- **Single 4.3 MB binary** instead of a Node.js toolchain
+- **Single 5.4 MB binary** instead of a Node.js toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **532 unit + integration tests** including property-based SSE fuzz
+- **920 unit + integration tests**, including property-based SSE fuzz and
+  end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
 
-## Features (v0.7.0)
+## Features
 
 | Area | What works |
 |---|---|
@@ -119,7 +120,7 @@ hints. Type `/` to summon the slash-command autocomplete. Press
 
 ## Slash commands
 
-All 23 Pi-compatible commands are recognized. The ones marked **stub**
+All 28 Pi-compatible commands are recognized. The ones marked **stub**
 output a "not yet implemented" message instead of taking real action.
 
 | Command | Argument | Status |

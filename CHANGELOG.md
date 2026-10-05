@@ -1,3 +1,239 @@
+## v0.8.9 — What the transcript was hiding (2026-10-05)
+
+A release driven by a single question: *why does the UI feel heavy after a
+big task?* The answer turned out to be four separate P0s, three of which
+only a real end-to-end run could find — 920 tests were green while the
+agent could not say a word, could not pass a tool argument, and could not
+kill a process.
+
+Tests: **812 → 920** (+108, every one a regression guard with a verified
+red-then-green cycle).
+
+---
+
+### P0 — assistant text was 100% dropped on the OpenAI path
+
+`nini --provider openai-compat --model MiniMax-M3 -p "..."` printed
+**nothing**: no output, exit code 0, no error message anywhere. `curl`
+against the same endpoint returned a perfectly good answer.
+
+v0.8.4 had fixed a real bug — a chunk carrying both a `</think>` close and
+a tool-call start lost the tool call, because the text handler did
+`return Some(fragment)` and skipped the `tool_calls` loop — by stashing the
+fragments in `State::fragments_pending` instead. **The drain that stash was
+waiting for was never written.** The field had one writer and no reader,
+and `TextDelta` / `ThinkingDelta` were never constructed anywhere in
+`openai.rs`.
+
+```text
+$ grep -n fragments_pending crates/nini-ai/src/openai.rs
+144:    fragments_pending: Vec<ThinkFragment>,            # declaration
+364:                        state.fragments_pending = frags;   # only writer
+```
+
+Every test either used the `fixture` provider (which never touches SSE
+parsing) or hand-built `SseEvent` values and asserted on **tool-call**
+events — because tool calls were what v0.8.4 fixed. Nobody asserted that
+`TextDelta` comes out of a real wire payload.
+
+The fix drains one fragment per `translate_sse` call, *after* the
+tool_calls handling (v0.8.4's ordering must survive), plus a `finalize`
+flush so the last sentence of an answer isn't lost, plus
+`ThinkTagFilter::flush()` for streams that end mid-`<think>`.
+
+**Also found by the new wire tests, in the same file:**
+
+- **Duplicate `ToolCallStop`.** The single-shot inline-args path emitted a
+  Stop and left the entry in `tool_calls`, so `finalize` emitted a second
+  one for the same id — two transcript lines, `tool_results` written twice.
+- **Usage was permanently zero.** `finalize(&mut state, None)` hard-coded
+  `None` and discarded the parsed `chunk.usage`, so the status bar's token
+  and cost counters read 0 for every OpenAI-compatible provider no matter
+  what the model actually spent.
+
+### P0 — interleaved parallel tool calls lost their arguments
+
+Driving the real TUI with *"read these four files in parallel"*:
+
+```text
+▸ read {"path":"target1.rs"}
+▸ read {"path":"target2.rs"}
+▸ read {"path":"target3.rs"}
+▸ read {"path":"target4.rs"}
+✗ read Took 0ms
+  invalid arguments: invalid type: null, expected struct ReadArgs
+```
+
+The agent accumulated tool calls in a **single `current_call` slot**: every
+`ToolCallStart` pushed the previous call out with its `input_json` still
+empty, and every `ToolCallStop` discarded whatever did not match. That is
+correct for a strictly serial `Start→Stop→Start→Stop` sequence — which is
+exactly what `fixture` emits, and therefore exactly what every test in the
+repo exercised. Real models interleave, and the result was most tool calls
+reaching the tool layer as `Value::Null`.
+
+The transcript still looked perfect, because v0.8.8 made the TUI sink
+track each line by id independently — so the arguments rendered
+beautifully while the tools received nothing. Two bugs hiding each other.
+
+Now accumulated in a `HashMap` keyed by id, with stragglers flushed (and
+logged) if a Stop never arrives.
+
+### P0 — the bash tool never actually killed the process tree
+
+`kill_process_tree` passed `child.id()` to `killpg()` — but `BashTool`
+never called `setsid(2)`, so the child was not a process-group leader and
+the group it named did not exist:
+
+```text
+child pid=550789
+child's real pgid (/proc/550789/stat field 5) = 550786   # the parent's group
+killpg(child_pid=550789) target group exists? false      # ESRCH, swallowed
+```
+
+The tool description promises *"on timeout the process tree is killed"*.
+On the path the LLM actually uses, that was false. And because the
+process-group kill was dead, every timeout also sat out the full grace
+period: a `timeout: 1` call really cost **6177 ms** (1 s + 5000 ms grace,
+after which the child was finally reaped by `kill_on_drop`).
+
+The root cause was two divergent bash implementations — `bash_runner.rs`
+(hook path) had the `pre_exec(setsid)`, `bash.rs` (tool path) had a comment
+claiming it did and no code to match, with zero test overlap. Both now go
+through one `procgroup` module, and `KILL_GRACE_MS` is 500 instead of 5000.
+
+### P0 — a CJK bash result panicked the whole agent
+
+`truncate()` cut the byte budget with a raw `&kept[..half]`:
+
+```text
+panicked at src/bash.rs: end byte index 524288 is not a char
+boundary; it is inside '文' (bytes 524286..524289 of string)
+```
+
+This is the same bug class v0.8.4 fixed twice (`render_tool_call`,
+`render_bash_execution`) — `truncate` was missed both times. It lives on
+the tool-execution path, so a >1 MiB Chinese bash result unwound the entire
+agent. 812 tests were green because every fixture was ASCII.
+
+### P0 — `read` overflowed, or silently lied
+
+`limit` defaulted to `usize::MAX`, so `offset + limit` overflowed. Debug
+builds (what `cargo test` runs) panicked with `attempt to add with
+overflow`; release wrapped to `offset - 1` and the tool **returned an empty
+string**, so the model concluded the file had no content past the offset.
+A model passing `offset` without `limit` is completely ordinary, and it
+could take the agent down.
+
+### P0 — bash output was buffered in full before truncation
+
+Both readers were unbounded `read_to_end`, so the 1 MiB budget was a
+post-hoc cosmetic number. `yes | head -c 64MB` reported
+`original_bytes=67108864` and `original_lines=6100806` while returning
+22 KB — the peak held the 64 MB, a second 64 MB `from_utf8_lossy` copy,
+and ~6.1 M fat pointers for the `lines().collect()` inside `truncate`.
+
+Now capped *while streaming* (draining past the cap so the child never
+blocks on a full pipe) with honest totals, and `truncate` is a single pass
+on character boundaries. `read` also got a real ceiling, checked against
+metadata *before* loading.
+
+---
+
+### P1 — the transcript lied about what it cut, then got 200× faster
+
+**Rendering (`P1-3` … `P1-6`).** Only `tool_result` had a width budget.
+Everything else was handed to ratatui's `List`, which does **not** wrap —
+it cuts at the screen edge with no marker. A 210-character user message
+rendered as `> STARTAAAA…` with the tail simply gone; `render_tool_call`'s
+flat 120-**byte** budget put its `…` at column 120, i.e. *off-screen*, so
+the truncation marker was itself truncated away. The unit test "covering"
+it asserted `joined.contains('…')` on the returned string, so it stayed
+green while the screen showed a bare hard cut.
+
+Every renderer now takes a cell budget; `truncate_cells` /
+`truncate_cells_head` are the shared primitives (the latter for paths and
+model ids, where the tail is the informative end). The truncation
+indicator now reports what was *actually* dropped, in the unit it was
+dropped in — it was subtracting a 2 KB budget that v0.8.7 had already
+stopped applying, so it said nothing when 1460 cells were hidden and said
+"2 KB" when 4.7 KB was. The footer no longer overflows (it measured with
+`chars().count()`, and appended the right half past the terminal edge when
+the halves did not fit — pushing the model name, of all things, off
+screen). Shrinking the transcript (compaction, `/clear`, `/new`, session
+reload) resets the scroll viewport, which previously left a completely
+blank transcript with a meaningless `↓ 59 more`.
+
+**Performance (`P1-7`).** *"After finishing a complex task, typing in the
+prompt felt sluggish and the TUI felt like it was holding a lot of
+resources."* The renderer needed each line's row count and got it by
+rendering **every line, fully, on every frame** — then rendering the
+visible ones a second time.
+
+```text
+                       before      after    speedup
+   16 lines /   8 KB    5.94 ms    1.67 ms      3.6x
+  307 lines / 164 KB   90.65 ms    1.87 ms     48x
+ 1227 lines / 661 KB  361.53 ms    1.82 ms    199x
+```
+
+A linear **0.545 ms/KB** with no intercept; a 16 ms budget is 60 fps, so
+~29 KB saturated a frame. The cost was *independent of what was on screen*:
+34 visible rows, 1227 lines rendered, 1193 discarded. Now cached on
+`(width, content fingerprint)`, which is self-invalidating — a streamed
+`AssistantText` grows, its length changes, only that line is re-counted.
+
+---
+
+### P2 — durability, cancellation, resource bounds
+
+- **Session JSONL** (`P2-9`): one malformed line used to make the *entire*
+  session unreadable — a hand-edit, a disk that filled mid-append, a
+  truncated copy, a field from a newer nini. Now salvaged line by line,
+  with the damage reported in the transcript rather than only in a log
+  (a silent tolerance is its own kind of lie).
+- **Abort** (`P2-11`): the abort path returned without emitting
+  `ToolResult`, so every in-flight tool call stayed pending in the
+  transcript for the rest of the session. The test for it asserts the
+  **invariant** (every `ToolCallStart` id appears as a `ToolResult` id) —
+  the pre-existing test only checked that the task ended, which is why it
+  never noticed.
+- **Parallel tool execution** (`P2-10`): batch size was whatever the model
+  emitted. 30 `bash` calls meant 30 process trees at once, multiplying
+  against the memory ceiling above. Now a worker pool bounded by
+  `RunConfig::max_parallel_tools` (default 8; `0` = unlimited).
+- **CI** (`P3-14`): the clippy job's `-D` flags were cancelled by `-A`
+  flags for the same lints later in the same command — it had been
+  allowing everything. The fmt job had been red since the repo was
+  created. Both now gate for real.
+
+---
+
+### Testing discipline (v0.8.9)
+
+Four bugs in this release could not be caught by the tests that existed,
+and the pattern is consistent: **they all lived on code paths the
+`fixture` provider never takes.** Fixture turns are serial, well-formed,
+non-truncating, and never interleave.
+
+So v0.8.9 adds two layers that had been missing entirely:
+
+- `crates/nini-ai/tests/openai_wire_e2e.rs` — 14 tests through the real
+  `stream()`: real HTTP (wiremock), real SSE bytes, real `translate_sse`,
+  real `finalize`.
+- `crates/nini-tui/tests/transcript_width_e2e.rs` (14) and
+  `transcript_perf_e2e.rs` (8) — `TestBackend` cell-level assertions, not
+  string-level ones.
+
+And a rule, learned the hard way three times this release: **assert the
+property that broke, not an adjacent symptom.** Removing the text drain
+still produced every character in the right order, just at the wrong
+*moment*; counting events couldn't tell it apart, so it took an ordering
+assertion. Performance needed a *ratio*, not an absolute millisecond
+count, or it would go flaky on slow CI.
+
+---
+
 ## v0.8.8 — Tool identity preservation (2026-10-03)
 
 Driving real LLM tasks after v0.8.7 revealed 3 additional bugs where
