@@ -101,40 +101,81 @@ pub fn summarize_branch(entries: &[Entry]) -> String {
 
 /// Extract file paths referenced by tool calls in the given entries.
 /// Returns `(read_files, modified_files)` as sorted, deduplicated vectors.
+/// Accumulated file operations, mirroring Pi's `FileOperations`
+/// (`compaction/utils.ts:5-13`).
+#[derive(Debug, Clone, Default)]
+pub struct FileOps {
+    /// Paths passed to the `read` tool.
+    pub read: std::collections::BTreeSet<String>,
+    /// Paths passed to the `write` tool.
+    pub written: std::collections::BTreeSet<String>,
+    /// Paths passed to the `edit` tool.
+    pub edited: std::collections::BTreeSet<String>,
+}
+
+/// Extract file paths referenced by tool calls in the given entries.
+/// Returns `(read_files, modified_files)` as sorted, deduplicated vectors.
+///
+/// v0.10: this used to scrape *Tool* message text, split it on whitespace
+/// and regex-match anything path-shaped. That was wrong in four ways:
+///
+///  1. it read `Role::Tool` messages, while Pi reads the **assistant** turn
+///     that requested the call (`utils.ts:25`);
+///  2. it ignored the structured `ToolUse` block and guessed from prose, so
+///     a path merely quoted inside a file's *contents* looked like a read;
+///  3. it had no tool-name dispatch, so nothing could ever be classified as
+///     modified — the `mods` set was declared and never inserted into;
+///  4. consequently `build_branch_summary_entry` always produced an empty
+///     `modified_files`.
+///
+/// Pi reads the assistant's `toolCall` blocks and dispatches on the tool
+/// name (`utils.ts:24-52`). The structured form was available all along.
 pub fn extract_file_operations(entries: &[Entry]) -> (Vec<String>, Vec<String>) {
-    let mut reads: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mods: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut ops = FileOps::default();
     for entry in entries {
-        if let Some(m) = &entry.message {
-            if !matches!(m.role, crate::provider::Role::Tool) {
+        let Some(m) = &entry.message else { continue };
+        if !matches!(m.role, crate::provider::Role::Assistant) {
+            continue;
+        }
+        for block in &m.content {
+            let crate::provider::ContentBlock::ToolUse { name, input, .. } = block else {
                 continue;
-            }
-            for block in &m.content {
-                if let crate::provider::ContentBlock::Text { text } = block {
-                    for token in text.split_whitespace() {
-                        let s = token.trim_matches(|c: char| {
-                            c == '"' || c == '\'' || c == '<' || c == '>' || c == ','
-                        });
-                        if is_path_like(s) {
-                            reads.insert(s.to_string());
-                        }
-                    }
+            };
+            let Some(path) = input.get("path").and_then(|p| p.as_str()) else {
+                continue;
+            };
+            match name.as_str() {
+                "read" => {
+                    ops.read.insert(path.to_string());
                 }
+                "write" => {
+                    ops.written.insert(path.to_string());
+                }
+                "edit" => {
+                    ops.edited.insert(path.to_string());
+                }
+                _ => {}
             }
         }
     }
-    (reads.into_iter().collect(), mods.into_iter().collect())
+    compute_file_lists(&ops)
 }
 
-fn is_path_like(s: &str) -> bool {
-    s.len() >= 3
-        && (s.starts_with('/')
-            || s.starts_with("~/")
-            || s.starts_with("./")
-            || s.starts_with("../")
-            || (s.contains('/')
-                && !s.contains(' ')
-                && s.chars().any(|c| c.is_ascii_alphanumeric())))
+/// Split accumulated operations into read-only and modified lists.
+///
+/// Mirrors Pi's `computeFileLists` (`utils.ts:54-58`): a path that was both
+/// read and written counts as **modified only** — listing it under
+/// read-files would tell the summarizer the file was left alone.
+pub fn compute_file_lists(ops: &FileOps) -> (Vec<String>, Vec<String>) {
+    let mut modified: std::collections::BTreeSet<String> = ops.edited.clone();
+    modified.extend(ops.written.iter().cloned());
+    let read_only: Vec<String> = ops
+        .read
+        .iter()
+        .filter(|f| !modified.contains(*f))
+        .cloned()
+        .collect();
+    (read_only, modified.into_iter().collect())
 }
 
 /// Serialize entries to a single string suitable for inclusion in a prompt.
@@ -189,19 +230,31 @@ fn format_entry_line(idx: usize, entry: &Entry) -> String {
 
 /// Format file operations as the XML-style block pi-mono uses for branch
 /// summary inputs.
+/// Render the file lists as summary metadata.
+///
+/// Mirrors Pi's `formatFileOperations` (`utils.ts:62-74`): newline-separated
+/// paths inside `<read-files>` / `<modified-files>`, and **nothing at all**
+/// when both lists are empty. nini used to emit both tags unconditionally
+/// with `<file>` wrappers, making "no operations" indistinguishable from
+/// "not reported".
 pub fn format_file_operations(read_files: &[String], modified_files: &[String]) -> String {
-    let mut out = String::new();
-    out.push_str("<read-files>\n");
-    for f in read_files {
-        out.push_str(&format!("  <file>{f}</file>\n"));
+    let mut sections: Vec<String> = Vec::new();
+    if !read_files.is_empty() {
+        sections.push(format!(
+            "<read-files>\n{}\n</read-files>",
+            read_files.join("\n")
+        ));
     }
-    out.push_str("</read-files>\n");
-    out.push_str("<modified-files>\n");
-    for f in modified_files {
-        out.push_str(&format!("  <file>{f}</file>\n"));
+    if !modified_files.is_empty() {
+        sections.push(format!(
+            "<modified-files>\n{}\n</modified-files>",
+            modified_files.join("\n")
+        ));
     }
-    out.push_str("</modified-files>\n");
-    out
+    if sections.is_empty() {
+        return String::new();
+    }
+    format!("\n\n{}", sections.join("\n\n"))
 }
 
 /// Build a `BranchSummaryMessage` from entries without invoking an LLM.
@@ -341,8 +394,16 @@ mod tests {
         assert!(reads.is_empty());
     }
 
+    /// v0.10: this used to assert the *bug*. It built a `Role::Tool` message
+    /// whose text mentioned two paths and required both to be reported as
+    /// files the agent had read. That is the old scraper: text matching
+    /// instead of structured tool calls, so any path mentioned in prose —
+    /// including one merely quoted inside a file's contents — was recorded
+    /// as an operation.
+    ///
+    /// Pi reads the assistant's `toolCall` blocks (`utils.ts:24-52`).
     #[test]
-    fn extract_file_operations_picks_paths_from_tool_results() {
+    fn paths_in_tool_result_prose_are_not_operations() {
         let mut entry = Entry::default();
         entry.id = "tool".to_string();
         entry.message = Some(crate::provider::Message {
@@ -352,43 +413,54 @@ mod tests {
             }],
             timestamp: 0,
         });
-        let (reads, _mods) = extract_file_operations(&[entry]);
-        assert!(reads.contains(&"/home/user/src/lib.rs".to_string()));
-        assert!(reads.contains(&"./README.md".to_string()));
+        let (reads, mods) = extract_file_operations(&[entry]);
+        assert!(
+            reads.is_empty() && mods.is_empty(),
+            "tool *result* text is output, not a request; got {reads:?} / {mods:?}"
+        );
     }
 
+    /// v0.10: built a `Role::Tool` message and expected the branch summary
+    /// to name the path in it. The summary now derives its file list from
+    /// assistant tool calls, so this asserts that route instead.
     #[test]
     fn summarize_branch_includes_files_section() {
         let mut entry = Entry::default();
-        entry.id = "tool".to_string();
+        entry.id = "assistant".to_string();
         entry.message = Some(crate::provider::Message {
-            role: crate::provider::Role::Tool,
-            content: vec![crate::provider::ContentBlock::Text {
-                text: "/tmp/foo.rs".to_string(),
+            role: crate::provider::Role::Assistant,
+            content: vec![crate::provider::ContentBlock::ToolUse {
+                id: "1".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({ "path": "/tmp/foo.rs" }),
             }],
             timestamp: 0,
         });
         let s = summarize_branch(&[entry]);
-        assert!(s.contains("/tmp/foo.rs"));
-        assert!(s.contains("Files Touched"));
+        assert!(s.contains("/tmp/foo.rs"), "{s}");
+        assert!(s.contains("Files Touched"), "{s}");
     }
 
+    /// v0.10: was asserting `<file>` wrappers, which Pi does not emit —
+    /// `formatFileOperations` (`utils.ts:66-71`) writes bare newline-separated
+    /// paths. The shape is what the summarizer model sees, so it is worth
+    /// pinning exactly.
     #[test]
-    fn format_file_operations_emits_xml_tags() {
+    fn format_file_operations_emits_pi_sections() {
         let xml = format_file_operations(&["/a.rs".into()], &["/b.rs".into()]);
-        assert!(xml.contains("<read-files>"));
-        assert!(xml.contains("<modified-files>"));
-        assert!(xml.contains("<file>/a.rs</file>"));
-        assert!(xml.contains("<file>/b.rs</file>"));
+        assert_eq!(
+            xml,
+            "\n\n<read-files>\n/a.rs\n</read-files>\n\n<modified-files>\n/b.rs\n</modified-files>"
+        );
     }
 
+    /// v0.10: used to assert that empty input still emits both tags. Pi
+    /// returns `""` (`utils.ts:73`), and the distinction matters: an empty
+    /// section reads as "the summarizer never looked", which is how a
+    /// silently-empty file inventory hides.
     #[test]
-    fn format_file_operations_handles_empty_inputs() {
-        let xml = format_file_operations(&[], &[]);
-        assert!(xml.contains("<read-files>"));
-        assert!(xml.contains("</read-files>"));
-        assert!(xml.contains("<modified-files>"));
-        assert!(xml.contains("</modified-files>"));
+    fn format_file_operations_emits_nothing_when_there_are_no_operations() {
+        assert_eq!(format_file_operations(&[], &[]), "");
     }
 
     #[test]
@@ -435,14 +507,78 @@ mod tests {
         assert!(BRANCH_SUMMARY_PROMPT.contains("## Output Format"));
     }
 
+    /// v0.10: replaces a test for `is_path_like`, a path-shaped-token
+    /// heuristic that existed only to support the old scraper. Path *shape*
+    /// is not the discriminator Pi uses — the structured tool call and its
+    /// name are (`utils.ts:24-52`). What matters now:
+    /// classification by tool name, and read-only meaning "not modified".
     #[test]
-    fn is_path_like_recognises_common_shapes() {
-        assert!(is_path_like("/abs/path"));
-        assert!(is_path_like("./relative"));
-        assert!(is_path_like("../up"));
-        assert!(is_path_like("~/home/path"));
-        assert!(!is_path_like("not a path"));
-        assert!(!is_path_like("")); // too short
-        assert!(!is_path_like("ab")); // too short
+    fn file_ops_come_from_tool_calls_not_from_prose() {
+        let mut e1 = Entry::default();
+        e1.id = "a1".into();
+        e1.message = Some(crate::provider::Message {
+            role: crate::provider::Role::Assistant,
+            content: vec![
+                crate::provider::ContentBlock::ToolUse {
+                    id: "1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({ "path": "src/one.rs" }),
+                },
+                crate::provider::ContentBlock::ToolUse {
+                    id: "2".into(),
+                    name: "write".into(),
+                    input: serde_json::json!({ "path": "src/two.rs" }),
+                },
+                crate::provider::ContentBlock::ToolUse {
+                    id: "3".into(),
+                    name: "edit".into(),
+                    input: serde_json::json!({ "path": "src/three.rs" }),
+                },
+            ],
+            timestamp: 0,
+        });
+        let mut e2 = Entry::default();
+        e2.id = "a2".into();
+        e2.message = Some(crate::provider::Message {
+            role: crate::provider::Role::Assistant,
+            content: vec![crate::provider::ContentBlock::Text {
+                text: "I will not touch /etc/passwd".into(),
+            }],
+            timestamp: 0,
+        });
+        let (read, modified) = extract_file_operations(&[e1, e2]);
+        assert_eq!(read, vec!["src/one.rs".to_string()]);
+        assert_eq!(
+            modified,
+            vec!["src/three.rs".to_string(), "src/two.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_read_then_edit_is_modified_not_read_only() {
+        let mut e = Entry::default();
+        e.id = "a1".into();
+        e.message = Some(crate::provider::Message {
+            role: crate::provider::Role::Assistant,
+            content: vec![
+                crate::provider::ContentBlock::ToolUse {
+                    id: "1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({ "path": "src/x.rs" }),
+                },
+                crate::provider::ContentBlock::ToolUse {
+                    id: "2".into(),
+                    name: "edit".into(),
+                    input: serde_json::json!({ "path": "src/x.rs" }),
+                },
+            ],
+            timestamp: 0,
+        });
+        let (read, modified) = extract_file_operations(&[e]);
+        assert!(
+            read.is_empty(),
+            "modified file must not be listed as read-only"
+        );
+        assert_eq!(modified, vec!["src/x.rs".to_string()]);
     }
 }

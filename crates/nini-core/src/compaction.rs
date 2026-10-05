@@ -417,11 +417,77 @@ pub fn prepare_compaction(
 /// - User questions (first user text in each turn)
 /// - Assistant outcomes (text responses)
 /// - Tool calls (name + args)
+/// File operations recorded by an *earlier* compaction.
+///
+/// Pi re-reads `prevCompaction.details.readFiles` / `.modifiedFiles` when it
+/// compacts again (`compaction.ts:59-65`), so the file inventory survives
+/// being compacted away itself. nini previously had neither the first
+/// computation nor the carry-forward.
+fn carried_file_ops(entries: &[Entry]) -> (Vec<String>, Vec<String>) {
+    let mut reads = Vec::new();
+    let mut modified = Vec::new();
+    for e in entries {
+        if e.entry_type != crate::LegacyEntryType::Compaction {
+            continue;
+        }
+        let Some(summary) = &e.summary else { continue };
+        collect_tagged(summary, "read-files", &mut reads);
+        collect_tagged(summary, "modified-files", &mut modified);
+    }
+    (reads, modified)
+}
+
+/// Pull `<tag>\n…\n</tag>` entries out of a previous summary.
+fn collect_tagged(text: &str, tag: &str, out: &mut Vec<String>) {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut inside = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line == open {
+            inside = true;
+            continue;
+        }
+        if line == close {
+            inside = false;
+            continue;
+        }
+        if inside && !line.is_empty() {
+            out.push(line.to_string());
+        }
+    }
+}
+
 pub fn generate_local_summary(entries: &[Entry]) -> String {
     let mut out = String::new();
     out.push_str("# Local summary (deterministic)\n\n");
 
-    let file_ops: Vec<String> = Vec::new();
+    // v0.10: this was `let file_ops: Vec<String> = Vec::new();` with a
+    // render branch below it that could therefore never run. The summary
+    // silently lost every fact about which files the run touched — the one
+    // thing a summarizer most needs in order to keep working after the
+    // detail is compacted away.
+    //
+    // Pi carries these lists in `CompactionDetails` and re-reads them from
+    // `prevCompaction.details` on the next compaction (`compaction.ts:59-65`),
+    // so the information survives repeated compactions. `carried` is that
+    // carry-forward.
+    let (mut read_files, mut modified_files) =
+        crate::branch_summary::extract_file_operations(entries);
+    let carried = carried_file_ops(entries);
+    for f in carried.0 {
+        if !read_files.contains(&f) && !modified_files.contains(&f) {
+            read_files.push(f);
+        }
+    }
+    for f in carried.1 {
+        if !modified_files.contains(&f) {
+            modified_files.push(f);
+        }
+    }
+    read_files.sort();
+    modified_files.sort();
+
     let mut user_questions: Vec<String> = Vec::new();
     let mut tool_calls: Vec<String> = Vec::new();
     let mut assistant_responses: Vec<String> = Vec::new();
@@ -488,11 +554,14 @@ pub fn generate_local_summary(entries: &[Entry]) -> String {
         out.push('\n');
     }
 
-    if !file_ops.is_empty() {
-        out.push_str("## File operations\n");
-        for f in file_ops {
-            out.push_str(&format!("- {}\n", f));
-        }
+    // v0.10: render via `branch_summary::format_file_operations`, so the
+    // markup matches Pi's `<read-files>` / `<modified-files>` sections
+    // instead of a bespoke bullet list the LLM path never produces.
+    let file_section = crate::branch_summary::format_file_operations(&read_files, &modified_files);
+    if !file_section.is_empty() {
+        out.push_str("## File operations");
+        out.push_str(&file_section);
+        out.push('\n');
     }
 
     if out == "# Local summary (deterministic)\n\n" {
