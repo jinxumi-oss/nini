@@ -396,9 +396,35 @@ fn cmd_import(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     CommandResult::output(out)
 }
 
+/// What a `/copy` attempt actually achieved.
+///
+/// v0.9.2 (P0-4): extracted so both branches are unit-testable without a
+/// real clipboard. CI has none, which is exactly why the old unconditional
+/// `Ok(())` stub survived 937 green tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyOutcome {
+    /// The text really is on the system clipboard.
+    Clipboard { bytes: usize },
+    /// No clipboard was reachable; the text went to stdout instead.
+    Stdout { bytes: usize, reason: String },
+}
+
+/// Map a clipboard attempt onto what we can honestly claim.
+fn classify_copy(msg: &str, res: Result<(), String>) -> CopyOutcome {
+    match res {
+        Ok(()) => CopyOutcome::Clipboard { bytes: msg.len() },
+        Err(reason) => CopyOutcome::Stdout {
+            bytes: msg.len(),
+            reason,
+        },
+    }
+}
+
 fn cmd_copy(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
     // Copy the last assistant message to the system clipboard.
-    // Falls back to stdout (for headless) if clipboard unavailable.
+    // If no clipboard is reachable (headless, no $DISPLAY), print to
+    // stdout instead and SAY SO — v0.9.2 (P0-4) fixed this reporting a
+    // copy that never happened.
     let last_assistant = state
         .transcript_state
         .lines
@@ -409,23 +435,21 @@ fn cmd_copy(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) 
             _ => None,
         });
     match last_assistant {
-        Some(msg) => {
-            match crate::clipboard::copy(&msg) {
-                Ok(()) => CommandResult::output(vec![format!(
-                    "(copied {} bytes to clipboard)",
-                    msg.len()
-                )]),
-                Err(_e) => {
-                    // Fallback: print to stdout so headless users
-                    // can still grab the text.
-                    println!("{msg}");
-                    CommandResult::output(vec![format!(
-                        "(copied {} bytes to stdout — clipboard unavailable)",
-                        msg.len()
-                    )])
-                }
+        Some(msg) => match classify_copy(&msg, crate::clipboard::copy(&msg)) {
+            CopyOutcome::Clipboard { bytes } => {
+                CommandResult::output(vec![format!("(copied {bytes} bytes to clipboard)")])
             }
-        }
+            CopyOutcome::Stdout { bytes, reason } => {
+                // Fallback: print to stdout so headless users can still
+                // grab the text. The reason is surfaced verbatim so a
+                // Wayland-permissions failure is distinguishable from a
+                // headless run.
+                println!("{msg}");
+                CommandResult::output(vec![format!(
+                    "(copied {bytes} bytes to stdout — no clipboard: {reason})"
+                )])
+            }
+        },
         None => CommandResult::output(vec!["(no assistant message to copy)".to_string()]),
     }
 }
@@ -767,14 +791,25 @@ fn cmd_login(_state: &mut AppState, _settings: &mut SettingsManager, args: &str)
 
 fn cmd_logout(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
     // /logout [provider]
-    // Removes the API key for the given provider (or all known
-    // providers when no arg given) from the process environment.
-    // Pi stores these in ~/.pi/agent/auth.json; nini v1 uses env
-    // vars directly (matching the no-OAuth guidance in README).
+    //
+    // v0.9.2 (P0-5): this USED TO claim to remove credentials. It only
+    // ever called `std::env::var_os(env).is_some()` and then reported
+    // "credentials unset in this session" — nothing was ever unset.
+    //
+    // The tempting one-liner here is `std::env::remove_var`. Do not do
+    // it: the TUI is a multi-threaded tokio runtime, and `remove_var`
+    // racing another thread's `var_os` is undefined behaviour, not just
+    // a style problem. (On edition 2024 the compiler rejects it outright,
+    // which is why the temptation is easy to fall for when the code is
+    // moved to a newer edition.)
+    //
+    // What nini CAN do honestly: detect which keys are set and hand the
+    // user the exact shell command to unset them. That is what this
+    // does now.
     let provider_arg = args.trim();
     // Map provider name → env var (Pi's mapping is in
     // `~/.pi/agent/auth.json`; we keep an explicit table).
-    let known: &[(&str, &str)] = &[
+    const KNOWN: &[(&str, &str)] = &[
         ("anthropic", "ANTHROPIC_API_KEY"),
         ("openai", "OPENAI_API_KEY"),
         ("openai-responses", "OPENAI_API_KEY"),
@@ -786,53 +821,74 @@ fn cmd_logout(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
         ("groq", "GROQ_API_KEY"),
         ("together", "TOGETHER_API_KEY"),
     ];
-    let to_remove: Vec<&str> = if provider_arg.is_empty() {
-        known.iter().map(|(_, env)| *env).collect()
+    // `openai` / `openai-responses` / `openai-compat` all map to the same
+    // variable. v0.9.2 (P0-5): dedupe, or a bare `/logout` printed
+    // "OPENAI_API_KEY" three times.
+    let to_check: Vec<&str> = if provider_arg.is_empty() {
+        let mut seen = std::collections::BTreeSet::new();
+        KNOWN
+            .iter()
+            .map(|(_, env)| *env)
+            .filter(|env| seen.insert(*env))
+            .collect()
     } else {
         let p = provider_arg.to_lowercase();
-        known
+        let mut seen = std::collections::BTreeSet::new();
+        KNOWN
             .iter()
             .filter(|(name, _)| *name == p.as_str())
             .map(|(_, env)| *env)
+            .filter(|env| seen.insert(*env))
             .collect()
     };
-    if to_remove.is_empty() {
+    if to_check.is_empty() {
         return CommandResult::output(vec![
             format!("logout: unknown provider {provider_arg:?}"),
-            "known: anthropic, openai, google, mistral, cohere, deepseek, groq, together"
+            "known: anthropic, openai, openai-responses, openai-compat, google, mistral, cohere, deepseek, groq, together"
                 .to_string(),
         ]);
     }
-    let mut removed = Vec::new();
-    let mut missing = Vec::new();
-    for env in &to_remove {
-        // Process env: we can't unset the parent's env, but we
-        // can spawn a sub-shell that re-execs nini without it.
-        // For v1 we just report what would be removed; the
-        // environment note in the README explains the limitation.
+    let mut present: Vec<&str> = Vec::new();
+    let mut already: Vec<&str> = Vec::new();
+    for env in &to_check {
+        // Presence check only. Note this reads nini's OWN environment,
+        // which is the environment it was launched with.
         if std::env::var_os(env).is_some() {
-            removed.push(*env);
+            present.push(env);
         } else {
-            missing.push(*env);
+            already.push(env);
         }
     }
+
+    let mut out = Vec::new();
+    if present.is_empty() {
+        out.push("no credentials set in nini's environment".to_string());
+        out.push(String::new());
+        out.push("nini reads API keys from environment variables and cannot".to_string());
+        out.push("modify the environment of the shell that started it.".to_string());
+    } else {
+        out.push(format!(
+            "nini cannot unset credentials in your shell ({} found).",
+            present.len()
+        ));
+        out.push("Run this in the shell that launched nini, then restart nini:".to_string());
+        out.push(String::new());
+        for env in &present {
+            out.push(format!("  unset {env}"));
+        }
+        out.push(String::new());
+        out.push("(if you exported it in a profile, remove it there too)".to_string());
+    }
+    if !already.is_empty() {
+        out.push(String::new());
+        out.push(format!("already unset: {}", already.join(", ")));
+    }
     state.push_assistant(format!(
-        "[logout] removed={}, missing={}",
-        removed.len(),
-        missing.len()
+        "[logout] present={}, already-unset={}",
+        present.len(),
+        already.len()
     ));
     state.push_divider();
-    let mut out = Vec::new();
-    if !removed.is_empty() {
-        out.push(format!(
-            "credentials unset in this session: {}",
-            removed.join(", ")
-        ));
-        out.push("(note: env-var unset requires restarting nini to take effect)".to_string());
-    }
-    if !missing.is_empty() {
-        out.push(format!("already unset: {}", missing.join(", ")));
-    }
     CommandResult::output(out)
 }
 
@@ -1392,4 +1448,116 @@ fn cmd_share(state: &mut AppState, _settings: &mut SettingsManager, _args: &str)
     // see Pi spec `references/spec-v0.85.1/slash-commands/share.md`.
     let _ = state;
     CommandResult::error("share: not yet implemented")
+}
+
+#[cfg(test)]
+mod honesty_tests {
+    //! v0.9.2 — regression tests for the two P0 "reported success but did
+    //! nothing" commands. Both shipped through 937 green tests, because
+    //! neither had a testable seam. These add one.
+
+    use super::*;
+
+    // ----------------------------------------------------------------
+    // P0-4: /copy
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn copy_success_is_only_claimed_when_copy_really_succeeded() {
+        let out = classify_copy("hello", Ok(()));
+        assert_eq!(out, CopyOutcome::Clipboard { bytes: 5 });
+    }
+
+    #[test]
+    fn copy_failure_is_never_reported_as_copied_to_clipboard() {
+        let out = classify_copy("hello", Err("clipboard unavailable: no DISPLAY".into()));
+        match out {
+            CopyOutcome::Stdout { bytes, ref reason } => {
+                assert_eq!(bytes, 5);
+                assert!(reason.contains("clipboard"));
+            }
+            other => {
+                panic!("a failed copy must NOT be reported as a clipboard success; got {other:?}")
+            }
+        }
+    }
+
+    /// The exact stub this replaces was `copy(_s) -> Ok(())`. Nothing in
+    /// CI can tell a real clipboard from a fake one, so the only guard we
+    /// can install is on the *classification*: a caller-supplied Err must
+    /// never be laundered into a success message.
+    #[test]
+    fn copy_never_launders_an_error_into_success() {
+        for reason in ["clipboard unavailable", "clipboard write failed", ""] {
+            let out = classify_copy("data", Err(reason.into()));
+            assert!(
+                matches!(out, CopyOutcome::Stdout { .. }),
+                "Err({reason:?}) was laundered into a clipboard success"
+            );
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // P0-5: /logout
+    // ----------------------------------------------------------------
+
+    fn logout_lines(state: &mut AppState, args: &str) -> Vec<String> {
+        let mut settings = SettingsManager::default();
+        let r = dispatch(state, &mut settings, CommandId::Logout, args);
+        assert!(r.error.is_none(), "/logout errored: {:?}", r.error);
+        match r.outcome {
+            crate::commands::CommandOutcome::Output(l) => l,
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    /// The regression: v0.9.1 printed "credentials unset in this session"
+    /// after doing nothing at all. The word "unset" in the imperative
+    /// sense must not come back.
+    #[test]
+    fn logout_never_claims_to_have_unset_anything() {
+        let mut state = AppState::new("test-model");
+        let lines = logout_lines(&mut state, "anthropic");
+        let blob = lines.join("\n");
+        for forbidden in ["removed", "credentials unset in this session"] {
+            assert!(
+                !blob.contains(forbidden),
+                "/logout must not claim {forbidden:?}; output was:\n{blob}"
+            );
+        }
+    }
+
+    /// `openai` / `openai-responses` / `openai-compat` all map to
+    /// `OPENAI_API_KEY`. A bare `/logout` used to list it three times.
+    #[test]
+    fn logout_dedupes_env_vars_across_provider_aliases() {
+        let mut state = AppState::new("test-model");
+        let lines = logout_lines(&mut state, "");
+        let joined = lines.join("\n");
+        // Whatever the answer, a given variable may be named at most
+        // once per `unset` line. Count occurrences of the alias target
+        // appearing as a standalone listed command.
+        let unset_lines: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.trim_start().starts_with("unset "))
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for l in &unset_lines {
+            let var = l.trim().trim_start_matches("unset ").trim();
+            assert!(seen.insert(var), "duplicate `unset {var}` line: {l:?}");
+        }
+        // And it must never exceed the number of distinct known vars (7).
+        assert!(
+            unset_lines.len() <= 7,
+            "at most 7 distinct env vars are known, got {}: {joined:?}",
+            unset_lines.len()
+        );
+    }
+
+    #[test]
+    fn logout_rejects_unknown_provider() {
+        let mut state = AppState::new("test-model");
+        let lines = logout_lines(&mut state, "not-a-provider");
+        assert!(lines[0].contains("unknown provider"), "{lines:?}");
+    }
 }

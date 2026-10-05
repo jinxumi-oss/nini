@@ -1,3 +1,122 @@
+## v0.9.2 — Things that told you they worked when they didn't (UNRELEASED)
+
+The v0.8.9 and v0.9.1 releases fixed crashes. This one fixes a
+different class of problem: **nini reporting success it had not
+achieved.** Three of the four items below shipped through a fully
+green 937-test suite with zero clippy warnings.
+
+Tests: **937 → 950**.
+
+---
+
+### Fix — the TUI never told the model about your skills (P0-1)
+
+`app.rs` built the system prompt with a hardcoded empty string where
+the skills block belonged:
+
+```rust
+settings_to_system_prompt(&settings, &cwd, &shared_tools, "")
+//                                                     ^ this
+```
+
+Meanwhile `settings_to_system_prompt` already accepted a
+`skills_prompt` argument and appended it, `format_skills_for_prompt`
+already rendered the Pi-style `<available_skills>` XML, and the status
+bar told the user **"loaded 5 skills — type to begin"**. The only
+caller that ever passed a real value was the scripted `nini demo` path.
+
+So: interactive nini advertised your skills to you, and told the model
+nothing. Every skill-driven workflow — the reason to run nini instead
+of `cat`-ing a file at an LLM — silently did nothing.
+
+This survived 937 green tests because the assembly lived inside
+`run_tui`, an `async fn` behind a TTY that **no test can call**. There
+was no seam. The fix extracts `build_tui_run_config()` so the prompt
+is testable, then injects the real block.
+
+The new tests were validated by re-injecting the bug and confirming
+they fail: three go red, three that don't depend on the fix stay green.
+
+`--no-skills` was wired in the same change. It was also being dropped
+in `main.rs` (`no_skills: _`) while `--help` advertised it, and a new
+always-on feature with no working opt-out isn't shippable.
+
+### Fix — /copy claimed the clipboard and touched nothing (P0-4)
+
+`clipboard::copy` was a seven-line stub whose body was `Ok(())`. Since
+`cmd_copy` treated `Ok(())` as success, `/copy` printed
+
+```
+(copied 812 bytes to clipboard)
+```
+
+and the clipboard stayed empty. The stdout fallback further down the
+call site was **unreachable** — it only ran on `Err`, and `Err` could
+never happen.
+
+`arboard` was already a dependency (`image_paste.rs` uses it for
+images), so the real implementation cost nothing. On a headless
+machine it now correctly reports the failure and prints the text:
+
+```
+(copied 15 bytes to stdout — no clipboard: clipboard unavailable:
+ Unknown error while interacting with the clipboard: X11 server
+ connection timed out because it was unreachable)
+```
+
+The lesson is now enforced in the module docs: **never report success
+we cannot verify.** The dead `read_image` stub went with it.
+
+### Fix — /logout removed nothing while reporting a tally (P0-5)
+
+`/logout` called `std::env::var_os(env).is_some()`, counted the hits,
+and announced `credentials unset in this session: ANTHROPIC_API_KEY`.
+Nothing was ever unset.
+
+It now hands over the exact command instead:
+
+```
+nini cannot unset credentials in your shell (1 found).
+Run this in the shell that launched nini, then restart nini:
+
+  unset ANTHROPIC_API_KEY
+```
+
+`std::env::remove_var` would have been the one-liner, and is the wrong
+answer: the TUI is a multi-threaded tokio runtime, and mutating the
+environment while another thread reads it is undefined behaviour. This
+crate is edition 2021, so the compiler will *not* warn you — on
+edition 2024 the same code stops compiling. A comment now says so.
+
+A real bug fell out of this too: `openai`, `openai-responses` and
+`openai-compat` all map to `OPENAI_API_KEY`, so a bare `/logout`
+listed it three times. Deduplicated, with a regression test.
+
+---
+
+## Known gaps carried into v0.9.2 (unchanged)
+
+Phase 0 of the plan (`docs/plans/v0.9.2-honesty-and-deadcode-sweep.md`)
+audited every user-visible promise in the codebase against its
+implementation. The following are **still broken** and are the next
+targets:
+
+| # | Gap | State |
+|---|---|---|
+| P0-2 | `ProjectTrustStore::load`/`save`/`get`/`clear` are all no-ops and `check()` has **zero call sites** — project trust is entirely unenforced. Worse, `default_path()` returns a CWD-relative `.pi/agent/trust.json` while the selector writes `~/.pi/agent/trust.json`. | ⬜ security |
+| P0-3 | 16 further CLI flags are dropped in `main.rs` and advertised in `--help`. 6 others are warned about; 13 work. | ⬜ |
+| P1-1 | `/debug` toggles a flag with no consumers; `tracing` is declared in four crates and initialised nowhere. There is no logging. | ⬜ |
+| P1-2 | Theme hot-reload does not exist. `notify` is a declared, unused dependency. | ⬜ |
+| P1-3 | `/tree` is broken in three layers, and would still render a straight line once two of them were fixed, because `/fork` creates no branches. | ⬜ |
+| P1-4 | `/reload` counts skills and discards the result. | ⬜ |
+| P1-7 | `set_status_bar_usage` is dead, so `context_window` is always 0 — the status-bar context bar and `/status`'s context line never render. The test at `status_lines.rs:73` sets the field by hand, which is why it is green. | ⬜ |
+| — | `/share` returns "not yet implemented". | ⬜ |
+
+Roughly 1,400 lines of unreferenced code remain (`nini-ext`,
+`branch_summary.rs`, `operations.rs`, 25 dead `pub fn`, 7 dead
+dependencies). None is deleted yet: v0.8.4 and v0.9.0 both deleted
+something that turned out to be a regression and had to restore it.
+
 ## v0.9.1 — Two panics that would have ended your session (2026-10-05)
 
 The last two items on the v0.8.9 plan. Both are about **what happens

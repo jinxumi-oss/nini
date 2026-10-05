@@ -255,7 +255,7 @@ async fn main() -> Result<()> {
         verbose: _,
         export: _,
         skill: _,
-        no_skills: _,
+        no_skills,
         prompt_template: _,
         no_prompt_templates: _,
         theme_file: _,
@@ -354,6 +354,7 @@ async fn main() -> Result<()> {
                 no_builtin_tools,
                 use_theme: use_theme.clone(),
                 api_key: api_key.clone(),
+                no_skills,
             })
             .await
         }

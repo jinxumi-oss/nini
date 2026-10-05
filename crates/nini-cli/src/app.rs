@@ -46,6 +46,63 @@ pub(crate) struct AppConfig {
     /// the env var was right, and `--api-key correct` failed with
     /// "OPENAI_API_KEY required" when it was not.
     pub api_key: Option<String>,
+    /// v0.9.2 (P0-3 A-class): the `--no-skills` flag. It was also
+    /// dropped in `main.rs` (`no_skills: _`), and `--help` advertises it
+    /// as "Disable skill loading". Wired in the same change that started
+    /// actually *injecting* skills, because a new always-on feature with
+    /// no working opt-out is not shippable.
+    pub no_skills: bool,
+}
+
+/// Build the `RunConfig` (model + system prompt) for a TUI session,
+/// plus the number of skills the prompt actually carries.
+///
+/// v0.9.2 (P0-1): extracted from `run_tui` purely so it is unit-testable.
+/// The system-prompt assembly used to be inlined into an `async fn` that
+/// requires a TTY, so **no test could reach it** — which is exactly how
+/// the skills block shipped passing `""` while the status bar advertised
+/// "loaded N skills" to the user.
+///
+/// Returning the count alongside the config is deliberate: the status bar
+/// renders "loaded N skills", so the number the user sees and the number
+/// the model receives must come from the *same* `load_skills` call.
+/// Deriving them separately leaves two chances to disagree — the exact bug
+/// class this release exists to remove.
+///
+/// `no_skills` mirrors `--no-skills`.
+pub(crate) fn build_tui_run_config(
+    settings: &nini_core::settings::Settings,
+    cwd: &std::path::Path,
+    tools: &nini_core::tool::ToolRegistry,
+    cfg: &AppConfig,
+) -> (RunConfig, usize) {
+    let cfg_model = if !cfg.model.is_empty() {
+        cfg.model.clone()
+    } else {
+        prompt_setup::model_for_cfg(settings)
+    };
+    // v0.9.2 (P0-1): this used to be `let skills_prompt = "";`.
+    let (skills_prompt, skills_in_prompt) = if cfg.no_skills {
+        (String::new(), 0)
+    } else {
+        let skills = load_skills(cwd);
+        let n = skills.skills.len();
+        (
+            nini_core::skills::format_skills_for_prompt(&skills.skills),
+            n,
+        )
+    };
+    let config = RunConfig {
+        model: cfg_model.clone(),
+        system: Some(prompt_setup::settings_to_system_prompt(
+            settings,
+            cwd,
+            tools,
+            &skills_prompt,
+        )),
+        ..RunConfig::new(cfg_model)
+    };
+    (config, skills_in_prompt)
 }
 
 /// Construct an `App` from CLI config and launch the TUI.
@@ -71,7 +128,6 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         settings.theme = Some(t.to_string());
     }
 
-    let _skills = load_skills(&cwd);
     let scripted_turns = std::env::var("NINI_TUI_FIXTURE_TURNS")
         .ok()
         .and_then(|raw| provider_factory::parse_scripted_turns(&raw))
@@ -103,21 +159,11 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         cfg.no_builtin_tools,
     );
 
-    let cfg_model = if !cfg.model.is_empty() {
-        cfg.model.clone()
-    } else {
-        prompt_setup::model_for_cfg(&settings)
-    };
-    let shared_cfg = RunConfig {
-        model: cfg_model.clone(),
-        system: Some(prompt_setup::settings_to_system_prompt(
-            &settings,
-            &cwd,
-            &shared_tools,
-            "",
-        )),
-        ..RunConfig::new(cfg_model)
-    };
+    // v0.9.2 (P0-1): `build_tui_run_config` injects the skills block and
+    // returns how many it advertised, so the status bar and the prompt
+    // cannot disagree. This directory used to be read three times per
+    // startup (v0.5 loaded once and threw the result away); now once.
+    let (shared_cfg, skills_in_prompt) = build_tui_run_config(&settings, &cwd, &shared_tools, &cfg);
 
     let agent_driver: AgentDriver = Arc::new(move |user_msg, sink, done| {
         let provider = shared_provider.clone();
@@ -212,7 +258,7 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         })
     });
 
-    run_tui_bootstrap(agent_driver, &cfg).await
+    run_tui_bootstrap(agent_driver, &cfg, skills_in_prompt).await
 }
 
 /// Run the TUI itself with the given `AgentDriver`. This is the part
@@ -221,6 +267,10 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
 async fn run_tui_bootstrap(
     agent_driver: nini_tui::runtime::AgentDriver,
     cfg: &AppConfig,
+    // v0.9.2 (P0-1): how many skills the system prompt actually carries.
+    // Passed in rather than recomputed so the status bar cannot drift
+    // from the prompt (see the comment at the use site).
+    skills_in_prompt: usize,
 ) -> Result<()> {
     use nini_tui::run as run_tui_inner;
 
@@ -260,14 +310,302 @@ async fn run_tui_bootstrap(
             if let Some(t) = nini_core::settings::load_settings(&cwd).thinking_level {
                 state.model_state.thinking_level = Some(t);
             }
-            let skills = nini_core::skills::load_skills(&cwd);
-            if !skills.skills.is_empty() {
-                let count = skills.skills.len();
-                state.run_state.status = format!("loaded {count} skills — type to begin");
+            // v0.9.2 (P0-1): this used to call `load_skills` a THIRD
+            // time (the v0.5 version loaded once and threw the result
+            // away; `build_tui_run_config` loads again). Three
+            // independent reads of the same directory is three chances
+            // for the status bar and the system prompt to disagree —
+            // which is precisely the bug this release is about.
+            //
+            // Use the count computed once in `build_tui_run_config`'s
+            // call site, and respect `--no-skills`. Reporting
+            // "loaded N skills" while the prompt carries none is the
+            // same lie in a new place.
+            if skills_in_prompt > 0 {
+                state.run_state.status =
+                    format!("loaded {skills_in_prompt} skills — type to begin");
             }
         },
         agent_driver,
         &cfg.model,
     )
     .await
+}
+
+#[cfg(test)]
+mod p0_1_skills_tests {
+    //! v0.9.2 (P0-1) — "the TUI told the user it loaded their skills, then
+    //! built a system prompt containing none of them."
+    //!
+    //! Why this needed its own seam: the assembly lived inside `run_tui`,
+    //! an `async fn` behind a TTY. 937 tests, 0 clippy warnings, and the
+    //! user-visible status bar still said "loaded N skills" while the
+    //! model had never heard of them.
+
+    use super::*;
+    use std::path::PathBuf;
+
+    /// `load_skills` reads `$HOME/.pi/agent/skills`, so tests that touch
+    /// it must not run concurrently. (Same reason
+    /// `tests/slash_command_e2e.rs` has a HOME_LOCK.)
+    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn base_config() -> AppConfig {
+        AppConfig {
+            provider: String::new(),
+            model: "test-model".to_string(),
+            fallback_keys: vec![],
+            fallback_base_urls: vec![],
+            tools: vec![],
+            exclude_tools: vec![],
+            no_tools: false,
+            no_builtin_tools: false,
+            use_theme: None,
+            api_key: None,
+            no_skills: false,
+        }
+    }
+
+    /// Create `<root>/.pi/skills/<name>/SKILL.md` and return `root`.
+    fn make_project_with_skill(tmp: &std::path::Path, name: &str, desc: &str) -> PathBuf {
+        let dir = tmp.join(".pi").join("skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {desc}\n---\n\nbody text\n"),
+        )
+        .unwrap();
+        tmp.to_path_buf()
+    }
+
+    /// Point `$HOME` at an empty temp dir so the developer's real
+    /// `~/.pi/agent/skills` cannot leak into the test.
+    fn isolate_home(tmp: &std::path::Path) {
+        let home = tmp.join("fake-home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+    }
+
+    fn system_of(t: (RunConfig, usize)) -> String {
+        t.0.system.unwrap_or_default()
+    }
+
+    /// The count the status bar will render, as reported by the same
+    /// call that built the prompt.
+    fn advertised_count(t: (RunConfig, usize)) -> usize {
+        t.1
+    }
+
+    // ---------------------------------------------------------------
+    // The regression itself.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tui_system_prompt_actually_contains_the_skills_block() {
+        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        isolate_home(tmp.path());
+        let cwd = make_project_with_skill(tmp.path(), "p0-one-skill", "does a p0 one thing");
+
+        let settings = load_settings(&cwd);
+        let tools = tool_registry::build_tools();
+        let cfg = build_tui_run_config(&settings, &cwd, &tools, &base_config());
+        let system = system_of(cfg);
+
+        assert!(
+            system.contains("<available_skills>"),
+            "system prompt has no skills block at all.\n--- got ---\n{system}"
+        );
+        assert!(
+            system.contains("p0-one-skill"),
+            "the skill name the status bar advertised is absent from the system prompt.\n--- got ---\n{system}"
+        );
+        assert!(
+            system.contains("does a p0 one thing"),
+            "skill description missing from the system prompt.\n--- got ---\n{system}"
+        );
+        // The model needs the path so it can `read` the skill.
+        assert!(
+            system.contains("SKILL.md"),
+            "skills are advertised without a <location>, so the model cannot load them.\n--- got ---\n{system}"
+        );
+    }
+
+    /// The status bar says "loaded N skills". If this count and the
+    /// prompt disagree, we are lying to the user in one place while
+    /// lying to the model in another.
+    #[test]
+    fn skills_visible_to_user_match_skills_in_prompt() {
+        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        isolate_home(tmp.path());
+        let cwd = make_project_with_skill(tmp.path(), "alpha-skill", "first");
+        make_project_with_skill(tmp.path(), "beta-skill", "second");
+
+        let loaded = load_skills(&cwd);
+        let settings = load_settings(&cwd);
+        let tools = tool_registry::build_tools();
+        let system = system_of(build_tui_run_config(
+            &settings,
+            &cwd,
+            &tools,
+            &base_config(),
+        ));
+
+        for s in &loaded.skills {
+            assert!(
+                system.contains(&s.name),
+                "status bar advertises skill {:?} but the prompt omits it",
+                s.name
+            );
+        }
+        assert!(
+            loaded.skills.len() >= 2,
+            "fixture should have produced >=2 skills, got {:?}",
+            loaded.skills.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // The opt-out (--no-skills, P0-3 A-class) must actually work.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn no_skills_flag_suppresses_the_block() {
+        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        isolate_home(tmp.path());
+        let cwd = make_project_with_skill(tmp.path(), "suppressed-skill", "should not appear");
+
+        let settings = load_settings(&cwd);
+        let tools = tool_registry::build_tools();
+        let mut cfg = base_config();
+        cfg.no_skills = true;
+        let system = system_of(build_tui_run_config(&settings, &cwd, &tools, &cfg));
+
+        assert!(
+            !system.contains("<available_skills>"),
+            "--no-skills did not suppress the skills block.\n--- got ---\n{system}"
+        );
+        assert!(
+            !system.contains("suppressed-skill"),
+            "--no-skills leaked a skill name into the prompt.\n--- got ---\n{system}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Guard: do not regress the rest of the prompt while fixing this.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn skills_fix_preserves_the_working_directory_hint() {
+        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        isolate_home(tmp.path());
+        let cwd = make_project_with_skill(tmp.path(), "cwd-hint-skill", "x");
+
+        let settings = load_settings(&cwd);
+        let tools = tool_registry::build_tools();
+        let system = system_of(build_tui_run_config(
+            &settings,
+            &cwd,
+            &tools,
+            &base_config(),
+        ));
+
+        // v0.8.5 added this because models otherwise guessed absolute
+        // paths and the explicit-path tools failed.
+        assert!(
+            system.contains(&cwd.display().to_string()),
+            "the working-directory hint disappeared.\n--- got ---\n{system}"
+        );
+    }
+
+    #[test]
+    fn empty_project_yields_no_skills_block_and_no_panic() {
+        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        isolate_home(tmp.path());
+        let cwd = tmp.path().join("empty");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let settings = load_settings(&cwd);
+        let tools = tool_registry::build_tools();
+        let system = system_of(build_tui_run_config(
+            &settings,
+            &cwd,
+            &tools,
+            &base_config(),
+        ));
+
+        assert!(!system.contains("<available_skills>"));
+        assert!(system.contains("You are nini"));
+    }
+
+    /// v0.9.2 (P0-1) follow-up, found while implementing the fix.
+    ///
+    /// The v0.9.1 fix would have introduced a *new* instance of the very
+    /// bug it was fixing: `--no-skills` suppressed the prompt, but the
+    /// status bar still computed its own count and announced
+    /// "loaded N skills". Two sources of truth, one of them lying.
+    ///
+    /// This asserts the invariant directly: the number the status bar
+    /// reports and the number of skills the prompt carries must be the
+    /// same number, in both flag states.
+    #[test]
+    fn status_bar_count_and_prompt_contents_agree_under_both_flag_states() {
+        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        isolate_home(tmp.path());
+        let cwd = make_project_with_skill(tmp.path(), "agree-a", "a");
+        make_project_with_skill(tmp.path(), "agree-b", "b");
+        make_project_with_skill(tmp.path(), "agree-c", "c");
+
+        let settings = load_settings(&cwd);
+        let tools = tool_registry::build_tools();
+        let on_disk = load_skills(&cwd).skills.len();
+        assert!(on_disk >= 3);
+
+        // --- flag OFF: status bar count == prompt count == on-disk count
+        let t_on = build_tui_run_config(&settings, &cwd, &tools, &base_config());
+        let in_prompt = system_of(t_on.clone()).matches("<skill>").count();
+        assert_eq!(
+            in_prompt, on_disk,
+            "prompt advertises {in_prompt} skills, {on_disk} exist on disk"
+        );
+        // `advertised_count` is the exact value run_tui hands to the
+        // status bar, so this compares the two real production outputs
+        // rather than two literals. (An earlier draft of this test wrote
+        // `let status_count = on_disk;` and asserted it equalled
+        // `in_prompt` — a tautology that would stay green no matter how
+        // broken the code under test became.)
+        assert_eq!(
+            advertised_count(t_on.clone()),
+            in_prompt,
+            "status bar count and prompt contents disagree with skills enabled"
+        );
+        assert_eq!(advertised_count(t_on), on_disk);
+
+        // --- flag ON: BOTH must be zero. Reporting "loaded 3 skills"
+        //     while the prompt carries none is the same lie, relocated.
+        let mut cfg = base_config();
+        cfg.no_skills = true;
+        let t_off = build_tui_run_config(&settings, &cwd, &tools, &cfg);
+        assert_eq!(
+            system_of(t_off.clone()).matches("<skill>").count(),
+            0,
+            "--no-skills still advertised skills"
+        );
+        // Because the count is 0, the status-bar branch
+        // `if skills_in_prompt > 0` is skipped and the message never
+        // renders at all.
+        assert_eq!(advertised_count(t_off.clone()), 0);
+        assert_eq!(
+            advertised_count(t_off),
+            system_of(build_tui_run_config(&settings, &cwd, &tools, &cfg))
+                .matches("<skill>")
+                .count(),
+            "status bar count and prompt contents disagree under --no-skills"
+        );
+    }
 }
