@@ -51,7 +51,7 @@ use nini_core::tool::ToolRegistry;
 use nini_core::RunConfig;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Counts how many times the model is actually invoked. The number of calls
 /// is the only reliable witness of "did another turn happen"; message counts
@@ -88,12 +88,84 @@ impl Provider for CountingProvider {
     }
 }
 
-/// Returns a fixed steering list and follow-up list, and counts polls.
+/// Models Pi's `PendingMessageQueue`: a queue is **drained**, not re-read.
+///
+/// The first poll returns the queued items; every later poll returns nothing.
+/// That is what `agent.js:63-71` does — `drain()` empties the queue — and it
+/// is the difference between a queue and a generator.
+///
+/// An earlier draft returned the same message on every poll, i.e. modelled a
+/// hook that produces fresh work forever. That is a different thing, and the
+/// run loop behaved correctly: it kept running until
+/// `max_follow_up_rounds` stopped it, which is exactly the guard a
+/// pathological producer needs. `a_pathological_producer_is_bounded` covers
+/// that case explicitly.
 struct Queue {
-    steering: Vec<nini_core::provider::Message>,
-    followup: Vec<nini_core::provider::Message>,
+    steering: Mutex<Option<Vec<nini_core::provider::Message>>>,
+    followup: Mutex<Option<Vec<nini_core::provider::Message>>>,
+    /// Release the steering item only once this many polls have happened.
+    ///
+    /// Pi polls steering twice per run: once at `agent-loop.js:83`, before
+    /// the outer loop, and once at `:160` after every turn. An interjection
+    /// typed by a human arrives *during* the run, so it must be picked up by
+    /// the `:160` poll — the `:83` poll already happened. Arming the item
+    /// from poll 0 models "the user typed before nini started", which the
+    /// first turn already satisfies, and would make this test assert 2 calls
+    /// for a scenario Pi also answers in 1.
+    steering_after_poll: usize,
+    /// When true the follow-up hook ignores `take()` and yields a fresh item
+    /// on every poll — a producer with no natural stopping point.
+    followup_forever: bool,
     steering_polls: AtomicUsize,
     followup_polls: AtomicUsize,
+}
+
+impl Queue {
+    /// `None` arms a never-ending producer (see the note above).
+    fn once(
+        steering: Vec<nini_core::provider::Message>,
+        followup: Vec<nini_core::provider::Message>,
+    ) -> Self {
+        Self {
+            steering: Mutex::new(if steering.is_empty() {
+                None
+            } else {
+                Some(steering)
+            }),
+            followup: Mutex::new(if followup.is_empty() {
+                None
+            } else {
+                Some(followup)
+            }),
+            steering_after_poll: 0,
+            followup_forever: false,
+            steering_polls: AtomicUsize::new(0),
+            followup_polls: AtomicUsize::new(0),
+        }
+    }
+
+    /// A steering item that only becomes visible to the poll at
+    /// `agent-loop.js:160`, i.e. the user interjects mid-run.
+    fn steering_mid_run(item: nini_core::provider::Message) -> Self {
+        let mut q = Self::once(vec![], vec![]);
+        *q.steering.lock().unwrap() = Some(vec![item]);
+        q.steering_after_poll = 1;
+        q
+    }
+
+    /// A follow-up hook that yields new work on *every* poll — a producer
+    /// with no natural stopping point. The run loop must still terminate;
+    /// `max_follow_up_rounds` is what guarantees it.
+    fn forever_followup() -> Self {
+        Self {
+            steering: Mutex::new(None),
+            followup: Mutex::new(None),
+            steering_after_poll: 0,
+            followup_forever: true,
+            steering_polls: AtomicUsize::new(0),
+            followup_polls: AtomicUsize::new(0),
+        }
+    }
 }
 
 impl AgentLoopHooks for Queue {
@@ -101,15 +173,23 @@ impl AgentLoopHooks for Queue {
         &self,
         _recent: &[nini_core::provider::Message],
     ) -> Vec<nini_core::provider::Message> {
-        self.steering_polls.fetch_add(1, Ordering::SeqCst);
-        self.steering.clone()
+        let n = self.steering_polls.fetch_add(1, Ordering::SeqCst);
+        if n < self.steering_after_poll {
+            return Vec::new();
+        }
+        let mut g = self.steering.lock().unwrap_or_else(|e| e.into_inner());
+        g.take().unwrap_or_default()
     }
     fn get_followup_messages(
         &self,
         _messages: &[nini_core::provider::Message],
     ) -> Vec<nini_core::provider::Message> {
         self.followup_polls.fetch_add(1, Ordering::SeqCst);
-        self.followup.clone()
+        if self.followup_forever {
+            return vec![user("more work")];
+        }
+        let mut g = self.followup.lock().unwrap_or_else(|e| e.into_inner());
+        g.take().unwrap_or_default()
     }
 }
 
@@ -140,15 +220,10 @@ async fn drain(agent: &mut Agent, input: &str) {
 // Do NOT "fix" a red run here by weakening the assertion. `assert_eq!(calls,
 // 2)` is the whole point: nini calls the model once, Pi calls it twice.
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "R1 (Pi L1 outer loop) not implemented — expected 2 model calls, nini makes 1"]
+
 async fn followup_triggers_another_model_call() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let hooks = Arc::new(Queue {
-        steering: vec![],
-        followup: vec![user("now write the docs")],
-        steering_polls: AtomicUsize::new(0),
-        followup_polls: AtomicUsize::new(0),
-    });
+    let hooks = Arc::new(Queue::once(vec![], vec![user("now write the docs")]));
     let mut agent = Agent::with_hooks(
         Arc::new(CountingProvider {
             calls: calls.clone(),
@@ -175,12 +250,7 @@ async fn followup_triggers_another_model_call() {
 #[tokio::test(flavor = "current_thread")]
 async fn no_followup_means_exactly_one_model_call() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let hooks = Arc::new(Queue {
-        steering: vec![],
-        followup: vec![],
-        steering_polls: AtomicUsize::new(0),
-        followup_polls: AtomicUsize::new(0),
-    });
+    let hooks = Arc::new(Queue::once(vec![], vec![]));
     let mut agent = Agent::with_hooks(
         Arc::new(CountingProvider {
             calls: calls.clone(),
@@ -212,15 +282,12 @@ async fn no_followup_means_exactly_one_model_call() {
 ///
 /// The provider here emits text only — deliberately the case nini misses.
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "R1 (unconditional end-of-turn steering poll) not implemented — nini polls steering only inside the tool branch"]
+
 async fn steering_is_polled_on_a_text_only_turn() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let hooks = Arc::new(Queue {
-        steering: vec![user("actually only touch the auth module")],
-        followup: vec![],
-        steering_polls: AtomicUsize::new(0),
-        followup_polls: AtomicUsize::new(0),
-    });
+    let hooks = Arc::new(Queue::steering_mid_run(user(
+        "actually only touch the auth module",
+    )));
     let queue = hooks.clone();
     let mut agent = Agent::with_hooks(
         Arc::new(CountingProvider {
@@ -252,3 +319,44 @@ async fn steering_is_polled_on_a_text_only_turn() {
 // both dead. That gap is recorded in `docs/plans/v0.10-pi-parity-refactor.md`
 // rather than asserted here: a compile-time assertion would stop this whole
 // test target — and therefore the whole suite — from building.
+
+// =====================================================================
+// Termination guarantee
+// =====================================================================
+
+/// A follow-up hook that yields work on *every* poll has no natural stopping
+/// point. Before v0.10 (R1) the loop could not even reach such a hook — it
+/// returned instead of reviving. Now that it can, it needs its own bound:
+/// `max_iterations` counts turns, not revivals, so a producer like this would
+/// run until the turn cap, which is the wrong cap for the wrong thing.
+///
+/// This is the test that the first draft of the R1 implementation failed: a
+/// stub returning the same follow-up every poll produced 17 model calls
+/// (1 + 16 revivals) instead of 2. The implementation was right and the stub
+/// was unrealistic — but a user can write exactly that hook, so the guard
+/// needs to exist and be asserted.
+#[tokio::test(flavor = "current_thread")]
+async fn a_pathological_producer_is_bounded() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let hooks = Arc::new(Queue::forever_followup());
+    let mut agent = Agent::with_hooks(
+        Arc::new(CountingProvider {
+            calls: calls.clone(),
+        }),
+        ToolRegistry::new(),
+        {
+            let mut cfg = RunConfig::new("test-model");
+            cfg.max_follow_up_rounds = 3;
+            cfg
+        },
+        hooks,
+    );
+
+    drain(&mut agent, "start").await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        4,
+        "1 initial turn + 3 allowed revivals, then the loop must stop"
+    );
+}

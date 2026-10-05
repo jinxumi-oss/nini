@@ -354,6 +354,10 @@ impl Default for RetrySettings {
 /// than 30.
 pub const DEFAULT_MAX_PARALLEL_TOOLS: usize = 8;
 
+/// v0.10 (R1): default bound on follow-up revivals of the turn loop.
+pub const DEFAULT_MAX_FOLLOW_UP_ROUNDS: usize = 16;
+
+/// Configuration for one `Agent::run` invocation.
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     pub model: String,
@@ -382,6 +386,13 @@ pub struct RunConfig {
     /// `0` means "no limit" — an explicit opt-out that preserves the
     /// pre-v0.8.9 behaviour.
     pub max_parallel_tools: usize,
+    /// v0.10 (R1): how many times the loop may be revived by a follow-up
+    /// before the run gives up and returns to Idle.
+    ///
+    /// `max_iterations` bounds turns, not revivals. Without a separate bound,
+    /// a follow-up hook that always yields work would keep the agent running
+    /// indefinitely with no counter tripping.
+    pub max_follow_up_rounds: usize,
 }
 
 impl RunConfig {
@@ -397,6 +408,7 @@ impl RunConfig {
             compaction: crate::compaction::CompactionSettings::default(),
             retry: crate::agent::RetrySettings::default(),
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
+            max_follow_up_rounds: DEFAULT_MAX_FOLLOW_UP_ROUNDS,
         }
     }
 }
@@ -738,13 +750,94 @@ impl Agent {
             yield AgentEvent::TurnStart;
 
             let mut iteration = 0;
+
+            // v0.10 (R1): Pi's queue-driven turn loop.
+            //
+            // Pi writes this as two nested loops (`agent-loop.js:85` L1
+            // outer, `:88` L2 inner). The nesting is not load-bearing — the
+            // two layers collapse into ONE loop with a guard at the top,
+            // which is what this is. Collapsing it matters practically: a
+            // nested `loop { loop { … } }` inside a 1500-line `try_stream!`
+            // generator body is a brace minefield, and a misplaced brace
+            // fails *silently* (compiles, wrong semantics) rather than loudly.
+            //
+            // The equivalence, stated once so it can be checked:
+            //
+            //   Pi:  pending = pollSteering()                 // :83
+            //        L1: L2: while (hasMoreToolCalls || pending) {
+            //              inject(pending); turn(); pending = pollSteering()   // :96,:106,:160
+            //            }
+            //            if (pollFollowUp() empty) break;  pending = followUp;  // :163
+            //        }
+            //
+            //   Here: pending = pollSteering()                // before the loop
+            //          loop {
+            //            if (!hasMoreToolCalls && pending.is_empty()) {   // L2 would exit
+            //              followUp = pollFollowUp();                    // → L1's only job
+            //              if (followUp empty) break;
+            //              pending = followUp;
+            //            }
+            //            inject(pending); turn(); hasMore = …; pending = pollSteering()
+            //          }
+            //
+            // `has_more_tool_calls` starts true because Pi seeds it true
+            // (`:86`) so the first turn always runs.
+            let mut pending: Vec<Message> = {
+                let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> =
+                    self.hooks.clone();
+                let messages_snapshot = self.messages.clone();
+                crate::agent_hooks::catch_hook_panic("get_steering_messages", || {
+                    hooks_ref.get_steering_messages(&messages_snapshot)
+                })
+            };
+            let mut has_more_tool_calls = true;
+            let mut follow_up_rounds = 0usize;
             loop {
+                // ── Pi's L1, collapsed: the only reason the outer loop
+                //    exists is to pick up a follow-up queued after the model
+                //    finished. nini used to `return` here after appending
+                //    follow-ups to history, which turned a queued *task*
+                //    into *dead context* — the model saw it as background on
+                //    the user's next message instead of acting on it now.
+                if !has_more_tool_calls && pending.is_empty() {
+                    let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> =
+                        self.hooks.clone();
+                    let messages_snapshot = self.messages.clone();
+                    let followup = crate::agent_hooks::catch_hook_panic(
+                        "get_followup_messages",
+                        || hooks_ref.get_followup_messages(&messages_snapshot),
+                    );
+                    // `max_iterations` bounds turns, not revivals. Without a
+                    // separate bound, a follow-up hook that always yields work
+                    // would keep the agent running indefinitely.
+                    if followup.is_empty() || follow_up_rounds >= config.max_follow_up_rounds {
+                        self.set_phase(AgentPhase::Idle);
+                        yield AgentEvent::PhaseChanged(AgentPhase::Idle);
+                        return;
+                    }
+                    follow_up_rounds += 1;
+                    pending = followup;
+                }
+
                 if abort.is_aborted() {
                     self.set_phase(AgentPhase::Idle);
                     yield AgentEvent::PhaseChanged(AgentPhase::Idle);
                     yield AgentEvent::Aborted;
                     return;
                 }
+                // v0.10 (R1): inject queued messages before the LLM call, as
+                // Pi does at `agent-loop.js:96-103`. Steering and follow-up
+                // both land here, which is why the two are indistinguishable
+                // in the message stream — only the poll timing differs.
+                //
+                // Pi wraps each in `message_start` / `message_end` (`:97-99`);
+                // nini's `AgentEvent` has no such variant, so the transcript
+                // picks them up with the next assistant turn. The ordering
+                // that matters — before the LLM call — is preserved.
+                for queued in pending.drain(..) {
+                    self.messages.push(queued);
+                }
+
                 iteration += 1;
                 // v0.7 (M3b) — soft-stop hook. Extensions can ask
                 // the agent to wrap up early (e.g. when the context
@@ -1172,31 +1265,21 @@ impl Agent {
                 let length_stop_reject =
                     stop_reason == "length" && !tool_calls.is_empty();
 
-                // If no tool calls AND not length-stop-rejecting, we're
-                // done — return to Idle. (The length_stop_reject branch
-                // below pushes synthetic Tool results so the message
-                // graph is still well-formed for the next LLM call.)
-                if tool_calls.is_empty() && !length_stop_reject {
-                    // v0.7 (M1) followup hook: let extensions inject
-                    // final messages before we exit. Defensive: a
-                    // panicking hook falls back to an empty Vec so
-                    // we never crash the run loop on extension bugs.
-                    // Snapshot the references we need OUT of self so the panic
-                    // wrapper doesn't have to claim &self is UnwindSafe
-                    // (it isn't — Agent contains Arc<dyn Trait>).
-                    let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> = self.hooks.clone();
-                    let messages_snapshot = self.messages.clone();
-                    let followup = crate::agent_hooks::catch_hook_panic(
-                        "get_followup_messages",
-                        || hooks_ref.get_followup_messages(&messages_snapshot),
-                    );
-                    for msg in followup {
-                        self.messages.push(msg);
-                    }
-                    self.set_phase(AgentPhase::Idle);
-                    yield AgentEvent::PhaseChanged(AgentPhase::Idle);
-                    return;
-                }
+                // v0.10 (R1): no longer an exit point. Pi sets
+                // `hasMoreToolCalls = false` and still reaches the steering
+                // poll at `:160`; the turn ends only if steering is empty too.
+                // nini used to poll follow-up, append it to history, and
+                // `return` — which demoted a follow-up from a task to dead
+                // context.
+                // The tool block runs whenever the model emitted tool calls —
+                // *including* the length-stop case, where it pushes synthetic
+                // failures so the message graph stays well-formed for the
+                // next LLM call (Pi's `failToolCallsFromTruncatedMessage`,
+                // `:263`). Excluding it here dropped those results and broke
+                // the tool_use/tool_result pairing.
+                has_more_tool_calls = !tool_calls.is_empty();
+
+                if has_more_tool_calls {
 
                 // v0.8.5: execute tool calls in PARALLEL via
                 // `FuturesUnordered`. The model often emits many
@@ -1435,27 +1518,31 @@ impl Agent {
                     .collect();
 
                 self.messages.push(Message { role: Role::Tool, content: tool_results.clone(), timestamp: 0 });
-                // v0.7 (M1) steering hook: let extensions inject
-                // messages between tool execution and the next LLM
-                // call. We pass the LAST TWO messages (the assistant
-                // turn + the tool results we just appended) so the
-                // hook can see what just happened without needing to
-                // take a slice of the entire history. Defensive: a
-                // panicking hook falls back to an empty Vec.
+                }   // end of `if has_more_tool_calls`
+
+                // v0.10 (R1) — Pi's `agent-loop.js:160`: steering is polled
+                // at the end of EVERY turn, unconditional.
+                //
+                // It used to live inside the tool-execution branch, so a user
+                // interjecting while the model streamed a long text-only
+                // answer was not seen until the *next* run. Pi runs another
+                // turn immediately; nini made the user type again.
+                //
+                // The last two messages are handed to the hook so it can see
+                // what just happened without a slice of the whole history.
+                // Defensive: a panicking hook falls back to an empty Vec.
                 let recent: Vec<Message> = if self.messages.len() >= 2 {
                     self.messages[self.messages.len() - 2..].to_vec()
                 } else {
                     self.messages.clone()
                 };
                 let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> = self.hooks.clone();
-                let steering = crate::agent_hooks::catch_hook_panic(
+                pending = crate::agent_hooks::catch_hook_panic(
                     "get_steering_messages",
                     || hooks_ref.get_steering_messages(&recent),
                 );
-                for msg in steering {
-                    self.messages.push(msg);
-                }
-                // Loop again: model will see tool results.
+                // Loop again: the guard at the top decides whether this is
+                // another turn or a follow-up revival.
             }
         })
     }
@@ -2489,7 +2576,7 @@ mod steering_followup_hook_tests {
     };
     use futures_core::Stream;
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// Minimal stub provider that emits one TextDelta and ends the
     /// turn with no tool calls. Used to exercise the followup hook
@@ -2573,6 +2660,9 @@ mod steering_followup_hook_tests {
         followup_calls: AtomicUsize,
         steering_to_inject: Vec<Message>,
         followup_to_inject: Vec<Message>,
+        /// v0.10 (R1): queues drain. See the `AgentLoopHooks` impl below.
+        steering_taken: AtomicBool,
+        followup_taken: AtomicBool,
     }
     impl CountingHooks {
         fn new(steering: Vec<Message>, followup: Vec<Message>) -> Self {
@@ -2581,6 +2671,8 @@ mod steering_followup_hook_tests {
                 followup_calls: AtomicUsize::new(0),
                 steering_to_inject: steering,
                 followup_to_inject: followup,
+                steering_taken: AtomicBool::new(false),
+                followup_taken: AtomicBool::new(false),
             }
         }
         fn steering_count(&self) -> usize {
@@ -2591,13 +2683,28 @@ mod steering_followup_hook_tests {
         }
     }
     impl AgentLoopHooks for CountingHooks {
+        // v0.10 (R1): both hooks now **drain**. Pi's `PendingMessageQueue`
+        // (`agent.js:63-71`) returns its contents once and the queue is then
+        // empty; re-serving the same items on every poll models a producer
+        // that never stops, not a queue.
+        //
+        // Returning a clone forever also made these tests lie: with the loop
+        // now able to revive, an undrained stub produced 16 revivals and the
+        // message count grew without bound, so the tests failed for a reason
+        // that had nothing to do with what they claimed to check.
         fn get_steering_messages(&self, _recent: &[Message]) -> Vec<Message> {
             self.steering_calls.fetch_add(1, Ordering::SeqCst);
-            self.steering_to_inject.clone()
+            // `swap` returns the PREVIOUS value, so `!previous` is the
+            // first-and-only delivery.
+            (!self.steering_taken.swap(true, Ordering::SeqCst))
+                .then(|| self.steering_to_inject.clone())
+                .unwrap_or_default()
         }
         fn get_followup_messages(&self, _all: &[Message]) -> Vec<Message> {
             self.followup_calls.fetch_add(1, Ordering::SeqCst);
-            self.followup_to_inject.clone()
+            (!self.followup_taken.swap(true, Ordering::SeqCst))
+                .then(|| self.followup_to_inject.clone())
+                .unwrap_or_default()
         }
     }
 
@@ -2651,6 +2758,14 @@ mod steering_followup_hook_tests {
     /// its returned messages land in the message log in order.
     #[tokio::test(flavor = "current_thread")]
     async fn followup_hook_injects_messages_on_run_end() {
+        // v0.10 (R1): this test used to assert "2 base + 2 followup = 4",
+        // which passed for the wrong reason — nini appended the follow-up to
+        // history and returned, so the follow-up never became a turn. The
+        // count was the same either way, which is exactly why the defect
+        // survived.
+        //
+        // It now asserts the thing that actually matters: a *second turn ran
+        // for the follow-up*, visible as a second assistant reply after it.
         let followup = vec![
             user_msg("(followup) also do X"),
             user_msg("(followup) and Y"),
@@ -2665,33 +2780,68 @@ mod steering_followup_hook_tests {
             while let Some(_ev) = s.next().await {}
         } // drop s here so we can borrow agent immutably
 
-        assert_eq!(hooks.followup_count(), 1, "followup fires once per run");
-        // 2 base messages + 2 followup = 4
-        assert_eq!(agent.messages().len(), 4);
-        let user_texts: Vec<&str> = agent
+        // Two polls, not one: the first drains the queue, the second returns
+        // empty and is what lets the loop exit. Asserting `== 1` would encode
+        // a poll count as if it were the behaviour under test.
+        assert_eq!(
+            hooks.followup_count(),
+            2,
+            "one productive poll to drain the queue, one empty poll to finish"
+        );
+
+        let texts: Vec<(Role, String)> = agent
             .messages()
             .iter()
-            .filter_map(|m| {
-                if m.role != Role::User {
-                    return None;
-                }
-                m.content.iter().find_map(|c| match c {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
+            .map(|m| {
+                (
+                    m.role,
+                    m.content
+                        .iter()
+                        .find_map(|c| match c {
+                            ContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default(),
+                )
             })
             .collect();
+
+        // user, assistant, followup X, followup Y, assistant — the trailing
+        // assistant is the proof the follow-up triggered a turn.
         assert_eq!(
-            user_texts,
-            vec!["hi", "(followup) also do X", "(followup) and Y"]
+            texts.len(),
+            5,
+            "expected the follow-up to produce a second turn; got {texts:?}"
+        );
+        assert_eq!(texts[0].1, "hi");
+        assert_eq!(
+            texts[1].0,
+            Role::Assistant,
+            "first reply before the follow-up"
+        );
+        assert_eq!(texts[2].1, "(followup) also do X");
+        assert_eq!(texts[3].1, "(followup) and Y");
+        assert_eq!(
+            texts[4].0,
+            Role::Assistant,
+            "the model must answer the follow-up, not just read it as context"
         );
     }
 
     /// The steering hook fires after every round of tool execution,
     /// not on text-only turns.
     #[tokio::test(flavor = "current_thread")]
-    async fn steering_hook_fires_only_after_tool_execution() {
-        // Text-only provider → no tool calls → no steering calls.
+    async fn steering_is_polled_on_every_turn_not_only_after_tools() {
+        // v0.10 (R1): this test asserted `steering_count() == 0` for a
+        // text-only turn, encoding "no tool calls → steering is never
+        // polled". Pi polls steering at `agent-loop.js:160` after *every*
+        // turn, so a user interjecting while the model streams a long
+        // text-only answer is heard on the next turn instead of at the start
+        // of the next run.
+        //
+        // With an empty queue the poll is a no-op, so the observable
+        // difference is the poll count: two (once before the loop at `:83`,
+        // once after the turn at `:160`), not zero.
         let hooks = Arc::new(CountingHooks::new(vec![], vec![]));
         let mut agent = agent_with_text_provider(hooks.clone());
 
@@ -2702,8 +2852,17 @@ mod steering_followup_hook_tests {
             while let Some(_ev) = s.next().await {}
         }
 
-        assert_eq!(hooks.steering_count(), 0, "no tool calls → no steering");
-        assert_eq!(hooks.followup_count(), 1);
+        assert_eq!(
+            hooks.steering_count(),
+            2,
+            "steering is polled before the first turn and after every turn"
+        );
+        // An empty queue must not manufacture extra turns.
+        assert_eq!(
+            agent.messages().len(),
+            2,
+            "empty steering queue must not add a turn"
+        );
     }
 
     /// When the model DOES call a tool, steering fires once after
