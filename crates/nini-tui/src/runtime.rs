@@ -35,6 +35,31 @@ pub fn shared_state(state: AppState) -> SharedState {
     Arc::new(Mutex::new(state))
 }
 
+/// v0.9.1: acquire the shared state **without inheriting a poisoned
+/// lock**.
+///
+/// The runtime had 28 `lock_state(&shared)` calls. A `Mutex` is
+/// poisoned when a thread panics while holding it, and a poisoned mutex
+/// makes *every* subsequent `lock()` return `Err`. So a single panic
+/// anywhere in the state — a `no session` path, a formatting bug, an
+/// arithmetic overflow (this release fixed three of those) — turned the
+/// TUI into a panic loop: every subsequent frame, at the very first
+/// `lock().unwrap()` on the render path, panicked again, and the user
+/// was left staring at a frozen or blank terminal with no way out short
+/// of killing the process.
+///
+/// A poisoned lock means "some state may be inconsistent", not "the
+/// state is unreadable". The TUI re-derives almost everything it draws
+/// from `AppState`'s own fields, and the failure mode of proceeding is a
+/// transient glitch, while the failure mode of panicking is a dead
+/// application. So: recover the guard and carry on.
+///
+/// This is why the failures above were survivable at all — but they were
+/// survivable *until the next keypress*.
+pub fn lock_state(shared: &SharedState) -> std::sync::MutexGuard<'_, AppState> {
+    shared.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A trimmed-down agent event for cross-task delivery. Avoids leaking
 /// `nini_core::AgentEvent` (and its `AgentError`/`Provider` dependencies)
 /// across the spawn boundary.
@@ -318,7 +343,7 @@ async fn run_loop(
         let name = settings.theme_name();
         // Mirror the theme name into AppState so the status bar can
         // render it without holding the settings lock.
-        shared.lock().unwrap().ui_state.theme_name = name.clone();
+        lock_state(&shared).ui_state.theme_name = name.clone();
         settings.theme()
     };
 
@@ -342,7 +367,7 @@ async fn run_loop(
         // hold the lock briefly. The watch channel above means we no
         // longer have to spin-lock on a Notify that nobody listens to.
         let snapshot = {
-            let g = shared.lock().unwrap();
+            let g = lock_state(&shared);
             g.clone()
         };
         // v0.6: F1 sets `state.ui_state.close_help` to ask the runtime to drop
@@ -352,7 +377,7 @@ async fn run_loop(
             active_selector = None;
             selector_query.clear();
             selector_visible.clear();
-            let mut g = shared.lock().unwrap();
+            let mut g = lock_state(&shared);
             g.ui_state.close_help = false;
             drop(g);
         }
@@ -425,9 +450,9 @@ async fn run_loop(
         // Check if submit_user_input signaled a selector-open request via
         // state.run_state.status. Run AFTER done.notify_waiters() in submit_user_input.
         if active_selector.is_none() {
-            let status = shared.lock().unwrap().run_state.status.clone();
+            let status = lock_state(&shared).run_state.status.clone();
             if let Some(kind) = status.strip_prefix("open_selector:") {
-                let current_model = shared.lock().unwrap().model_state.model.clone();
+                let current_model = lock_state(&shared).model_state.model.clone();
                 match kind {
                     "model" => {
                         let sel =
@@ -467,7 +492,7 @@ async fn run_loop(
                     }
                     "tree" => {
                         // Open tree selector against the active session's entries.
-                        let session_arc = shared.lock().unwrap().session_state.session.clone();
+                        let session_arc = lock_state(&shared).session_state.session.clone();
                         let entries: Vec<nini_core::SessionEntry> = if let Some(arc) = session_arc {
                             if let Ok(guard) = arc.try_lock() {
                                 guard.entries.clone()
@@ -529,7 +554,7 @@ async fn run_loop(
                     _ => {}
                 }
                 // Clear the status flag so it doesn't re-trigger.
-                shared.lock().unwrap().run_state.status = "ready".to_string();
+                lock_state(&shared).run_state.status = "ready".to_string();
             }
         }
 
@@ -555,7 +580,7 @@ async fn run_loop(
                                     None
                                 };
                                 if let Some(new_model) = model_update {
-                                    shared.lock().unwrap().model_state.model = new_model;
+                                    lock_state(&shared).model_state.model = new_model;
                                 }
                                 // Selector closed: reset any residual
                                 // open_selector:* flag so the status bar
@@ -595,7 +620,7 @@ async fn run_loop(
             // until after we'd already resumed anyway. We just
             // check the flag cheaply here.
             _ = editor_poll_tick.tick() => {
-                if shared.lock().unwrap().run_state.pending_external_editor {
+                if lock_state(&shared).run_state.pending_external_editor {
                     handle_external_editor_dance(terminal, &shared);
                 }
             }
@@ -609,7 +634,7 @@ async fn run_loop(
                     ThemeEvent::Changed(path) | ThemeEvent::Removed(path) => {
                         let mut settings = crate::settings::SettingsManager::default();
                         let name = settings.theme_name();
-                        shared.lock().unwrap().ui_state.theme_name = name.clone();
+                        lock_state(&shared).ui_state.theme_name = name.clone();
                         theme = settings.theme();
                         let _ = bus.emit(crate::event_bus::AppEvent::ThemeChanged(
                             name.unwrap_or_default(),
@@ -623,7 +648,7 @@ async fn run_loop(
             }
         }
 
-        let mode = shared.lock().unwrap().run_state.mode;
+        let mode = lock_state(&shared).run_state.mode;
         if mode == RunMode::Quitting {
             return Ok(());
         }
@@ -808,7 +833,7 @@ fn apply_selector_result(
         if let Some(path_str) = session_sel.result.clone() {
             // Load the session file into AppState.
             let path = std::path::PathBuf::from(&path_str);
-            if let Err(e) = shared.lock().unwrap().session_load(path) {
+            if let Err(e) = lock_state(&shared).session_load(path) {
                 eprintln!("[nini] session load failed: {e}");
             }
         }
@@ -820,9 +845,9 @@ fn apply_selector_result(
         // (b) queue the full summary into pending_next_turn_messages so
         //     the next user turn has it as context (Pi parity — mirrors
         //     _pendingNextTurnMessages).
-        let session_arc = shared.lock().unwrap().session_state.session.clone();
-        let prev_status = shared.lock().unwrap().run_state.status.clone();
-        shared.lock().unwrap().run_state.status = "branch summary: computing…".into();
+        let session_arc = lock_state(&shared).session_state.session.clone();
+        let prev_status = lock_state(&shared).run_state.status.clone();
+        lock_state(&shared).run_state.status = "branch summary: computing…".into();
         if let Some(arc) = session_arc {
             if let Ok(guard) = arc.try_lock() {
                 let entries = guard.entries.clone();
@@ -839,7 +864,7 @@ fn apply_selector_result(
                         s.clone()
                     };
                     let len = truncated.len();
-                    let mut g = shared.lock().unwrap();
+                    let mut g = lock_state(&shared);
                     g.push_assistant(format!("(branch summary: {len} chars)\n{truncated}",));
                     g.push_divider();
                     // (b) Queue full summary for next turn.
@@ -847,7 +872,7 @@ fn apply_selector_result(
                         .pending_next_turn_messages
                         .push(format!("[BRANCH SUMMARY]\n\n{}", s,));
                 }
-                shared.lock().unwrap().run_state.status = prev_status;
+                lock_state(&shared).run_state.status = prev_status;
             }
         }
         return None;
@@ -883,12 +908,12 @@ fn apply_selector_result(
                     // the runtime uses for an Enter keypress.
                     let name = id.trim_start_matches("cmd:/").to_string();
                     let cmd_line = format!("/{name}");
-                    let mut g = shared.lock().unwrap();
+                    let mut g = lock_state(&shared);
                     g.input.text.clear();
                     g.input.cursor = 0;
                     drop(g);
                     if let Some((cmd_id, args)) = crate::commands::parse(&cmd_line) {
-                        let mut g2 = shared.lock().unwrap();
+                        let mut g2 = lock_state(&shared);
                         let mut settings = crate::settings::SettingsManager::default();
                         let result =
                             crate::commands::dispatch(&mut g2, &mut settings, cmd_id, &args);
@@ -917,7 +942,7 @@ fn apply_selector_result(
                     }
                 }
                 "action:clear" => {
-                    let mut g = shared.lock().unwrap();
+                    let mut g = lock_state(&shared);
                     // v0.8.9 (P1-5): a stale `scroll_offset` from a
                     // longer transcript would survive the clear and
                     // render an empty box.
@@ -930,11 +955,11 @@ fn apply_selector_result(
                     g.push_divider();
                 }
                 "action:exit" => {
-                    let mut g = shared.lock().unwrap();
+                    let mut g = lock_state(&shared);
                     g.run_state.mode = RunMode::Quitting;
                 }
                 _ => {
-                    let mut g = shared.lock().unwrap();
+                    let mut g = lock_state(&shared);
                     g.push_assistant(format!("[palette] unknown action id: {}", id));
                     g.push_divider();
                     let _ = label;
@@ -983,7 +1008,7 @@ fn handle_external_editor_dance(
 ) {
     // 1. Snapshot input and clear the flag.
     let (initial_text, initial_cursor) = {
-        let mut g = shared.lock().unwrap();
+        let mut g = lock_state(&shared);
         g.run_state.pending_external_editor = false;
         (g.input.text.clone(), g.input.cursor)
     };
@@ -1023,7 +1048,7 @@ fn handle_external_editor_dance(
     // 5. Apply the result (or the error) and force a redraw.
     match result {
         Ok(Some(new_text)) => {
-            let mut g = shared.lock().unwrap();
+            let mut g = lock_state(&shared);
             // Replace the entire input buffer + push an undo snapshot
             // so Ctrl+Z restores the pre-edit version.
             g.input.replace_whole(new_text.clone());
@@ -1031,13 +1056,13 @@ fn handle_external_editor_dance(
         }
         Ok(None) => {
             // No change.
-            let mut g = shared.lock().unwrap();
+            let mut g = lock_state(&shared);
             g.run_state.status = "editor: no changes".to_string();
             // Suppress the unused warning on initial_cursor.
             let _ = initial_cursor;
         }
         Err(e) => {
-            let mut g = shared.lock().unwrap();
+            let mut g = lock_state(&shared);
             g.run_state.status = format!("editor error: {e}");
             g.push_assistant(format!("[editor error] {e}"));
             g.push_divider();
@@ -1126,7 +1151,7 @@ fn handle_key(
     done: Arc<Notify>,
     event_tx: tokio::sync::watch::Sender<bool>,
 ) {
-    let mut state = shared.lock().unwrap();
+    let mut state = lock_state(&shared);
     let key: Key = k.into();
     let action = resolve_with_user_overrides(key);
     // Drop the lock while we hold it; the rest of the match needs it.
@@ -1526,7 +1551,7 @@ fn submit_user_input_inner(
     event_tx: tokio::sync::watch::Sender<bool>,
 ) {
     let text = {
-        let mut g = shared.lock().unwrap();
+        let mut g = lock_state(&shared);
         if g.run_state.mode != RunMode::Editing {
             return;
         }

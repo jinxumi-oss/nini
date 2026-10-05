@@ -1,3 +1,90 @@
+## v0.9.1 — Two panics that would have ended your session (2026-10-05)
+
+The last two items on the v0.8.9 plan. Both are about **what happens
+after something goes wrong**, which is precisely what the previous
+release never tested.
+
+Tests: **929 → 937**.
+
+---
+
+### Fix — one panic used to kill the TUI permanently (P2-8)
+
+The runtime had 29 `shared.lock().unwrap()` calls. A `Mutex` is poisoned
+when a thread panics while holding it, and every later `lock()` on a
+poisoned mutex returns `Err`. So `unwrap()` converts **one** panic into
+a permanent condition: the next frame's first `lock()` panics again, and
+again, for the rest of the process. The user is left with a frozen or
+blank terminal and no way out short of killing nini.
+
+That is a much worse outcome than the panic that started it — and it was
+not hypothetical for this codebase. v0.8.9 and v0.9.0 shipped fixes for
+**three panics reachable from ordinary input**: an integer overflow in
+`read`, a UTF-8 boundary panic in bash output truncation, and a
+concurrent-agent indexing panic. Any of them would have ended the
+session, and the only symptom would have been "nini froze".
+
+A poisoned lock means "some state may be inconsistent", not "the state
+is unreadable". The TUI re-derives nearly everything it draws from
+`AppState`'s own fields; the failure mode of proceeding is a transient
+glitch, while the failure mode of panicking is a dead application. So
+`lock_state()` recovers the guard and carries on.
+
+Applied to all 29 sites in `runtime.rs` plus the global event bus — a
+poisoned *global* is worse still, because it outlives every session and
+would make the next run of nini panic on its first event. Production
+code is now free of `lock().unwrap()`; the remaining occurrences are all
+inside `#[cfg(test)]` blocks.
+
+### Fix — small terminals no longer render nonsense (P2-12)
+
+The chrome was a fixed 6 rows (2 footer + 3 prompt + 1 hint) before the
+transcript got anything. Below that, ratatui squeezed the overflow into
+whatever was left. A 20x5 terminal rendered:
+
+```text
+> hello idle       m          ← the user's message and the status bar, same line
+┌ ─ input ─ ───────┐
+ Enter  send  …     ← and the input row is gone
+```
+
+Nothing panicked — ratatui clipped — but it no longer read as an
+application, and "make your terminal bigger" is not advice you can give
+someone in a 60-column split pane or an SSH window on a phone.
+
+Degradation is now explicit and ordered: drop the hint bar, then the
+footer's second row, then the prompt's border. The transcript and the
+prompt are last to go, because they are the two things you cannot work
+without.
+
+Two details the tests caught while building it:
+
+- `render_footer` had a `height < 2` fallback that *invented* a row
+  (`tmp.height = 1`) and drew the stats line on top of the transcript —
+  that is where `> hello idle m` came from. Zero rows now means zero rows.
+- `Borders::ALL` on the prompt costs two rows, so at the 2-row height the
+  layout hands us on a short terminal, the frame consumed the whole
+  widget and the input line was pushed out. Below 3 rows the border is
+  dropped and the text drawn bare: an unframed prompt you can type into
+  beats a handsome empty box.
+
+---
+
+### Tests +8
+
+`crates/nini-tui/tests/lock_poison_e2e.rs` (5): the guard is usable after
+poisoning, the render path survives three consecutive frames, a
+simulated runtime tick survives, the global bus survives, and state
+written *before* the panic is still intact afterwards.
+
+Verified red-then-green: restoring `lock().unwrap()` reproduces
+`called \`Result::unwrap()\` on an \`Err\` value: PoisonError { .. }` and
+fails 4 of the 5.
+
+`transcript_width_e2e.rs` (3): degenerate sizes (10x4, 5x3, 20x5, 40x3,
+8x2, 3x1) never panic or overflow; the prompt survives at usable widths;
+the transcript keeps at least one row. Verified red-then-green too.
+
 ## v0.9.0 — Honour `--api-key`, and make the default model real (2026-10-05)
 
 A v0.8.9 post-release acceptance pass, released as **0.9.0** rather than a patch: the default model changes, which is a behaviour change. Cargo also rejects a four-part semver, so `0.8.9.1` was never on

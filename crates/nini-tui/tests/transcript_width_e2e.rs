@@ -998,3 +998,83 @@ fn session_pill_is_dropped_whole_not_shown_half() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 9. Degenerate terminal sizes (v0.9.1, P2-12)
+// ---------------------------------------------------------------------------
+//
+// The layout asked for a fixed 2-row footer, a 3-row prompt box and a
+// 1-row hint bar — 6 rows before the transcript gets anything. Below
+// that, ratatui squeezed the overflow into whatever was left, so:
+//
+//   40x3  the footer vanished entirely
+//   10x4  the prompt box collapsed to `┌ ─ input┐` with no bottom border
+//    5x3  unrecognisable
+//
+// None of it panicked — ratatui clipped — but the user is looking at
+// something that does not read as an application, and the standard fix
+// ("make your terminal bigger") is not available on a phone-sized SSH
+// window or a split pane.
+//
+// The fix degrades in *known* steps rather than falling off a cliff:
+// drop the hint bar, then the footer's second row, then the prompt
+// border — keeping the transcript and the prompt, which are the two
+// things you cannot work without.
+
+fn tiny_frame(w: u16, h: u16) -> Vec<String> {
+    let mut s = AppState::new("m");
+    Arc::make_mut(&mut s.transcript_state)
+        .lines
+        .push(TranscriptLine::User("hello".to_string()));
+    let backend = TestBackend::new(w, h);
+    let mut t = Terminal::new(backend).unwrap();
+    t.draw(|f| render_frame(f, &s)).unwrap();
+    let buf = t.backend().buffer().clone();
+    (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                .collect::<String>()
+        })
+        .collect()
+}
+
+#[test]
+fn tiny_terminals_do_not_panic() {
+    for (w, h) in [(10u16, 4u16), (5, 3), (20, 5), (40, 3), (8, 2), (3, 1)] {
+        let rows = tiny_frame(w, h);
+        assert_eq!(rows.len(), h as usize, "{w}x{h}: wrong row count");
+        for (y, row) in rows.iter().enumerate() {
+            assert!(
+                nini_tui::width::display_width(row) <= w as usize,
+                "{w}x{h} row {y} overflows: {row:?}"
+            );
+        }
+    }
+}
+
+/// A terminal too small for the full chrome still shows the prompt —
+/// it is the one thing you cannot work without.
+#[test]
+fn the_prompt_survives_at_usable_widths() {
+    for (w, h) in [(20u16, 5u16), (40, 3), (10, 4)] {
+        let rows = tiny_frame(w, h);
+        let has_prompt = rows.iter().any(|r| r.contains('❯'));
+        assert!(
+            has_prompt,
+            "{w}x{h}: the input prompt disappeared entirely:\n{rows:?}"
+        );
+    }
+}
+
+/// At a small-but-workable size the transcript keeps at least one row.
+#[test]
+fn the_transcript_keeps_at_least_one_row() {
+    for (w, h) in [(20u16, 6u16), (40, 5), (40, 4)] {
+        let rows = tiny_frame(w, h);
+        assert!(
+            rows.iter().any(|r| r.contains("hello")),
+            "{w}x{h}: the transcript is gone:\n{rows:?}"
+        );
+    }
+}

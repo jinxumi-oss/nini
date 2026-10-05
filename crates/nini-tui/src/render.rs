@@ -92,18 +92,43 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
         let max_h = (area.height / 3).max(5);
         (total_rows + 2).clamp(3, max_h)
     };
+    // v0.9.1 (P2-12): the chrome used to be a fixed 6 rows (2 footer +
+    // 3 prompt + 1 hint) before the transcript got anything. Below that,
+    // ratatui squeezed the overflow into whatever was left, and a 20x5
+    // terminal rendered the user's own message and the footer's
+    // "idle  m" on the *same line*, with the prompt's input row pushed
+    // off the bottom. It never panicked — ratatui clipped — but it no
+    // longer read as an application, and "make your terminal bigger" is
+    // not advice you can give someone in a 60-column split pane.
+    //
+    // Degrade in known steps instead of falling off a cliff: drop the
+    // hint bar, then the footer's second row, then the prompt's border.
+    // The transcript and the prompt are the two things you cannot work
+    // without, so they are last to go.
+    let footer_rows: u16 = match area.height {
+        0..=4 => 0,
+        5..=6 => 1,
+        _ => 2,
+    };
+    let hint_rows: u16 = if area.height >= 10 { 1 } else { 0 };
+    let want_prompt: u16 = if popup_height > 0 { popup_height } else { 3 };
+    let prompt_rows: u16 = want_prompt
+        .min(area.height.saturating_sub(footer_rows + hint_rows + 1))
+        .max(1);
+    let search_rows: u16 = if state.ui_state.search.is_some() {
+        1
+    } else {
+        0
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // footer (Pi-style 2-row: pwd line + stats/model line)
-            Constraint::Length(if state.ui_state.search.is_some() {
-                1
-            } else {
-                0
-            }), // search bar (only when active)
-            Constraint::Min(3),    // transcript
-            Constraint::Length(if popup_height > 0 { popup_height } else { 3 }), // prompt OR popup
-            Constraint::Length(1), // key hints
+            Constraint::Length(footer_rows), // pwd line + stats/model line
+            Constraint::Length(search_rows), // search bar (only when active)
+            Constraint::Min(1),              // transcript — never below one row
+            Constraint::Length(prompt_rows), // prompt OR popup
+            Constraint::Length(hint_rows),   // key hints
         ])
         .split(area);
 
@@ -161,8 +186,18 @@ fn render_footer(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     //
     // Mirrors `FooterComponent` in pi-coding-agent/.../components/footer.js: a
     // dedicated env line + a stats line with right-aligned model identity.
-    if area.height < 2 {
-        // Fallback: very small area — collapse to a single stats-only line.
+    if area.height == 0 {
+        // v0.9.1 (P2-12): the layout deliberately gave the footer zero
+        // rows on a very short terminal. The old `height < 2` fallback
+        // then *invented* one (`tmp.height = 1`) and drew the stats line
+        // on top of the transcript — which is how a 40x3 terminal ended
+        // up rendering `> hello idle    m`: the user's own message and
+        // the status bar, on the same line. Zero rows means zero rows.
+        return;
+    }
+    if area.height == 1 {
+        // One row available: show the stats line only — it carries the
+        // model identity, which is the more useful of the two.
         let mut tmp = area;
         tmp.height = 1;
         render_stats_line(f, state, theme, tmp);
@@ -1115,18 +1150,28 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
             ]));
         }
     }
-    let para = Paragraph::new(line_widgets)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.fg_style("borderMuted"))
-                .title(Span::styled(
-                    " \u{2500} input \u{2500} ",
-                    theme.fg_style("borderMuted"),
-                ))
-                .padding(Padding::horizontal(padding_x)),
-        )
-        .wrap(Wrap { trim: false });
+    // v0.9.1 (P2-12): `Borders::ALL` costs two rows. At the 2-row
+    // height the layout now hands us on a short terminal, the borders
+    // consumed the whole widget and the input line — the one row that
+    // matters — was pushed out. Below 3 rows, drop the frame and draw
+    // the text bare: an unframed prompt you can type into beats a
+    // handsome empty box.
+    let para = if area.height >= 3 {
+        Paragraph::new(line_widgets)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme.fg_style("borderMuted"))
+                    .title(Span::styled(
+                        " \u{2500} input \u{2500} ",
+                        theme.fg_style("borderMuted"),
+                    ))
+                    .padding(Padding::horizontal(padding_x)),
+            )
+            .wrap(Wrap { trim: false })
+    } else {
+        Paragraph::new(line_widgets).wrap(Wrap { trim: false })
+    };
     f.render_widget(para, area);
 
     // Render cursor. Account for paddingX: x offset starts after the
