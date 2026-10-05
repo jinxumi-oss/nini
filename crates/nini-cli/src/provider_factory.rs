@@ -17,6 +17,35 @@ use anyhow::{Context, Result};
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
 use nini_core::provider::{Provider, Usage};
 
+/// v0.9.0: resolve the API key for a provider.
+///
+/// Precedence, as `--help` promises: explicit `--api-key` **overrides**
+/// the environment variable.
+///
+/// v0.9.0 also rejects an *empty* key. `std::env::var` returns `Ok("")`
+/// for a variable that is set-but-blank, which sailed past the
+/// `.context(...)` check and produced a provider that sent
+/// `Authorization: Bearer ` — a silent 401 with no diagnostic at all.
+/// An empty key is a configuration mistake; it deserves a sentence
+/// saying so, not a round trip to the server.
+fn resolve_api_key(explicit: Option<&str>, env_var: &str, provider: &str) -> Result<String> {
+    if let Some(k) = explicit {
+        let trimmed = k.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!(
+                "--api-key was passed but is empty. Pass a real key, or unset it \
+                 and set {env_var} instead."
+            );
+        }
+        return Ok(trimmed.to_string());
+    }
+    match std::env::var(env_var) {
+        Ok(v) if !v.trim().is_empty() => Ok(v),
+        Ok(_) => anyhow::bail!("{env_var} is set but empty. Unset it, or pass --api-key <key>."),
+        Err(_) => anyhow::bail!("{env_var} required for {provider}"),
+    }
+}
+
 /// Construct an `Arc<dyn Provider>` for the named backend. Reads
 /// provider-specific env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 /// etc.) and respects `*_BASE_URL` for gateway compatibility.
@@ -25,11 +54,19 @@ use nini_core::provider::{Provider, Usage};
 /// key rotation (currently only `anthropic`), wrap the primary + each
 /// fallback key in a `FallbackProvider`. Empty/duplicate fallback keys
 /// are skipped.
+///
+/// v0.9.0: `api_key_override` is the `--api-key` flag. It used to be
+/// dropped on the floor in `main.rs` (`api_key: _`), so the flag's help
+/// text — "API key (overrides env vars)" — was simply false. Verified by
+/// hand: `--api-key wrong` with a correct env var succeeded, and
+/// `--api-key correct` with no env var failed with "OPENAI_API_KEY
+/// required".
 pub(crate) fn build_provider(
     provider: &str,
     turns: Vec<Vec<FixtureTurn>>,
     fallback_keys: &[String],
     fallback_base_urls: &[String],
+    api_key_override: Option<&str>,
 ) -> Result<Arc<dyn Provider>> {
     match provider {
         "fixture" => Ok(Arc::new(ProgrammedProvider::from_turns(turns))),
@@ -45,8 +82,7 @@ pub(crate) fn build_provider(
         // but the actual env var is `OPENAI_BASE_URL`, not
         // `OPENAI_API_KEY_BASE_URL`. Inline the read instead.
         "openai" => {
-            let key =
-                std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY required for openai")?;
+            let key = resolve_api_key(api_key_override, "OPENAI_API_KEY", "openai")?;
             let provider = match std::env::var("OPENAI_BASE_URL").ok() {
                 Some(base) => nini_ai::openai::OpenAiProvider::new(key).with_base_url(base),
                 None => nini_ai::openai::OpenAiProvider::new(key),
@@ -54,20 +90,26 @@ pub(crate) fn build_provider(
             Ok(Arc::new(provider))
         }
         "openai-responses" => {
-            let key = std::env::var("OPENAI_API_KEY")
-                .context("OPENAI_API_KEY required for openai-responses")?;
+            let key = resolve_api_key(api_key_override, "OPENAI_API_KEY", "openai-responses")?;
             Ok(Arc::new(
                 nini_ai::openai_responses::OpenAiResponsesProvider::new(key),
             ))
         }
         "openai-compat" => {
-            let key = std::env::var("OPENAI_API_KEY")
-                .context("OPENAI_API_KEY required for openai-compat")?;
+            let key = resolve_api_key(api_key_override, "OPENAI_API_KEY", "openai-compat")?;
             let base = std::env::var("OPENAI_BASE_URL")
                 .context("OPENAI_BASE_URL required for openai-compat")?;
             Ok(Arc::new(nini_ai::openai_compat::OpenAiCompatProvider::new(
                 base, key,
             )))
+        }
+        "google" if api_key_override.is_some() => {
+            let key = resolve_api_key(api_key_override, "GOOGLE_API_KEY", "google")?;
+            let base = std::env::var("GOOGLE_BASE_URL").ok();
+            Ok(Arc::new(match base {
+                Some(b) => nini_ai::google::GoogleProvider::with_base_url(b, key),
+                None => nini_ai::google::GoogleProvider::new(key),
+            }))
         }
         "google" => build_with_optional_base_url(
             "GOOGLE_API_KEY (or GEMINI_API_KEY)",
@@ -314,5 +356,67 @@ mod tests {
     fn parse_scripted_turns_unknown_kind_returns_none() {
         let raw = r#"[{"kind":"weird","data":"x"}]"#;
         assert!(parse_scripted_turns(raw).is_none());
+    }
+
+    // ---- v0.9.0: `--api-key` actually overrides the env var ----
+    //
+    // The flag used to be dropped on the floor in `main.rs`
+    // (`api_key: _`), so `--help`'s "API key (overrides env vars)" was
+    // false. Verified by hand before the fix:
+    //
+    //   --api-key wrong   + correct env var  ->  SUCCEEDED
+    //   --api-key correct + no env var      ->  "OPENAI_API_KEY required"
+    //
+    // Both are the opposite of what the flag promises.
+
+    #[test]
+    fn explicit_api_key_wins_over_the_env_var() {
+        // SAFETY: single-threaded test process, no other thread reads
+        // this var concurrently.
+        unsafe { std::env::set_var("NINI_TEST_KEY", "from-env") };
+        let k = resolve_api_key(Some("from-flag"), "NINI_TEST_KEY", "test").unwrap();
+        assert_eq!(k, "from-flag");
+    }
+
+    #[test]
+    fn env_var_is_used_when_no_flag_is_given() {
+        unsafe { std::env::set_var("NINI_TEST_KEY", "from-env") };
+        let k = resolve_api_key(None, "NINI_TEST_KEY", "test").unwrap();
+        assert_eq!(k, "from-env");
+    }
+
+    #[test]
+    fn an_empty_flag_is_an_error_not_a_silent_blank_bearer_token() {
+        // This is the shape that produced a silent 401 with no
+        // diagnostic at all: `std::env::var` returns `Ok("")` for a
+        // variable that is set-but-blank, which sailed past the old
+        // `.context(...)` check and built a provider that sent
+        // `Authorization: Bearer `.
+        let err = resolve_api_key(Some(""), "NINI_TEST_KEY", "test").unwrap_err();
+        assert!(
+            err.to_string().contains("empty"),
+            "error should say the key is empty, got: {err}"
+        );
+        let err = resolve_api_key(Some("   "), "NINI_TEST_KEY", "test").unwrap_err();
+        assert!(err.to_string().contains("empty"), "whitespace is empty too");
+    }
+
+    #[test]
+    fn a_blank_env_var_is_an_error() {
+        unsafe { std::env::set_var("NINI_TEST_KEY", "   ") };
+        let err = resolve_api_key(None, "NINI_TEST_KEY", "test").unwrap_err();
+        assert!(
+            err.to_string().contains("set but empty"),
+            "error should distinguish blank-set from unset, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_missing_env_var_names_the_variable() {
+        let err = resolve_api_key(None, "NINI_TEST_ABSENT_KEY", "test").unwrap_err();
+        assert!(
+            err.to_string().contains("NINI_TEST_ABSENT_KEY"),
+            "error should name the variable, got: {err}"
+        );
     }
 }

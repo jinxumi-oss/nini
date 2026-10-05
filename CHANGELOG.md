@@ -1,3 +1,114 @@
+## v0.9.0 — Honour `--api-key`, and make the default model real (2026-10-05)
+
+A v0.8.9 post-release acceptance pass, released as **0.9.0** rather than a patch: the default model changes, which is a behaviour change. Cargo also rejects a four-part semver, so `0.8.9.1` was never on
+the table. Two things it turned up that the green suite could not: a
+documented flag that did nothing, and a default model that was a placeholder.
+
+Tests: **920 → 929**.
+
+---
+
+### Fix — `--api-key` was silently ignored
+
+`main.rs` destructured the flag as `api_key: _` and dropped it.
+`provider_factory` read `OPENAI_API_KEY` straight from the environment
+and never heard about the flag, so `--help`'s *"API key (overrides env
+vars)"* was false in both directions:
+
+```console
+$ nini --provider openai-compat --api-key deliberately-wrong ...   # env correct
+  → succeeded                                                        # flag ignored
+
+$ nini --provider openai-compat --api-key <correct> ...             # env unset
+  → Error: OPENAI_API_KEY required for openai-compat                # flag ignored
+```
+
+`--api-key` now overrides the environment variable, and
+`resolve_api_key()` distinguishes three cases with three different
+messages: explicit key, environment key, and neither.
+
+### Fix — an empty API key failed silently
+
+`std::env::var` returns `Ok("")` for a variable that is set but blank, so
+`--api-key ""` (or an exported-but-empty `OPENAI_API_KEY`) sailed past the
+old `.context(...)` check and built a provider that sent
+`Authorization: Bearer ` — a **401 with no diagnostic anywhere in the
+TUI**, just two dividers and silence. An empty key is a configuration
+mistake and now says so:
+
+```console
+$ nini --provider openai-compat --api-key "" ...
+  Error: --api-key was passed but is empty. Pass a real key, or unset it
+         and set OPENAI_API_KEY instead.
+
+$ OPENAI_API_KEY="   " nini --provider openai-compat ...
+  Error: OPENAI_API_KEY is set but empty. Unset it, or pass --api-key <key>.
+```
+
+The same run showed that an *invalid* key was reported properly
+(`[error] provider error: api error (401)`), so the two failure shapes
+were inconsistent — same root cause, opposite symptoms.
+
+### Fix — session flags are now refused out loud, not ignored
+
+`--continue-session`, `--session-id`, `--no-session`, `--name`, `--fork`
+and `--session-dir` were also `_: _`. TUI session persistence is a
+known, README-declared gap, so they cannot be implemented here — but
+silently accepting a flag is worse than refusing it. They now print
+what is being ignored and why.
+
+### Change — the default model is a real one
+
+`--model` defaulted to `test-model`, a placeholder that only means
+anything to the `fixture` provider. `nini --provider openai-compat`
+without `--model` therefore sent a model id no server has heard of.
+
+The default is now **`MiniMax-M3.1-Flash-Preview`** — real, fast and
+cheap, which is what you want as a default because an agent's first
+token matters more than its fifth. Override with `--model` or `/model`.
+
+### Fix — `delta.reasoning_content` was dropped
+
+Switching the default exposed a latent parsing gap. MiniMax's reasoning
+models disagree about where the thinking goes, *intermittently on the
+same model and prompt*: `MiniMax-M3` inlines it in `delta.content`
+inside `<think>` tags, while `MiniMax-M3.1-Flash-Preview` sends it as
+`delta.reasoning_content`. serde ignores unknown fields, so the
+reasoning parsed successfully and was then thrown away — the user saw an
+answer with no thinking block, the same failure shape as the v0.8.9 P0-4
+text loss one layer down.
+
+`OpenAiDelta` now carries the field and routes it to `ThinkingDelta`.
+Both kinds of text go into the same queue in arrival order, and neither
+returns early — the v0.8.4 lesson is that returning on one kind of text
+drops the other.
+
+### Fix — 529 is retryable
+
+The first run on the new default model failed with
+`api error (529)`. That is MiniMax's gateway reporting a saturated
+model, and it is exactly as transient as a 503 — but `is_retryable_error`
+did not list it, so the run failed outright when a retry would have
+succeeded. It is now covered.
+
+---
+
+### Verified end to end
+
+Against `https://minnimax.chat/v1` with the new default model, in the
+real TUI:
+
+```text
+ nini   idle                                     (openai-compat) MiniMax-M3.1-Flash-Preview
+> 用一句话说明 Rust 的所有权
+────────────────────────────────────────────────────────────
+  💭 The user asks in Chinese: "用一句话说明 Rust 的所有权" …
+  💭
+  💭 Just answer concisely in Chinese, one sentence.
+Rust 的所有权是一套编译期规则：每个值有且仅有一个所有者，所有者离开
+作用域时值被释放，而赋值或传参会…
+```
+
 ## v0.8.9 — What the transcript was hiding (2026-10-05)
 
 A release driven by a single question: *why does the UI feel heavy after a

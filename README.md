@@ -2,9 +2,9 @@
 
 > A Pi-compatible coding agent, rewritten in Rust.
 
-[![Status](https://img.shields.io/badge/status-v0.8.9-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.9.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-920%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-929%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -18,7 +18,7 @@ settings, and models.json keep working.
 - **Single 5.4 MB binary** instead of a Node.js toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **920 unit + integration tests**, including property-based SSE fuzz and
+- **929 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -28,6 +28,7 @@ settings, and models.json keep working.
 | Area | What works |
 |---|---|
 | **Providers** | Anthropic, OpenAI (Chat + Responses), OpenAI-compatible (any `/v1/chat/completions`), fixture (offline test) |
+| **Default model** | `MiniMax-M3.1-Flash-Preview` — override with `--model` or `/model` |
 | **Tools** | `bash` (process-tree kill, timeout, SIGTERM→SIGKILL), `read`, `write` (atomic), `edit` (exact-match), `grep` (regex + .gitignore), `find` (glob + .gitignore) |
 | **TUI** | ratatui + crossterm, readline-style editing, kill ring, history recall, slash-command autocomplete dropdown, command palette (Ctrl+Shift+K), transcript search (Ctrl+F), external editor (Ctrl+G) |
 | **Slash commands** | All 28 Pi-compatible commands (`/help`, `/model`, `/export`, `/new`, `/quit`, …) |

@@ -450,3 +450,104 @@ async fn server_error_payload_is_surfaced() {
         "the error payload was swallowed: {events:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 9. `delta.reasoning_content` (v0.9.0)
+// ---------------------------------------------------------------------------
+//
+// MiniMax's reasoning models disagree about where the thinking goes, and
+// the disagreement is *intermittent on the same model and prompt*:
+// `MiniMax-M3` inlines it in `delta.content` inside `<think>` tags,
+// while `MiniMax-M3.1-Flash-Preview` — the new default model — sends it
+// as `delta.reasoning_content`.
+//
+// serde ignores unknown fields, so before this was handled the reasoning
+// parsed fine and was silently dropped: the user saw an answer with no
+// thinking block at all. Same failure shape as the v0.8.9 P0-4 text loss,
+// one layer down, so it got its own coverage.
+
+#[tokio::test]
+async fn reasoning_content_becomes_a_thinking_delta() {
+    let events = events_from_sse(&[
+        r#"{"choices":[{"delta":{"reasoning_content":"let me think about this"},"index":0}]}"#,
+        r#"{"choices":[{"delta":{"content":"The answer."},"index":0}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}]}"#,
+    ])
+    .await;
+
+    assert_eq!(
+        thinking_text(&events),
+        "let me think about this",
+        "reasoning_content was dropped: {events:?}"
+    );
+    assert_eq!(visible_text(&events), "The answer.");
+    assert!(has_stop(&events));
+}
+
+/// A chunk carrying reasoning *and* content must emit both, reasoning
+/// first. This is the v0.8.4 lesson applied to the new field: returning
+/// on the first text kind drops the other.
+#[tokio::test]
+async fn reasoning_and_content_on_one_chunk_are_both_kept() {
+    let events = events_from_sse(&[
+        r#"{"choices":[{"delta":{"reasoning_content":"thinking","content":"answering"},"index":0}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}]}"#,
+    ])
+    .await;
+
+    assert_eq!(
+        thinking_text(&events),
+        "thinking",
+        "lost the reasoning: {events:?}"
+    );
+    assert_eq!(
+        visible_text(&events),
+        "answering",
+        "lost the content: {events:?}"
+    );
+
+    let pos_think = events
+        .iter()
+        .position(|e| matches!(e, StreamEvent::ThinkingDelta { .. }))
+        .expect("no ThinkingDelta");
+    let pos_text = events
+        .iter()
+        .position(|e| matches!(e, StreamEvent::TextDelta { .. }))
+        .expect("no TextDelta");
+    assert!(
+        pos_think < pos_text,
+        "reasoning must precede the answer: {events:?}"
+    );
+}
+
+/// Reasoning interleaved with content across many chunks keeps its
+/// arrival order.
+#[tokio::test]
+async fn interleaved_reasoning_keeps_order() {
+    let events = events_from_sse(&[
+        r#"{"choices":[{"delta":{"reasoning_content":"one "},"index":0}]}"#,
+        r#"{"choices":[{"delta":{"content":"A "},"index":0}]}"#,
+        r#"{"choices":[{"delta":{"reasoning_content":"two "},"index":0}]}"#,
+        r#"{"choices":[{"delta":{"content":"B"},"index":0}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}]}"#,
+    ])
+    .await;
+
+    assert_eq!(thinking_text(&events), "one two ");
+    assert_eq!(visible_text(&events), "A B");
+}
+
+/// A `MiniMax-M3`-style stream that still inlines `<think>` in `content`
+/// must keep working — the new field is additive, not a replacement.
+#[tokio::test]
+async fn inline_think_tags_still_work_alongside_the_new_field() {
+    let events = events_from_sse(&[
+        r#"{"choices":[{"delta":{"content":"<think>inline reasoning</think>"},"index":0}]}"#,
+        r#"{"choices":[{"delta":{"content":"the answer"},"index":0}]}"#,
+        r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}]}"#,
+    ])
+    .await;
+
+    assert_eq!(thinking_text(&events), "inline reasoning");
+    assert_eq!(visible_text(&events), "the answer");
+}

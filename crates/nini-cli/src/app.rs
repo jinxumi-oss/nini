@@ -40,6 +40,12 @@ pub(crate) struct AppConfig {
     pub no_tools: bool,
     pub no_builtin_tools: bool,
     pub use_theme: Option<String>,
+    /// v0.9.0: the `--api-key` flag. It was dropped in `main.rs`
+    /// (`api_key: _`), which made the help text "API key (overrides env
+    /// vars)" false — verified by hand: `--api-key wrong` succeeded when
+    /// the env var was right, and `--api-key correct` failed with
+    /// "OPENAI_API_KEY required" when it was not.
+    pub api_key: Option<String>,
 }
 
 /// Construct an `App` from CLI config and launch the TUI.
@@ -78,6 +84,7 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         scripted_turns,
         &cfg.fallback_keys,
         &cfg.fallback_base_urls,
+        cfg.api_key.as_deref(),
     )
     .unwrap_or_else(|_| {
         Arc::new(nini_ai::fixture::ProgrammedProvider::from_turns(

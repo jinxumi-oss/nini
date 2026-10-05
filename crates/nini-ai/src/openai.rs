@@ -391,6 +391,19 @@ fn translate_sse(ev: &SseEvent, state: &mut StreamState) -> Option<StreamEvent> 
         }
         Some(c) => {
             if let Some(delta) = c.delta {
+                // v0.9.0: a chunk may carry reasoning, content, or
+                // both. Handle reasoning first and *keep going* — the
+                // whole v0.8.4 lesson is that returning early on one
+                // kind of text drops the other. Both end up in the same
+                // queue, in arrival order, so the TUI renders the
+                // thinking block above the answer.
+                if let Some(reasoning) = delta.reasoning_content {
+                    if !reasoning.is_empty() {
+                        state
+                            .fragments_pending
+                            .push_back(ThinkFragment::Thinking(reasoning));
+                    }
+                }
                 if let Some(text) = delta.content {
                     if !text.is_empty() {
                         let frags = state.think_filter.push(&text);
@@ -860,6 +873,24 @@ struct OpenAiChoice {
 #[derive(Debug, Deserialize, Default)]
 struct OpenAiDelta {
     content: Option<String>,
+    /// v0.9.0: reasoning trace on a separate field.
+    ///
+    /// MiniMax's reasoning models are not consistent about where the
+    /// thinking goes. `MiniMax-M3` inlines it in `delta.content` wrapped
+    /// in `<think>` tags, which `ThinkTagFilter` handles. But
+    /// `MiniMax-M3.1-Flash-Preview` — the new default model — sends it
+    /// as `delta.reasoning_content` instead, and does so
+    /// *intermittently*: the same model and the same prompt returned
+    /// `reasoning_content` on one stream and plain `content` on the
+    /// next.
+    ///
+    /// serde ignores unknown fields by default, so before this field
+    /// existed the reasoning was parsed successfully and then silently
+    /// dropped — the user just saw an answer with no visible thinking.
+    /// That is the same failure mode as the v0.8.9 P0-4 text loss, one
+    /// layer down, so it is worth being explicit about.
+    #[serde(default)]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAiDeltaToolCall>>,
 }
 

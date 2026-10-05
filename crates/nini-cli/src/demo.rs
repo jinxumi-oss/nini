@@ -30,6 +30,7 @@ pub(crate) async fn run_demo(
     model: &str,
     fallback_keys: &[String],
     fallback_base_urls: &[String],
+    api_key: Option<&str>,
 ) -> Result<()> {
     eprintln!("[demo] task: {task}");
     eprintln!("[demo] provider: {provider} | model: {model}");
@@ -44,8 +45,13 @@ pub(crate) async fn run_demo(
     } else {
         demo_simple_turns(task)
     };
-    let provider_impl =
-        provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
+    let provider_impl = provider_factory::build_provider(
+        provider,
+        turns,
+        fallback_keys,
+        fallback_base_urls,
+        api_key,
+    )?;
     let tools = tool_registry::build_tools();
     let system = prompt_setup::settings_to_system_prompt(&settings, &cwd, &tools, &skills_prompt);
     let config = RunConfig {
@@ -111,6 +117,7 @@ pub(crate) async fn run_print(
     model: &str,
     fallback_keys: &[String],
     fallback_base_urls: &[String],
+    api_key: Option<&str>,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let settings = load_settings(&cwd);
@@ -123,8 +130,13 @@ pub(crate) async fn run_print(
             usage: nini_core::provider::Usage::default(),
         },
     ]];
-    let provider_impl =
-        provider_factory::build_provider(provider, turns, fallback_keys, fallback_base_urls)?;
+    let provider_impl = provider_factory::build_provider(
+        provider,
+        turns,
+        fallback_keys,
+        fallback_base_urls,
+        api_key,
+    )?;
     let tools = tool_registry::build_tools();
     let system = prompt_setup::settings_to_system_prompt(&settings, &cwd, &tools, &skills_prompt);
     let config = RunConfig {

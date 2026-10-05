@@ -36,7 +36,12 @@ struct Args {
     provider: String,
 
     /// Model identifier.
-    #[arg(long, default_value = "test-model")]
+    ///
+    /// v0.9.0: was `test-model`, a placeholder that only makes sense
+    /// for the fixture provider — so `nini --provider openai-compat`
+    /// without `--model` sent a model id no server has heard of and got
+    /// a 404. The default is now a real model.
+    #[arg(long, default_value = DEFAULT_MODEL)]
     model: String,
 
     /// Comma-separated secondary API key(s) for automatic fallback.
@@ -187,6 +192,21 @@ enum Cmd {
 /// Built-in model catalog for `nini --list-models` (fallback when
 /// models.json is missing).
 #[allow(dead_code)]
+/// v0.9.0: default model.
+///
+/// Was `test-model` — a placeholder that only means anything to the
+/// `fixture` provider, so `nini --provider openai-compat` without an
+/// explicit `--model` sent a model id no server has ever heard of and
+/// came back 404.
+///
+/// MiniMax-M3.1-Flash-Preview is a real, fast, cheap model; it is the
+/// one you want as a default because an agent's first token matters
+/// more than its fifth. Override with `--model` or `/model`.
+pub const DEFAULT_MODEL: &str = "MiniMax-M3.1-Flash-Preview";
+
+/// Built-in model catalog for `nini --list-models` (fallback when
+/// models.json is missing).
+#[allow(dead_code)]
 const BUILTIN_CATALOG: &[(&str, &str)] = &[
     ("anthropic/claude-opus-4-7", "Anthropic Claude Opus 4.7"),
     ("anthropic/claude-sonnet-4-5", "Anthropic Claude Sonnet 4.5"),
@@ -214,13 +234,13 @@ async fn main() -> Result<()> {
         model,
         fallback_keys,
         fallback_base_urls,
-        continue_session: _,
-        session_id: _,
-        no_session: _,
-        name: _,
-        fork: _,
-        session_dir: _,
-        api_key: _,
+        continue_session,
+        session_id,
+        no_session,
+        name,
+        fork,
+        session_dir,
+        api_key,
         system_prompt: _,
         append_system_prompt: _,
         thinking: _,
@@ -246,6 +266,42 @@ async fn main() -> Result<()> {
         no_context_files: _,
     } = args;
 
+    // v0.9.0: these were all `_: _` in the destructure above, i.e.
+    // accepted, documented in `--help`, and then dropped on the floor.
+    //
+    // TUI session persistence is a known, README-declared gap, so the
+    // honest thing is to say so at startup rather than let a user
+    // believe `--continue-session` restored anything. Silently ignoring
+    // a flag is worse than refusing it.
+    let mut ignored: Vec<&str> = Vec::new();
+    if continue_session {
+        ignored.push("--continue-session");
+    }
+    if session_id.is_some() {
+        ignored.push("--session-id");
+    }
+    if no_session {
+        // Harmless: the TUI does not persist sessions anyway, so this
+        // flag is already the default behaviour.
+        ignored.push("--no-session (already the default)");
+    }
+    if name.is_some() {
+        ignored.push("--name");
+    }
+    if fork.is_some() {
+        ignored.push("--fork");
+    }
+    if session_dir.is_some() {
+        ignored.push("--session-dir");
+    }
+    if !ignored.is_empty() {
+        eprintln!(
+            "[nini] ignoring {}: TUI session persistence is not implemented yet \
+             (see README section 'Known gaps').",
+            ignored.join(", ")
+        );
+    }
+
     match cmd {
         Some(Cmd::Demo { task }) => {
             let task = task.unwrap_or_else(|| "find TODOs and fix them".to_string());
@@ -255,6 +311,7 @@ async fn main() -> Result<()> {
                 &model,
                 &fallback_keys,
                 &fallback_base_urls,
+                api_key.as_deref(),
             )
             .await
         }
@@ -281,6 +338,7 @@ async fn main() -> Result<()> {
                 &model,
                 &fallback_keys,
                 &fallback_base_urls,
+                api_key.as_deref(),
             )
             .await
         }
@@ -295,6 +353,7 @@ async fn main() -> Result<()> {
                 no_tools,
                 no_builtin_tools,
                 use_theme: use_theme.clone(),
+                api_key: api_key.clone(),
             })
             .await
         }

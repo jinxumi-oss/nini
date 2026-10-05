@@ -164,6 +164,11 @@ pub fn is_retryable_error(msg: &str) -> bool {
         || m.contains("502")
         || m.contains("503")
         || m.contains("504")
+        // v0.9.0: 529 is what MiniMax's gateway returns while a
+        // model is saturated — hit it on the very first run of the new
+        // default model, on a prompt that succeeds on the retry. It is
+        // exactly as transient as a 503.
+        || m.contains("529")
         || m.contains("internal server error")
         || m.contains("upstream")
         || m.contains("overloaded")
@@ -186,6 +191,8 @@ mod retry_policy_tests {
         assert!(is_retryable_error("connection reset by peer"));
         assert!(is_retryable_error("upstream timeout"));
         assert!(is_retryable_error("HTTP 429 too many requests"));
+        // v0.9.0: MiniMax gateway saturation.
+        assert!(is_retryable_error("api error (529): request failed: 529"));
         // Fatal errors should NOT retry.
         assert!(!is_retryable_error("context window exceeded"));
         assert!(!is_retryable_error("invalid api key"));
