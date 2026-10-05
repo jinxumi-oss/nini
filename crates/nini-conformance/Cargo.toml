@@ -1,0 +1,26 @@
+# v0.10 (W0) — Pi conformance oracles.
+#
+# This crate ships NO product code. Its only job is to make "nini behaves
+# like Pi" an *executable* claim rather than a prose one. Every test here
+# takes a fixture derived from real Pi output as its input — never nini's
+# own output — because a round-trip against nini proves only that nini
+# agrees with itself. That is how a `stop_reason` / `stopReason` casing bug
+# survived 950 green tests.
+[package]
+name = "nini-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nini-core = { path = "../nini-core" }
+nini-session = { path = "../nini-session" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

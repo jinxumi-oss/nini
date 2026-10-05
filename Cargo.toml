@@ -7,6 +7,7 @@ members = [
     "crates/nini-tools",
     "crates/nini-tui",
     "crates/nini-ext",
+    "crates/nini-conformance",
     "crates/nini-cli",
 ]
 

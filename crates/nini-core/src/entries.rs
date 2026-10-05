@@ -61,6 +61,10 @@ pub struct ThinkingLevelChangeEntry {
     #[serde(rename = "parentId")]
     pub parent_id: Option<String>,
     pub timestamp: String,
+    /// v0.10 (R7): Pi writes `thinkingLevel` (camelCase). nini used to emit
+    /// and expect `thinking_level`, so every real Pi session lost this
+    /// entry. `alias` keeps old nini-written files loadable.
+    #[serde(rename = "thinkingLevel", alias = "thinking_level")]
     pub thinking_level: String,
 }
 
@@ -143,6 +147,9 @@ pub struct CustomMessageEntry {
     #[serde(rename = "parentId")]
     pub parent_id: Option<String>,
     pub timestamp: String,
+    /// v0.10 (R7): Pi writes `customType`. `alias` keeps old nini files
+    /// loadable.
+    #[serde(rename = "customType", alias = "custom_type")]
     pub custom_type: String,
     pub content: StringOrContentBlocks,
     pub display: bool,
@@ -238,7 +245,20 @@ pub struct AssistantMessage {
     pub provider: String,
     pub model: String,
     pub usage: Usage,
+    /// v0.10 (R7): Pi writes `stopReason` / `errorMessage` (camelCase).
+    ///
+    /// These two fields were the single largest source of data loss: nini
+    /// expected snake_case, so **every assistant message in a real Pi
+    /// session was silently dropped** — 48% of all lines across 301 files.
+    /// It was invisible because nini also *wrote* snake_case, so every
+    /// round-trip test in the repo passed. See
+    /// `crates/nini-conformance/tests/session_fresh.rs`.
+    ///
+    /// `alias` preserves the ability to read the two snake_case files nini
+    /// wrote before this change; new writes use Pi's casing.
+    #[serde(rename = "stopReason", alias = "stop_reason")]
     pub stop_reason: StopReason,
+    #[serde(rename = "errorMessage", alias = "error_message")]
     pub error_message: Option<String>,
     pub timestamp: i64,
 }
@@ -314,8 +334,21 @@ pub enum ContentBlock {
     Text { text: String },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
+    /// v0.10 (R7): Pi's image block is `{type, data, mimeType}` where
+    /// `data` is base64. nini modelled it as `{type, image}` with no
+    /// `mimeType`, so image-bearing Pi sessions failed to parse **and** nini
+    /// wrote a shape Pi cannot read. The variant name stays `image` because
+    /// that is the tag Pi writes; only the payload field is renamed.
+    ///
+    /// The variant had zero construction and zero match sites before this
+    /// change, so widening it to carry `mimeType` broke nothing.
     #[serde(rename = "image")]
-    Image { image: String },
+    Image {
+        #[serde(rename = "data", alias = "image")]
+        data: String,
+        #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+    },
     #[serde(rename = "toolCall")]
     ToolCall {
         id: String,

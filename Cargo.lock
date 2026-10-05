@@ -1430,6 +1430,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nini-conformance"
+version = "0.9.1"
+dependencies = [
+ "nini-core",
+ "nini-session",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "nini-core"
 version = "0.9.1"
 dependencies = [

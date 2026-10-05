@@ -490,7 +490,8 @@ mod tests {
             content: StringOrContentBlocks::Blocks(vec![
                 PiBlock::Text { text: "ok".into() },
                 PiBlock::Image {
-                    image: "data:...".into(),
+                    data: "data:...".into(),
+                    mime_type: Some("image/png".into()),
                 },
             ]),
             timestamp: 0,
