@@ -48,6 +48,35 @@ use crate::provider::Message;
 /// LLM view before reaching the model. M3b wires this filtering into
 /// the default `convert_to_llm` impl via
 /// `AgentMessage::is_internal_only`.
+/// What a hook wants changed for the **next** turn.
+///
+/// v0.10 (R1e). Mirrors Pi's `AgentLoopTurnUpdate`
+/// (`pi-agent-core/src/types.ts`).
+///
+/// ## Why model-only
+///
+/// Pi's version also carries `context` and `thinkingLevel`. Neither is
+/// implemented here, deliberately — nini has no reader for either:
+///
+///   * `thinkingLevel` — nini's `Request` (`provider.rs`) has **no**
+///     thinking/reasoning field at all. `thinking_level` lives in TUI state
+///     and is written to settings.json, but no provider has ever been sent
+///     it. A field with no reader is worse than an absent one: it looks
+///     implemented.
+///   * `context` — Pi re-syncs it from a long-lived session object
+///     (`agent-session.ts:534-554`). nini's `Agent` is constructed fresh
+///     per `run` by the driver closure, so there is no session to re-read.
+///
+/// `model` is the one field with a real reader: `build_request` uses
+/// `config.model` on every provider request, so updating it here is
+/// exactly what makes a mid-run model change take effect.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TurnUpdate {
+    /// Replacement model for the next provider request. `None` keeps the
+    /// current one.
+    pub model: Option<String>,
+}
+
 pub trait AgentLoopHooks: Send + Sync {
     /// Inject messages **after** a round of tool execution, **before**
     /// the next LLM call.
@@ -139,6 +168,29 @@ pub trait AgentLoopHooks: Send + Sync {
     ///      prompt can trigger a compaction."
     ///   * "Stop if the last assistant message contains
     ///      `<DONE/>`."
+    /// v0.10 (R1e): called after `turn_end` and before the loop decides
+    /// whether to make another provider request.
+    ///
+    /// Pi (`agent-loop.ts:236-245`):
+    ///
+    /// ```ts
+    /// const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
+    /// if (nextTurnSnapshot) { currentContext = …; config = { …, model: nextTurnSnapshot.model ?? config.model }; }
+    /// ```
+    ///
+    /// Pi's own session layer uses this to re-sync live state into the
+    /// loop, which is what makes a model change made *while the agent is
+    /// running* apply to the next turn.
+    ///
+    /// **Order matters**: Pi evaluates this BEFORE `shouldStopAfterTurn`,
+    /// so a stop verdict is never computed against a stale model.
+    ///
+    /// Contract (same as the other hooks): must not panic. A panicking
+    /// hook falls back to "change nothing".
+    fn prepare_next_turn(&self, _messages: &[Message]) -> TurnUpdate {
+        TurnUpdate::default()
+    }
+
     fn should_stop_after_turn(&self, _messages: &[Message]) -> bool {
         false
     }

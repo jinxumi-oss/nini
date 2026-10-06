@@ -165,11 +165,46 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
     // startup (v0.5 loaded once and threw the result away); now once.
     let (shared_cfg, skills_in_prompt) = build_tui_run_config(&settings, &cwd, &shared_tools, &cfg);
 
+    // v0.10 (R1e): a hook that re-syncs the live model into the loop.
+    //
+    // Pi does this from its session layer
+    // (`agent-session.ts:534-554`, `_installAgentNextTurnRefresh`): before
+    // every provider request it re-reads `agent.state.model` and pushes it
+    // into the loop via `prepareNextTurn`. That is the mechanism behind a
+    // model change taking effect *mid-run*.
+    //
+    // nini needed the same bridge because `RunConfig` is cloned once at
+    // `run()` entry: the TUI updated `model_state.model` and the status bar
+    // showed the new model, while every request kept going to the old one.
+    // The sink is handed to the driver per run, so the hook reads the
+    // current selection on each completed turn.
+    struct LiveConfigHooks {
+        sink: nini_tui::runtime::AgentSink,
+    }
+
+    impl nini_core::agent_hooks::AgentLoopHooks for LiveConfigHooks {
+        fn prepare_next_turn(
+            &self,
+            _messages: &[nini_core::provider::Message],
+        ) -> nini_core::agent_hooks::TurnUpdate {
+            nini_core::agent_hooks::TurnUpdate {
+                model: self.sink.current_model(),
+            }
+        }
+    }
+
     let agent_driver: AgentDriver = Arc::new(move |user_msg, sink, done| {
         let provider = shared_provider.clone();
         let tools = shared_tools.clone();
         let cfg = shared_cfg.clone();
-        let mut agent = Agent::new(provider, tools, cfg);
+        // v0.10 (R1e): the hooks travel with the sink the runtime just
+        // handed us, so the running loop can see model changes.
+        let mut agent = Agent::with_hooks(
+            provider,
+            tools,
+            cfg,
+            std::sync::Arc::new(LiveConfigHooks { sink: sink.clone() }),
+        );
         tokio::spawn(async move {
             let mut stream = Box::pin(agent.run(nini_core::AgentMessage::user(user_msg.clone())));
             while let Some(ev) = stream.next().await {

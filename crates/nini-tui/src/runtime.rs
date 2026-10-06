@@ -127,6 +127,30 @@ impl AgentSink {
         Self { state, notify }
     }
 
+    /// v0.10 (R1e): the model the user currently has selected.
+    ///
+    /// Read by `LiveConfigHooks::prepare_next_turn` on every completed
+    /// turn. This is how a Ctrl+L / `/model` change made *while the agent
+    /// is running* reaches the next provider request — before this, the
+    /// status bar showed the new model while the loop kept calling the
+    /// old one, because `RunConfig` was cloned once at `run()` entry.
+    pub fn current_model(&self) -> Option<String> {
+        let m = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .model_state
+            .model
+            .clone();
+        // An empty selection would blank the model on the next request,
+        // so treat it as "no opinion" and let the loop keep its model.
+        if m.is_empty() {
+            None
+        } else {
+            Some(m)
+        }
+    }
+
     /// Apply an `AgentEventLite` to the state.
     ///
     /// v0.8.5 (perf + correctness):

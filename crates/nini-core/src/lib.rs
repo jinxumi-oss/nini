@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod agent;
 pub mod agent_hooks;
+pub use agent_hooks::{AgentLoopHooks, NoopHooks, TurnUpdate};
 pub mod branch_summary;
 pub mod conversion;
 

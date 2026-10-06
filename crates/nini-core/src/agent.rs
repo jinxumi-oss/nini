@@ -745,7 +745,9 @@ impl Agent {
         let provider = self.provider.clone();
         let tool_specs = self.tools.specs();
         let tool_registry = self.tools.clone();
-        let config = self.config.clone();
+        // v0.10 (R1e): mutable so `prepare_next_turn` can swap the model
+        // for the next request, as Pi does at `agent-loop.ts:236-245`.
+        let mut config = self.config.clone();
         let abort = self.abort.clone();
 
         Box::pin(try_stream! {
@@ -1602,6 +1604,32 @@ impl Agent {
                 let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> =
                     self.hooks.clone();
                 let snapshot = self.messages.clone();
+
+                // v0.10 (R1e) — Pi's `prepareNextTurn`
+                // (`agent-loop.ts:236-245`), evaluated BEFORE
+                // `shouldStopAfterTurn` so a stop verdict is never computed
+                // against a stale model:
+                //
+                //     const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
+                //     if (nextTurnSnapshot) { config = { …, model: nextTurnSnapshot.model ?? config.model }; }
+                //     if (await config.shouldStopAfterTurn?.({ … })) { … }
+                //
+                // This is what makes a model change made *while the agent is
+                // running* take effect. Before this, the TUI updated
+                // `state.model_state.model` and the status bar reflected it,
+                // while `RunConfig` — cloned once at `run()` entry — kept
+                // sending the old model. The user saw one model in the
+                // status bar and another one being called.
+                let turn_update =
+                    crate::agent_hooks::catch_hook_panic("prepare_next_turn", || {
+                        hooks_ref.prepare_next_turn(&snapshot)
+                    });
+                if let Some(next_model) = turn_update.model {
+                    if next_model != config.model {
+                        config.model = next_model;
+                    }
+                }
+
                 let should_stop = crate::agent_hooks::catch_hook_panic(
                     "should_stop_after_turn",
                     || hooks_ref.should_stop_after_turn(&snapshot),
