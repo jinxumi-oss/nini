@@ -253,6 +253,7 @@ pub fn inline_llm_summary(
         max_tokens: Some(2048),
         temperature: Some(0.0),
         tools: vec![],
+        reasoning: None,
     };
 
     // Dispatch on a fresh thread with a dedicated runtime.
@@ -393,6 +394,14 @@ pub struct RunConfig {
     /// a follow-up hook that always yields work would keep the agent running
     /// indefinitely with no counter tripping.
     pub max_follow_up_rounds: usize,
+    /// v0.10 (R1f): how much the model should think.
+    ///
+    /// Pi carries this as `reasoning` on the stream options
+    /// (`pi-ai/src/types.ts:305`). It was previously unreachable in nini:
+    /// `/thinking` validated the level, the TUI showed it, settings.json
+    /// persisted it — and no provider ever received it, because `Request`
+    /// had no field to hold it.
+    pub reasoning: Option<crate::provider::ThinkingLevel>,
     /// v0.10 (R1c): force the whole tool batch serial, mirroring Pi's
     /// `config.toolExecution` (`agent-loop.ts:423`). A single tool can
     /// also opt in with `Tool::execution_mode`; this is the global switch.
@@ -414,6 +423,7 @@ impl RunConfig {
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             max_follow_up_rounds: DEFAULT_MAX_FOLLOW_UP_ROUNDS,
             tool_execution: crate::tool::ToolExecutionMode::default(),
+            reasoning: None,
         }
     }
 }
@@ -1999,6 +2009,19 @@ fn panic_msg(payload: &Box<dyn std::any::Any + Send>) -> String {
     "<opaque panic payload>".to_string()
 }
 
+/// v0.10 (R1f): exposed so the settings → RunConfig → Request chain can be
+/// asserted. The thinking level was persisted and displayed for versions
+/// while `build_request` had nowhere to put it. An unobservable link in
+/// a chain cannot be tested, and an untestable link is one that silently
+/// goes missing.
+pub fn build_request_for_test(
+    config: &RunConfig,
+    messages: &[Message],
+    tools: &[ToolSpec],
+) -> Request {
+    build_request(config, messages, tools)
+}
+
 fn build_request(config: &RunConfig, messages: &[Message], tools: &[ToolSpec]) -> Request {
     Request {
         model: config.model.clone(),
@@ -2011,6 +2034,7 @@ fn build_request(config: &RunConfig, messages: &[Message], tools: &[ToolSpec]) -
         // config.system here. Keeping this field as-is preserves
         // the wire shape.
         system: config.system.clone(),
+        reasoning: config.reasoning,
     }
 }
 

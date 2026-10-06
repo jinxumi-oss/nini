@@ -103,7 +103,12 @@ impl Provider for OpenAiResponsesProvider {
     }
 }
 
-fn build_request_body(req: &Request) -> Result<String, ProviderError> {
+/// v0.10 (R1f): exposed so the wire shape can be asserted directly.
+/// Encodes the OpenAI Responses request body for a neutral `Request`, including the
+/// `reasoning` field. Previously private, which is why the thinking level
+/// had no way to be observed from a test — recorded, persisted, and never
+/// visible to anything that could catch it missing.
+pub fn build_request_body(req: &Request) -> Result<String, ProviderError> {
     let mut items: Vec<serde_json::Value> = Vec::new();
     for m in &req.messages {
         match m.role {
@@ -190,14 +195,25 @@ fn build_request_body(req: &Request) -> Result<String, ProviderError> {
         })
         .collect();
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": req.model,
         "input": items,
         "stream": true,
         "max_output_tokens": req.max_tokens,
         "temperature": req.temperature,
         "tools": tools,
+        // v0.10 (R1f): the Responses API takes a nested `reasoning`
+        // object rather than a flat `reasoning_effort`. Pi builds the same
+        // shape from the same `reasoning` level
+        // (`openai-responses.ts:206-210`). `off` becomes omission.
+        "reasoning": match req.reasoning.filter(|l| l.is_on()) {
+            Some(l) => serde_json::json!({ "effort": l.as_str() }),
+            None => serde_json::Value::Null,
+        },
     });
+    if body.get("reasoning").map(|v| v.is_null()).unwrap_or(false) {
+        body.as_object_mut().unwrap().remove("reasoning");
+    }
 
     serde_json::to_string(&body).map_err(ProviderError::from)
 }

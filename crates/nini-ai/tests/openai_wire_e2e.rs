@@ -69,6 +69,7 @@ async fn events_from_sse(chunks: &[&str]) -> Vec<StreamEvent> {
         max_tokens: Some(256),
         temperature: None,
         system: None,
+        reasoning: None,
     };
 
     let mut stream: Pin<

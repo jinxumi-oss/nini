@@ -183,7 +183,12 @@ struct StreamState {
     tool_call_started: std::collections::HashSet<u32>,
 }
 
-fn build_request_body(req: &Request) -> Result<String, ProviderError> {
+/// v0.10 (R1f): exposed so the wire shape can be asserted directly.
+/// Encodes the OpenAI Chat Completions request body for a neutral `Request`, including the
+/// `reasoning` field. Previously private, which is why the thinking level
+/// had no way to be observed from a test — recorded, persisted, and never
+/// visible to anything that could catch it missing.
+pub fn build_request_body(req: &Request) -> Result<String, ProviderError> {
     let body = OpenAiRequest::from_neutral(req)?;
     serde_json::to_string(&body).map_err(ProviderError::from)
 }
@@ -636,6 +641,17 @@ struct OpenAiRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<OpenAiStreamOptions>,
+    /// v0.10 (R1f): reasoning effort.
+    ///
+    /// Pi: `const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;`
+    /// (`openai-completions.ts:626`). `off` becomes *omission*, not a
+    /// literal `"off"` — the OpenAI API has no such value.
+    ///
+    /// One edit here covers `openai` plus every brand that routes through
+    /// `OpenAiCompatProvider` (`openai_compat`, `mistral`, `groq`,
+    /// `google`, `cohere`, `deepseek`).
+    #[serde(skip_serializing_if = "Option::is_none", rename = "reasoning_effort")]
+    reasoning_effort: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -804,6 +820,9 @@ impl<'a> OpenAiRequest<'a> {
             stream_options: Some(OpenAiStreamOptions {
                 include_usage: true,
             }),
+            // v0.10 (R1f) — `off` is expressed as omission, per Pi
+            // (`openai-completions.ts:626`).
+            reasoning_effort: req.reasoning.filter(|l| l.is_on()).map(|l| l.as_str()),
         })
     }
 }

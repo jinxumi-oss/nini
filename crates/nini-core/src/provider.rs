@@ -117,8 +117,103 @@ pub enum StreamEvent {
     Error { message: String },
 }
 
+/// How much the model should think before answering.
+///
+/// v0.10 (R1f). Mirrors Pi's `ModelThinkingLevel`
+/// (`pi-ai/src/types.ts:82-83`):
+///
+/// ```ts
+/// export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+/// export type ModelThinkingLevel = "off" | ThinkingLevel;
+/// ```
+///
+/// nini's `/thinking` command already accepted exactly this vocabulary
+/// (`dispatch.rs`, `["off","minimal","low","medium","high","xhigh","max"]`)
+/// and persisted it to settings.json — but `Request` had no field to carry
+/// it, so no provider had ever been sent a value. Recorded, displayed,
+/// persisted, never transmitted. This enum is the missing link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThinkingLevel {
+    /// Do not think. Serialised per family as an explicit off/disable.
+    Off,
+    Minimal,
+    #[default]
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl ThinkingLevel {
+    /// The wire spelling, matching Pi's `ThinkingLevel` strings.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThinkingLevel::Off => "off",
+            ThinkingLevel::Minimal => "minimal",
+            ThinkingLevel::Low => "low",
+            ThinkingLevel::Medium => "medium",
+            ThinkingLevel::High => "high",
+            ThinkingLevel::XHigh => "xhigh",
+            ThinkingLevel::Max => "max",
+        }
+    }
+
+    /// True when thinking is actually requested.
+    pub fn is_on(self) -> bool {
+        self != ThinkingLevel::Off
+    }
+
+    /// Every accepted spelling, for validation and completion UIs.
+    pub const ALL: &'static [&'static str] =
+        &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+    /// Token budget for families that express thinking as a budget
+    /// (Anthropic's `budget_tokens`) rather than an effort label.
+    ///
+    /// Pi defaults to 1024 when thinking is enabled and no budget is given
+    /// (`anthropic-messages.ts:1067`, `:216`); the level scales that default
+    /// so `/thinking max` is visibly different from `/thinking low`.
+    pub fn budget_tokens(self) -> u32 {
+        match self {
+            ThinkingLevel::Off => 0,
+            ThinkingLevel::Minimal => 1024,
+            ThinkingLevel::Low => 2048,
+            ThinkingLevel::Medium => 8192,
+            ThinkingLevel::High => 16_384,
+            ThinkingLevel::XHigh => 32_768,
+            ThinkingLevel::Max => 32_768,
+        }
+    }
+}
+
+impl std::str::FromStr for ThinkingLevel {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "off" => Ok(ThinkingLevel::Off),
+            "minimal" => Ok(ThinkingLevel::Minimal),
+            "low" => Ok(ThinkingLevel::Low),
+            "medium" => Ok(ThinkingLevel::Medium),
+            "high" => Ok(ThinkingLevel::High),
+            "xhigh" => Ok(ThinkingLevel::XHigh),
+            "max" => Ok(ThinkingLevel::Max),
+            other => Err(format!(
+                "unknown thinking level {other:?}; expected one of {}",
+                ThinkingLevel::ALL.join("|")
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for ThinkingLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A request to a model provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Request {
     pub model: String,
     pub messages: Vec<Message>,
@@ -126,6 +221,12 @@ pub struct Request {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub system: Option<String>,
+    /// v0.10 (R1f): how much the model should think.
+    ///
+    /// `None` means "the caller expressed no opinion" and the family
+    /// omits the field entirely — which is what Pi does when `reasoning`
+    /// is unset (`anthropic-messages.ts:824-826`).
+    pub reasoning: Option<ThinkingLevel>,
 }
 
 /// Provider capability flags. Pi today supports all of these via dispatch;

@@ -100,6 +100,17 @@ pub(crate) fn build_tui_run_config(
             tools,
             &skills_prompt,
         )),
+        // v0.10 (R1f): finally hand the persisted thinking level to the
+        // provider. `settings.thinking_level` has been written and read
+        // back since v0.8, and `/thinking` validates the exact vocabulary
+        // Pi uses — but `Request` had no field for it, so nothing was ever
+        // transmitted. `None` (unset / unparseable) leaves the field out of
+        // the body entirely, which is what Pi does when `reasoning` is
+        // absent.
+        reasoning: settings
+            .thinking_level
+            .as_deref()
+            .and_then(|l| l.parse::<nini_core::provider::ThinkingLevel>().ok()),
         ..RunConfig::new(cfg_model)
     };
     (config, skills_in_prompt)

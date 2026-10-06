@@ -290,6 +290,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             system: None,
+            reasoning: None,
         }
     }
 

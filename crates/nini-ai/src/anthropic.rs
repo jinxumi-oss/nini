@@ -129,7 +129,12 @@ struct BuildingToolCall {
     input_json: String,
 }
 
-fn build_request_body(req: &Request) -> Result<String, ProviderError> {
+/// v0.10 (R1f): exposed so the wire shape can be asserted directly.
+/// Encodes the Anthropic Messages request body for a neutral `Request`, including the
+/// `reasoning` field. Previously private, which is why the thinking level
+/// had no way to be observed from a test — recorded, persisted, and never
+/// visible to anything that could catch it missing.
+pub fn build_request_body(req: &Request) -> Result<String, ProviderError> {
     let body = AnthropicRequest::from_neutral(req)?;
     serde_json::to_string(&body).map_err(ProviderError::from)
 }
@@ -226,7 +231,29 @@ struct AnthropicRequest<'a> {
     tools: Vec<AnthropicTool<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// v0.10 (R1f): extended thinking.
+    ///
+    /// Wire shape from Pi (`anthropic-messages.ts:1050-1072`):
+    ///   * thinking requested, older model → `{type:"enabled", budget_tokens, display}`
+    ///   * explicitly off                        → `{type:"disabled"}`
+    ///   * no opinion (`None`)                   → field omitted entirely
+    ///
+    /// The budget comes from `ThinkingLevel::budget_tokens`; Pi's own
+    /// default when thinking is on and no budget is given is 1024
+    /// (`:1067`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinking>,
     stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicThinking {
+    Enabled {
+        budget_tokens: u32,
+        display: &'static str,
+    },
+    Disabled,
 }
 
 #[derive(Debug, Serialize)]
@@ -262,6 +289,19 @@ struct AnthropicTool<'a> {
 
 impl<'a> AnthropicRequest<'a> {
     fn from_neutral(req: &'a Request) -> Result<Self, ProviderError> {
+        // v0.10 (R1f) — Pi: `if (!options?.reasoning) { thinkingEnabled: false }`
+        // (`anthropic-messages.ts:824-826`). `Off` is explicit, `None` is
+        // silence; the two are different requests.
+        let thinking = req.reasoning.map(|lvl| {
+            if lvl.is_on() {
+                AnthropicThinking::Enabled {
+                    budget_tokens: lvl.budget_tokens(),
+                    display: "summarized",
+                }
+            } else {
+                AnthropicThinking::Disabled
+            }
+        });
         let mut messages: Vec<AnthropicMessage> = Vec::new();
         for m in &req.messages {
             let role = match m.role {
@@ -307,6 +347,7 @@ impl<'a> AnthropicRequest<'a> {
             system: req.system.as_deref(),
             tools,
             temperature: req.temperature,
+            thinking,
             stream: true,
         })
     }

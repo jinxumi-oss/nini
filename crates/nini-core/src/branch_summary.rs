@@ -334,6 +334,7 @@ async fn try_summarize(
         max_tokens: Some(2048),
         temperature: Some(0.2),
         system: Some(system),
+        reasoning: None,
     };
     collect_text_from_stream(provider.clone(), req).await
 }
