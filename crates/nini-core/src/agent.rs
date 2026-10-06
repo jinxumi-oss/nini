@@ -844,23 +844,10 @@ impl Agent {
                 }
 
                 iteration += 1;
-                // v0.7 (M3b) — soft-stop hook. Extensions can ask
-                // the agent to wrap up early (e.g. when the context
-                // is near-full and the next prompt should trigger
-                // a compaction). The hook is a CLONED snapshot of
-                // self.messages so it doesn't need &mut Agent.
-                let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> =
-                    self.hooks.clone();
-                let snapshot = self.messages.clone();
-                let should_stop = crate::agent_hooks::catch_hook_panic(
-                    "should_stop_after_turn",
-                    || hooks_ref.should_stop_after_turn(&snapshot),
-                );
-                if should_stop {
-                    self.set_phase(AgentPhase::Idle);
-                    yield AgentEvent::PhaseChanged(AgentPhase::Idle);
-                    return;
-                }
+                // v0.10 (R1d): the soft-stop hook is no longer consulted
+                // here. Pi evaluates it *after* the turn completes — see
+                // its position at the end of this loop body, and
+                // `crates/nini-conformance/tests/stop_after_turn.rs`.
                 // Hard safety net: ALWAYS preserved, regardless of
                 // whether the hook fires. A panicking hook that
                 // ignores max_iterations is still bounded by it.
@@ -1583,6 +1570,46 @@ impl Agent {
                     && crate::tool::should_terminate_tool_batch(&terminate_flags)
                 {
                     has_more_tool_calls = false;
+                }
+
+                // v0.10 (R1d) — Pi's per-turn order, verbatim
+                // (`agent-loop.ts:225-250`):
+                //
+                //     await emit({ type: "turn_end", message, toolResults });
+                //     const nextTurnSnapshot = await config.prepareNextTurn?.(…);
+                //     if (nextTurnSnapshot) { …swap context/model/reasoning… }
+                //     if (await config.shouldStopAfterTurn?.({ … })) {
+                //         await emit({ type: "agent_end", messages: newMessages });
+                //         return;
+                //     }
+                //     pendingMessages = await config.getSteeringMessages?.();
+                //
+                // nini used to evaluate this at the TOP of the loop, before
+                // the LLM call. That inverts the contract in two ways: the
+                // hook never saw a completed turn (an extension saying
+                // "stop once the context is nearly full" stopped one turn
+                // earlier than Pi), and its verdict was about a turn that
+                // had not happened yet.
+                //
+                // It now runs here, after the turn's `turn_end` and the tool
+                // batch, and — as in Pi — returning true ends the run
+                // *before* the queues are polled, so a queued steering and
+                // follow-up are discarded rather than executed.
+                //
+                // The hook takes a CLONED snapshot of self.messages so it
+                // does not need &mut Agent. Defensive: a panicking hook
+                // falls back to false and the run continues.
+                let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> =
+                    self.hooks.clone();
+                let snapshot = self.messages.clone();
+                let should_stop = crate::agent_hooks::catch_hook_panic(
+                    "should_stop_after_turn",
+                    || hooks_ref.should_stop_after_turn(&snapshot),
+                );
+                if should_stop {
+                    self.set_phase(AgentPhase::Idle);
+                    yield AgentEvent::PhaseChanged(AgentPhase::Idle);
+                    return;
                 }
 
                 // v0.10 (R1) — Pi's `agent-loop.js:160`: steering is polled
@@ -3567,8 +3594,18 @@ mod context_hook_tests {
             tokio::pin!(s);
             while let Some(_ev) = s.next().await {}
         }
-        assert_eq!(agent.messages().len(), 1);
+        // v0.10 (R1d): this used to assert 1 message — the hook fired
+        // *before* the LLM call, so the run ended with the user message
+        // and nothing else. Pi consults `shouldStopAfterTurn` after
+        // `turn_end` (`agent-loop.js:151`), so the first turn completes
+        // first: user + assistant, then stop.
+        assert_eq!(
+            agent.messages().len(),
+            2,
+            "the turn must complete before the hook is consulted"
+        );
         assert_eq!(agent.messages()[0].role, Role::User);
+        assert_eq!(agent.messages()[1].role, Role::Assistant);
     }
 
     /// M3b — `should_stop_after_turn` returning false does NOT
@@ -3725,12 +3762,14 @@ mod context_hook_tests {
         assert_eq!(agent.messages().len(), 2);
     }
 
-    /// M3b — `should_stop_after_turn` sees the messages at the
-    /// START of the iteration (before the LLM is called for
-    /// that turn). A hook can implement "stop after the LLM
-    /// produces N turns" by counting assistant messages.
+    /// v0.10 (R1d) — renamed. The old name and doc asserted the opposite
+    /// of Pi: `should_stop_after_turn` was consulted at the START of the
+    /// iteration, before the LLM call for that turn. Pi calls it after
+    /// `turn_end` (`agent-loop.js:151`), so it always sees a completed
+    /// turn. A hook implements "stop after the model has produced N turns"
+    /// by counting assistant messages, and N is now exact.
     #[tokio::test(flavor = "current_thread")]
-    async fn should_stop_after_turn_sees_messages_at_iteration_start() {
+    async fn should_stop_after_turn_sees_the_completed_turn() {
         struct StopAfterFirst;
         impl AgentLoopHooks for StopAfterFirst {
             fn should_stop_after_turn(&self, msgs: &[Message]) -> bool {
