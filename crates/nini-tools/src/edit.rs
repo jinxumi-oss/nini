@@ -92,54 +92,71 @@ impl Tool for EditTool {
             ctx.cwd.join(&parsed.path)
         };
 
-        let content = fs::read_to_string(&path)
-            .await
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => {
-                    ToolError::Io(format!("file not found: {}", path.display()))
-                }
-                _ => ToolError::Io(e.to_string()),
-            })?;
+        // v0.10 (G2): the read-modify-write below is now atomic per file.
+        //
+        // nini runs a batch of tool calls concurrently, so two edits to the
+        // same path in one assistant turn — an ordinary pattern, e.g. two
+        // unrelated replacements in one file — both read the same original
+        // and the second silently overwrote the first. Measured here with 8
+        // concurrent edits: 1–4 of 8 reported success and 1–2 of 8 survived.
+        //
+        // Pi wraps `edit` and `write` in `withFileMutationQueue`
+        // (`pi-agent-core/src/harness/tools/file-mutation-queue.ts`), keyed
+        // on the canonical path, so the same file serialises while different
+        // files stay parallel. The lock lives here rather than in the agent
+        // so the guarantee holds for every caller.
+        crate::mutation_queue::with_file_mutation_queue(&path, || async {
+            let content = fs::read_to_string(&path)
+                .await
+                .map_err(|e| match e.kind() {
+                    std::io::ErrorKind::NotFound => {
+                        ToolError::Io(format!("file not found: {}", path.display()))
+                    }
+                    _ => ToolError::Io(e.to_string()),
+                })?;
 
-        let (new_content, replacements) = Self::apply(&content, &parsed.old_text, &parsed.new_text)
-            .map_err(ToolError::InvalidArgs)?;
+            let (new_content, replacements) =
+                Self::apply(&content, &parsed.old_text, &parsed.new_text)
+                    .map_err(ToolError::InvalidArgs)?;
 
-        // Atomic write
-        let parent = path.parent().unwrap_or(Path::new("."));
-        let file_name = path.file_name().unwrap();
-        let tmp = parent.join(format!(
-            ".{}.nini-tmp.{}",
-            file_name.to_string_lossy(),
-            std::process::id()
-        ));
-        fs::write(&tmp, new_content.as_bytes()).await?;
-        if let Err(e) = fs::rename(&tmp, &path).await {
-            let _ = fs::remove_file(&tmp).await;
-            return Err(ToolError::Io(e.to_string()));
-        }
+            // Atomic write
+            let parent = path.parent().unwrap_or(Path::new("."));
+            let file_name = path.file_name().unwrap();
+            // v0.10 (G2): see the note in `write.rs` — the pid-only temp name
+            // collided between concurrent edits to the same file.
+            let tmp = parent.join(crate::mutation_queue::unique_temp_name(
+                &file_name.to_string_lossy(),
+            ));
+            fs::write(&tmp, new_content.as_bytes()).await?;
+            if let Err(e) = fs::rename(&tmp, &path).await {
+                let _ = fs::remove_file(&tmp).await;
+                return Err(ToolError::Io(e.to_string()));
+            }
 
-        // Build a unified diff for the TUI to render with +/- coloring.
-        // Context of 3 matches `diff -u` default behavior.
-        let diff_text = diff::render_unified(&content, &new_content, 3);
-        let (adds, dels) = diff::diff_summary(&content, &new_content);
+            // Build a unified diff for the TUI to render with +/- coloring.
+            // Context of 3 matches `diff -u` default behavior.
+            let diff_text = diff::render_unified(&content, &new_content, 3);
+            let (adds, dels) = diff::diff_summary(&content, &new_content);
 
-        Ok(ToolOutput {
-            content: format!(
-                "replaced {} occurrence(s) in {}\n\n{}",
-                replacements,
-                path.display(),
-                diff_text
-            ),
-            is_error: false,
-            details: Some(json!({
-                "path": path.display().to_string(),
-                "replacements": replacements,
-                "additions": adds,
-                "deletions": dels,
-                "diff": diff_text,
-            })),
-            duration_ms: 0,
+            Ok(ToolOutput {
+                content: format!(
+                    "replaced {} occurrence(s) in {}\n\n{}",
+                    replacements,
+                    path.display(),
+                    diff_text
+                ),
+                is_error: false,
+                details: Some(json!({
+                    "path": path.display().to_string(),
+                    "replacements": replacements,
+                    "additions": adds,
+                    "deletions": dels,
+                    "diff": diff_text,
+                })),
+                duration_ms: 0,
+            })
         })
+        .await
     }
 
     fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {

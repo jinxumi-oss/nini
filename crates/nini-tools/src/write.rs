@@ -78,39 +78,50 @@ impl Tool for WriteTool {
             ctx.cwd.join(&parsed.path)
         };
 
-        // Ensure parent dir
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).await?;
+        // v0.10 (G2): serialise against other mutations of the same path —
+        // see the long note in `edit.rs`. `write` is a whole-file replace, so
+        // two concurrent writes to one file are last-writer-wins by
+        // definition; the queue makes the *order* deterministic relative to
+        // the tool batch instead of racing the filesystem, and stops a
+        // `write` from interleaving with an `edit` of the same file.
+        crate::mutation_queue::with_file_mutation_queue(&path, || async {
+            // Ensure parent dir
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    fs::create_dir_all(parent).await?;
+                }
             }
-        }
 
-        // Atomic write: write to <path>.tmp.<rand>, then rename
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let file_name = path
-            .file_name()
-            .ok_or_else(|| ToolError::InvalidArgs("path has no file name".to_string()))?;
-        let tmp = parent.join(format!(
-            ".{}.nini-tmp.{}",
-            file_name.to_string_lossy(),
-            std::process::id()
-        ));
-        fs::write(&tmp, parsed.content.as_bytes()).await?;
-        if let Err(e) = fs::rename(&tmp, &path).await {
-            // Best-effort cleanup
-            let _ = fs::remove_file(&tmp).await;
-            return Err(ToolError::Io(e.to_string()));
-        }
+            // Atomic write: write to <path>.tmp.<rand>, then rename
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            let file_name = path
+                .file_name()
+                .ok_or_else(|| ToolError::InvalidArgs("path has no file name".to_string()))?;
+            // v0.10 (G2): the name was `.{file}.nini-tmp.{pid}` — one per
+            // process per file, so two concurrent writes to that file truncated
+            // and rewrote the *same* path. `unique_temp_name` adds a monotonic
+            // counter.
+            let tmp = parent.join(crate::mutation_queue::unique_temp_name(
+                &file_name.to_string_lossy(),
+            ));
+            fs::write(&tmp, parsed.content.as_bytes()).await?;
+            if let Err(e) = fs::rename(&tmp, &path).await {
+                // Best-effort cleanup
+                let _ = fs::remove_file(&tmp).await;
+                return Err(ToolError::Io(e.to_string()));
+            }
 
-        Ok(ToolOutput {
-            content: format!("wrote {} bytes to {}", parsed.content.len(), path.display()),
-            is_error: false,
-            details: Some(json!({
-                "path": path.display().to_string(),
-                "bytes": parsed.content.len(),
-            })),
-            duration_ms: 0,
+            Ok(ToolOutput {
+                content: format!("wrote {} bytes to {}", parsed.content.len(), path.display()),
+                is_error: false,
+                details: Some(json!({
+                    "path": path.display().to_string(),
+                    "bytes": parsed.content.len(),
+                })),
+                duration_ms: 0,
+            })
         })
+        .await
     }
 }
 

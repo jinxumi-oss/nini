@@ -11,6 +11,7 @@ pub mod diff;
 pub mod edit;
 pub mod find;
 pub mod grep;
+pub mod mutation_queue;
 pub mod operations;
 pub mod procgroup;
 pub mod read;

@@ -20,8 +20,9 @@ regex = "1.11"
 ignore = "0.4"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 tempfile = { workspace = true }
-tokio = { workspace = true }
 assert_matches = { workspace = true }
 
 [lints]
