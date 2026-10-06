@@ -69,6 +69,45 @@ pub struct ToolOutput {
     /// tool does not measure its own duration (e.g. read of a
     /// cached file).
     pub duration_ms: u64,
+    /// v0.10 (R1c): this tool has the final answer — end the turn
+    /// instead of asking the model again.
+    ///
+    /// Pi: `AgentToolResult.terminate`, consumed by
+    /// `shouldTerminateToolBatch` (`agent-loop.ts:582-584`). A tool that
+    /// collects a complete answer sets this so the loop stops rather than
+    /// spending another model call to be told what the tool already knows.
+    ///
+    /// Defaults to false. The batch-level verdict is the **logical and**
+    /// over every result — see [`should_terminate_tool_batch`].
+    #[serde(default)]
+    pub terminate: bool,
+}
+
+/// Per-tool execution-mode override. Mirrors Pi's `ToolExecutionMode`
+/// (`pi-agent-core/src/types.ts:402-408`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolExecutionMode {
+    /// This tool may run concurrently with the rest of the batch.
+    #[default]
+    Parallel,
+    /// This tool must run one at a time, with the other tool calls too.
+    Sequential,
+}
+
+/// Decide whether a finished tool batch ends the turn.
+///
+/// Mirrors Pi's `shouldTerminateToolBatch` (`agent-loop.ts:582-584`):
+///
+/// ```ts
+/// return finalizedCalls.length > 0 && finalizedCalls.every((f) => f.result.terminate === true);
+/// ```
+///
+/// The `every` is the load-bearing detail. "any result terminated" would
+/// let one finished tool cut off a sibling that still has something to
+/// report, and the empty-batch guard stops a batch of zero from ending the
+/// turn.
+pub fn should_terminate_tool_batch(results: &[bool]) -> bool {
+    !results.is_empty() && results.iter().all(|t| *t)
 }
 
 impl ToolOutput {
@@ -79,6 +118,7 @@ impl ToolOutput {
             is_error: false,
             details: None,
             duration_ms: 0,
+            terminate: false,
         }
     }
 
@@ -89,6 +129,8 @@ impl ToolOutput {
             is_error: true,
             details: None,
             duration_ms: 0,
+            // An errored tool never holds a final answer.
+            terminate: false,
         }
     }
 }
@@ -166,6 +208,30 @@ pub trait Tool: Send + Sync {
     ///
     /// Common use cases: permission checks (TrustStore), path
     /// sanitization, arg rewriting, audit logging.
+    /// v0.10 (R1c): per-tool execution-mode override, mirroring Pi's
+    /// `AgentTool.executionMode` (`types.ts:402-408`).
+    ///
+    /// Returning [`ToolExecutionMode::Sequential`] downgrades the **entire
+    /// batch** to serial execution, not just this tool — Pi's behaviour at
+    /// `agent-loop.ts:418-426`:
+    ///
+    /// ```ts
+    /// const hasSequentialToolCall = toolCalls.some(
+    ///     (tc) => tools?.find((t) => t.name === tc.name)?.executionMode === "sequential");
+    /// if (config.toolExecution === "sequential" || hasSequentialToolCall) { … }
+    /// ```
+    ///
+    /// The downgrade is all-or-nothing because a sequential tool needs
+    /// exclusive use of whatever shared state it touches; interleaving
+    /// siblings around it breaks that guarantee just as surely as running
+    /// it alongside them.
+    ///
+    /// Default: [`ToolExecutionMode::Parallel`], which preserves the worker
+    /// pool added in v0.8.5.
+    fn execution_mode(&self) -> ToolExecutionMode {
+        ToolExecutionMode::default()
+    }
+
     fn before(&self) -> Option<Box<dyn BeforeExecute>> {
         None
     }

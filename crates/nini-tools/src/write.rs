@@ -119,6 +119,7 @@ impl Tool for WriteTool {
                     "bytes": parsed.content.len(),
                 })),
                 duration_ms: 0,
+                terminate: false,
             })
         })
         .await

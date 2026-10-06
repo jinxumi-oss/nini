@@ -118,6 +118,7 @@ impl Tool for FindTool {
                 "pattern": parsed.pattern,
             })),
             duration_ms: 0,
+            terminate: false,
         })
     }
 

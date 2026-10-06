@@ -138,6 +138,7 @@ impl Tool for GrepTool {
                 "matches": results.len(),
             })),
             duration_ms: 0,
+            terminate: false,
         })
     }
 

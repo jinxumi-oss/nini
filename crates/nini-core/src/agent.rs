@@ -393,6 +393,10 @@ pub struct RunConfig {
     /// a follow-up hook that always yields work would keep the agent running
     /// indefinitely with no counter tripping.
     pub max_follow_up_rounds: usize,
+    /// v0.10 (R1c): force the whole tool batch serial, mirroring Pi's
+    /// `config.toolExecution` (`agent-loop.ts:423`). A single tool can
+    /// also opt in with `Tool::execution_mode`; this is the global switch.
+    pub tool_execution: crate::tool::ToolExecutionMode,
 }
 
 impl RunConfig {
@@ -409,6 +413,7 @@ impl RunConfig {
             retry: crate::agent::RetrySettings::default(),
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             max_follow_up_rounds: DEFAULT_MAX_FOLLOW_UP_ROUNDS,
+            tool_execution: crate::tool::ToolExecutionMode::default(),
         }
     }
 }
@@ -1279,6 +1284,14 @@ impl Agent {
                 // the tool_use/tool_result pairing.
                 has_more_tool_calls = !tool_calls.is_empty();
 
+                // v0.10 (R1c): per-call `terminate` flags in batch order.
+                // Declared out here because Pi evaluates the batch verdict
+                // after the batch returns (`agent-loop.js:216`), which is
+                // outside the execution block. `shouldTerminateToolBatch`
+                // takes the AND over every finalized result
+                // (`agent-loop.js:582-584`).
+                let mut terminate_flags: Vec<bool> = vec![false; tool_calls.len()];
+
                 if has_more_tool_calls {
 
                 // v0.8.5: execute tool calls in PARALLEL via
@@ -1394,10 +1407,43 @@ impl Agent {
                     #[allow(unused_mut)]
                     let mut pending_queue: Option<std::iter::Enumerate<std::vec::IntoIter<PendingToolCall>>>;
 
+                    // v0.10 (R1c) — Pi's `executeToolCalls`
+                    // (`agent-loop.ts:418-426`): ONE tool declaring
+                    // `executionMode === "sequential"` downgrades the WHOLE
+                    // batch, not just that tool.
+                    //
+                    //     const hasSequentialToolCall = toolCalls.some(
+                    //         (tc) => tools?.find((t) => t.name === tc.name)?.executionMode === "sequential");
+                    //     if (config.toolExecution === "sequential" || hasSequentialToolCall) {
+                    //         return executeToolCallsSequential(...);
+                    //     }
+                    //
+                    // The downgrade is all-or-nothing because a sequential
+                    // tool needs exclusive use of whatever shared state it
+                    // touches, and interleaving siblings around it would
+                    // break that guarantee just as surely as running it
+                    // alongside them.
+                    let batch_is_sequential = config.tool_execution
+                        == crate::tool::ToolExecutionMode::Sequential
+                        || specs.iter().any(|s| {
+                            tool_registry
+                                .get(&s.name)
+                                .map(|t| {
+                                    t.execution_mode()
+                                        == crate::tool::ToolExecutionMode::Sequential
+                                })
+                                .unwrap_or(false)
+                        });
+
                     let mut futures = FuturesUnordered::new();
                     // `0` means "no limit" — an explicit opt-out of the
                     // ceiling, preserving the pre-v0.8.9 behaviour.
-                    let parallelism = if config.max_parallel_tools == 0 {
+                    // A sequential batch runs one at a time. Pi does the
+                    // same via `executeToolCallsSequential`
+                    // (`agent-loop.ts:433`), which has no worker pool at all.
+                    let parallelism = if batch_is_sequential {
+                        1
+                    } else if config.max_parallel_tools == 0 {
                         specs.len().max(1)
                     } else {
                         config.max_parallel_tools
@@ -1434,6 +1480,9 @@ impl Agent {
                         name: tc_name.clone(),
                         output: output.clone(),
                     };
+                    if idx < terminate_flags.len() {
+                        terminate_flags[idx] = output.terminate;
+                    }
                     tool_results_slots[idx] = Some(ContentBlock::ToolResult {
                         tool_use_id: tc_id,
                         content: output.content,
@@ -1519,6 +1568,22 @@ impl Agent {
 
                 self.messages.push(Message { role: Role::Tool, content: tool_results.clone(), timestamp: 0 });
                 }   // end of `if has_more_tool_calls`
+
+                // v0.10 (R1c) — Pi's `hasMoreToolCalls = !batch.terminate`
+                // (`agent-loop.js:216`), evaluated *after* the batch
+                // returns. A tool that has the final answer sets
+                // `ToolOutput::terminate`, and when every result agrees the
+                // turn ends instead of spending another model call to be
+                // told what the tool already knows.
+                //
+                // The predicate is `every`, not `some`
+                // (`agent-loop.ts:582-584`): one finished tool must not
+                // cut off a sibling that still has something to report.
+                if !terminate_flags.is_empty()
+                    && crate::tool::should_terminate_tool_batch(&terminate_flags)
+                {
+                    has_more_tool_calls = false;
+                }
 
                 // v0.10 (R1) — Pi's `agent-loop.js:160`: steering is polled
                 // at the end of EVERY turn, unconditional.

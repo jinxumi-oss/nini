@@ -1433,6 +1433,7 @@ dependencies = [
 name = "nini-conformance"
 version = "0.9.1"
 dependencies = [
+ "async-trait",
  "futures-util",
  "nini-core",
  "nini-session",

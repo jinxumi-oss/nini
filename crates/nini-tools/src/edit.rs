@@ -154,6 +154,7 @@ impl Tool for EditTool {
                     "diff": diff_text,
                 })),
                 duration_ms: 0,
+                terminate: false,
             })
         })
         .await

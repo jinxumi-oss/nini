@@ -164,6 +164,7 @@ mod tests {
                 is_error: false,
                 details: None,
                 duration_ms: 0,
+                terminate: false,
             })
         }
     }

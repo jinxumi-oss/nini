@@ -21,6 +21,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+async-trait = "0.1"
 tokio = { workspace = true, features = ["macros", "rt"] }
 futures-util = { workspace = true }
 

@@ -259,6 +259,7 @@ impl Tool for BashTool {
             is_error,
             details: Some(serde_json::to_value(&details).unwrap()),
             duration_ms,
+            terminate: false,
         })
     }
 
