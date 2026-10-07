@@ -68,10 +68,32 @@ use crate::provider::{ContentBlock, Message, Role};
 ///                    as a generic carrier and the model doesn't need
 ///                    the type to interpret the content.
 pub fn session_entry_to_llm_message(entry: &SessionEntry) -> Option<Message> {
-    let SessionEntry::Message(m) = entry else {
-        return None;
-    };
-    session_message_to_llm(&m.message)
+    match entry {
+        SessionEntry::Message(m) => session_message_to_llm(&m.message),
+        // v0.10 (R2a): a stored compaction is context, not metadata.
+        //
+        // This used to fall through the `let ... else` and return `None`,
+        // so a resumed session silently lost everything the summary stood
+        // for. `compact_history` puts the summary in the live history
+        // (agent.rs), but never persisted it, and the read side dropped it
+        // anyway — so compaction held for the rest of the run and then
+        // evaporated on `/resume` or a restart.
+        //
+        // The marker and Role::User match what `compact_history` splices,
+        // via the shared `context_summary_message` helper, so a live run
+        // and a resumed one read identically.
+        SessionEntry::Compaction(c) => Some(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: crate::compaction::context_summary_message(&c.summary),
+            }],
+            timestamp: 0,
+        }),
+        // Everything else is session metadata: model / thinking-level
+        // changes, labels, custom entries, v0.7 internal-only records.
+        // They must not enter the model's context.
+        _ => None,
+    }
 }
 
 /// Batch version: walk all message entries and emit one

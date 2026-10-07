@@ -93,6 +93,25 @@ pub enum AgentEvent {
         id: String,
         input_json: serde_json::Value,
     },
+    /// v0.10 (R2a): a compaction just rewrote history.
+    ///
+    /// Emitted by the loop after `compact_history` splices the summary in.
+    /// The `Agent` has no session handle — the TUI's `AppState` owns the
+    /// session, and the driver closure builds a fresh `Agent` per run — so
+    /// without an event the summary reached the model and then vanished on
+    /// `/resume` or a restart.
+    ///
+    /// Pi reaches the same outcome differently: its session layer
+    /// orchestrates compaction (`agent-session.ts:747`) and Pi's
+    /// `AgentEvent` has no compaction variant. nini compacts inside the
+    /// loop, so the loop has to publish the fact for the session to record.
+    Compacted {
+        /// The summary text, already carrying `CONTEXT_SUMMARY_MARKER`
+        /// semantics via `compaction::context_summary_message`.
+        summary: String,
+        /// `tokens_before` at the moment of compaction, for the cursor.
+        tokens_before: u32,
+    },
     /// A tool finished executing.
     /// A tool finished executing. `name` lets the TUI render
     /// `✓ bash (4ms)` instead of just `✓`, so parallel tool results
@@ -731,7 +750,7 @@ impl Agent {
             role: Role::User,
             timestamp: 0,
             content: vec![ContentBlock::Text {
-                text: format!("[CONTEXT SUMMARY]\n\n{}", out.summary),
+                text: crate::compaction::context_summary_message(&out.summary),
             }],
         };
         let mut new_history = Vec::with_capacity(1 + self.messages.len() - prefix_len);
@@ -912,7 +931,15 @@ impl Agent {
                             }
                         }
                     };
-                    let _out = self.compact_history(summary_fn);
+                    // v0.10 (R2a): publish the compaction so the session layer can record
+                    // it. The Agent has no session handle, so without this
+                    // the summary exists only in memory and a resumed
+                    // session has no memory of the work that came before.
+                    let compacted = self.compact_history(summary_fn);
+                    yield AgentEvent::Compacted {
+                        summary: compacted.summary.clone(),
+                        tokens_before: compacted.tokens_before,
+                    };
                     // Emit Compacting phase + abort-event observers can
                     // race-compete via self.auto_compaction_abort_handle().
                     self.set_phase(AgentPhase::Compacting {
@@ -923,7 +950,7 @@ impl Agent {
                         reason: "overflow".into(),
                         progress: None,
                     });
-                    yield AgentEvent::Error { message: format!("compaction: tokens before={} after={}", _out.tokens_before, _out.tokens_after) };
+                    yield AgentEvent::Error { message: format!("compaction: tokens before={} after={}", compacted.tokens_before, compacted.tokens_after) };
                     self.set_phase(AgentPhase::Working);
                     yield AgentEvent::PhaseChanged(AgentPhase::Working);
                 }
@@ -1126,10 +1153,18 @@ impl Agent {
                                             .collect();
                                         crate::compaction::generate_local_summary(&entries)
                                     };
-                                    let _out = self.compact_history(summary_fn);
+                                    // v0.10 (R2a): publish the compaction so the session layer can record
+                    // it. The Agent has no session handle, so without this
+                    // the summary exists only in memory and a resumed
+                    // session has no memory of the work that came before.
+                    let compacted = self.compact_history(summary_fn);
+                    yield AgentEvent::Compacted {
+                        summary: compacted.summary.clone(),
+                        tokens_before: compacted.tokens_before,
+                    };
                                     yield AgentEvent::Error { message: format!(
                                         "auto-compaction (overflow): tokens before={} after={}",
-                                        _out.tokens_before, _out.tokens_after
+                                        compacted.tokens_before, compacted.tokens_after
                                     )};
                                 }
                             }

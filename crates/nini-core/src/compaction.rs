@@ -570,6 +570,20 @@ pub fn generate_local_summary(entries: &[Entry]) -> String {
     out
 }
 
+/// Marker prefixed to an in-process compaction summary.
+///
+/// Shared by `Agent::compact_history` (which splices it into the live
+/// message history) and `conversion::session_entry_to_llm_message` (which
+/// rebuilds it from a stored `SessionEntry::Compaction`). It was a bare
+/// literal in the first place, so a live run and a resumed one could
+/// disagree without anything noticing.
+pub const CONTEXT_SUMMARY_MARKER: &str = "[CONTEXT SUMMARY]";
+
+/// Render a compaction summary as the context message both paths use.
+pub fn context_summary_message(summary: &str) -> String {
+    format!("{CONTEXT_SUMMARY_MARKER}\n\n{summary}")
+}
+
 /// Result of running `compact`: a new compaction entry to insert into the
 /// entries slice at `keep_from`.
 #[derive(Debug, Clone)]
