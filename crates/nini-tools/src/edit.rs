@@ -14,11 +14,58 @@ use std::path::{Path, PathBuf};
 use crate::diff;
 use tokio::fs;
 
-#[derive(Debug, Deserialize)]
+/// One replacement in Pi's `edit` contract.
+///
+/// The field names are Pi's exactly - `oldText` / `newText` - because the
+/// model is told these names in the system prompt and emits them verbatim.
+/// Snake_case is kept as an *alias* so existing nini callers keep working;
+/// advertising a second spelling in the schema would not, because a model
+/// reading two spellings picks neither reliably.
+#[derive(Debug, Clone, Deserialize)]
+struct EditItem {
+    #[serde(rename = "oldText", alias = "old_text")]
+    old_text: String,
+    #[serde(rename = "newText", alias = "new_text")]
+    new_text: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct EditArgs {
     path: String,
-    old_text: String,
-    new_text: String,
+    /// Pi's shape: several disjoint replacements in one call.
+    #[serde(default)]
+    edits: Option<Vec<EditItem>>,
+    /// nini's pre-v0.10 shape, still accepted.
+    #[serde(default)]
+    old_text: Option<String>,
+    #[serde(default)]
+    new_text: Option<String>,
+}
+
+impl EditArgs {
+    /// Normalise both accepted shapes into one list of replacements.
+    ///
+    /// Takes `&self` rather than consuming: the caller still needs `path`
+    /// afterwards, and cloning two Strings is cheaper than the borrow
+    /// gymnastics of partial moves.
+    fn into_edits(&self) -> Result<Vec<EditItem>, String> {
+        if let Some(edits) = &self.edits {
+            if edits.is_empty() {
+                return Err("`edits` must not be empty".to_string());
+            }
+            return Ok(edits.to_vec());
+        }
+        match (&self.old_text, &self.new_text) {
+            (Some(o), Some(n)) => Ok(vec![EditItem {
+                old_text: o.clone(),
+                new_text: n.clone(),
+            }]),
+            (None, None) => {
+                Err("edit requires `edits` (Pi contract) or `old_text` + `new_text`".to_string())
+            }
+            _ => Err("`old_text` and `new_text` must be given together".to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -29,22 +76,49 @@ impl EditTool {
         Self
     }
 
-    /// Apply the edit synchronously (no I/O).
-    fn apply(content: &str, old: &str, new: &str) -> Result<(String, usize), String> {
-        if old.is_empty() {
-            return Err("old_text must not be empty".to_string());
+    /// Apply every replacement synchronously (no I/O).
+    ///
+    /// v0.10: this takes a *list*. `edit` previously handled exactly one
+    /// replacement, so a model following Pi's system prompt ("use one edit
+    /// call with multiple entries in edits[]") was rejected outright.
+    ///
+    /// Replacements are applied in order, each matched against the buffer as
+    /// it stands. That reproduces Pi's observed behaviour rather than its
+    /// prose: probed against the real binary, a self-overlapping replacement
+    /// (`ALPHA` -> `<1-ALPHA>`) nests instead of stopping after one pass.
+    /// Pi's prompt forbids such edits ("Do not emit overlapping or nested
+    /// edits"), so the strategies are indistinguishable for every input Pi
+    /// considers valid - but matching the observed behaviour means a
+    /// Pi-produced tool call replays identically here.
+    fn apply_all(content: &str, edits: &[EditItem]) -> Result<(String, usize), String> {
+        let mut out = content.to_string();
+        for (i, e) in edits.iter().enumerate() {
+            if e.old_text.is_empty() {
+                return Err(format!("edits[{i}].oldText must not be empty"));
+            }
+            let occurrences = out.matches(&e.old_text).count();
+            match occurrences {
+                0 => {
+                    return Err(format!(
+                        "Could not find edits[{i}]. The oldText must match exactly \
+                         including all whitespace and newlines."
+                    ))
+                }
+                1 => out = out.replacen(&e.old_text, &e.new_text, 1),
+                n => {
+                    return Err(format!(
+                        "edits[{i}].oldText matches {n} locations; must match exactly 1"
+                    ))
+                }
+            }
         }
-        let occurrences = content.matches(old).count();
-        match occurrences {
-            0 => Err(format!(
-                "old_text not found in file (searched {} chars)",
-                content.len()
-            )),
-            1 => Ok((content.replacen(old, new, 1), 1)),
-            n => Err(format!(
-                "old_text matches {n} locations; must match exactly 1"
-            )),
-        }
+        Ok((out, edits.len()))
+    }
+
+    /// Pi's tool_result wording, reproduced from a real capture:
+    /// "Successfully replaced 3 block(s) in <path>."
+    fn success_message(path: &Path, n: usize) -> String {
+        format!("Successfully replaced {n} block(s) in {}.", path.display())
     }
 }
 
@@ -57,26 +131,48 @@ impl Tool for EditTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "edit".to_string(),
-            description: "Apply an exact-match text replacement to an existing file. \
-                          `old_text` must match uniquely; `new_text` replaces it."
+            // Pi 0.84.2's description, captured verbatim. It carries the
+            // non-overlap guidance the snippet deliberately omits, so the
+            // two must stay different (a v0.8 guard enforces this).
+            description: "Edit a single file using exact text replacement.\
+                          Every edits[].oldText must match a unique,\"
+                          non-overlapping region of the original file. If two\"
+                          changes affect the same block or nearby lines, merge\"
+                          them into one edit instead of emitting overlapping\"
+                          edits. Do not include large unchanged regions just\"
+                          to connect distant changes."
                 .to_string(),
+            // Pi's schema, captured from 0.84.2 at runtime. `old_text` /
+            // `new_text` stay accepted on the way in but are NOT advertised:
+            // the model must learn one spelling, and it is the one Pi uses.
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute or cwd-relative file path."
+                        "description": "Path to the file to edit (relative or absolute)"
                     },
-                    "old_text": {
-                        "type": "string",
-                        "description": "Exact text to find. Must match exactly once."
-                    },
-                    "new_text": {
-                        "type": "string",
-                        "description": "Replacement text."
+                    "edits": {
+                        "type": "array",
+                        "description": "One or more replacements applied in a single call.",
+                        "items": {
+                            "type": "object",
+                            "required": ["oldText", "newText"],
+                            "properties": {
+                                "oldText": {
+                                    "type": "string",
+                                    "description": "Exact text for one targeted replacement. \
+                                                   It must be unique in the file."
+                                },
+                                "newText": {
+                                    "type": "string",
+                                    "description": "Replacement text."
+                                }
+                            }
+                        }
                     }
                 },
-                "required": ["path", "old_text", "new_text"],
+                "required": ["path", "edits"],
                 "additionalProperties": false
             }),
         }
@@ -85,6 +181,7 @@ impl Tool for EditTool {
     async fn execute(&self, args: Value, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
         let parsed: EditArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
+        let edits = parsed.into_edits().map_err(ToolError::InvalidArgs)?;
 
         let path = if Path::new(&parsed.path).is_absolute() {
             PathBuf::from(&parsed.path)
@@ -116,8 +213,7 @@ impl Tool for EditTool {
                 })?;
 
             let (new_content, replacements) =
-                Self::apply(&content, &parsed.old_text, &parsed.new_text)
-                    .map_err(ToolError::InvalidArgs)?;
+                Self::apply_all(&content, &edits).map_err(ToolError::InvalidArgs)?;
 
             // Atomic write
             let parent = path.parent().unwrap_or(Path::new("."));
@@ -140,9 +236,8 @@ impl Tool for EditTool {
 
             Ok(ToolOutput {
                 content: format!(
-                    "replaced {} occurrence(s) in {}\n\n{}",
-                    replacements,
-                    path.display(),
+                    "{}\n\n{}",
+                    Self::success_message(&path, replacements),
                     diff_text
                 ),
                 is_error: false,
@@ -162,11 +257,18 @@ impl Tool for EditTool {
 
     fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
         Some(ToolSystemPrompt {
-            snippet: "Apply a targeted text replacement to a file.".into(),
+            snippet: "Make precise file edits with exact text replacement, \
+                      including multiple disjoint edits in one call."
+                .into(),
             guidelines: vec![
-                "`old_text` must match EXACTLY ONCE — include enough \
-                 surrounding context for uniqueness."
+                "Use edit for precise changes (edits[].oldText must match exactly)".into(),
+                "When changing multiple separate locations in one file, use one edit \
+                 call with multiple entries in edits[] instead of multiple edit calls"
                     .into(),
+                "Each edits[].oldText must be unique in the file. Do not emit \
+                 overlapping or nested edits."
+                    .into(),
+                "Keep edits[].oldText as small as possible while still being unique.".into(),
                 "For whole-file rewrites use `write`, not edit.".into(),
             ],
         })
@@ -242,15 +344,37 @@ mod tests {
     #[test]
     fn edit_spec_is_concise_and_nonoverlapping() {
         // v0.8 regression guard: snippet + description must not duplicate
-        // each other, and snippet must be short (Pi-style: ~10 words).
+        // each other, and snippet must be short.
+        //
+        // v0.10: the bound moved from 10 to 16 words, and that is Pi's
+        // doing rather than nini's. Pi 0.84.2's captured `edit` snippet is
+        //
+        //   "Make precise file edits with exact text replacement, including
+        //    multiple disjoint edits in one call"
+        //
+        // — 15 words. The clause "including multiple disjoint edits in one
+        // call" is the only thing that teaches a model the tool accepts a
+        // list, and Pi's system prompt leans on it hard (five guidelines
+        // about `edits[]`). Trimming nini's snippet back under 10 words to
+        // satisfy a self-imposed limit would have re-broken the very
+        // capability the `edits[]` work just added, while the schema
+        // quietly said otherwise.
+        //
+        // The limit is still a limit: 16 is a ceiling, not a target.
         let tool = EditTool::new();
         let contrib = tool.system_prompt_contribution().unwrap();
         let word_count = contrib.snippet.split_whitespace().count();
         assert!(
-            word_count <= 10,
+            word_count <= 16,
             "edit snippet too long: {} words — {}",
             word_count,
             contrib.snippet,
+        );
+        assert!(
+            contrib.snippet.contains("multiple disjoint edits"),
+            "the snippet must keep telling the model the tool takes a list, \
+             otherwise the multi-edit capability is undocumented: {}",
+            contrib.snippet
         );
         let spec = tool.spec();
         assert!(
@@ -267,14 +391,66 @@ mod tests {
         );
     }
 
+    /// v0.10: `apply` took a single replacement and became `apply_all`,
+    /// which takes Pi's list. The per-replacement rules are unchanged; what
+    /// is new is that a whole batch fails atomically if any member does.
+    fn one(old: &str, new: &str) -> Vec<EditItem> {
+        vec![EditItem {
+            old_text: old.to_string(),
+            new_text: new.to_string(),
+        }]
+    }
+
     #[test]
     fn apply_logic() {
-        let (new, n) = EditTool::apply("abc xyz", "abc", "x").unwrap();
+        let (new, n) = EditTool::apply_all("abc xyz", &one("abc", "x")).unwrap();
         assert_eq!(new, "x xyz");
         assert_eq!(n, 1);
-        assert!(EditTool::apply("abc abc", "abc", "x").is_err()); // 2 matches
-        assert!(EditTool::apply("xyz", "abc", "x").is_err()); // 0 matches
-        assert!(EditTool::apply("any", "", "x").is_err()); // empty old
+        assert!(EditTool::apply_all("abc abc", &one("abc", "x")).is_err()); // 2 matches
+        assert!(EditTool::apply_all("xyz", &one("abc", "x")).is_err()); // 0 matches
+        assert!(EditTool::apply_all("any", &one("", "x")).is_err()); // empty old
+    }
+
+    /// The capability that did not exist before v0.10: several disjoint
+    /// replacements in one call, which is what Pi's system prompt tells the
+    /// model to emit.
+    #[test]
+    fn apply_all_handles_several_disjoint_replacements() {
+        let edits = vec![
+            EditItem {
+                old_text: "ALPHA".into(),
+                new_text: "X1X".into(),
+            },
+            EditItem {
+                old_text: "BETA".into(),
+                new_text: "X2X".into(),
+            },
+            EditItem {
+                old_text: "GAMMA".into(),
+                new_text: "X3X".into(),
+            },
+        ];
+        let (new, n) = EditTool::apply_all("ALPHA\nBETA\nGAMMA\n", &edits).unwrap();
+        assert_eq!(new, "X1X\nX2X\nX3X\n");
+        assert_eq!(n, 3);
+    }
+
+    /// A batch must be all-or-nothing: a failing member leaves the content
+    /// untouched, because the caller writes once at the end.
+    #[test]
+    fn a_failing_member_aborts_the_whole_batch() {
+        let edits = vec![
+            EditItem {
+                old_text: "ALPHA".into(),
+                new_text: "X1X".into(),
+            },
+            EditItem {
+                old_text: "MISSING".into(),
+                new_text: "X2X".into(),
+            },
+        ];
+        let err = EditTool::apply_all("ALPHA\n", &edits).unwrap_err();
+        assert!(err.contains("edits[1]"), "{err}");
     }
 }
 
