@@ -326,7 +326,19 @@ impl AgentSink {
 /// A function that drives one agent turn. Called by the runtime after Submit.
 /// `sink` receives the agent's events. `done` is notified when the turn
 /// finishes (whether successfully, with error, or aborted).
-pub type AgentDriver = Arc<dyn Fn(String, AgentSink, Arc<Notify>) -> JoinHandle<()> + Send + Sync>;
+/// Drives one turn.
+///
+/// v0.10 (R2a/A3): takes the messages the session's live context resolves
+/// to, so the Agent starts from the session rather than from an empty
+/// history. This is Pi's `agent.state.messages = buildSessionContext(...)`,
+/// moved to the boundary where the session is actually reachable — the
+/// Agent has no session handle, and the driver used to hand it an empty
+/// history while the session held the real one.
+pub type AgentDriver = Arc<
+    dyn Fn(String, Vec<nini_core::provider::Message>, AgentSink, Arc<Notify>) -> JoinHandle<()>
+        + Send
+        + Sync,
+>;
 
 /// Public entrypoint: run the TUI. `bootstrap` is called once to seed the
 /// `AppState`. `agent_driver` is spawned whenever the user submits a message.
@@ -1840,9 +1852,22 @@ fn submit_user_input_inner(
         text
     };
 
+    // v0.10 (R2a/A3): hand the driver the session's live context.
+    //
+    // This is the point where the session is reachable, so it is where
+    // `build_context_entries` belongs. The Agent used to start empty every
+    // run while the session held the whole history — two stores, one of
+    // which the model never saw. A compaction recorded in the session is
+    // therefore visible to the very next turn, which is the entire reason
+    // P0.1, P0.2 and A1 were worth doing.
+    let seed: Vec<nini_core::provider::Message> = {
+        let g = lock_state(&shared);
+        g.session_context_messages()
+    };
+
     // Spawn the agent task with its own sink.
     let sink = AgentSink::new(shared.clone(), event_tx.clone());
-    let _handle = (agent_driver)(text, sink, done.clone());
+    let _handle = (agent_driver)(text, seed, sink, done.clone());
     // The handle is intentionally dropped — the task continues running in
     // the background. We don't abort the agent on quit; the runtime owns
     // the SharedState and the sink keeps a clone.

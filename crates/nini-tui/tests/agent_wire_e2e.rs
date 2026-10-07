@@ -57,9 +57,15 @@ fn render(state: &AppState, w: u16, h: u16) -> String {
 /// against the given tools. Used by submit-spawned tests.
 fn make_fixture_driver(
     turns: Vec<Vec<FixtureTurn>>,
-) -> impl Fn(String, AgentSink, Arc<Notify>) -> JoinHandle<()> + Send + Sync + 'static {
+) -> impl Fn(String, Vec<nini_core::provider::Message>, AgentSink, Arc<Notify>) -> JoinHandle<()>
+       + Send
+       + Sync
+       + 'static {
     let cwd = std::env::current_dir().unwrap();
-    move |user_msg: String, sink: AgentSink, done: Arc<Notify>| {
+    move |user_msg: String,
+          _seed: Vec<nini_core::provider::Message>,
+          sink: AgentSink,
+          done: Arc<Notify>| {
         let provider: Arc<dyn nini_core::Provider> =
             Arc::new(ProgrammedProvider::from_turns(turns.clone()));
         let tools = ToolRegistry::new().register(Arc::new(BashTool::new()));
@@ -194,7 +200,7 @@ async fn submit_triggers_agent_and_renders_response() {
     } // lock dropped here
 
     let done = Arc::new(Notify::new());
-    let _handle = driver(submitted, sink.clone(), done.clone());
+    let _handle = driver(submitted, Vec::new(), sink.clone(), done.clone());
 
     // Wait for agent task to finish (notify_waiters triggers)
     done.notified().await;
@@ -232,7 +238,7 @@ async fn multiple_submits_accumulate_in_transcript() {
     let sink1 = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let driver1 = make_fixture_driver(turns1);
     let done1 = Arc::new(Notify::new());
-    driver1("first question".into(), sink1, done1.clone());
+    driver1("first question".into(), Vec::new(), sink1, done1.clone());
     done1.notified().await;
 
     // Second turn
@@ -246,7 +252,7 @@ async fn multiple_submits_accumulate_in_transcript() {
     let sink2 = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
     let driver2 = make_fixture_driver(turns2);
     let done2 = Arc::new(Notify::new());
-    driver2("second question".into(), sink2, done2.clone());
+    driver2("second question".into(), Vec::new(), sink2, done2.clone());
     done2.notified().await;
 
     let snapshot = shared.lock().unwrap().clone();
@@ -510,7 +516,7 @@ async fn full_pipeline_drive_keys_then_run_agent() {
 
     let submitted = "find TODOs and fix them".to_string();
     let done = Arc::new(Notify::new());
-    driver(submitted, sink.clone(), done.clone());
+    driver(submitted, Vec::new(), sink.clone(), done.clone());
 
     // 3. Wait for agent task
     done.notified().await;

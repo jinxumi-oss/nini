@@ -186,8 +186,20 @@ async fn compact_history_prepends_summary_and_keeps_suffix() {
 // Test 4: agent run loop auto-compacts when over budget
 // =====================================================================
 #[tokio::test]
-async fn run_auto_compacts_when_over_budget() {
-    // Programmed provider that just responds with text.
+async fn an_over_budget_agent_does_not_compact_itself() {
+    // A3 rewrote the subject of this test.
+    //
+    // It used to seed an over-budget history, run the loop, and assert that
+    // the Agent compacted itself and reported it through an `Error` event
+    // beginning "compaction:". That in-loop threshold check is gone: its
+    // compaction never reached the session, and the `Compacted` event it
+    // emitted had no consumer anywhere in the tree.
+    //
+    // What matters now is the opposite. If the Agent compacted itself again,
+    // its history would diverge from the session's, and the two would
+    // disagree about what the model is being shown - which is the state A1,
+    // P0.1, P0.2 and A2 were all done to eliminate. The session owns
+    // compaction now, and hands the Agent its context as a seed.
     let provider: Arc<dyn Provider> = Arc::new(ProgrammedProvider::from_turns(vec![vec![
         FixtureTurn::Text("hi".to_string()),
         FixtureTurn::Stop {
@@ -201,39 +213,47 @@ async fn run_auto_compacts_when_over_budget() {
     cfg.compaction.reserve_tokens = 50;
     let mut agent = Agent::new(provider, tools, cfg);
 
-    // Seed with content that exceeds budget
+    // Seed with content that exceeds budget.
     agent.seed(vec![nini_core::provider::Message {
         role: nini_core::provider::Role::User,
         content: vec![nini_core::provider::ContentBlock::Text {
-            text: "x".repeat(400), // 100 tokens, over 50-token budget
+            text: "x".repeat(400),
         }],
         timestamp: 0,
     }]);
-    assert!(agent.should_compact());
+    // The predicate still reports the truth about the budget; it just no
+    // longer acts on it inside the loop.
+    assert!(
+        agent.should_compact(),
+        "the budget check itself is unchanged"
+    );
 
-    let mut saw_compaction = false;
+    let before = agent.messages().len();
     {
         let mut stream = Box::pin(agent.run(nini_core::AgentMessage::user("hi")));
         while let Some(ev) = stream.next().await {
             if let Ok(AgentEvent::Error { message }) = &ev {
-                if message.starts_with("compaction:") {
-                    saw_compaction = true;
-                }
+                assert!(
+                    !message.starts_with("compaction:"),
+                    "the Agent must not compact itself any more; that \
+                     decision belongs to the session. Got: {message}"
+                );
             }
         }
     }
     assert!(
-        saw_compaction,
-        "auto-compaction should fire when over budget"
+        agent.messages()[..before].iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(
+                    b,
+                    nini_core::provider::ContentBlock::Text { text } if text.len() == 400
+                )
+            })
+        }),
+        "the seeded history must survive untouched: a self-compaction here \
+         would leave the Agent and the session describing different \
+         conversations"
     );
-    // After run, history should contain the summary message
-    assert!(!agent.messages().is_empty());
-    let first_msg = &agent.messages()[0];
-    if let nini_core::provider::ContentBlock::Text { text } = &first_msg.content[0] {
-        assert!(text.starts_with("[CONTEXT SUMMARY]"), "got: {text}");
-    } else {
-        panic!("expected first message to be Text");
-    }
 }
 
 // =====================================================================

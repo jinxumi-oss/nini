@@ -1884,6 +1884,24 @@ impl AppState {
     /// number of transcript lines that were folded.
     ///
     /// The runtime invokes this from the auto-compaction path when the
+    /// The session's live context as provider messages.
+    ///
+    /// This is what an Agent should be seeded with. Empty when there is no
+    /// session — `--no-session`, or before one is initialised — and an
+    /// empty seed is correct there: there is no history to replay.
+    pub fn session_context_messages(&self) -> Vec<nini_core::provider::Message> {
+        let Some(arc) = self.session_state.session.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(guard) = arc.try_lock() else {
+            return Vec::new();
+        };
+        nini_session::build_context_entries(&guard)
+            .iter()
+            .filter_map(nini_core::conversion::session_entry_to_llm_message)
+            .collect()
+    }
+
     /// Compact the session for real, and refresh the transcript to match.
     ///
     /// Replaces `auto_compact_local`, which folded the first half of the

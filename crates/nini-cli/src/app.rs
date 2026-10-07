@@ -204,7 +204,7 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         }
     }
 
-    let agent_driver: AgentDriver = Arc::new(move |user_msg, sink, done| {
+    let agent_driver: AgentDriver = Arc::new(move |user_msg, seed, sink, done| {
         let provider = shared_provider.clone();
         let tools = shared_tools.clone();
         let cfg = shared_cfg.clone();
@@ -216,6 +216,14 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
             cfg,
             std::sync::Arc::new(LiveConfigHooks { sink: sink.clone() }),
         );
+        // v0.10 (R2a/A3): start from the session's live context rather than
+        // from nothing. The Agent is built fresh per run, so without this
+        // the model saw only the current turn while the session held the
+        // whole conversation - and a compaction recorded there had no effect
+        // on the next request.
+        if !seed.is_empty() {
+            agent.seed(seed);
+        }
         tokio::spawn(async move {
             let mut stream = Box::pin(agent.run(nini_core::AgentMessage::user(user_msg.clone())));
             while let Some(ev) = stream.next().await {

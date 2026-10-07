@@ -886,74 +886,27 @@ impl Agent {
                     Err(AgentError::TooManyIterations(config.max_iterations))?;
                 }
 
-                // Auto-compact: if context window is exceeded, summarize the
-                // older prefix of history and prepend a single summary
-                // message. v1 uses the deterministic local summary; LLM
-                // summarization lands when a provider is wired in.
-                if crate::compaction::should_compact(
-                    crate::compaction::estimate_provider_messages_tokens(&self.messages),
-                    &config.compaction,
-                ) {
-                    // Pi parity: use the configured provider for a real
-                    // LLM summary. We avoid a hard dependency on nini-ai
-                    // by calling the provider's stream() directly with a
-                    // summary-style prompt. On any error, fall back to
-                    // the deterministic local heuristic.
-                    let provider_for_summary = self.provider.clone();
-                    let model_for_summary = config.model.clone();
-                    let summary_fn = move |msgs: &[Message], _prev: Option<String>| {
-                        // Inline LLM summary call. We don't depend on
-                        // nini-ai here — the LLM call is done directly.
-                        match crate::agent::inline_llm_summary(
-                            &provider_for_summary,
-                            &model_for_summary,
-                            msgs,
-                        ) {
-                            Ok(s) => s,
-                            Err(_) => {
-                                // Fallback: build entries and use local
-                                // heuristic.
-                                let entries: Vec<crate::Entry> = msgs
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, m)| crate::Entry::message(
-                                        format!("cmsg_{i}"),
-                                        None,
-                                        (i as u64) + 1,
-                                        AgentMessage {
-                                        role: m.role,
-                                        content: m.content.clone(),
-                                        timestamp: 0,
-                                    },
-                                    ))
-                                    .collect();
-                                crate::compaction::generate_local_summary(&entries)
-                            }
-                        }
-                    };
-                    // v0.10 (R2a): publish the compaction so the session layer can record
-                    // it. The Agent has no session handle, so without this
-                    // the summary exists only in memory and a resumed
-                    // session has no memory of the work that came before.
-                    let compacted = self.compact_history(summary_fn);
-                    yield AgentEvent::Compacted {
-                        summary: compacted.summary.clone(),
-                        tokens_before: compacted.tokens_before,
-                    };
-                    // Emit Compacting phase + abort-event observers can
-                    // race-compete via self.auto_compaction_abort_handle().
-                    self.set_phase(AgentPhase::Compacting {
-                        reason: "overflow".into(),
-                        progress: None,
-                    });
-                    yield AgentEvent::PhaseChanged(AgentPhase::Compacting {
-                        reason: "overflow".into(),
-                        progress: None,
-                    });
-                    yield AgentEvent::Error { message: format!("compaction: tokens before={} after={}", compacted.tokens_before, compacted.tokens_after) };
-                    self.set_phase(AgentPhase::Working);
-                    yield AgentEvent::PhaseChanged(AgentPhase::Working);
-                }
+                // v0.10 (R2a/A3): the threshold compaction that used to live
+                // here is gone.
+                //
+                // It checked `should_compact` before every request and, if
+                // over budget, spliced a summary into `self.messages` in
+                // memory. Nothing about it reached the session: the
+                // `AgentEvent::Compacted` it emitted had no consumer
+                // anywhere in the tree, so a compacted run left a session
+                // with the full, uncompacted history and a live context that
+                // disagreed with it.
+                //
+                // Compaction now belongs to the session, which persists it
+                // and derives the live context from the entry tree. The TUI
+                // runs it before submitting a turn and hands the resulting
+                // context to this Agent as its seed, so the history here is
+                // the session's history rather than a second copy of it.
+                //
+                // The overflow trigger further down stays, deliberately: it
+                // is the safety net for a turn that outgrew its window
+                // between two submissions. Making that path persist and
+                // retry through the session is the next step.
 
                 // v0.7 (M3b) — apply the 2 context hooks in order:
                 //   1. transform_context (trim / inject)
@@ -2208,93 +2161,29 @@ mod phase_lifecycle_tests {
 
 #[cfg(test)]
 mod llm_summary_in_run_loop_tests {
-    use super::*;
-    use crate::provider::{Capabilities, Provider, ProviderError, Request, StreamEvent};
-    use futures_core::Stream;
-    use std::pin::Pin;
-    use std::sync::Arc;
+    // v0.10 (R2a/A3): the imports that stood here -
+    // `StreamEvent`, `Stream`, `Pin`, `Arc` - were there for
+    // `auto_compaction_with_llm_provider_emits_compacting_phase`. That
+    // test went with the in-loop threshold compaction it covered, and
+    // the fixture with it.
+    //
+    // The test that stood here -
 
-    /// Mock provider that returns a TextDelta + MessageStop with usage
-    /// metadata. Simulates the LLM-summarizer's output behavior.
-    struct MockSummaryProvider;
-    impl Provider for MockSummaryProvider {
-        fn name(&self) -> &'static str {
-            "mock-summary"
-        }
-        fn capabilities(&self) -> Capabilities {
-            Capabilities::default()
-        }
-        fn stream(
-            &self,
-            _req: Request,
-        ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send + 'static>>
-        {
-            Box::pin(futures_util::stream::iter(vec![
-                Ok(StreamEvent::MessageStart {
-                    id: "msg-1".into(),
-                    model: "test".into(),
-                }),
-                Ok(StreamEvent::TextDelta {
-                    text: "# Summary\n\nFiles: a.rs b.rs".into(),
-                }),
-                Ok(StreamEvent::MessageStop {
-                    stop_reason: "stop".into(),
-                    usage: Usage {
-                        input_tokens: 50,
-                        output_tokens: 100,
-                        ..Default::default()
-                    },
-                }),
-            ]))
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn auto_compaction_with_llm_provider_emits_compacting_phase() {
-        use futures_util::StreamExt;
-        let provider = Arc::new(MockSummaryProvider);
-        let tools = ToolRegistry::new();
-        let mut cfg = RunConfig::new("test-model");
-        cfg.compaction.context_window = 100;
-        cfg.compaction.reserve_tokens = 50;
-        let mut agent = Agent::new(provider, tools, cfg);
-        // Seed messages past the budget so auto-compaction fires.
-        agent.seed(vec![Message {
-            role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: "x".repeat(400),
-            }],
-            timestamp: 0,
-        }]);
-
-        let mut phases = Vec::new();
-        let mut saw_summary = false;
-        {
-            let mut stream = Box::pin(agent.run(Message::user("hi")));
-            while let Some(ev) = stream.next().await {
-                match ev {
-                    Ok(AgentEvent::PhaseChanged(p)) => phases.push(p),
-                    Ok(AgentEvent::Error { message }) if message.starts_with("compaction:") => {
-                        saw_summary = true;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        assert!(
-            saw_summary,
-            "auto-compaction should run and emit summary event"
-        );
-        // Should transition Working → Compacting → Working.
-        let compactions: Vec<_> = phases
-            .iter()
-            .filter(|p| matches!(p, AgentPhase::Compacting { .. }))
-            .collect();
-        assert!(
-            !compactions.is_empty(),
-            "should emit at least one Compacting phase"
-        );
-    }
+    /// v0.10 (R2a/A3): the test that stood here -
+    /// `auto_compaction_with_llm_provider_emits_compacting_phase` - is gone
+    /// with the mechanism it covered.
+    ///
+    /// It seeded an over-budget history, ran the loop, and asserted that a
+    /// compaction fired, that an `Error` event beginning "compaction:" was
+    /// emitted, and that the phase went Working -> Compacting -> Working.
+    /// All three came from the in-loop threshold check removed in A3, whose
+    /// compaction never reached the session: the `Compacted` event it
+    /// emitted had no consumer anywhere in the tree.
+    ///
+    /// Compaction now runs in the session, which persists it and hands the
+    /// resulting context to this Agent as its seed. The Agent no longer
+    /// compacts itself, so there is nothing here to assert. The invariants
+    /// that replaced it live in `nini-tui/tests/a3_seed.rs`.
 
     #[test]
     fn llm_summary_provider_unavailable_falls_back_to_local() {
