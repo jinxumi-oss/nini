@@ -174,9 +174,17 @@ impl AgentSink {
                 s.run_state.status = phase;
             }
             match ev {
-                AgentEventLite::TextDelta(text) => s.push_assistant_raw(text),
+                AgentEventLite::TextDelta(text) => {
+                    s.push_assistant_raw(text.clone());
+                    // P0.1: the transcript copy is display only; without
+                    // this the model's prose never reached the session.
+                    s.session_buffer_text(&text);
+                }
                 AgentEventLite::ThinkingDelta(text) => s.push_thinking_raw(text),
-                AgentEventLite::ToolCallStart { id, name } => s.push_tool_call(id, name, ""),
+                AgentEventLite::ToolCallStart { id, name } => {
+                    s.push_tool_call(id.clone(), name.clone(), "");
+                    s.session_buffer_tool_call_start(&id, &name);
+                }
                 AgentEventLite::ToolCallStop { id, args } => {
                     // v0.8.8 (tool-identity): update the SPECIFIC tool
                     // call line by id, not by last position. Parallel
@@ -206,15 +214,18 @@ impl AgentSink {
                         if let Some(TranscriptLine::ToolCall { args: a, .. }) =
                             lines.lines.get_mut(idx)
                         {
-                            *a = args;
+                            *a = args.clone();
                         }
                     } else {
                         // Stop without matching Start (out-of-order
                         // event from buggy provider). Fall back to
                         // pushing a new line; id is preserved for
                         // any later ToolResult to find.
-                        s.push_tool_call(id, String::new(), args);
+                        s.push_tool_call(id.clone(), String::new(), args.clone());
                     }
+                    // P0.1: the arguments arrive here, not at Start, so
+                    // this is the first point where the call is complete.
+                    s.session_buffer_tool_call_args(&id, &args);
                 }
                 AgentEventLite::ToolResult {
                     id,
@@ -238,10 +249,31 @@ impl AgentSink {
                     // instead of just `✓`. This is critical when
                     // multiple tools run in parallel — the user needs
                     // to know which result belongs to which call.
-                    s.push_tool_result_raw(id, name, ok, content, Some(duration_ms));
+                    s.push_tool_result_raw(
+                        id.clone(),
+                        name.clone(),
+                        ok,
+                        content.clone(),
+                        Some(duration_ms),
+                    );
+                    // P0.1: the assistant message holding the call must be
+                    // written before its result. This is the first moment the
+                    // turn's shape is known.
+                    s.session_flush_assistant();
+                    s.session_append_tool_result(
+                        &id,
+                        &name,
+                        ok,
+                        &content,
+                        details,
+                        Some(duration_ms),
+                    );
                 }
                 AgentEventLite::TurnEnd => {
                     s.push_divider();
+                    // P0.1: a turn that made no tool call still has prose
+                    // worth keeping, and nothing else would flush it.
+                    s.session_flush_assistant();
                     // Flush session to disk on turn end. Errors are logged but
                     // never propagated — IO failures must not break the TUI.
                     s.session_flush();

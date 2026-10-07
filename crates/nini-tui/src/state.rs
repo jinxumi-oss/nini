@@ -995,6 +995,38 @@ pub struct SessionState {
     /// explanation. The runtime surfaces this as a `StopNotice` so the
     /// gap is on screen next to the content it affects.
     pub skipped_lines_on_load: usize,
+    /// The assistant turn currently being assembled for persistence.
+    ///
+    /// P0.1: before this, the agent's side of a conversation never reached
+    /// the session file. A complete turn left exactly one entry — the user
+    /// message. Assistant prose arrived as `TextDelta` -> `push_assistant_raw`
+    /// (transcript only), and `push_tool_call` / `push_tool_result` never
+    /// touched the session at all. `state.rs` carried the comment "Tool
+    /// results are part of the turn — session_append is handled on TurnEnd";
+    /// nothing handled them.
+    ///
+    /// Pi's shape is one assistant message holding the text plus every
+    /// `toolCall` block, followed by one message per tool result. The event
+    /// stream gives us those pieces separately and incrementally, so they
+    /// are buffered here and written once the turn's shape is known.
+    pub pending_assistant: Option<PendingAssistant>,
+}
+
+/// One `toolCall` block being assembled for the pending assistant message.
+#[derive(Debug, Clone)]
+pub struct PendingToolCall {
+    pub id: String,
+    pub name: String,
+    /// Filled in by `ToolCallStop`. The provider streams the arguments
+    /// after announcing the call, so at `ToolCallStart` they are not known.
+    pub args: Option<String>,
+}
+
+/// An assistant turn under construction: prose plus the calls it made.
+#[derive(Debug, Clone, Default)]
+pub struct PendingAssistant {
+    pub text: String,
+    pub tool_calls: Vec<PendingToolCall>,
 }
 
 // =================================================================
@@ -1176,6 +1208,7 @@ impl Clone for SessionState {
             cwd: self.cwd.clone(),
             git_branch: self.git_branch.clone(),
             skipped_lines_on_load: self.skipped_lines_on_load,
+            pending_assistant: self.pending_assistant.clone(),
         }
     }
 }
@@ -1189,6 +1222,7 @@ impl Default for SessionState {
             cwd: None,
             git_branch: None,
             skipped_lines_on_load: 0,
+            pending_assistant: None,
         }
     }
 }
@@ -1368,6 +1402,144 @@ impl AppState {
         }
     }
 
+    /// P0.1: buffer a streamed text delta for the pending assistant message.
+    pub fn session_buffer_text(&mut self, text: &str) {
+        let p = self
+            .session_state
+            .pending_assistant
+            .get_or_insert_with(PendingAssistant::default);
+        p.text.push_str(text);
+    }
+
+    /// P0.1: record a tool call announcement (name known, args not yet).
+    pub fn session_buffer_tool_call_start(&mut self, id: &str, name: &str) {
+        let p = self
+            .session_state
+            .pending_assistant
+            .get_or_insert_with(PendingAssistant::default);
+        if !p.tool_calls.iter().any(|c| c.id == id) {
+            p.tool_calls.push(PendingToolCall {
+                id: id.to_string(),
+                name: name.to_string(),
+                args: None,
+            });
+        }
+    }
+
+    /// P0.1: fill in the arguments once the provider stops streaming them.
+    pub fn session_buffer_tool_call_args(&mut self, id: &str, args: &str) {
+        let p = self
+            .session_state
+            .pending_assistant
+            .get_or_insert_with(PendingAssistant::default);
+        if let Some(call) = p.tool_calls.iter_mut().find(|c| c.id == id) {
+            call.args = Some(args.to_string());
+            return;
+        }
+        // A Stop with no matching Start (an out-of-order event from a
+        // buggy provider). Record it rather than losing the call, matching
+        // what the transcript path already does.
+        p.tool_calls.push(PendingToolCall {
+            id: id.to_string(),
+            name: String::new(),
+            args: Some(args.to_string()),
+        });
+    }
+
+    /// P0.1: write the pending assistant turn as ONE assistant message.
+    ///
+    /// Pi's assistant message carries the prose and every `toolCall` block
+    /// together; splitting them would put the arguments in a message with no
+    /// call and the call in a message with no arguments.
+    ///
+    /// No-op when nothing is buffered, so it is safe to call from both the
+    /// tool-result path and `TurnEnd`.
+    pub fn session_flush_assistant(&mut self) {
+        let Some(pending) = self.session_state.pending_assistant.take() else {
+            return;
+        };
+        if pending.text.is_empty() && pending.tool_calls.is_empty() {
+            return;
+        }
+
+        let mut content: Vec<nini_core::entries::ContentBlock> = Vec::new();
+        if !pending.text.is_empty() {
+            content.push(nini_core::entries::ContentBlock::Text { text: pending.text });
+        }
+        for call in &pending.tool_calls {
+            let args = call.args.clone().unwrap_or_default();
+            let arguments =
+                serde_json::from_str(&args).unwrap_or_else(|_| serde_json::Value::String(args));
+            content.push(nini_core::entries::ContentBlock::ToolCall {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments,
+            });
+        }
+
+        self.session_append_message(nini_core::entries::AgentMessage::Assistant(
+            nini_core::entries::AssistantMessage {
+                content,
+                api: String::new(),
+                provider: String::new(),
+                model: String::new(),
+                usage: Default::default(),
+                stop_reason: nini_core::entries::StopReason::Stop,
+                error_message: None,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            },
+        ));
+    }
+
+    /// P0.1: persist one tool result as its own message, Pi-shaped.
+    ///
+    /// `toolCallId` is what binds a result back to its call on resume; it
+    /// must be the provider's call id, not a display index.
+    pub fn session_append_tool_result(
+        &mut self,
+        id: &str,
+        name: &str,
+        ok: bool,
+        content: &str,
+        details: Option<serde_json::Value>,
+        duration_ms: Option<u64>,
+    ) {
+        let details =
+            details.or_else(|| duration_ms.map(|ms| serde_json::json!({ "durationMs": ms })));
+        self.session_append_message(nini_core::entries::AgentMessage::ToolResult(
+            nini_core::entries::ToolResultMessage {
+                tool_call_id: id.to_string(),
+                tool_name: name.to_string(),
+                content: vec![nini_core::entries::ContentBlock::Text {
+                    text: content.to_string(),
+                }],
+                details,
+                usage: None,
+                is_error: !ok,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            },
+        ));
+    }
+
+    /// Append a pre-built session message, minting an id and a timestamp.
+    fn session_append_message(&mut self, message: nini_core::entries::AgentMessage) {
+        let Some(ref arc) = self.session_state.session else {
+            return;
+        };
+        if let Ok(mut guard) = arc.try_lock() {
+            let id = format!("msg_{}", uuid::Uuid::new_v4());
+            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            guard.append(nini_core::SessionEntry::Message(
+                nini_core::entries::SessionMessageEntry {
+                    id,
+                    parent_id: None,
+                    timestamp,
+                    message,
+                },
+            ));
+        }
+    }
+
     /// Flush pending entries to disk (atomic: temp file + rename).
     /// Logs errors but does not propagate — IO failures must not break the TUI.
     pub fn session_flush(&self) {
@@ -1419,6 +1591,9 @@ impl AppState {
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) {
+        // The previous assistant turn has to land before the new user
+        // message, or the session reads back out of order.
+        self.session_flush_assistant();
         let s = text.into();
         Arc::make_mut(&mut self.transcript_state)
             .lines
