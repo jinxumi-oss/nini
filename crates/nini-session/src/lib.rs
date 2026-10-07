@@ -267,6 +267,15 @@ impl Session {
     ) -> String {
         let id = format!("msg_{}", uuid::Uuid::new_v4());
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        // P0.2: honour a parent that names a real entry (that is how a
+        // branch is made), and chain at the leaf otherwise. Every TUI call
+        // site passed `None`, so a four-entry session had a `get_path()` of
+        // length one and no tree existed for the compaction machinery to
+        // walk.
+        let parent_id = match parent_id {
+            Some(p) if self.get_entry(&p).is_some() => Some(p),
+            _ => self.leaf_id(),
+        };
         let entry = nini_core::SessionEntry::Message(nini_core::SessionMessageEntry {
             id: id.clone(),
             parent_id,
@@ -296,6 +305,59 @@ impl Session {
             header: SessionHeader::new(cwd),
             entries: Vec::new(),
             skipped_lines: 0,
+        }
+    }
+
+    /// Append an entry parented at the current leaf, Pi-style.
+    ///
+    /// Pi's `sessionManager._appendEntry` sets `parentId: this.leafId` on
+    /// every entry it writes. nini's TUI instead passed `parent_id: None`
+    /// from every call site, so a four-entry session had a `get_path()` of
+    /// length one and no tree existed for the compaction machinery to walk.
+    ///
+    /// Routing writes through here makes the tree a property of the session
+    /// rather than something each caller has to remember.
+    pub fn append_chained(&mut self, mut entry: SessionEntry) -> String {
+        let parent = self.leaf_id();
+        entry.set_parent_id(parent);
+        let id = entry.id().to_string();
+        self.entries.push(entry);
+        id
+    }
+
+    /// P0.2: link a flat legacy file into a chain, in file order.
+    ///
+    /// nini wrote every entry with `parentId: null` for most of its life, so
+    /// old session files are flat lists. This fills each null with the
+    /// preceding entry's id, which turns them into the chain they were
+    /// always meant to be.
+    ///
+    /// Two properties matter:
+    ///   * an entry that already names a parent is never rewritten, so a
+    ///     genuine Pi file - where only the root has a null parent - comes
+    ///     through untouched;
+    ///   * the first entry keeps `None`, because it is the root.
+    ///
+    /// Runs on read rather than on write, so no file is rewritten behind the
+    /// user's back and the rule is applied uniformly however a session is
+    /// loaded.
+    pub fn link_flat_entries(&mut self) {
+        if self.entries.len() < 2 {
+            return;
+        }
+        // Filled per entry, not all-or-nothing. An earlier version bailed
+        // out as soon as it saw one real parent link, which meant a file
+        // that was flat except for a single link kept every remaining null
+        // - the opposite of the intent.
+        //
+        // Per entry is also what makes this a no-op on a genuine Pi file:
+        // there the only null parent is the root, which is the first entry,
+        // and the loop starts at 1.
+        let ids: Vec<String> = self.entries.iter().map(|e| e.id().to_string()).collect();
+        for i in 1..self.entries.len() {
+            if self.entries[i].parent_id().is_none() {
+                self.entries[i].set_parent_id(Some(ids[i - 1].clone()));
+            }
         }
     }
 
@@ -484,7 +546,7 @@ impl Codec {
             }
         }
 
-        Ok(Session {
+        let mut session = Session {
             header: header.unwrap_or_else(|| {
                 // No header — create one
                 SessionHeader {
@@ -498,7 +560,13 @@ impl Codec {
             }),
             entries,
             skipped_lines,
-        })
+        };
+        // P0.2: nini wrote flat files for most of its life, so a session
+        // loaded from disk may have no parent links at all. Link it here so
+        // `get_path` - and therefore everything defined over the tree -
+        // sees real history.
+        session.link_flat_entries();
+        Ok(session)
     }
 
     /// Write session to disk atomically (write to temp, rename).

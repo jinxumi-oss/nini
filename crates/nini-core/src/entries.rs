@@ -398,6 +398,28 @@ pub enum StopReason {
 
 // Helper accessors used by nini-session — these work for any variant.
 impl SessionEntry {
+    /// Rewrite this entry's parent link.
+    ///
+    /// P0.2: nini wrote every entry with `parentId: null`, so a session had
+    /// no tree at all - `get_path` returned a single entry, and Pi's
+    /// tree-shaped algorithms (compaction reconstruction, branch selection)
+    /// had nothing to walk. Pi chains every entry to the current leaf; this
+    /// is the seam that lets the session do the same without every caller
+    /// having to remember.
+    pub fn set_parent_id(&mut self, parent: Option<String>) {
+        match self {
+            Self::Message(e) => e.parent_id = parent,
+            Self::ModelChange(e) => e.parent_id = parent,
+            Self::ThinkingLevelChange(e) => e.parent_id = parent,
+            Self::Compaction(e) => e.parent_id = parent,
+            Self::BranchSummary(e) => e.parent_id = parent,
+            Self::Custom(e) => e.parent_id = parent,
+            Self::CustomMessage(e) => e.parent_id = parent,
+            Self::Label(e) => e.parent_id = parent,
+            Self::SessionInfo(e) => e.parent_id = parent,
+        }
+    }
+
     pub fn id(&self) -> &str {
         match self {
             Self::Message(e) => &e.id,

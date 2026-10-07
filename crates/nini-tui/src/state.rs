@@ -1529,7 +1529,10 @@ impl AppState {
         if let Ok(mut guard) = arc.try_lock() {
             let id = format!("msg_{}", uuid::Uuid::new_v4());
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-            guard.append(nini_core::SessionEntry::Message(
+            // P0.2: chain at the leaf, like every other write. This path
+            // carries the whole agent turn, so leaving it detached is what
+            // made tool traffic invisible to the tree.
+            guard.append_chained(nini_core::SessionEntry::Message(
                 nini_core::entries::SessionMessageEntry {
                     id,
                     parent_id: None,
