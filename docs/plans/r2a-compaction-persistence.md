@@ -1,19 +1,59 @@
 # R2a — compaction persistence: ground truth, gap, and the fork
 
-Status: **investigated, not implemented.** `edit` contract shipped as `965fe84`.
-Baseline at time of writing: 1012 tests pass, clippy 0, fmt clean.
+Status: **A1 shipped** (`c249d9b`). A2 blocked by P0 below.
+Baseline: 1019 tests pass, clippy 0, fmt clean.
+
+---
+
+## 0. P0 — two defects that outrank compaction
+
+Found while scoping Option A. Both proven by execution, not by reading.
+
+### P0.1 Tool calls and tool results are never persisted
+
+A full turn — user message, tool call, assistant text, tool result — leaves
+**two** entries in the session file: the user text and the assistant text.
+The `toolCall` and `toolResult` blocks are absent entirely.
+
+Evidence:
+
+- `state.rs:1516` `push_tool_result` calls only `push_tool_result_raw` and
+  carries the comment *"Tool results are part of the turn — session_append is
+  handled on TurnEnd"*. Nothing handles them.
+- `runtime.rs:110` `AgentSink` holds `state` and `notify` and **no session
+  handle at all**, so it cannot persist anything on TurnEnd either.
+- `runtime.rs:241` calls the `_raw` variant, documented as transcript-only.
+- `session_append` has exactly two call sites (`state.rs:1426`, `:1432`),
+  both plain text.
+- No production code constructs a `ToolUse` or `ToolResult` `SessionEntry`.
+
+Consequence: on `/resume` or restart the model sees user turns and assistant
+prose with the entire tool history gone.
+
+### P0.2 Every entry has `parentId: null`, so there is no tree
+
+A session with 4 entries yields a `get_path()` of length **1**.
+
+`Session::get_path` finds the leaf as "an entry no other entry parents to".
+With `parentId: null` on everything, every entry qualifies, and the newest
+wins. The path is a single entry.
+
+Consequence: `get_path`, tree/branch selection, `/resume` leaf choice, and
+Pi's `buildContextEntries` are all non-functional on any session nini has
+ever written. `firstKeptEntryId` refers to a tree that does not exist.
+
+**These outrank compaction.** A compaction that walks a tree needs the tree.
 
 ---
 
 ## 1. Pi 0.84.2 ground truth
 
 Source: `/home/jin/pi-src-reconstructed/pi-coding-agent/src/core/session-manager.ts`
-(recovered from sourcemaps; 495 files, zero missing).
+(Pi 0.84.2 recovered from its own sourcemaps).
 
 ### 1.1 On-disk entry
 
 ```ts
-// session-manager.ts:69
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -25,17 +65,14 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 }
 ```
 
-`SessionEntryBase` contributes `id`, `parentId`, `timestamp`.
-
 ### 1.2 Write
 
 ```ts
-// session-manager.ts:1097
 appendCompaction(summary, firstKeptEntryId, tokensBefore, details?, fromHook?, usage?): string {
-	const entry: CompactionEntry<T> = {
+	const entry = {
 		type: "compaction",
 		id: generateId(this.byId),
-		parentId: this.leafId,
+		parentId: this.leafId,          // <-- chained to the leaf
 		timestamp: new Date().toISOString(),
 		summary, firstKeptEntryId, tokensBefore, details, usage, fromHook,
 	};
@@ -44,149 +81,59 @@ appendCompaction(summary, firstKeptEntryId, tokensBefore, details?, fromHook?, u
 }
 ```
 
-Note `firstKeptEntryId` is a **plain required string**. nini models it as
-`Option<String>`. That is a divergence, though a permissive one: Pi's reader
-would break on a `null`, so nini must never write `null` there.
-
-### 1.3 Read — the reconstruction algorithm
+### 1.3 Read
 
 ```ts
-// session-manager.ts:415  buildContextEntries
-const path = buildSessionPath(entries, leafId, byId);
-let compaction = null;
-for (const entry of path) if (entry.type === "compaction") compaction = entry;
-if (!compaction) return path;
-
-const compactionIdx = path.findIndex((e) => e.id === compaction.id);
-const contextEntries = [compaction];
-let foundFirstKept = false;
-for (let i = 0; i < compactionIdx; i++) {          // scan FORWARD
-	const entry = path[i];
-	if (entry.id === compaction.firstKeptEntryId) foundFirstKept = true;
-	if (foundFirstKept) contextEntries.push(entry);
-}
-contextEntries.push(...path.slice(compactionIdx + 1));
-return contextEntries;
+// buildContextEntries, session-manager.ts:415
+const compaction = last compaction entry on the leaf path
+if (!compaction) return path
+contextEntries = [compaction]
+scan path[0..compactionIdx] FORWARD; start collecting once
+  entry.id === compaction.firstKeptEntryId          // flag set BEFORE push
+contextEntries.push(...path.slice(compactionIdx + 1))
 ```
 
-**Semantics:** the live context is
-`[compaction] + (pre-compaction tail starting at firstKeptEntryId) + (everything after the compaction)`.
-
-The compaction entry becomes a model message via
-`createCompactionSummaryMessage(summary, tokensBefore, timestamp)` →
-`{ role: "compactionSummary", summary, tokensBefore, timestamp }`.
-
-`firstKeptEntryId` is therefore **load-bearing**: without it, resume cannot know
-where the retained tail begins, and the whole pre-compaction history is either
-duplicated or lost.
+Live context = `[compaction] + (tail from firstKeptEntryId) + (everything after)`.
 
 ---
 
-## 2. nini's verified state — six breaks in one chain
+## 2. What shipped (A1)
 
-Every line below was read from the working tree, not inferred.
+- `Session::append_compaction` — mirrors Pi's writer, parents at the leaf.
+- `build_context_entries` — mirrors Pi's reader.
+- Oracle `a_compaction.rs`, 7 tests. Four injected regressions each fail
+  distinct tests (first-compaction-wins / kept-entry dropped / parented at
+  root / `firstKeptEntryId` left null).
 
-| # | Break | Evidence |
-|---|---|---|
-| 1 | `AgentEvent::Compacted` is emitted twice and **consumed by nobody** | `agent.rs:939`, `agent.rs:1161`; grep for `Compacted` across `nini-tui/`, `nini-cli/`, `nini-session/` returns **zero** matches |
-| 2 | `AgentEventLite` has **no `Compacted` variant** | full enum at `runtime.rs:67` |
-| 3 | `make_compaction_entry` has **no production caller** | only `lib.rs:45` re-export and `compaction.rs:1221` test |
-| 4 | `first_kept_entry_id` hardcoded `None` in production | `nini-session/src/lib.rs:707`, `nini-core/src/lib.rs:232` |
-| 5 | The Agent has **no stable message identity** | `compact_history` synthesises `format!("msg_{i}")` from a positional index (`agent.rs:718`) |
-| 6 | Agent messages and session entries are **not positionally aligned** | session entries are appended at **TurnEnd**, one per turn — `state.rs:1525` "Tool results are part of the turn — session_append is handled on TurnEnd" |
-
-Break 6 is load-bearing. `compact_history` returns `keep_from`, an **index into
-the Agent's `Vec<Message>`**. The session stores **one entry per turn**. There
-is no mechanical map from one to the other, so `first_kept_entry_id` could not
-be computed even in principle from what the Agent currently publishes.
-
-This is not laziness in the original implementation. It is a structural
-consequence of the split of responsibilities, and it is why the field is `None`.
-
-### What nini already gets right
-
-The in-memory splice is already Pi-equivalent:
-
-```rust
-// agent.rs — compact_history
-new_history = [summary_message] ++ messages[prefix_len..]
-```
-
-which is the same set Pi's `buildContextEntries` produces. The defect is purely
-in **persistence**, not in runtime behaviour.
+The algorithm is Pi-equivalent and verified. **It is currently unreachable in
+production**, because it consumes a tree that nini does not write (P0.2).
 
 ---
 
-## 3. The fork
+## 3. Still open
 
-Pi compacts **in the session layer** (`agent-session.ts:1878` →
-`sessionManager.appendCompaction`), so the component that compacts owns the
-entries and therefore knows the ids. nini compacts **in the Agent loop** and the
-session layer only ever sees turn-level entries.
+| id | Item |
+|---|---|
+| P0.1 | Persist tool calls and tool results |
+| P0.2 | Chain `parentId` so `get_path` returns the real history |
+| A2 | Delete `auto_compact_local` and `cmd_compact`'s transcript slicing; route `/compact` and auto-compact through the session layer |
+| A3 | Move the Agent's in-loop trigger (`agent.rs:893`, `:1136`) out to the driver; drop `AgentEvent::Compacted` |
+| A4 | Rebuild the transcript from `build_context_entries` on resume |
 
-Closing the chain therefore requires an architecture decision.
+### A2's two fakes
 
-### Option A — move compaction orchestration to the session layer (Pi's way)
-
-The session owns entries and ids; compaction becomes a session operation the
-TUI invokes, like `/compact`.
-
-- Cost: the auto-compaction triggers currently inside the loop
-  (`agent.rs:893` threshold, `agent.rs:1136` overflow) must move, or become
-  requests the session services. Large blast radius.
-- Benefit: it is Pi's actual architecture; the identity problem disappears
-  permanently rather than being papered over.
-
-### Option B — persist at turn granularity, offset in `details`
-
-Write the `CompactionEntry` with `first_kept_entry_id` pointing at the **turn
-entry** holding the first retained message, and record the intra-turn offset in
-`details`.
-
-- Cost: small. Read side must honour the offset.
-- Cost: introduces a reconstruction rule Pi does not have. `details` is an
-  extension point Pi itself documents, so the wire stays valid — but a
-  Pi-produced session would reconstruct slightly differently from a nini one
-  for the same logical state.
-
-### Option C — give the Agent stable ids
-
-Mint a uuid per Agent message at creation, carry it into the session entry, and
-use it as `first_kept_entry_id`.
-
-- Cost: medium. Touches message creation sites.
-- Benefit: `firstKeptEntryId` means exactly what Pi's means. No second
-  reconstruction rule. Wire-clean.
+`state.rs:1627 auto_compact_local` and `dispatch.rs:936 cmd_compact` both fold
+**transcript lines** at `total / 2` — no token budget, no session write, no
+effect on what the model sees. `cmd_compact`'s comment claims it "matches the
+algorithm used by the auto-compaction path", which is false: auto uses a
+token estimate, then the same `/2`.
 
 ---
 
-## 4. Recommendation
+## 4. Order
 
-**Option C now, Option A eventually.**
+P0.1 → P0.2 → A2 → A3 → A4.
 
-C is the only option that makes `first_keptEntryId` semantically identical to
-Pi's without relocating the auto-compaction triggers, which are entangled with
-overflow handling inside the loop. A remains the target architecture and can be
-adopted later without invalidating C's ids.
-
-**B is rejected**: it trades a structural problem for a permanent semantic
-divergence, which is the opposite of what this project is for.
-
-The user owns this decision: it determines the shape of the next substantial
-chunk of work, and building the wrong one costs more than not building it.
-
----
-
-## 5. Work common to all three options
-
-Safe to build regardless of the fork, and a strict prerequisite for any of them:
-
-1. `AgentEventLite::Compacted { summary, tokens_before }` + the mapping from
-   `AgentEvent::Compacted`. Without it the TUI cannot observe the event at all.
-2. `Session::append_compaction(...) -> String` in `nini-session`, mirroring
-   `appendCompaction` — real id, `parent_id = leaf`, returns the new id.
-3. `compact_history` stops minting `msg_{i}` from a positional index.
-4. `first_kept_entry_id: None` removed from both production sites; the type
-   becomes non-`Option` to match Pi, or is asserted non-null on write.
-
-Each step is independently testable and none of them commits to A, B or C.
+P0.2 changes `get_path` semantics for every existing session, so it needs a
+migration decision: nini sessions written with flat `parentId: null` cannot be
+distinguished from branched ones except by inspecting for any non-null parent.
