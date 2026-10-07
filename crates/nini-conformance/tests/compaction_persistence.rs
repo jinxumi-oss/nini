@@ -102,16 +102,20 @@ fn a_full_session_with_a_compaction_round_trips() {
             id: "m2".into(),
             parent_id: Some("c1".into()),
             timestamp: "t".into(),
-            message: nini_core::entries::AgentMessage::Assistant(nini_core::entries::AssistantMessage {
-                content: vec![entries::ContentBlock::Text { text: "on it".into() }],
-                api: "a".into(),
-                provider: "p".into(),
-                model: "m".into(),
-                usage: Default::default(),
-                stop_reason: nini_core::entries::StopReason::Stop,
-                error_message: None,
-                timestamp: 0,
-            }),
+            message: nini_core::entries::AgentMessage::Assistant(
+                nini_core::entries::AssistantMessage {
+                    content: vec![entries::ContentBlock::Text {
+                        text: "on it".into(),
+                    }],
+                    api: "a".into(),
+                    provider: "p".into(),
+                    model: "m".into(),
+                    usage: Default::default(),
+                    stop_reason: nini_core::entries::StopReason::Stop,
+                    error_message: None,
+                    timestamp: 0,
+                },
+            ),
         }),
     ];
 
@@ -174,7 +178,8 @@ fn non_message_metadata_entries_stay_out_of_context() {
 /// one must read the same.
 #[test]
 fn the_marker_matches_the_one_compact_history_writes() {
-    let msg: Message = nini_core::conversion::session_entry_to_llm_message(&compaction_entry()).unwrap();
+    let msg: Message =
+        nini_core::conversion::session_entry_to_llm_message(&compaction_entry()).unwrap();
     let text = msg
         .content
         .iter()
