@@ -127,6 +127,15 @@ impl AgentSink {
         Self { state, notify }
     }
 
+    /// The shared state behind this sink.
+    ///
+    /// v0.10 (R2a/A3b): the driver needs the session to compact through, and
+    /// the sink is the only handle it is given per run. Pi's `AgentSession`
+    /// holds both the agent and the session manager for exactly this reason.
+    pub fn state(&self) -> SharedState {
+        self.state.clone()
+    }
+
     /// v0.10 (R1e): the model the user currently has selected.
     ///
     /// Read by `LiveConfigHooks::prepare_next_turn` on every completed

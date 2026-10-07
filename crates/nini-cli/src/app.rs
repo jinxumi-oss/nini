@@ -224,6 +224,32 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         if !seed.is_empty() {
             agent.seed(seed);
         }
+
+        // v0.10 (R2a/A3b): overflow compaction goes through the session.
+        //
+        // Without this the Agent compacted its own memory on overflow and
+        // recorded nothing, so that was the one case where the model's
+        // context changed with no trace on disk. The sink is the only
+        // handle the driver gets per run, and it carries the session.
+        agent.set_compaction_hook({
+            let shared = sink.state();
+            nini_core::CompactionHook::new(move |_messages| {
+                let keep = {
+                    let g = shared.lock().ok()?;
+                    g.model_state.settings_snapshot.keep_recent_tokens
+                };
+                let mut g = shared.lock().ok()?;
+                let report = g.session_compact(keep)?;
+                let messages = g.session_context_messages();
+                drop(g);
+                Some(nini_core::CompactionResult {
+                    summary: report.summary,
+                    tokens_before: report.tokens_before,
+                    tokens_after: 0,
+                    messages,
+                })
+            })
+        });
         tokio::spawn(async move {
             let mut stream = Box::pin(agent.run(nini_core::AgentMessage::user(user_msg.clone())));
             while let Some(ev) = stream.next().await {

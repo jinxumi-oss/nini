@@ -377,6 +377,54 @@ pub const DEFAULT_MAX_PARALLEL_TOOLS: usize = 8;
 /// v0.10 (R1): default bound on follow-up revivals of the turn loop.
 pub const DEFAULT_MAX_FOLLOW_UP_ROUNDS: usize = 16;
 
+/// What a caller-supplied compaction did.
+///
+/// v0.10 (R2a/A3b). The overflow path used to compact the Agent's own
+/// memory and nothing else: the `Compacted` event it emitted had no
+/// consumer, so an overflow compaction was the one case that changed the
+/// model's context without being recorded anywhere. The session is now
+/// reachable from the driver, so it does the compaction and hands back the
+/// history to continue with.
+#[derive(Debug, Clone)]
+pub struct CompactionResult {
+    /// The summary that was persisted.
+    pub summary: String,
+    /// Estimated tokens before compaction.
+    pub tokens_before: u32,
+    /// Estimated tokens after.
+    pub tokens_after: u32,
+    /// The history to continue the run with.
+    pub messages: Vec<Message>,
+}
+
+/// Compaction performed by the caller, which can reach the session.
+///
+/// Returning `None` means "nothing to compact", and the run continues
+/// unchanged.
+///
+/// A newtype rather than a bare `Arc<dyn Fn>` because `RunConfig` derives
+/// `Debug`, and a closure is not `Debug`. A manual impl that prints the
+/// type name keeps `RunConfig`'s derive working and says nothing false.
+#[derive(Clone)]
+pub struct CompactionHook(Arc<dyn Fn(&[Message]) -> Option<CompactionResult> + Send + Sync>);
+
+impl CompactionHook {
+    pub fn new(f: impl Fn(&[Message]) -> Option<CompactionResult> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    /// Run the hook, if there is one.
+    pub fn run(&self, messages: &[Message]) -> Option<CompactionResult> {
+        (self.0)(messages)
+    }
+}
+
+impl std::fmt::Debug for CompactionHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CompactionHook(<opaque>)")
+    }
+}
+
 /// Configuration for one `Agent::run` invocation.
 #[derive(Debug, Clone)]
 pub struct RunConfig {
@@ -388,6 +436,14 @@ pub struct RunConfig {
     pub tool_context: ToolContext,
     /// Compaction settings (context window + reserve).
     pub compaction: crate::compaction::CompactionSettings,
+    /// v0.10 (R2a/A3b): compaction performed by the caller.
+    ///
+    /// `None` falls back to the Agent compacting its own memory, which
+    /// records nothing - the behaviour this field exists to replace. The
+    /// overflow path is the only thing that consults it; the threshold
+    /// check was removed in A3 because the session compacts before each
+    /// submission instead.
+    pub compact: Option<CompactionHook>,
     /// Retry policy for transient LLM errors.
     pub retry: RetrySettings,
     /// v0.8.9 (P2-10): how many tool calls from a single assistant turn
@@ -432,6 +488,7 @@ impl RunConfig {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
+            compact: None,
             system: None,
             max_tokens: Some(8192),
             temperature: None,
@@ -626,6 +683,17 @@ impl Agent {
     pub fn end_retry(&mut self) {
         self.retry_attempt = 0;
         self.set_phase(AgentPhase::Working);
+    }
+
+    /// v0.10 (R2a/A3b): install a compaction hook on this run's config.
+    ///
+    /// The Agent cannot reach the session, so overflow compaction used to
+    /// change the model's history with nothing written to disk. A caller
+    /// that *can* reach the session installs a hook here and the Agent
+    /// delegates to it, which is Pi's sequence: compact, persist, rebuild
+    /// the context, continue with it.
+    pub fn set_compaction_hook(&mut self, hook: CompactionHook) {
+        self.config.compact = Some(hook);
     }
 
     /// Is auto-compaction currently active?
@@ -1091,30 +1159,72 @@ impl Agent {
                                         &config.compaction,
                                     )
                                 {
-                                    let summary_fn = |msgs: &[Message], _prev: Option<String>| {
-                                        let entries: Vec<crate::Entry> = msgs.iter().enumerate()
-                                            .map(|(i, m)| crate::Entry::message(
-                                                format!("cmsg_{i}"),
-                                                None,
-                                                (i as u64) + 1,
-                                                AgentMessage {
-                                        role: m.role,
-                                        content: m.content.clone(),
-                                        timestamp: 0,
-                                    },
-                                            ))
-                                            .collect();
-                                        crate::compaction::generate_local_summary(&entries)
+                                    // v0.10 (R2a/A3b): prefer the caller's
+                                    // hook, which can reach the session.
+                                    //
+                                    // The fallback below compacts this
+                                    // Agent's memory and records nothing,
+                                    // so an overflow was the one case where
+                                    // the model's context changed with no
+                                    // trace on disk. With a hook, the
+                                    // sequence is Pi's: compact, persist,
+                                    // rebuild the context, continue with
+                                    // it.
+                                    let compacted = match &config.compact {
+                                        Some(hook) => {
+                                            let snapshot = self.messages.clone();
+                                            match hook.run(&snapshot) {
+                                                Some(r) => {
+                                                    self.messages = r.messages.clone();
+                                                    r
+                                                }
+                                                None => {
+                                                    // Nothing to compact.
+                                                    // Leave the history
+                                                    // alone and let the
+                                                    // run continue.
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            let summary_fn =
+                                                |msgs: &[Message], _prev: Option<String>| {
+                                                    let entries: Vec<crate::Entry> = msgs
+                                                        .iter()
+                                                        .enumerate()
+                                                        .map(|(i, m)| {
+                                                            crate::Entry::message(
+                                                                format!("cmsg_{i}"),
+                                                                None,
+                                                                (i as u64) + 1,
+                                                                AgentMessage {
+                                                                    role: m.role,
+                                                                    content: m
+                                                                        .content
+                                                                        .clone(),
+                                                                    timestamp: 0,
+                                                                },
+                                                            )
+                                                        })
+                                                        .collect();
+                                                    crate::compaction::generate_local_summary(
+                                                        &entries,
+                                                    )
+                                                };
+                                            let out = self.compact_history(summary_fn);
+                                            CompactionResult {
+                                                summary: out.summary,
+                                                tokens_before: out.tokens_before,
+                                                tokens_after: out.tokens_after,
+                                                messages: Vec::new(),
+                                            }
+                                        }
                                     };
-                                    // v0.10 (R2a): publish the compaction so the session layer can record
-                    // it. The Agent has no session handle, so without this
-                    // the summary exists only in memory and a resumed
-                    // session has no memory of the work that came before.
-                    let compacted = self.compact_history(summary_fn);
-                    yield AgentEvent::Compacted {
-                        summary: compacted.summary.clone(),
-                        tokens_before: compacted.tokens_before,
-                    };
+                                    yield AgentEvent::Compacted {
+                                        summary: compacted.summary.clone(),
+                                        tokens_before: compacted.tokens_before,
+                                    };
                                     yield AgentEvent::Error { message: format!(
                                         "auto-compaction (overflow): tokens before={} after={}",
                                         compacted.tokens_before, compacted.tokens_after

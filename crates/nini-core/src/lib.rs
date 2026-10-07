@@ -21,7 +21,8 @@ pub mod skills;
 pub mod tool;
 
 pub use agent::{
-    AbortHandle, Agent, AgentError, AgentEvent, RunConfig, DEFAULT_MAX_PARALLEL_TOOLS,
+    AbortHandle, Agent, AgentError, AgentEvent, CompactionHook, CompactionResult, RunConfig,
+    DEFAULT_MAX_PARALLEL_TOOLS,
 };
 pub use entries::{
     AssistantMessage, BranchSummaryEntry, BranchSummaryMessage, CompactionEntry,
