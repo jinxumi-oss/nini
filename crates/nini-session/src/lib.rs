@@ -183,6 +183,62 @@ impl SessionHeader {
 }
 
 /// A session as on disk: header + entries.
+/// Pi 0.84.2 `buildContextEntries` — `/home/jin/pi-src-reconstructed/
+/// pi-coding-agent/src/core/session-manager.ts:415`.
+///
+/// The live context of a session is
+///
+/// ```text
+/// [compaction] + (pre-compaction tail from firstKeptEntryId) + (everything after)
+/// ```
+///
+/// Pi scans the path forward from the root and flips a flag when it reaches
+/// `firstKeptEntryId`; the matching entry itself is kept. An id that matches
+/// nothing contributes nothing from the prefix — deliberately, so a
+/// malformed id cannot silently resurrect the whole history.
+///
+/// Only the LAST compaction on the path is honoured: earlier ones are
+/// represented by the summary of the later one.
+///
+/// This is what nini's read path was missing. `CompactionEntry::
+/// first_kept_entry_id` existed but had no production writer, so no session
+/// ever carried one and this function had nothing to reconstruct from.
+pub fn build_context_entries(session: &Session) -> Vec<SessionEntry> {
+    let path: Vec<SessionEntry> = session.get_path().into_iter().cloned().collect();
+
+    let compaction_idx = path
+        .iter()
+        .rposition(|e| matches!(e, SessionEntry::Compaction(_)));
+    let Some(ci) = compaction_idx else {
+        return path;
+    };
+
+    let first_kept = match &path[ci] {
+        SessionEntry::Compaction(c) => c.first_kept_entry_id.as_deref(),
+        _ => None,
+    };
+
+    let mut context = Vec::with_capacity(path.len());
+    context.push(path[ci].clone());
+
+    if let Some(first_kept) = first_kept {
+        let mut found = false;
+        for entry in &path[..ci] {
+            // Pi sets the flag BEFORE pushing, so the kept entry itself is
+            // included. Reversing these two lines silently drops one entry.
+            if entry.id() == first_kept {
+                found = true;
+            }
+            if found {
+                context.push(entry.clone());
+            }
+        }
+    }
+
+    context.extend_from_slice(&path[ci + 1..]);
+    context
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Session {
     pub header: SessionHeader,
@@ -241,6 +297,51 @@ impl Session {
             entries: Vec::new(),
             skipped_lines: 0,
         }
+    }
+
+    /// Pi 0.84.2 `sessionManager.appendCompaction` —
+    /// `session-manager.ts:1097`.
+    ///
+    /// Pi types `firstKeptEntryId` as a required `string`. nini's
+    /// `CompactionEntry` carries `Option<String>` because it predates any
+    /// writer; this constructor always populates it, so the two `None`
+    /// literals that used to sit in production code can go away.
+    ///
+    /// Returns the new entry's id so the caller can chain further entries
+    /// onto it, exactly as Pi's `appendCompaction` returns `entry.id`.
+    pub fn append_compaction(
+        &mut self,
+        summary: String,
+        first_kept_entry_id: String,
+        tokens_before: u32,
+    ) -> String {
+        let id = format!("compact_{}", uuid::Uuid::new_v4());
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        self.entries.push(SessionEntry::Compaction(
+            nini_core::entries::CompactionEntry {
+                id: id.clone(),
+                // Pi: `parentId: this.leafId`. Parenting anywhere else lands the
+                // entry on a different branch and resume loses it silently.
+                parent_id: self.leaf_id(),
+                timestamp,
+                summary,
+                tokens_before: Some(tokens_before),
+                retained_tail: None,
+                first_kept_entry_id: Some(first_kept_entry_id),
+                details: None,
+                usage: None,
+                from_hook: None,
+            },
+        ));
+        id
+    }
+
+    /// The current leaf: the entry no other entry parents to, newest wins.
+    ///
+    /// `get_path` derives the leaf the same way; this exists so
+    /// `append_compaction` can parent without walking the whole path twice.
+    pub fn leaf_id(&self) -> Option<String> {
+        self.get_path().last().map(|e| e.id().to_string())
     }
 
     pub fn append(&mut self, entry: SessionEntry) -> &mut Self {
