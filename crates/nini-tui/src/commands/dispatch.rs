@@ -933,116 +933,28 @@ fn cmd_new(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -
     )])
 }
 
-fn cmd_compact(
-    state: &mut AppState,
-    _settings: &mut SettingsManager,
-    _args: &str,
-) -> CommandResult {
-    // Manual compaction: call the local heuristic summarizer
-    // (matches the algorithm used by the auto-compaction path).
-    // The runtime could pass an LLM-backed summary_fn to call
-    // the LLM here; for now we mirror the local heuristic so
-    // users always get a deterministic summary.
-    //
-    // We slice the transcript: everything before the cut point
-    // gets summarized, the cut point onward stays verbatim. The
-    // cut point is `transcript.len() / 2` for manual compaction
-    // (auto-compaction uses the same find_cut_point algorithm).
-    use nini_core::Entry;
-    let total = state.transcript_state.lines.len();
-    if total < 4 {
-        // Short transcript: don't mutate, just return a one-line
-        // status. (Tests verify transcript is unchanged.)
-        return CommandResult::output(vec![
-            "compact: nothing to compact (transcript has < 4 entries)".to_string(),
-        ]);
+fn cmd_compact(state: &mut AppState, settings: &mut SettingsManager, _args: &str) -> CommandResult {
+    // A2: this used to drain the first half of the *transcript lines* at
+    // `total / 2`, synthesise a numbered list of line previews, and put
+    // that back into the transcript. No session write, no token budget, and
+    // nothing the model would ever see - and its comment claimed it
+    // "matches the algorithm used by the auto-compaction path", which it
+    // did not. The same comment described the cut as `find_cut_point`,
+    // which was never called from here.
+    let keep = settings.get().keep_recent_tokens;
+    match state.session_compact(keep) {
+        Some(r) => {
+            state.session_flush();
+            CommandResult::output(vec![format!(
+                "compacted: folded {} entries into a summary \
+                 ({} tokens before); context now starts at {}",
+                r.folded, r.tokens_before, r.first_kept_entry_id
+            )])
+        }
+        None => CommandResult::output(vec![
+            "compact: nothing to compact (session too small)".to_string()
+        ]),
     }
-    let cut_at = total / 2;
-    // Drain prefix out, convert TranscriptLine → legacy Entry.
-    let prefix_lines: Vec<_> = Arc::make_mut(&mut state.transcript_state)
-        .lines
-        .drain(..cut_at)
-        .collect();
-    let prefix_entries: Vec<Entry> = prefix_lines
-        .iter()
-        .enumerate()
-        .filter_map(|(i, l)| {
-            use crate::state::TranscriptLine;
-            match l {
-                TranscriptLine::User(s) => Some(Entry::message(
-                    format!("c{}-u", i),
-                    None,
-                    (i as u64) + 1,
-                    nini_core::AgentMessage::user(s.clone()),
-                )),
-                TranscriptLine::AssistantText(s) => Some(Entry::message(
-                    format!("c{}-a", i),
-                    None,
-                    (i as u64) + 1,
-                    nini_core::AgentMessage::assistant(s.clone()),
-                )),
-                TranscriptLine::ToolCall { name, args, .. } => {
-                    let args_json: serde_json::Value = serde_json::from_str(args)
-                        .unwrap_or_else(|_| serde_json::Value::String(args.clone()));
-                    Some(Entry::message(
-                        format!("c{}-tc", i),
-                        None,
-                        (i as u64) + 1,
-                        nini_core::AgentMessage {
-                            role: nini_core::Role::Assistant,
-                            content: vec![nini_core::provider::ContentBlock::ToolUse {
-                                id: String::new(),
-                                name: name.clone(),
-                                input: args_json,
-                            }],
-                            timestamp: 0,
-                        },
-                    ))
-                }
-                TranscriptLine::ToolResult { ok: _, content, .. }
-                | TranscriptLine::BashExecution {
-                    cmd: _,
-                    output: content,
-                    ..
-                } => Some(Entry::message(
-                    format!("c{}-tr", i),
-                    None,
-                    (i as u64) + 1,
-                    nini_core::AgentMessage {
-                        role: nini_core::Role::Tool,
-                        content: vec![nini_core::provider::ContentBlock::Text {
-                            text: content.clone(),
-                        }],
-                        timestamp: 0,
-                    },
-                )),
-                TranscriptLine::Divider => None,
-                // v0.8: thinking content isn't part of the
-                // user-visible conversation history — it's
-                // model-internal. Skip for compaction purposes.
-                TranscriptLine::ThinkingText { .. } => None,
-                // v0.8.4: stop notices are ephemeral and not
-                // part of the conversation history either.
-                TranscriptLine::StopNotice(_) => None,
-            }
-        })
-        .collect();
-    let summary = nini_core::compaction::generate_local_summary(&prefix_entries);
-    let summary_len = prefix_lines.len();
-    // Replace the prefix with a single summary message.
-    Arc::make_mut(&mut state.transcript_state).lines.insert(
-        0,
-        TranscriptLine::AssistantText(format!("[CONTEXT SUMMARY]\n\n{summary}")),
-    );
-    state.push_assistant(format!("[compacted] {summary_len} entries → summary"));
-    state.push_divider();
-    CommandResult::output(vec![
-        format!("compacted: {summary_len} entries → summary"),
-        format!(
-            "new transcript size: {}",
-            state.transcript_state.lines.len()
-        ),
-    ])
 }
 
 fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {

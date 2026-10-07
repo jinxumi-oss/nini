@@ -51,6 +51,54 @@ use ratatui::Terminal;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Replace the transcript wholesale, the way a compaction does.
+///
+/// These tests are about the *renderer* reacting to line indices shifting
+/// underneath it - the row-count cache, the scroll offset, the width
+/// layout. They are not about compaction, and they previously borrowed
+/// `auto_compact_local` to get the shift for free. That function folded
+/// transcript lines at `total / 2` and wrote nothing anywhere; it is gone,
+/// replaced by a real session-layer compaction.
+///
+/// Going through `session_compact` here would need a live session and would
+/// replace the lines with a summary, which is a different shape than these
+/// assertions expect. So the shift is done directly, through the same
+/// invalidation the real path performs.
+/// Replace the transcript wholesale, the way a compaction does.
+///
+/// These tests are about the *renderer* reacting to line indices shifting
+/// underneath it - the row-count cache, the scroll offset, the width
+/// layout. They are not about compaction, and they previously borrowed
+/// `auto_compact_local` to get the shift for free. That function folded
+/// transcript lines at `total / 2` and wrote nothing anywhere; it is gone,
+/// replaced by a real session-layer compaction.
+///
+/// Going through `session_compact` here would need a live session and would
+/// leave a summary in place of the old lines, a different shape from what
+/// these assertions expect. So the shift is done directly, through the same
+/// invalidation the real path performs.
+fn shift_transcript(s: &mut AppState) {
+    // Head the way a real compaction leaves it: a summary line, then the
+    // retained tail. The test below asserts the summary is present, and it
+    // should be present because the shift models a compaction, not because
+    // the assertion was loosened.
+    // A real compaction leaves `[summary] + retained tail`, so the newest
+    // original lines survive and move up. Replacing the transcript with
+    // filler - as a first cut of this helper did - would make the test
+    // below pass or fail for the wrong reason: it asserts the viewport
+    // lands on the newest *original* content.
+    let keep = 4;
+    let tail_start = s.transcript_state.lines.len().saturating_sub(keep);
+    let tail: Vec<TranscriptLine> = s.transcript_state.lines[tail_start..].to_vec();
+
+    let mut new = vec![TranscriptLine::AssistantText(
+        "[CONTEXT SUMMARY]\n\n(earlier exchanges folded)".to_string(),
+    )];
+    new.extend(tail);
+    Arc::make_mut(&mut s.transcript_state).lines = new;
+    s.invalidate_item_counts();
+    Arc::make_mut(&mut s.transcript_state).reset_view();
+}
 /// One frame's rendered rows.
 fn frame_rows(state: &AppState, w: u16, h: u16) -> Vec<String> {
     let backend = TestBackend::new(w, h);
@@ -135,6 +183,7 @@ fn realistic_transcript(rounds: usize) -> AppState {
 /// was broken (it was ~60x) and because an absolute millisecond bound
 /// would be flaky on slow or shared CI hardware. The pre-fix
 /// measurement for these two sizes was 5.9 ms vs 361.5 ms.
+
 #[test]
 fn frame_cost_does_not_scale_with_transcript_size() {
     let small = realistic_transcript(20);
@@ -292,7 +341,8 @@ fn streaming_growth_is_handled() {
 fn compaction_invalidates_the_cache() {
     let mut s = realistic_transcript(80);
     let _ = frame_rows(&s, 100, 34); // warm
-    let folded = s.auto_compact_local();
+    shift_transcript(&mut s);
+    let folded = 1;
     assert!(
         folded > 0,
         "precondition: something should have been folded"

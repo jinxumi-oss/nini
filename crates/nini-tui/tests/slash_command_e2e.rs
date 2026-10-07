@@ -632,9 +632,21 @@ fn compact_command_short_transcript_returns_early() {
 
 #[test]
 fn compact_command_long_transcript_replaces_prefix_with_summary() {
+    // A2: the same shape change as in compaction_e2e.rs. This test built
+    // only a transcript and expected `/compact` to fold it, which worked
+    // solely because the old `cmd_compact` folded *transcript lines* and
+    // wrote nothing. The real cut is a token budget over the session, so
+    // the state under test needs a session and a budget small enough that
+    // 20 exchanges actually cross it.
+    let dir = std::env::temp_dir().join(format!("nini-a2-slashcmd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
     let mut state = AppState::new("test-model");
+    state.session_init(dir.join("s.jsonl"));
     let mut settings = SettingsManager::default();
-    // Build a long transcript with 10 user/assistant pairs.
+    settings.settings.keep_recent_tokens = 8;
+    // Build a long session with 10 user/assistant pairs.
     for i in 0..10 {
         state.push_user(format!("question {i}: how to refactor auth?"));
         state.push_assistant(format!(
@@ -654,6 +666,7 @@ fn compact_command_long_transcript_replaces_prefix_with_summary() {
     );
     // The transcript should be smaller (or equal).
     assert!(state.transcript_state.lines.len() <= before);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

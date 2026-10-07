@@ -260,10 +260,28 @@ fn slash_compact_command_dispatches() {
 }
 
 #[test]
-fn slash_compact_command_dispatches_with_long_transcript() {
+fn slash_compact_command_dispacts_with_long_transcript() {
+    // A2: this test used to build only a transcript and expect `/compact`
+    // to fold it. That worked because the old `cmd_compact` folded
+    // *transcript lines* at `total / 2` and wrote nothing anywhere. The real
+    // compaction operates on the session, so the state under test now has
+    // to include one - and the push_* helpers write to both, so the same
+    // eight exchanges build the session too.
+    let dir = std::env::temp_dir().join(format!("nini-a2-slash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
     let mut state = AppState::new("test");
+    state.session_init(dir.join("s.jsonl"));
     let mut settings = SettingsManager::default();
-    // Build a long transcript so /compact actually does something.
+    // The cut is a TOKEN budget now, not `transcript.len() / 2`. Sixteen
+    // short exchanges come nowhere near the 20k default, so the honest
+    // result for this state is "nothing to compact" - which is what the
+    // command returned. Forcing a small budget is what makes this test
+    // about the compaction rather than about the default; padding the
+    // messages with filler to cross 20k would test the estimator instead.
+    settings.settings.keep_recent_tokens = 8;
+    // Build a long session so /compact actually does something.
     for i in 0..8 {
         state.push_user(format!("user {i}"));
         state.push_assistant(format!("assistant {i}"));
@@ -280,6 +298,7 @@ fn slash_compact_command_dispatches_with_long_transcript() {
         _ => panic!("expected Output"),
     }
     assert!(state.transcript_state.lines.len() <= before);
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         state
             .transcript_state
@@ -339,4 +358,41 @@ fn should_compact_strictly_greater_than_budget() {
     // One above, should compact.
     assert!(should_compact(901, &s));
     assert!(should_compact(2000, &s));
+}
+
+/// The behaviour that replaced the old fake, stated directly.
+///
+/// `cmd_compact` used to fold the first half of the transcript lines at
+/// `total / 2` whatever the token count, so a session that was nowhere near
+/// its budget still had half of it thrown away for display. The cut is a
+/// token budget now, and a short session is left alone.
+#[test]
+fn a_session_well_inside_its_budget_is_left_alone() {
+    let dir = std::env::temp_dir().join(format!("nini-a2-budget-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let mut state = AppState::new("test");
+    state.session_init(dir.join("s.jsonl"));
+    let mut settings = SettingsManager::default(); // default 20k budget
+    for i in 0..8 {
+        state.push_user(format!("user {i}"));
+        state.push_assistant(format!("assistant {i}"));
+    }
+    let before = state.transcript_state.lines.len();
+
+    let r = dispatch(&mut state, &mut settings, CommandId::Compact, "");
+    match r.outcome {
+        CommandOutcome::Output(lines) => assert!(
+            lines.iter().any(|l| l.contains("nothing to compact")),
+            "a short session must not be compacted: {lines:?}"
+        ),
+        _ => panic!("expected Output"),
+    }
+    assert_eq!(
+        state.transcript_state.lines.len(),
+        before,
+        "and the transcript must be untouched"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

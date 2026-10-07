@@ -18,6 +18,89 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// One row of the conversation transcript. Either a user message, assistant
 /// text, a tool call (with tool name + JSON args), or a tool result.
+/// Render a session's live context into transcript lines.
+///
+/// A compaction entry becomes one `AssistantText` line carrying the
+/// `CONTEXT SUMMARY` marker, which is the same text
+/// `nini_core::conversion` feeds the model, so what the user reads and what
+/// the model sees say the same thing.
+fn render_context_entries(entries: &[nini_core::SessionEntry]) -> Vec<TranscriptLine> {
+    use nini_core::entries::{AgentMessage, ContentBlock, StringOrContentBlocks};
+    let mut lines = Vec::new();
+
+    let text_of = |content: &StringOrContentBlocks| -> Option<String> {
+        match content {
+            StringOrContentBlocks::String(t) => Some(t.clone()),
+            StringOrContentBlocks::Blocks(bs) => bs.iter().find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            }),
+        }
+    };
+
+    for entry in entries {
+        // A compaction is its own entry type, not a message. It renders as
+        // one line carrying the same `CONTEXT SUMMARY` marker the model is
+        // given, so what the user reads and what the model sees agree.
+        if let nini_core::SessionEntry::Compaction(c) = entry {
+            lines.push(TranscriptLine::AssistantText(
+                nini_core::compaction::context_summary_message(&c.summary),
+            ));
+            continue;
+        }
+        let nini_core::SessionEntry::Message(m) = entry else {
+            continue;
+        };
+        match &m.message {
+            AgentMessage::User(u) => {
+                if let Some(t) = text_of(&u.content) {
+                    lines.push(TranscriptLine::User(t));
+                }
+            }
+            AgentMessage::Assistant(a) => {
+                for b in &a.content {
+                    match b {
+                        ContentBlock::Text { text } => {
+                            lines.push(TranscriptLine::AssistantText(text.clone()))
+                        }
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } => lines.push(TranscriptLine::ToolCall {
+                            id: id.clone(),
+                            name: name.clone(),
+                            args: arguments.to_string(),
+                            collapsed: false,
+                        }),
+                        _ => {}
+                    }
+                }
+            }
+            AgentMessage::ToolResult(t) => {
+                let body = t
+                    .content
+                    .iter()
+                    .find_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                lines.push(TranscriptLine::ToolResult {
+                    id: t.tool_call_id.clone(),
+                    name: t.tool_name.clone(),
+                    ok: !t.is_error,
+                    content: body,
+                    collapsed: false,
+                    duration_ms: None,
+                });
+            }
+            _ => {}
+        }
+    }
+    lines
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TranscriptLine {
     User(String),
@@ -1801,46 +1884,51 @@ impl AppState {
     /// number of transcript lines that were folded.
     ///
     /// The runtime invokes this from the auto-compaction path when the
-    /// provider cannot be reached (or when running in `--no-llm` mode).
-    pub fn auto_compact_local(&mut self) -> usize {
-        use crate::state::TranscriptLine;
-        let total = self.transcript_state.lines.len();
-        if total < 4 {
-            return 0;
-        }
-        let cut_at = total / 2;
-        let prefix_lines: Vec<TranscriptLine> = Arc::make_mut(&mut self.transcript_state)
-            .lines
-            .drain(..cut_at)
-            .collect();
-        // Build a short textual summary from the prefix. We don't have
-        // direct access to `nini_core::Entry` from the prefix, but
-        // `generate_local_summary` works on `Vec<Entry>` — so we
-        // synthesise a flat string from the prefix lines instead. This
-        // keeps the TUI-side compaction self-contained.
-        let mut summary = String::from("# Compaction Summary\n\n");
-        for (i, line) in prefix_lines.iter().enumerate() {
-            summary.push_str(&format!("{i:>3}. {}\n", line_summary_text(line)));
-        }
-        summary.push_str(&format!(
-            "\n({} entries folded into this summary.)\n",
-            prefix_lines.len()
-        ));
-        // Replace prefix with a single AssistantText.
-        Arc::make_mut(&mut self.transcript_state).lines.insert(
-            0,
-            TranscriptLine::AssistantText(format!("[CONTEXT SUMMARY]\n\n{summary}")),
-        );
-        // v0.8.9 (P1-5): we just cut the line count in half, so a
-        // `scroll_offset` from before is an index past the new end and
-        // the transcript renders blank. Snap back to the tail — which is
-        // also where the user wants to be right after a compaction.
-        Arc::make_mut(&mut self.transcript_state).reset_view();
-        // v0.8.9 (perf): `drain(..cut_at)` + `insert(0, ..)` shifts every
-        // surviving line down one slot, so a cached row count could end
-        // up describing a different line. Drop the cache.
+    /// Compact the session for real, and refresh the transcript to match.
+    ///
+    /// Replaces `auto_compact_local`, which folded the first half of the
+    /// *transcript lines* at `total / 2`: no token budget, no session
+    /// write, nothing the model or a restart would ever see. The cut now
+    /// comes from the same token-budget algorithm the agent loop uses, and
+    /// the result is a real `CompactionEntry`.
+    ///
+    /// Returns the report so the caller can say what happened.
+    pub fn session_compact(
+        &mut self,
+        keep_recent_tokens: u32,
+    ) -> Option<nini_session::CompactionReport> {
+        let arc = self.session_state.session.as_ref()?.clone();
+        let report = {
+            let mut guard = arc.try_lock().ok()?;
+            guard.compact(keep_recent_tokens)
+        }?;
+        self.transcript_from_context();
+        Some(report)
+    }
+
+    /// Rebuild the transcript from the session's live context.
+    ///
+    /// After a compaction the displayed history and the stored history are
+    /// two different things unless one is derived from the other. Pi
+    /// derives the model context from the entry tree; the transcript has to
+    /// follow the same source or the user is shown a history the agent
+    /// does not have.
+    pub fn transcript_from_context(&mut self) {
+        let Some(arc) = self.session_state.session.as_ref().cloned() else {
+            return;
+        };
+        let Ok(guard) = arc.try_lock() else {
+            return;
+        };
+        let context = nini_session::build_context_entries(&guard);
+        let lines = render_context_entries(&context);
+        drop(guard);
+
+        Arc::make_mut(&mut self.transcript_state).lines = lines;
+        // The line count just changed wholesale, so any cached row count
+        // now describes a different transcript.
         self.invalidate_item_counts();
-        prefix_lines.len()
+        Arc::make_mut(&mut self.transcript_state).reset_view();
     }
 
     /// Toggle the `collapsed` flag on the transcript line at `index` if
@@ -2044,10 +2132,6 @@ impl AppState {
 
 fn chars_to_tokens(s: &str) -> u32 {
     ((s.chars().count() as u32) + 3) / 4
-}
-
-fn line_summary_text(line: &crate::state::TranscriptLine) -> String {
-    line.summary_text()
 }
 
 /// Public summary form of a transcript line, used by the transcript
@@ -2359,35 +2443,6 @@ mod tests {
         let settings = crate::settings::Settings::default();
         s.push_user("hello");
         assert!(!s.should_auto_compact(&settings));
-    }
-
-    #[test]
-    fn auto_compact_local_replaces_prefix_with_summary() {
-        let mut s = AppState::new("m");
-        for i in 0..8 {
-            s.push_user(format!("user message {i}"));
-        }
-        let before = s.transcript_state.lines.len();
-        let folded = s.auto_compact_local();
-        assert!(folded >= 4, "should fold at least half");
-        assert!(
-            s.transcript_state.lines.len() < before,
-            "transcript should shrink"
-        );
-        // The new head should be a CONTEXT SUMMARY line.
-        match &s.transcript_state.lines[0] {
-            TranscriptLine::AssistantText(t) => assert!(t.starts_with("[CONTEXT SUMMARY]")),
-            other => panic!("expected AssistantText head, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn auto_compact_local_short_transcript_is_noop() {
-        let mut s = AppState::new("m");
-        s.push_user("hi");
-        let folded = s.auto_compact_local();
-        assert_eq!(folded, 0);
-        assert_eq!(s.transcript_state.lines.len(), 1);
     }
 
     #[test]

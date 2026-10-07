@@ -1810,12 +1810,27 @@ fn submit_user_input_inner(
         // also calls `should_auto_compact` and produces an LLM summary
         // before the model request, so this serves as the offline
         // default.
+        // A2: this used to call `auto_compact_local`, which folded the
+        // first half of the *transcript lines* at `total / 2` and wrote
+        // nothing anywhere - the model never saw a summary and a restart
+        // brought the whole prefix back. The cut now comes from the token
+        // budget and the result is a real CompactionEntry.
         if g.should_auto_compact(&g.model_state.settings_snapshot) {
-            let folded = g.auto_compact_local();
-            g.push_assistant(format!(
-                "[auto-compact] folded {folded} entries before next turn"
-            ));
-            g.push_divider();
+            let keep = g.model_state.settings_snapshot.keep_recent_tokens;
+            match g.session_compact(keep) {
+                Some(r) => {
+                    g.session_flush();
+                    g.push_divider();
+                    g.push_assistant(format!(
+                        "[auto-compact] folded {} entries into a summary \
+                         ({} tokens before)",
+                        r.folded, r.tokens_before
+                    ));
+                }
+                None => {
+                    g.push_assistant("[auto-compact] nothing to compact".to_string());
+                }
+            }
         }
 
         g.push_user(text.clone());

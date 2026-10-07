@@ -183,6 +183,21 @@ impl SessionHeader {
 }
 
 /// A session as on disk: header + entries.
+/// What a compaction actually did, for the caller to report and to assert on.
+#[derive(Debug, Clone)]
+pub struct CompactionReport {
+    /// Id of the `CompactionEntry` just written.
+    pub compaction_id: String,
+    /// The entry the retained tail starts at. Pi's `firstKeptEntryId`.
+    pub first_kept_entry_id: String,
+    /// The summary text that was persisted.
+    pub summary: String,
+    /// How many entries were folded into the summary.
+    pub folded: usize,
+    /// Estimated tokens before compaction, recorded for the cursor.
+    pub tokens_before: u32,
+}
+
 /// Pi 0.84.2 `buildContextEntries` — `/home/jin/pi-src-reconstructed/
 /// pi-coding-agent/src/core/session-manager.ts:415`.
 ///
@@ -306,6 +321,65 @@ impl Session {
             entries: Vec::new(),
             skipped_lines: 0,
         }
+    }
+
+    /// Compact the session, Pi's way: cut on a token budget, summarise the
+    /// older prefix, and record it as a real `CompactionEntry`.
+    ///
+    /// This replaces two functions that only *looked* like compaction.
+    /// `AppState::auto_compact_local` and `cmd_compact` both folded the
+    /// first half of the **transcript lines** — `cut_at = total / 2`, no
+    /// token budget, no session write, no effect on what the model sees or
+    /// what survives a restart. `cmd_compact`'s comment claimed it "matches
+    /// the algorithm used by the auto-compaction path", which was false:
+    /// auto used a token estimate and then the same `/2`.
+    ///
+    /// The cut comes from `compaction::find_cut_point`, the same
+    /// token-budget algorithm the agent loop uses, so the manual and
+    /// automatic paths finally agree.
+    ///
+    /// The summary is the deterministic local summariser. Pi calls an LLM
+    /// for this; wiring that through is the next step, and it does not
+    /// change where the cut falls or what gets recorded.
+    ///
+    /// Returns `None` when there is nothing to compact: fewer than two
+    /// entries, a cut that would swallow everything or nothing.
+    pub fn compact(&mut self, keep_recent_tokens: u32) -> Option<CompactionReport> {
+        use nini_core::compaction::{
+            estimate_entries_tokens, find_cut_point, generate_local_summary,
+        };
+
+        let path: Vec<SessionEntry> = self.get_path().into_iter().cloned().collect();
+        if path.len() < 2 {
+            return None;
+        }
+
+        // The algorithms are written against the legacy `Entry`. The
+        // `From<SessionEntry>` impl carries `id` through, which matters:
+        // `firstKeptEntryId` has to name a real entry on the far side or
+        // the reconstruction cannot find it.
+        let legacy: Vec<nini_core::Entry> = path.into_iter().map(Into::into).collect();
+
+        let cut = find_cut_point(&legacy, keep_recent_tokens);
+        if cut.keep_from == 0 || cut.keep_from >= legacy.len() {
+            return None;
+        }
+
+        let summary = generate_local_summary(&legacy[..cut.keep_from]);
+        let tokens_before = estimate_entries_tokens(&legacy);
+        let first_kept_entry_id = legacy[cut.keep_from].id.clone();
+        let folded = cut.keep_from;
+
+        let compaction_id =
+            self.append_compaction(summary.clone(), first_kept_entry_id.clone(), tokens_before);
+
+        Some(CompactionReport {
+            compaction_id,
+            first_kept_entry_id,
+            summary,
+            folded,
+            tokens_before,
+        })
     }
 
     /// Append an entry parented at the current leaf, Pi-style.

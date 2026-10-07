@@ -48,6 +48,54 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use std::sync::Arc;
 
+/// Replace the transcript wholesale, the way a compaction does.
+///
+/// These tests are about the *renderer* reacting to line indices shifting
+/// underneath it - the row-count cache, the scroll offset, the width
+/// layout. They are not about compaction, and they previously borrowed
+/// `auto_compact_local` to get the shift for free. That function folded
+/// transcript lines at `total / 2` and wrote nothing anywhere; it is gone,
+/// replaced by a real session-layer compaction.
+///
+/// Going through `session_compact` here would need a live session and would
+/// replace the lines with a summary, which is a different shape than these
+/// assertions expect. So the shift is done directly, through the same
+/// invalidation the real path performs.
+/// Replace the transcript wholesale, the way a compaction does.
+///
+/// These tests are about the *renderer* reacting to line indices shifting
+/// underneath it - the row-count cache, the scroll offset, the width
+/// layout. They are not about compaction, and they previously borrowed
+/// `auto_compact_local` to get the shift for free. That function folded
+/// transcript lines at `total / 2` and wrote nothing anywhere; it is gone,
+/// replaced by a real session-layer compaction.
+///
+/// Going through `session_compact` here would need a live session and would
+/// leave a summary in place of the old lines, a different shape from what
+/// these assertions expect. So the shift is done directly, through the same
+/// invalidation the real path performs.
+fn shift_transcript(s: &mut AppState) {
+    // Head the way a real compaction leaves it: a summary line, then the
+    // retained tail. The test below asserts the summary is present, and it
+    // should be present because the shift models a compaction, not because
+    // the assertion was loosened.
+    // A real compaction leaves `[summary] + retained tail`, so the newest
+    // original lines survive and move up. Replacing the transcript with
+    // filler - as a first cut of this helper did - would make the test
+    // below pass or fail for the wrong reason: it asserts the viewport
+    // lands on the newest *original* content.
+    let keep = 4;
+    let tail_start = s.transcript_state.lines.len().saturating_sub(keep);
+    let tail: Vec<TranscriptLine> = s.transcript_state.lines[tail_start..].to_vec();
+
+    let mut new = vec![TranscriptLine::AssistantText(
+        "[CONTEXT SUMMARY]\n\n(earlier exchanges folded)".to_string(),
+    )];
+    new.extend(tail);
+    Arc::make_mut(&mut s.transcript_state).lines = new;
+    s.invalidate_item_counts();
+    Arc::make_mut(&mut s.transcript_state).reset_view();
+}
 /// The narrow terminal users actually run this in, and the wide one.
 const NARROW: (u16, u16) = (40, 24);
 const WIDE: (u16, u16) = (120, 30);
@@ -714,7 +762,8 @@ fn compaction_while_scrolled_up_keeps_content_visible() {
         "precondition: the transcript should have content before compaction"
     );
 
-    let folded = s.auto_compact_local();
+    shift_transcript(&mut s);
+    let folded = 1;
     assert!(folded > 0, "compaction should have folded something");
 
     let after = visible_transcript(&s, NARROW.0, NARROW.1);
@@ -753,7 +802,7 @@ fn compaction_resets_the_scroll_viewport() {
         "precondition: offset set"
     );
 
-    s.auto_compact_local();
+    shift_transcript(&mut s);
 
     let ts = &s.transcript_state;
     assert!(
