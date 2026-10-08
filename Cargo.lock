@@ -1394,6 +1394,7 @@ dependencies = [
  "chrono",
  "futures-core",
  "futures-util",
+ "nini-ai",
  "nini-core",
  "proptest",
  "reqwest",
