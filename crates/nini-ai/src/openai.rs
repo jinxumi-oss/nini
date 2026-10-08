@@ -20,6 +20,9 @@ pub struct OpenAiProvider {
     client: Client,
     base_url: String,
     api_key: String,
+    /// v0.10 (R2b): per-endpoint wire differences. OpenAI's own
+    /// defaults; a compatible provider overrides them.
+    pub compat: OpenAiCompat,
 }
 
 impl OpenAiProvider {
@@ -29,12 +32,22 @@ impl OpenAiProvider {
             client: Client::new(),
             base_url: DEFAULT_BASE_URL.to_string(),
             api_key: api_key.into(),
+            compat: OpenAiCompat::default(),
         }
     }
 
     /// Override the base URL (for proxies or OpenAI-compat servers).
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = url.into();
+        self
+    }
+
+    /// v0.10 (R2b): declare this endpoint's wire differences.
+    ///
+    /// Set once by the provider that owns the endpoint, so the compat rules
+    /// live next to the base URL rather than inside the request builder.
+    pub fn with_compat(mut self, compat: OpenAiCompat) -> Self {
+        self.compat = compat;
         self
     }
 
@@ -63,9 +76,12 @@ impl Provider for OpenAiProvider {
         let client = self.client.clone();
         let base_url = self.base_url.clone();
         let api_key = self.api_key.clone();
+        // `Copy`, captured by value like the strings above: borrowing
+        // `self.compat` inside the stream would pin the borrow for 'static.
+        let compat = self.compat;
 
         Box::pin(try_stream! {
-                let body = build_request_body(&req)?;
+                let body = build_request_body_for(&req, compat)?;
                 let url = format!("{base_url}{}/chat/completions",
         if base_url.ends_with("/v1") { "" } else { "/v1" });
                 let response = client
@@ -189,7 +205,19 @@ struct StreamState {
 /// had no way to be observed from a test — recorded, persisted, and never
 /// visible to anything that could catch it missing.
 pub fn build_request_body(req: &Request) -> Result<String, ProviderError> {
-    let body = OpenAiRequest::from_neutral(req)?;
+    build_request_body_for(req, OpenAiCompat::default())
+}
+
+/// As `build_request_body`, for an endpoint with its own wire rules.
+///
+/// v0.10 (R2b): the two are separate because a DeepSeek-shaped endpoint
+/// must not inherit OpenAI's field names, and the previous single function
+/// had no way to say so.
+pub fn build_request_body_for(
+    req: &Request,
+    compat: OpenAiCompat,
+) -> Result<String, ProviderError> {
+    let body = OpenAiRequest::from_neutral(req, compat)?;
     serde_json::to_string(&body).map_err(ProviderError::from)
 }
 
@@ -628,17 +656,85 @@ fn finalize(state: &mut StreamState, usage: Option<OpenAiUsage>) -> Vec<StreamEv
 
 // --- Wire ---
 
+/// Which field carries the token budget on the wire.
+///
+/// Pi: `maxTokensField?: "max_completion_tokens" | "max_tokens"`
+/// (`types.ts:557`), selected by `getCompatOptions` from the provider and
+/// base URL (`openai-completions.ts:1480`). The OpenAI-compatible ecosystem
+/// is not uniform, and sending the wrong one is a 400 rather than a
+/// cosmetic difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxTokensField {
+    MaxCompletionTokens,
+    MaxTokens,
+}
+
+/// Per-endpoint behaviour differences, mirroring Pi's `getCompatOptions`.
+///
+/// Kept as an explicit descriptor rather than a pile of `base_url.contains`
+/// checks inside the builder: the callers are the providers, and they know
+/// what they are. A URL-substring soup here would be Pi's own shape to copy
+/// and a nuisance to test.
+#[derive(Debug, Clone, Copy)]
+pub struct OpenAiCompat {
+    pub max_tokens_field: MaxTokensField,
+    /// Whether `store: false` may be sent at all.
+    pub supports_store: bool,
+}
+
+impl Default for OpenAiCompat {
+    /// OpenAI itself. Confirmed by capture: nine of nine requests carried
+    /// `max_completion_tokens` and `store: false`.
+    fn default() -> Self {
+        Self {
+            max_tokens_field: MaxTokensField::MaxCompletionTokens,
+            supports_store: true,
+        }
+    }
+}
+
+impl OpenAiCompat {
+    /// Pi puts DeepSeek, Moonshot, Together, NVIDIA, Chutes, Z.ai,
+    /// Ant Ling and the Cloudflare AI gateway on `max_tokens`
+    /// (`openai-completions.ts:1480`), and excludes all of them - plus
+    /// Cerebras, xAI and OpenCode - from `store`
+    /// (`openai-completions.ts:1462`).
+    pub fn uses_max_tokens_field() -> Self {
+        Self {
+            max_tokens_field: MaxTokensField::MaxTokens,
+            supports_store: false,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct OpenAiRequest<'a> {
     model: &'a str,
     messages: Vec<OpenAiMessage<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolRef<'a>>,
+    /// v0.10 (R2b): which field carries the budget.
+    ///
+    /// Pi picks per provider - `maxTokensField: useMaxTokens ? "max_tokens"
+    /// : "max_completion_tokens"` (`openai-completions.ts:1502`) - because
+    /// the OpenAI-compatible endpoints are not uniform. The captures show
+    /// OpenAI itself on `max_completion_tokens` (nine of nine requests), and
+    /// the per-provider split is read from Pi's source rather than
+    /// captured, because there is no capture for a DeepSeek-style endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     stream: bool,
+    /// v0.10 (R2b): `store: false` on every captured Pi request, but only
+    /// for providers Pi considers "standard"
+    /// (`supportsStore: !isNonStandard`, `openai-completions.ts:1499`).
+    /// A non-standard endpoint may reject the field outright, so omitting
+    /// it there is deliberate rather than an oversight.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    store: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<OpenAiStreamOptions>,
     /// v0.10 (R1f): reasoning effort.
@@ -699,7 +795,7 @@ struct OpenAiToolFunctionRef<'a> {
 }
 
 impl<'a> OpenAiRequest<'a> {
-    fn from_neutral(req: &'a Request) -> Result<Self, ProviderError> {
+    fn from_neutral(req: &'a Request, compat: OpenAiCompat) -> Result<Self, ProviderError> {
         let mut messages: Vec<OpenAiMessage> = Vec::new();
         for m in &req.messages {
             match m.role {
@@ -814,9 +910,27 @@ impl<'a> OpenAiRequest<'a> {
             model: &req.model,
             messages,
             tools,
-            max_tokens: req.max_tokens,
+            max_completion_tokens: match compat.max_tokens_field {
+                MaxTokensField::MaxCompletionTokens => req.max_tokens,
+                MaxTokensField::MaxTokens => None,
+            },
+            max_tokens: match compat.max_tokens_field {
+                MaxTokensField::MaxTokens => req.max_tokens,
+                MaxTokensField::MaxCompletionTokens => None,
+            },
+            // Pi sends temperature whenever it is set, with no reasoning
+            // carve-out: `if (options?.temperature !== undefined)
+            // params.temperature = options.temperature`
+            // (`openai-completions.ts:722`).
+            //
+            // An earlier version of this file dropped it for reasoning
+            // models, on the grounds that OpenAI rejects sampling params
+            // there. That is a divergence from Pi dressed as a safety
+            // measure, and Pi is the specification here: nini matches it,
+            // and the reasoning level travels in its own field.
             temperature: req.temperature,
             stream: true,
+            store: compat.supports_store.then_some(false),
             stream_options: Some(OpenAiStreamOptions {
                 include_usage: true,
             }),
@@ -825,6 +939,27 @@ impl<'a> OpenAiRequest<'a> {
             reasoning_effort: req.reasoning.filter(|l| l.is_on()).map(|l| l.as_str()),
         })
     }
+}
+
+/// The exact JSON body nini would put on the wire, for a given `Request`.
+///
+/// v0.10 (R2b): the wire shape was previously observable only by
+/// intercepting HTTP. `tests/openai_wire_parity.rs` needs it directly, and
+/// this runs the real `from_neutral` rather than a copy of it, so the test
+/// cannot drift away from the code it is meant to describe.
+/// As `build_request_for_test`, for a non-OpenAI-compatible endpoint.
+#[cfg(any(test, feature = "test-exports"))]
+pub fn build_request_for_compat(req: &Request, compat: OpenAiCompat) -> serde_json::Value {
+    let built = OpenAiRequest::from_neutral(req, compat)
+        .expect("a neutral request must convert to the wire format");
+    serde_json::to_value(built).expect("the wire request must serialise")
+}
+
+#[cfg(any(test, feature = "test-exports"))]
+pub fn build_request_for_test(req: &Request) -> serde_json::Value {
+    let built = OpenAiRequest::from_neutral(req, OpenAiCompat::default())
+        .expect("a neutral request must convert to the wire format");
+    serde_json::to_value(built).expect("the wire request must serialise")
 }
 
 /// v0.7.3 (UX test) — openai-compat URL construction. Different

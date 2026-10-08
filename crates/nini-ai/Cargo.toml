@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Enables `build_request_for_test`, which the wire-parity oracle needs.
+# `cfg(test)` does not reach an integration test - it is a separate crate -
+# so the switch has to be a feature that dev-dependencies can turn on.
+test-exports = []
+
 [dependencies]
 nini-core = { path = "../nini-core" }
 serde = { workspace = true }
@@ -22,6 +28,9 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# Self dev-dependency: enables `test-exports` for the lib while building
+# this crate's own tests, without exposing the helper in a normal build.
+nini-ai = { path = ".", features = ["test-exports"] }
 tempfile = { workspace = true }
 wiremock = { workspace = true }
 tokio-stream = { workspace = true }

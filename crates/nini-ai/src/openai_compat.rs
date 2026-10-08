@@ -21,6 +21,19 @@ impl OpenAiCompatProvider {
             inner: openai::OpenAiProvider::new(api_key).with_base_url(base_url),
         }
     }
+
+    /// v0.10 (R2b): declare this endpoint's wire differences.
+    ///
+    /// The OpenAI-compatible ecosystem is not uniform. Pi keeps a
+    /// per-provider table for exactly this reason
+    /// (`getCompatOptions`, `openai-completions.ts:1462-1502`): DeepSeek
+    /// and its neighbours take `max_tokens` and reject `store`, while
+    /// OpenAI takes `max_completion_tokens` and carries `store: false`.
+    /// Without this the compat brands inherit OpenAI's spelling and fail.
+    pub fn with_compat(mut self, compat: openai::OpenAiCompat) -> Self {
+        self.inner = self.inner.with_compat(compat);
+        self
+    }
 }
 
 impl Provider for OpenAiCompatProvider {
