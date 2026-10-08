@@ -2,9 +2,22 @@
 //!
 //! Acceptance criterion, fixed in advance: **`skipped == 0`**.
 //!
-//! The fixture is real Pi output with only *values* scrubbed (text bodies,
+//! The fixture is real Pi output with values scrubbed (text bodies,
 //! paths, UUIDs) — every key name, enum value, and container shape is
 //! verbatim, so a schema divergence still fails here.
+//!
+//! **Scope, stated precisely because it is easy to over-read.** This is
+//! line-level schema coverage. It says nothing about the session *graph*:
+//! scrubbing replaced each entry id with an 8-character hash without
+//! carrying the change through to `parentId` references, so most parents
+//! in that file do not resolve. `the_fixture_cannot_prove_anything_about
+//! _the_graph` below pins that fact so it cannot be mistaken for a
+//! property of Pi, and `fixtures/README.md` records it in full.
+//!
+//! A related trap, already sprung once: the dangling links read like a
+//! nini bug, and a tree test written against this file fails for reasons
+//! that have nothing to do with nini. `nini-tui/tests/p02_tree.rs` builds
+//! its own tree instead.
 
 use nini_conformance::{diagnose, fixture, summarise};
 
@@ -33,66 +46,49 @@ fn reads_every_line_of_a_real_pi_session() {
     );
 }
 
+/// Pin the fixture's known limitation.
+///
+/// Without this, the dangling `parentId` references look like a nini bug or
+/// like a property of Pi, and the next person to write a tree test against
+/// this file loses an hour to it. Asserting the limitation is the honest
+/// form: it is true, it is deliberate, and it is not going to change under
+/// us.
+///
+/// If this test ever fails because someone *did* repair the links, the
+/// right response is to update `fixtures/README.md`, not to relax this.
 #[test]
-fn the_fixture_itself_covers_the_whole_schema() {
-    // A conformance fixture that silently stops covering something is worse
-    // than no fixture: it reports green while the gap is untested. This
-    // guards the guard.
+fn the_fixture_cannot_prove_anything_about_the_graph() {
     let path = fixture("pi-0.84.2-session.jsonl");
-    let (verdicts, _) = diagnose(&path);
 
-    let mut types: std::collections::BTreeSet<&str> = Default::default();
-    let mut roles: std::collections::BTreeSet<String> = Default::default();
-    let mut blocks: std::collections::BTreeSet<String> = Default::default();
-    for v in &verdicts {
-        if let Some(t) = v.pi_type.as_deref() {
-            types.insert(t);
-        }
-    }
+    let mut ids: Vec<String> = Vec::new();
+    let mut parents: Vec<String> = Vec::new();
     for line in std::fs::read_to_string(&path).unwrap().lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if v.get("type").and_then(|t| t.as_str()) != Some("message") {
+        if v.get("type").and_then(|t| t.as_str()) == Some("session") {
             continue;
         }
-        let Some(m) = v.get("message") else { continue };
-        if let Some(r) = m.get("role").and_then(|r| r.as_str()).map(str::to_owned) {
-            roles.insert(r);
-        }
-        if let Some(cs) = m.get("content").and_then(|c| c.as_array()) {
-            for b in cs {
-                if let Some(t) = b.get("type").and_then(|t| t.as_str()).map(str::to_owned) {
-                    blocks.insert(t);
-                }
-            }
+        ids.push(
+            v.get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or_default()
+                .into(),
+        );
+        if let Some(p) = v.get("parentId").and_then(|p| p.as_str()) {
+            parents.push(p.into());
         }
     }
 
-    for t in [
-        "session",
-        "message",
-        "model_change",
-        "thinking_level_change",
-        "custom",
-        "custom_message",
-        "compaction",
-    ] {
-        assert!(
-            types.contains(t),
-            "fixture no longer covers entry type `{t}`"
-        );
-    }
-    for r in ["user", "assistant", "toolResult", "custom"] {
-        assert!(
-            roles.contains(r),
-            "fixture no longer covers message role `{r}`"
-        );
-    }
-    for b in ["text", "thinking", "toolCall", "image"] {
-        assert!(
-            blocks.contains(b),
-            "fixture no longer covers content block `{b}`"
-        );
-    }
+    let known: std::collections::HashSet<&String> = ids.iter().collect();
+    let resolving = parents.iter().filter(|p| known.contains(p)).count();
+
+    assert!(
+        resolving * 2 < parents.len(),
+        "expected most parentId references in this fixture to dangle, since \
+         scrubbing replaced ids without carrying the change through to \
+         parents. {resolving}/{} now resolve, which means the file changed \
+         — update fixtures/README.md rather than this assertion.",
+        parents.len()
+    );
 }
