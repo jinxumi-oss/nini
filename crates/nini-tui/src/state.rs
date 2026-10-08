@@ -1915,6 +1915,48 @@ impl AppState {
             .collect()
     }
 
+    /// Re-derive `run_state.context_window` from the settings snapshot.
+    ///
+    /// v0.10 (R2c): this value was never set in production. `AppState::new`
+    /// is what `runtime::run` builds (`runtime.rs:364`), it leaves
+    /// `run_state.context_window` at 0, `set_status_bar_usage` has no caller
+    /// anywhere in the crate, and `should_auto_compact` opens with
+    ///
+    /// ```text
+    /// if self.run_state.context_window == 0 { return false }
+    /// ```
+    ///
+    /// So the automatic compaction path that R2a/A2 built - persisted,
+    /// reconstructed, rebuilt into the transcript - never fired once in a
+    /// real session. Every test of it set the window explicitly, which is
+    /// exactly how the gap survived.
+    ///
+    /// The source is `settings.context_window`, which defaults to 200_000
+    /// and mirrors Pi's `DEFAULT_COMPACTION_SETTINGS`. The model catalog's
+    /// own `context_window` is deliberately **not** used: every entry in it
+    /// is currently 128_000, which is a guess rather than a measurement,
+    /// and a wrong number triggers compaction at the wrong time - worse
+    /// than not triggering. When the catalog carries real per-model
+    /// values, this is where they will take precedence.
+    ///
+    /// A settings value of 0 stays 0: "unknown window" means no automatic
+    /// compaction, and the status bar says so rather than inventing a
+    /// number.
+    pub fn refresh_context_window(&mut self) {
+        let window = self.model_state.settings_snapshot.context_window;
+        self.run_state.context_window = window;
+    }
+
+    /// Change the selected model, keeping the context window consistent.
+    ///
+    /// The two model-change sites in `runtime.rs` assigned
+    /// `model_state.model` directly, so anything derived from it went
+    /// stale. Routing both through here means there is one place to forget.
+    pub fn set_model(&mut self, model: impl Into<String>) {
+        self.model_state.model = model.into();
+        self.refresh_context_window();
+    }
+
     /// Compact the session for real, and refresh the transcript to match.
     ///
     /// Replaces `auto_compact_local`, which folded the first half of the

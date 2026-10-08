@@ -357,12 +357,33 @@ pub type AgentDriver = Arc<
 /// Previously this was hardcoded to `"test-model"` and the user's `--model`
 /// flag was silently ignored at the TUI layer (cf. v0.7.2 ux-report #7).
 /// `bootstrap` may override the model again if the caller needs to.
-pub async fn run<F>(bootstrap: F, agent_driver: AgentDriver, initial_model: &str) -> Result<()>
+/// Build the initial `AppState` the way a real session does.
+///
+/// v0.10 (R2c): extracted from `run` so the production sequence can be
+/// tested rather than described. The sequence matters — the bootstrap is
+/// what installs the settings snapshot, so the context window can only be
+/// derived *after* it runs, and getting that order wrong leaves the window
+/// at 0.
+///
+/// An earlier version of this test called `refresh_context_window` itself,
+/// which meant it verified the method and not that anything called it: an
+/// injection that deleted the call site from `run` passed clean. With the
+/// sequence here, `run` and the test cannot diverge.
+pub fn initial_state<F>(initial_model: &str, bootstrap: F) -> AppState
 where
     F: FnOnce(&mut AppState),
 {
     let mut state = AppState::new(initial_model);
     bootstrap(&mut state);
+    state.refresh_context_window();
+    state
+}
+
+pub async fn run<F>(bootstrap: F, agent_driver: AgentDriver, initial_model: &str) -> Result<()>
+where
+    F: FnOnce(&mut AppState),
+{
+    let state = initial_state(initial_model, bootstrap);
     let shared = shared_state(state);
 
     // Install SIGINT/SIGTERM/SIGHUP handlers + panic hook before enabling
@@ -657,7 +678,7 @@ async fn run_loop(
                                     None
                                 };
                                 if let Some(new_model) = model_update {
-                                    lock_state(&shared).model_state.model = new_model;
+                                    lock_state(&shared).set_model(new_model);
                                 }
                                 // Selector closed: reset any residual
                                 // open_selector:* flag so the status bar
@@ -1175,7 +1196,7 @@ fn cycle_model(state: &mut crate::state::AppState, direction: i32) {
     let new_pos = new_pos as usize;
     state.model_state.models_cycle_idx = Some(new_pos);
     let new_model = state.model_state.models_cycle[new_pos].clone();
-    state.model_state.model = new_model.clone();
+    state.set_model(new_model.clone());
     // Persist to settings.json if the runtime wired in a real path.
     let mut settings = match state.model_state.settings_path.clone() {
         Some(p) => crate::settings::SettingsManager::load_from_disk(p),
