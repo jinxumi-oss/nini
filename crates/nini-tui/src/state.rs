@@ -1646,20 +1646,33 @@ impl AppState {
         });
     }
 
-    /// Load a session from disk and replace the current session.
+    /// Load a session from disk, replace the current session, and rebuild
+    /// the transcript from it.
+    ///
+    /// v0.10 (R2a/A4): this used to load the session and nothing else.
+    /// Its comment claimed "the caller rebuilds the transcript from
+    /// `session.entries` right after this" - twice - and no caller did.
+    /// Both call sites (`dispatch.rs` `/resume`, `runtime.rs` the session
+    /// picker) stopped at the `?`.
+    ///
+    /// The consequence was that `/resume` swapped the history the *model*
+    /// would see - A3 seeds the next Agent from the session - while the
+    /// transcript the *user* looks at kept whatever it had, usually the
+    /// previous conversation or nothing at all. The two disagreed about
+    /// what the session contained.
+    ///
+    /// `build_context_entries` is the right source, not `session.entries`:
+    /// it is what the agent will actually be given, so a compaction shows
+    /// up as a summary rather than as the history it replaced.
     pub fn session_load(&mut self, path: PathBuf) -> Result<(), nini_session::SessionError> {
         let session = nini_session::Session::read_from_file(&path)?;
-        // v0.8.9 (P2-9): record the damage. The caller rebuilds the
-        // transcript from `session.entries` right after this, so this is
-        // the only place that knows what was lost.
+        // v0.8.9 (P2-9): record the damage. This is the only place that
+        // knows what was lost on the way in.
         self.session_state.skipped_lines_on_load = session.skipped_lines;
         self.session_state.session_id = Some(session.header.id.clone());
         self.session_state.session = Some(Arc::new(Mutex::new(session)));
         self.session_state.session_path = Some(path);
-        // v0.8.9 (P1-5): the caller rebuilds `transcript_state.lines`
-        // from this session, so the current scroll offset refers to a
-        // line count that is about to be replaced.
-        Arc::make_mut(&mut self.transcript_state).reset_view();
+        self.transcript_from_context();
         Ok(())
     }
 
