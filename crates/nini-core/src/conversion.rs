@@ -140,12 +140,12 @@ pub fn session_message_to_llm(msg: &PiMsg) -> Option<Message> {
                 .iter()
                 .map(|b| match b {
                     PiBlock::Text { text } => text.clone(),
-                    // Image/Image/ToolCall → empty text placeholder.
-                    // Tool call args aren't useful in a tool result
-                    // message; the model needs the result string.
-                    PiBlock::Image { .. } | PiBlock::Thinking { .. } | PiBlock::ToolCall { .. } => {
-                        String::new()
-                    }
+                    // Pi's `NON_VISION_TOOL_IMAGE_PLACEHOLDER`
+                    // (`transform-messages.ts:13`) for images. Tool call
+                    // args are still dropped: they are not useful in a tool
+                    // result message, the model needs the result string.
+                    PiBlock::Image { .. } => NON_VISION_TOOL_IMAGE_PLACEHOLDER.to_string(),
+                    PiBlock::Thinking { .. } | PiBlock::ToolCall { .. } => String::new(),
                 })
                 .collect::<Vec<_>>()
                 .join("");
@@ -189,13 +189,47 @@ fn user_content_to_blocks(content: &StringOrContentBlocks) -> Vec<ContentBlock> 
             .iter()
             .filter_map(|b| match b {
                 PiBlock::Text { text } => Some(ContentBlock::Text { text: text.clone() }),
-                // Image/Thinking/ToolCall → empty text placeholders,
-                // matching the previous nini-tui/nini-cli behavior.
-                PiBlock::Image { .. } | PiBlock::Thinking { .. } | PiBlock::ToolCall { .. } => None,
+                // v0.10 (R2g): images became a visible placeholder.
+                //
+                // They used to become `None`, i.e. they vanished. An
+                // `Image` block is parsed out of a real Pi session - R1f
+                // added `Image { data, mime_type }` for exactly that - and
+                // then silently disappeared before reaching any provider.
+                //
+                // `provider::ContentBlock` has no image variant at all
+                // (Text / ToolUse / ToolResult only), so sending one is not
+                // currently possible and `Capabilities::vision` is
+                // `false` everywhere, which is accurate. What was wrong was
+                // the silence: the model saw a message with a hole in it.
+                //
+                // Pi replaces the block with this text instead
+                // (`transform-messages.ts:12`):
+                // `NON_VISION_USER_IMAGE_PLACEHOLDER`.
+                PiBlock::Image { .. } => Some(ContentBlock::Text {
+                    text: NON_VISION_USER_IMAGE_PLACEHOLDER.to_string(),
+                }),
+                // Thinking and tool calls still have no provider
+                // representation here; that is unchanged.
+                PiBlock::Thinking { .. } | PiBlock::ToolCall { .. } => None,
             })
             .collect(),
     }
 }
+
+/// Pi's `NON_VISION_USER_IMAGE_PLACEHOLDER`
+/// (`pi-ai/src/api/transform-messages.ts:12`).
+///
+/// `provider::ContentBlock` has no image variant, so an image cannot be
+/// sent today. The placeholder is what Pi puts in its place, and saying so
+/// is the difference between a model that knows an image was dropped and one
+/// that sees a sentence with a hole in it.
+pub const NON_VISION_USER_IMAGE_PLACEHOLDER: &str =
+    "(image omitted: model does not support images)";
+
+/// Pi's `NON_VISION_TOOL_IMAGE_PLACEHOLDER`
+/// (`pi-ai/src/api/transform-messages.ts:13`).
+pub const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str =
+    "(tool image omitted: model does not support images)";
 
 /// Convert `entries::AssistantMessage.content` into
 /// `provider::ContentBlock` list. Text blocks pass through;
@@ -507,7 +541,15 @@ mod tests {
     }
 
     #[test]
-    fn user_with_image_block_skips_it() {
+    /// Renamed and re-pointed in R2g.
+    ///
+    /// This used to be `user_with_image_block_skips_it` and asserted
+    /// `content.len() == 1` - "Image is dropped, only Text remains". It
+    /// pinned the defect: a test that locks in the wrong behaviour is a
+    /// test that reports green while the behaviour is wrong, which is the
+    /// same failure as a field that is always zero, wearing a test's
+    /// clothes.
+    fn user_image_becomes_a_placeholder_not_a_hole() {
         let msg = PiMsg::User(UserMessage {
             content: StringOrContentBlocks::Blocks(vec![
                 PiBlock::Text { text: "ok".into() },
@@ -519,8 +561,23 @@ mod tests {
             timestamp: 0,
         });
         let m = session_message_to_llm(&msg).unwrap();
-        // Image is dropped, only Text remains.
-        assert_eq!(m.content.len(), 1);
+        // Two blocks now: the user's text, and Pi's placeholder saying the
+        // image was omitted. A silent drop left the model with a sentence
+        // and no indication anything had been removed.
+        assert_eq!(m.content.len(), 2, "{:?}", m.content);
+        let texts: Vec<&str> = m
+            .content
+            .iter()
+            .map(|b| match b {
+                ContentBlock::Text { text } => text.as_str(),
+                other => panic!("expected text, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(texts[0], "ok", "the user's text is untouched");
+        assert_eq!(
+            texts[1], NON_VISION_USER_IMAGE_PLACEHOLDER,
+            "and the image is accounted for by name"
+        );
     }
 
     #[test]
