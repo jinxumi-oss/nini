@@ -280,10 +280,13 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
                         }
                     }
                     Ok(AgentEvent::TurnEnd { stop_reason, usage }) => {
+                        // v0.10 (R2e): tokens only. The cost used to be
+                        // computed here and sent as a third field, which
+                        // made it a constant nobody could check; the TUI
+                        // prices it against the selected model instead.
                         sink.push(nini_tui::runtime::AgentEventLite::Usage(
                             usage.input_tokens,
                             usage.output_tokens,
-                            0.0,
                         ));
                         // v0.8.4 (ux-001, pi-parity): surface non-success
                         // stop reasons at the end of the assistant turn.

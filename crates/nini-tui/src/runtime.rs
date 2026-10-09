@@ -96,7 +96,17 @@ pub enum AgentEventLite {
     /// / "Operation aborted" / "Error: …"). The string is a
     /// human-readable label that already maps to a friendly message.
     StopReason(String),
-    Usage(u32, u32, f64),
+    /// v0.10 (R2e): tokens only. The cost used to travel as a third field,
+    /// which `app.rs` filled with a hardcoded `0.0` - so `run_state.cost_usd`
+    /// never moved and `render.rs`, which shows the cost pill only when
+    /// `cost_usd > 0.0`, never showed one.
+    ///
+    /// Pricing moved here instead. The TUI is what knows the selected
+    /// model, and the catalog is what knows its rates, so the two are in the
+    /// same process and the arithmetic is testable through the sink. Sending
+    /// a precomputed number across a boundary made it possible for that
+    /// number to be a constant, which is exactly what happened.
+    Usage(u32, u32),
     /// Agent phase transition. Mirrors `AgentEvent::PhaseChanged` from
     /// nini-core but as a lightweight payload (just the phase name).
     PhaseChanged(String),
@@ -295,13 +305,13 @@ impl AgentSink {
                         .lines
                         .push(TranscriptLine::StopNotice(label));
                 }
-                AgentEventLite::Usage(input, output, cost) => {
+                AgentEventLite::Usage(input, output) => {
                     s.run_state.tokens.input += input as u64;
                     s.run_state.tokens.output += output as u64;
-                    // Cost is denominated in USD; add to running total.
-                    if cost > 0.0 {
-                        s.run_state.cost_usd += cost;
-                    }
+                    // Priced against the model the TUI currently has
+                    // selected, which is the one that produced this turn.
+                    s.run_state.cost_usd +=
+                        nini_core::model_lookup::turn_cost(&s.model_state.model, input, output);
                 }
                 AgentEventLite::PhaseChanged(_) => {
                     // Already handled at top of this match (set status).

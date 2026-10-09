@@ -42,11 +42,30 @@ pub struct ModelSpec {
     /// Pi's `compat.supportsTemperature`, defaulting to true. Declared
     /// false for `claude-opus-4-7`, `claude-opus-4-8` and `claude-opus-5`.
     pub supports_temperature: bool,
+    /// Tiered pricing, selected by total input tokens.
+    ///
+    /// 21 of Pi's 1267 models carry `cost.tiers`; none of the 112 for the
+    /// providers nini reaches do today. Carrying them anyway means a future
+    /// catalog entry cannot be silently under-priced by a flat rate - which
+    /// is exactly the class of quiet wrongness this project has spent R2c
+    /// and R2d removing.
+    pub cost_tiers: Vec<ModelCostTier>,
     /// The thinking levels this model declares in `thinkingLevelMap`.
     pub thinking_levels: Vec<String>,
 }
 
+/// A pricing tier: rates that apply once total input tokens exceed
+/// `input_tokens_above`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelCostTier {
+    pub input_tokens_above: u64,
+    pub cost: ModelCost,
+}
+
 /// Per-token pricing, Pi's `ModelCostSchema`.
+///
+/// **Rates are dollars per million tokens**, matching Pi
+/// (`types.ts:779`: `input: number; // $/million tokens`).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ModelCost {
     pub input: f64,
@@ -75,6 +94,21 @@ struct RawSpec {
     supports_temperature: bool,
     #[serde(default)]
     thinking_levels: Vec<String>,
+    #[serde(default)]
+    cost_tiers: Vec<RawTier>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTier {
+    input_tokens_above: u64,
+    #[serde(default)]
+    input: f64,
+    #[serde(default)]
+    output: f64,
+    #[serde(default)]
+    cache_read: f64,
+    #[serde(default)]
+    cache_write: f64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -138,6 +172,19 @@ impl ModelRuntime {
                     },
                     supports_temperature: r.supports_temperature,
                     thinking_levels: r.thinking_levels,
+                    cost_tiers: r
+                        .cost_tiers
+                        .into_iter()
+                        .map(|t| ModelCostTier {
+                            input_tokens_above: t.input_tokens_above,
+                            cost: ModelCost {
+                                input: t.input,
+                                output: t.output,
+                                cache_read: t.cache_read,
+                                cache_write: t.cache_write,
+                            },
+                        })
+                        .collect(),
                 })
                 .collect(),
         }
