@@ -6,8 +6,6 @@
 //!
 //! Plus 4 fixture builders + 2 helpers used only by the demo paths.
 
-use std::path::Path;
-
 use anyhow::Result;
 use futures_util::StreamExt;
 
@@ -177,13 +175,20 @@ pub(crate) async fn run_print(
 
 /// Scripted fixture for the "fix TODOs" demo.
 ///
-/// Discovers the first source file containing `TODO`, then scripts
-/// a multi-turn agent run: grep → read → edit → verify.
-pub(crate) fn demo_fix_todos_turns(cwd: &std::path::Path) -> Vec<Vec<FixtureTurn>> {
+/// v0.10 (R2f): this doc used to promise "discovers the first source file
+/// containing TODO, then scripts a multi-turn agent run: grep -> read ->
+/// edit -> verify". It does neither half. `find_first_file_with_todo` was
+/// called and its result dropped on the floor - `let _target = ...` - and
+/// the body has always been a single turn.
+///
+/// The doc is corrected rather than the program extended: a demo is a
+/// scripted fixture, and quietly making it four turns to satisfy a comment
+/// would be a bigger change than the comment deserved. What it does is now
+/// what it says.
+pub(crate) fn demo_fix_todos_turns(_cwd: &std::path::Path) -> Vec<Vec<FixtureTurn>> {
     use nini_ai::fixture::FixtureTurn as F;
     use nini_core::provider::Usage;
-    let _target = find_first_file_with_todo(cwd);
-    // Single-turn demo: agent issues one grep + emits a final text.
+    // Single-turn demo: the agent issues one grep and emits a final text.
     // The CLI's exit code is 0 because we don't simulate a 50-iter
     // runaway.
     vec![
@@ -222,28 +227,6 @@ pub(crate) fn demo_simple_turns(task: &str) -> Vec<Vec<FixtureTurn>> {
     ]]
 }
 
-/// Walk `cwd` looking for the first regular file containing the
-/// word `TODO` in its content. Returns the relative path if found.
-pub(crate) fn find_first_file_with_todo(cwd: &Path) -> Option<String> {
-    for entry in std::fs::read_dir(cwd).ok()?.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if content.contains("TODO") {
-            return path
-                .strip_prefix(cwd)
-                .ok()
-                .map(|p| p.to_string_lossy().into_owned())
-                .or_else(|| Some(path.to_string_lossy().into_owned()));
-        }
-    }
-    None
-}
-
 /// v0.7.1 — delegate to the chokepoint in nini-core::conversion.
 /// See crates/nini-tui/src/commands.rs::entry_legacy_message for the
 /// parallel refactor.
@@ -266,23 +249,6 @@ pub(crate) fn cli_entry_legacy(entry: &nini_core::SessionEntry) -> Option<nini_c
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn find_first_file_with_todo_finds_target() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "// TODO: hello").unwrap();
-        std::fs::write(dir.path().join("b.rs"), "fn main() {}").unwrap();
-        let found = find_first_file_with_todo(dir.path());
-        assert!(found.is_some(), "should find a.txt with TODO");
-    }
-
-    #[test]
-    fn find_first_file_with_todo_returns_none_if_no_todo() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "no markers here").unwrap();
-        let found = find_first_file_with_todo(dir.path());
-        assert_eq!(found, None);
-    }
 
     #[test]
     fn cli_entry_legacy_handles_real_entry() {

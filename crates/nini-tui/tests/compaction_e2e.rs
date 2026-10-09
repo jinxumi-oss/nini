@@ -359,7 +359,6 @@ fn compaction_settings_default_is_sensible() {
     assert_eq!(s.reserve_tokens, 16384);
     assert!(s.enabled);
     assert_eq!(s.keep_recent_tokens, 20000);
-    assert!(s.max_single_turn_chars > 0);
 }
 
 // =====================================================================

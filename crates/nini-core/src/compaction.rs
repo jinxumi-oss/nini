@@ -43,8 +43,6 @@ pub struct CompactionSettings {
     /// tokens of message history verbatim. The summary covers everything
     /// before the cut.
     pub keep_recent_tokens: u32,
-    /// If a single user/assistant turn is larger than this, split it.
-    pub max_single_turn_chars: usize,
 }
 
 impl Default for CompactionSettings {
@@ -56,7 +54,6 @@ impl Default for CompactionSettings {
             context_window: 200_000,
             reserve_tokens: 16384,
             keep_recent_tokens: 20000,
-            max_single_turn_chars: 16_000,
         }
     }
 }
