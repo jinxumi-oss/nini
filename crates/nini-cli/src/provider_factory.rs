@@ -28,6 +28,16 @@ use nini_core::provider::{Provider, Usage};
 /// `Authorization: Bearer ` — a silent 401 with no diagnostic at all.
 /// An empty key is a configuration mistake; it deserves a sentence
 /// saying so, not a round trip to the server.
+/// Resolve a provider's key: `--api-key` first, then the provider's
+/// environment variable.
+///
+/// v0.10 (R2i): five providers read `std::env::var` directly instead of
+/// coming through here - anthropic, deepseek, groq, mistral, cohere - so
+/// `--api-key` was silently ignored for them. `nini --api-key sk-... --provider
+/// anthropic` failed with "ANTHROPIC_API_KEY required for anthropic" while
+/// the user was holding the key on the command line. A flag that works for
+/// some providers and is invisible for the rest is worse than one that does
+/// not exist: it looks like it was honoured.
 fn resolve_api_key(explicit: Option<&str>, env_var: &str, provider: &str) -> Result<String> {
     if let Some(k) = explicit {
         let trimmed = k.trim();
@@ -70,7 +80,9 @@ pub(crate) fn build_provider(
 ) -> Result<Arc<dyn Provider>> {
     match provider {
         "fixture" => Ok(Arc::new(ProgrammedProvider::from_turns(turns))),
-        "anthropic" => build_anthropic_with_fallbacks(fallback_keys, fallback_base_urls),
+        "anthropic" => {
+            build_anthropic_with_fallbacks(api_key_override, fallback_keys, fallback_base_urls)
+        }
         // v0.8.4 (bugfix): `OPENAI_BASE_URL` was previously ignored
         // — `OpenAiProvider::new(key)` hard-codes the upstream URL
         // to `https://api.openai.com`. Any user pointing the env at
@@ -129,8 +141,7 @@ pub(crate) fn build_provider(
         // `{NAME}_BASE_URL` (= `DEEPSEEK_API_KEY_BASE_URL`) instead
         // of `DEEPSEEK_BASE_URL`. Inline the read.
         "deepseek" => {
-            let key = std::env::var("DEEPSEEK_API_KEY")
-                .context("DEEPSEEK_API_KEY required for deepseek")?;
+            let key = resolve_api_key(api_key_override, "DEEPSEEK_API_KEY", "deepseek")?;
             let provider = match std::env::var("DEEPSEEK_BASE_URL").ok() {
                 Some(base) => nini_ai::deepseek::DeepSeekProvider::with_base_url(base, key),
                 None => nini_ai::deepseek::DeepSeekProvider::new(key),
@@ -138,7 +149,7 @@ pub(crate) fn build_provider(
             Ok(Arc::new(provider))
         }
         "groq" => {
-            let key = std::env::var("GROQ_API_KEY").context("GROQ_API_KEY required for groq")?;
+            let key = resolve_api_key(api_key_override, "GROQ_API_KEY", "groq")?;
             let provider = match std::env::var("GROQ_BASE_URL").ok() {
                 Some(base) => nini_ai::groq::GroqProvider::with_base_url(base, key),
                 None => nini_ai::groq::GroqProvider::new(key),
@@ -146,8 +157,7 @@ pub(crate) fn build_provider(
             Ok(Arc::new(provider))
         }
         "mistral" => {
-            let key =
-                std::env::var("MISTRAL_API_KEY").context("MISTRAL_API_KEY required for mistral")?;
+            let key = resolve_api_key(api_key_override, "MISTRAL_API_KEY", "mistral")?;
             let provider = match std::env::var("MISTRAL_BASE_URL").ok() {
                 Some(base) => nini_ai::mistral::MistralProvider::with_base_url(base, key),
                 None => nini_ai::mistral::MistralProvider::new(key),
@@ -155,8 +165,7 @@ pub(crate) fn build_provider(
             Ok(Arc::new(provider))
         }
         "cohere" => {
-            let key =
-                std::env::var("COHERE_API_KEY").context("COHERE_API_KEY required for cohere")?;
+            let key = resolve_api_key(api_key_override, "COHERE_API_KEY", "cohere")?;
             let provider = match std::env::var("COHERE_BASE_URL").ok() {
                 Some(base) => nini_ai::cohere::CohereProvider::with_base_url(base, key),
                 None => nini_ai::cohere::CohereProvider::new(key),
@@ -173,11 +182,11 @@ pub(crate) fn build_provider(
 /// Anthropic-specific helper: builds the primary provider + a
 /// chain of FallbackProvider instances if `fallback_keys` is non-empty.
 fn build_anthropic_with_fallbacks(
+    api_key_override: Option<&str>,
     fallback_keys: &[String],
     fallback_base_urls: &[String],
 ) -> Result<Arc<dyn Provider>> {
-    let key =
-        std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY required for anthropic")?;
+    let key = resolve_api_key(api_key_override, "ANTHROPIC_API_KEY", "anthropic")?;
     let base = std::env::var("ANTHROPIC_BASE_URL").ok();
 
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
@@ -418,5 +427,113 @@ mod tests {
             err.to_string().contains("NINI_TEST_ABSENT_KEY"),
             "error should name the variable, got: {err}"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // R2i: the flag must reach every provider, not just some of them.
+    //
+    // `resolve_api_key` was always correct - flag first, then the
+    // provider's env var, naming the right variable on failure. Five
+    // providers just did not call it: anthropic, deepseek, groq, mistral
+    // and cohere read `std::env::var` directly. So
+    //
+    //     nini --api-key sk-... --provider anthropic
+    //
+    // failed with "ANTHROPIC_API_KEY required for anthropic" while the
+    // user was holding the key on the command line. A flag that works for
+    // some providers and is invisible for the rest is worse than one that
+    // does not exist: it looks like it was honoured.
+    // ---------------------------------------------------------------
+
+    /// Every provider that reaches `resolve_api_key`, with the variable it
+    /// names. Kept as data so a new provider cannot be added without a row.
+    const PROVIDERS: &[(&str, &str)] = &[
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+        ("openai-responses", "OPENAI_API_KEY"),
+        ("openai-compat", "OPENAI_API_KEY"),
+        ("google", "GOOGLE_API_KEY"),
+        ("google", "GEMINI_API_KEY"),
+        ("deepseek", "DEEPSEEK_API_KEY"),
+        ("groq", "GROQ_API_KEY"),
+        ("mistral", "MISTRAL_API_KEY"),
+        ("cohere", "COHERE_API_KEY"),
+    ];
+
+    /// Run `f` with every relevant environment variable unset, restoring
+    /// them afterwards. The bug only shows when the variable is *absent*:
+    /// with it set, the direct `env::var` read happened to work.
+    ///
+    /// # Safety
+    /// `set_var`/`remove_var` are not thread-safe in Rust 2024. These tests
+    /// live in this binary's own test module and use their own variable
+    /// names, but the process still runs tests in parallel, so the call is
+    /// guarded the way `std` documents.
+    fn with_env_unset<T>(names: &[&str], f: impl FnOnce() -> T) -> T {
+        let saved: Vec<(String, Option<String>)> = names
+            .iter()
+            .map(|n| (n.to_string(), std::env::var(n).ok()))
+            .collect();
+        for (n, _) in &saved {
+            unsafe { std::env::remove_var(n) };
+        }
+        let out = f();
+        for (n, v) in saved {
+            match v {
+                Some(v) => unsafe { std::env::set_var(&n, v) },
+                None => unsafe { std::env::remove_var(&n) },
+            }
+        }
+        out
+    }
+
+    fn build(provider: &str, key: Option<&str>) -> Result<Arc<dyn Provider>> {
+        build_provider(provider, Vec::new(), &[], &[], key)
+    }
+
+    #[test]
+    fn an_api_key_on_the_command_line_reaches_every_provider() {
+        let envs: Vec<&str> = PROVIDERS.iter().map(|(_, e)| *e).collect();
+        with_env_unset(&envs, || {
+            for (provider, env) in PROVIDERS {
+                assert!(
+                    build(provider, Some("sk-test-key")).is_ok(),
+                    "`--api-key` was ignored for `{provider}`. With no {env} \
+                     set the flag is the only source, so a failure here is \
+                     the bug this test exists for."
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn without_a_flag_it_still_names_the_right_variable() {
+        let envs: Vec<&str> = PROVIDERS.iter().map(|(_, e)| *e).collect();
+        with_env_unset(&envs, || {
+            for (provider, env) in PROVIDERS {
+                let err = build(provider, None)
+                    .err()
+                    .unwrap_or_else(|| panic!("{provider} built with no credential at all"));
+                assert!(
+                    err.to_string().contains(env),
+                    "{provider} should name {env} in its error, got: {err}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn an_empty_flag_is_refused_rather_than_ignored() {
+        let envs: Vec<&str> = PROVIDERS.iter().map(|(_, e)| *e).collect();
+        with_env_unset(&envs, || {
+            let err = match build("anthropic", Some("   ")) {
+                Ok(_) => panic!("an empty --api-key must not be silently treated as unset"),
+                Err(e) => e,
+            };
+            assert!(
+                err.to_string().contains("empty"),
+                "and the error should say so: {err}"
+            );
+        });
     }
 }
