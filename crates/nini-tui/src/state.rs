@@ -58,6 +58,18 @@ fn render_context_entries(entries: &[nini_core::SessionEntry]) -> Vec<Transcript
                 }
             }
             AgentMessage::Assistant(a) => {
+                // v0.10 (R2h): a failed turn has no content blocks, so
+                // without this it rendered as nothing at all - a resumed
+                // session could not tell it had happened.
+                if a.stop_reason == nini_core::entries::StopReason::Error
+                    || a.stop_reason == nini_core::entries::StopReason::Aborted
+                {
+                    let detail = a
+                        .error_message
+                        .clone()
+                        .unwrap_or_else(|| "Unknown error".to_string());
+                    lines.push(TranscriptLine::StopNotice(format!("Error: {detail}")));
+                }
                 for b in &a.content {
                     match b {
                         ContentBlock::Text { text } => {
@@ -1614,6 +1626,33 @@ impl AppState {
                 details,
                 usage: None,
                 is_error: !ok,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            },
+        ));
+    }
+
+    /// Record a turn that failed, as an assistant message carrying the error.
+    ///
+    /// v0.10 (R2h): `AgentEvent::TurnEnd` has no error payload and `run()`
+    /// returns `Err` outright on a non-retryable provider error, so a failed
+    /// turn left nothing in the session - the `[error]` line the user saw
+    /// came from `push_assistant_raw`, which is transcript-only. Reopening
+    /// the session showed a conversation quietly missing its last turn.
+    ///
+    /// Pi's schema has a place for exactly this: `stopReason: "error"` with
+    /// `errorMessage` set (`pi-protocol/src/schemas.ts:148-154`), rendered
+    /// at `assistant-message.ts:190-193`. R1f added both fields to nini so
+    /// real Pi sessions would parse; this is the producer that was missing.
+    pub fn session_append_turn_error(&mut self, message: &str) {
+        self.session_append_message(nini_core::entries::AgentMessage::Assistant(
+            nini_core::entries::AssistantMessage {
+                content: vec![],
+                api: String::new(),
+                provider: String::new(),
+                model: String::new(),
+                usage: Default::default(),
+                stop_reason: nini_core::entries::StopReason::Error,
+                error_message: Some(message.to_string()),
                 timestamp: chrono::Utc::now().timestamp_millis(),
             },
         ));

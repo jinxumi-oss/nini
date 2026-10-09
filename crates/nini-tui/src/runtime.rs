@@ -89,6 +89,16 @@ pub enum AgentEventLite {
         duration_ms: u64,
     },
     TurnEnd,
+    /// v0.10 (R2h): the run returned an error, so the turn produced no
+    /// assistant message at all.
+    ///
+    /// Distinct from `Error`, which is also used for transient notices
+    /// ("retrying after transient error") that are not failures. A failed
+    /// turn used to leave no trace in the session: `run()` returns `Err`,
+    /// the driver pushes `Error`, and that path renders transcript-only, so
+    /// a resumed session showed a conversation that had silently lost its
+    /// last turn.
+    TurnFailed(String),
     Error(String),
     /// v0.8.4 (ux-001): non-success stop reason surfaced at the end of
     /// an assistant turn. Mirrors Pi's `AssistantMessageComponent`
@@ -299,6 +309,14 @@ impl AgentSink {
                 }
                 AgentEventLite::Error(message) => {
                     s.push_assistant_raw(format!("[error] {message}"));
+                }
+                AgentEventLite::TurnFailed(message) => {
+                    // Record it, so a resumed session can show that the turn
+                    // failed rather than pretending it never happened.
+                    s.session_append_turn_error(&message);
+                    s.session_flush();
+                    s.push_assistant_raw(format!("[error] {message}"));
+                    s.push_divider();
                 }
                 AgentEventLite::StopReason(label) => {
                     Arc::make_mut(&mut s.transcript_state)
