@@ -11,6 +11,7 @@ pub mod conversion;
 pub mod compaction;
 pub mod entries;
 pub mod git;
+pub mod model_lookup;
 pub mod model_runtime;
 pub mod overflow;
 pub mod project_trust;

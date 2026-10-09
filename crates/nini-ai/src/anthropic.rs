@@ -346,7 +346,23 @@ impl<'a> AnthropicRequest<'a> {
             max_tokens: req.max_tokens.unwrap_or(8192),
             system: req.system.as_deref(),
             tools,
-            temperature: req.temperature,
+            // Pi: `if (options?.temperature !== undefined &&
+            //       !options?.thinkingEnabled && compat.supportsTemperature)`
+            // (`anthropic-messages.ts:1021`).
+            //
+            // The `!thinkingEnabled` half was missed here. An earlier
+            // change concluded from Pi's *OpenAI* path - where temperature
+            // really is sent unconditionally - that Pi always sends it, and
+            // carried that across to Anthropic. One provider's rule is not
+            // another's rule.
+            //
+            // The other half, `compat.supportsTemperature`, is per-model and
+            // comes from the catalog: real Pi data declares
+            // `supportsTemperature: false` for `claude-opus-4-7`,
+            // `claude-opus-5` and others. It lands with the catalog work.
+            temperature: req
+                .temperature
+                .filter(|_| !req.reasoning.map(|l| l.is_on()).unwrap_or(false)),
             thinking,
             stream: true,
         })

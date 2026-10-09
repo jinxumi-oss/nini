@@ -320,11 +320,10 @@ async fn main() -> Result<()> {
             // Build runtime from models.json or fall back to defaults.
             let cwd = std::env::current_dir().unwrap_or_default();
             let mj = nini_core::settings::load_models_json(&cwd);
-            let runtime = if mj.providers.is_empty() {
-                nini_core::model_runtime::ModelRuntime::with_defaults()
-            } else {
-                nini_core::model_runtime::ModelRuntime::from_models_json(&mj)
-            };
+            // The shipped catalog carries the model metadata; `models.json`
+            // is configuration and only overrides what it actually states.
+            let mut runtime = nini_core::model_runtime::ModelRuntime::with_defaults();
+            nini_core::model_runtime::merge_user_overrides(&mut runtime, &mj);
             let filter = list_models.as_deref().unwrap_or("");
             for m in nini_core::model_runtime::resolve_pattern(&runtime, filter) {
                 println!("{}", m.id);

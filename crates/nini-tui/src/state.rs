@@ -1931,20 +1931,32 @@ impl AppState {
     /// real session. Every test of it set the window explicitly, which is
     /// exactly how the gap survived.
     ///
-    /// The source is `settings.context_window`, which defaults to 200_000
-    /// and mirrors Pi's `DEFAULT_COMPACTION_SETTINGS`. The model catalog's
-    /// own `context_window` is deliberately **not** used: every entry in it
-    /// is currently 128_000, which is a guess rather than a measurement,
-    /// and a wrong number triggers compaction at the wrong time - worse
-    /// than not triggering. When the catalog carries real per-model
-    /// values, this is where they will take precedence.
+    /// The source is, in order: the model catalog's own `contextWindow`
+    /// for the selected model, then `settings.context_window` (default
+    /// 200_000, mirroring Pi's `DEFAULT_COMPACTION_SETTINGS`).
+    ///
+    /// The catalog was deliberately ignored when it held a flat 128_000 for
+    /// every model - a guess, and a wrong number fires the trigger at the
+    /// wrong time. R2d generated it from Pi's own data files, so it now
+    /// carries measured values (16 distinct windows across the providers
+    /// nini supports) and takes precedence.
     ///
     /// A settings value of 0 stays 0: "unknown window" means no automatic
     /// compaction, and the status bar says so rather than inventing a
     /// number.
     pub fn refresh_context_window(&mut self) {
-        let window = self.model_state.settings_snapshot.context_window;
-        self.run_state.context_window = window;
+        // v0.10 (R2d): the catalog now carries Pi's own per-model values
+        // (`contextWindow` in `providers/data/*.json`), so for a model it
+        // knows, that number wins - it is measured, and settings is a
+        // single default the user may not have adjusted for this model.
+        //
+        // Settings remain the fallback for a model the catalog does not
+        // have, and for the case where nobody has said anything at all.
+        let from_catalog = nini_core::model_lookup::context_window_for(&self.model_state.model);
+        self.run_state.context_window = match from_catalog {
+            Some(w) => w,
+            None => self.model_state.settings_snapshot.context_window,
+        };
     }
 
     /// Change the selected model, keeping the context window consistent.
