@@ -134,6 +134,23 @@ struct BuildingToolCall {
 /// `reasoning` field. Previously private, which is why the thinking level
 /// had no way to be observed from a test — recorded, persisted, and never
 /// visible to anything that could catch it missing.
+/// Whether this model accepts `temperature`, per Pi's model data.
+///
+/// Pi reads the flag off the model rather than the provider
+/// (`anthropic-messages.ts:182`), so it is a property of the model id, not
+/// of the endpoint. The catalog is generated from the same data files Pi
+/// ships, which is what makes this answerable without a table written by
+/// hand.
+fn model_supports_temperature(model: &str) -> bool {
+    let id = model.rsplit('/').next().unwrap_or(model);
+    nini_core::model_runtime::ModelRuntime::with_defaults()
+        .all()
+        .into_iter()
+        .find(|m| m.provider == "anthropic" && m.id.rsplit('/').next() == Some(id))
+        .map(|m| m.supports_temperature)
+        .unwrap_or(true)
+}
+
 pub fn build_request_body(req: &Request) -> Result<String, ProviderError> {
     let body = AnthropicRequest::from_neutral(req)?;
     serde_json::to_string(&body).map_err(ProviderError::from)
@@ -360,9 +377,27 @@ impl<'a> AnthropicRequest<'a> {
             // comes from the catalog: real Pi data declares
             // `supportsTemperature: false` for `claude-opus-4-7`,
             // `claude-opus-5` and others. It lands with the catalog work.
-            temperature: req
-                .temperature
-                .filter(|_| !req.reasoning.map(|l| l.is_on()).unwrap_or(false)),
+            // Both halves of Pi's condition now
+            // (`anthropic-messages.ts:1021`):
+            //
+            //   options?.temperature !== undefined
+            //   && !options?.thinkingEnabled
+            //   && compat.supportsTemperature
+            //
+            // The second is per-model and comes from the catalog, which is
+            // generated from the same data files Pi ships.
+            // `claude-opus-4-7`, `claude-opus-4-8` and `claude-opus-5`
+            // declare `supportsTemperature: false`.
+            //
+            // A model the catalog does not have counts as supporting
+            // temperature, which is Pi's own default
+            // (`model.compat?.supportsTemperature ?? true`, `:182`) and the
+            // safe direction: a value Pi would not have sent is dropped
+            // rather than invented.
+            temperature: req.temperature.filter(|_| {
+                !req.reasoning.map(|l| l.is_on()).unwrap_or(false)
+                    && model_supports_temperature(&req.model)
+            }),
             thinking,
             stream: true,
         })
