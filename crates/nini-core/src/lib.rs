@@ -8,6 +8,7 @@ pub use agent_hooks::{AgentLoopHooks, NoopHooks, TurnUpdate};
 pub mod branch_summary;
 pub mod conversion;
 
+pub mod auth_store;
 pub mod compaction;
 pub mod entries;
 pub mod git;

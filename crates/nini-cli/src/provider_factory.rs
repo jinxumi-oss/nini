@@ -50,10 +50,37 @@ fn resolve_api_key(explicit: Option<&str>, env_var: &str, provider: &str) -> Res
         return Ok(trimmed.to_string());
     }
     match std::env::var(env_var) {
-        Ok(v) if !v.trim().is_empty() => Ok(v),
+        Ok(v) if !v.trim().is_empty() => return Ok(v),
         Ok(_) => anyhow::bail!("{env_var} is set but empty. Unset it, or pass --api-key <key>."),
-        Err(_) => anyhow::bail!("{env_var} required for {provider}"),
+        Err(_) => {}
     }
+
+    // v0.10 (R2j): Pi's credential store, read-only. Same precedence as
+    // Pi's (`compat.ts:226-229`): explicit option, then the environment,
+    // then the stored credential.
+    //
+    // Nothing is written here. `/login` still prints an `export` line
+    // rather than storing a secret, and that is a decision about writing
+    // credentials to disk, not a wiring gap.
+    if let Some(key) = nini_core::auth_store::stored_key(provider) {
+        return Ok(key);
+    }
+
+    let mut msg = format!("{env_var} required for {provider}");
+    let stored = nini_core::auth_store::stored_providers();
+    if !stored.is_empty() {
+        msg.push_str(&format!(
+            ". nini found credentials in {} for: {}",
+            nini_core::auth_store::auth_path().display(),
+            stored.join(", ")
+        ));
+    } else {
+        msg.push_str(&format!(
+            ". No credential in {} either - run /login, or set {env_var}.",
+            nini_core::auth_store::auth_path().display()
+        ));
+    }
+    anyhow::bail!(msg)
 }
 
 /// Construct an `Arc<dyn Provider>` for the named backend. Reads
