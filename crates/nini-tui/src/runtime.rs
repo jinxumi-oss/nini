@@ -1718,6 +1718,19 @@ fn submit_user_input_inner(
                         duration_ms: result.duration_ms,
                         collapsed: false,
                     });
+                // v0.10 (R2f): record it too. The transcript line above is
+                // display only - without a session entry the command is gone
+                // on `/resume`, and `render_context_entries` rebuilds from
+                // the session rather than from what is on screen.
+                g.session_append_bash_execution(
+                    &cmd,
+                    &output,
+                    &crate::ansi::strip_ansi(&result.stderr),
+                    result.ok,
+                    result.exit_code,
+                    result.duration_ms,
+                );
+                g.session_flush();
                 g.push_divider();
                 // For `!cmd`, also inject the output as a user message so
                 // the agent sees it on the next turn. For `!!cmd` the

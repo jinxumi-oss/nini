@@ -95,6 +95,21 @@ fn render_context_entries(entries: &[nini_core::SessionEntry]) -> Vec<Transcript
                     duration_ms: None,
                 });
             }
+            AgentMessage::BashExecution(b) => {
+                // v0.10 (R2f): previously fell into the `_` arm and was
+                // dropped, so a resumed session could not show a command the
+                // user had run.
+                lines.push(TranscriptLine::BashExecution {
+                    id: String::new(),
+                    cmd: b.command.clone(),
+                    output: b.output.clone(),
+                    stderr: String::new(),
+                    ok: b.exit_code == Some(0),
+                    exit_code: b.exit_code,
+                    duration_ms: 0,
+                    collapsed: false,
+                });
+            }
             _ => {}
         }
     }
@@ -1602,6 +1617,47 @@ impl AppState {
                 timestamp: chrono::Utc::now().timestamp_millis(),
             },
         ));
+    }
+
+    /// Record a `!cmd` execution in the session.
+    ///
+    /// v0.10 (R2f): `!cmd` pushed a `TranscriptLine::BashExecution` and
+    /// nothing else. `BashExecutionMessage` had no production constructor
+    /// anywhere in the tree, so a shell command the user ran was visible
+    /// while the session was open and gone the moment they resumed - and
+    /// `render_context_entries`, which rebuilds the transcript from the
+    /// session, dropped the variant anyway.
+    ///
+    /// The command output is still injected as a user message for the model,
+    /// so what the agent sees was never the problem; what a resumed session
+    /// shows was.
+    ///
+    /// `full_output_path` stays `None`. Pi spills oversized output to a file
+    /// and points at it (`bash-execution.ts:197`); nini's truncation happens
+    /// in the render layer and the full text is still in memory, so there is
+    /// nothing to spill *to* yet. Carrying a path nobody writes would be the
+    /// same class of dead field this sweep has been removing.
+    pub fn session_append_bash_execution(
+        &mut self,
+        cmd: &str,
+        output: &str,
+        stderr: &str,
+        ok: bool,
+        exit_code: Option<i32>,
+        duration_ms: u64,
+    ) {
+        self.session_append_message(nini_core::entries::AgentMessage::BashExecution(
+            nini_core::entries::BashExecutionMessage {
+                command: cmd.to_string(),
+                output: output.to_string(),
+                exit_code,
+                cancelled: false,
+                truncated: false,
+                full_output_path: None,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            },
+        ));
+        let _ = (stderr, ok, duration_ms);
     }
 
     /// Append a pre-built session message, minting an id and a timestamp.
