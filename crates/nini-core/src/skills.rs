@@ -31,8 +31,8 @@ pub struct Skill {
 /// Where a skill was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
-    User,    // ~/.pi/agent/skills/
-    Project, // .pi/skills/
+    User,    // ~/.nini/agent/skills/
+    Project, // .nini/skills/
 }
 
 impl SkillSource {
@@ -150,15 +150,12 @@ fn split_frontmatter(text: &str) -> (Option<String>, String) {
 
 /// User-level skills directory: `~/.pi/agent/skills/`.
 pub fn user_skills_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)?;
-    Some(home.join(".pi").join("agent").join("skills"))
+    crate::paths::agent_file("skills")
 }
 
 /// Project-level skills directory: `<cwd>/.pi/skills/`.
 pub fn project_skills_dir(cwd: &Path) -> Option<PathBuf> {
-    Some(cwd.join(".pi").join("skills"))
+    Some(crate::paths::project_file(cwd, "skills"))
 }
 
 /// Render the loaded skills into a system-prompt fragment (Pi-style
@@ -238,7 +235,7 @@ mod tests {
             name: "firecrawl".into(),
             description: "Search & scrape the web".into(),
             body: String::new(),
-            base_dir: PathBuf::from("/home/jin/.pi/agent/skills/firecrawl"),
+            base_dir: PathBuf::from("/home/jin/.nini/agent/skills/firecrawl"),
             source: SkillSource::User,
             disable_model_invocation: false,
         };
@@ -253,7 +250,7 @@ mod tests {
             "missing escaped desc: {out}"
         );
         assert!(
-            out.contains("<location>/home/jin/.pi/agent/skills/firecrawl/SKILL.md</location>"),
+            out.contains("<location>/home/jin/.nini/agent/skills/firecrawl/SKILL.md</location>"),
             "missing location path: {out}"
         );
         assert!(out.contains("</available_skills>"), "missing closer: {out}");

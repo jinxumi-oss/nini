@@ -14,6 +14,7 @@ pub mod git;
 pub mod model_lookup;
 pub mod model_runtime;
 pub mod overflow;
+pub mod paths;
 pub mod project_trust;
 pub mod prompt_template;
 pub mod provider;

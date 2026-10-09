@@ -1119,8 +1119,8 @@ fn import_command_with_valid_jsonl_replaces_transcript() {
 }
 
 // =====================================================================
-// /prompt command: loads .md templates from .pi/prompts/ and
-// ~/.pi/agent/prompts/, substitutes $1/$@/$ARGUMENTS placeholders, and
+// /prompt command: loads .md templates from .nini/prompts/ and
+// ~/.nini/agent/prompts/, substitutes $1/$@/$ARGUMENTS placeholders, and
 // injects the rendered text as a user message.
 // =====================================================================
 
@@ -1130,7 +1130,7 @@ fn prompt_command_unknown_template_lists_available() {
     let mut state = AppState::new("test-model");
     let mut settings = SettingsManager::default();
     let tmp = tempfile::tempdir().unwrap();
-    let prompts_dir = tmp.path().join(".pi").join("prompts");
+    let prompts_dir = tmp.path().join(".nini").join("prompts");
     std::fs::create_dir_all(&prompts_dir).unwrap();
     let mut f = std::fs::File::create(prompts_dir.join("greet.md")).unwrap();
     writeln!(f, "---\ndescription: Greet the user\n---\nHello $1").unwrap();
@@ -1164,7 +1164,7 @@ fn prompt_command_renders_substituted_template() {
     let mut state = AppState::new("test-model");
     let mut settings = SettingsManager::default();
     let tmp = tempfile::tempdir().unwrap();
-    let prompts_dir = tmp.path().join(".pi").join("prompts");
+    let prompts_dir = tmp.path().join(".nini").join("prompts");
     std::fs::create_dir_all(&prompts_dir).unwrap();
     let mut f = std::fs::File::create(prompts_dir.join("greet.md")).unwrap();
     writeln!(f, "---\ndescription: Greet the user\n---\nHello $1").unwrap();
@@ -1201,7 +1201,7 @@ fn prompt_command_quoted_args_preserve_whitespace() {
     let mut state = AppState::new("test-model");
     let mut settings = SettingsManager::default();
     let tmp = tempfile::tempdir().unwrap();
-    let prompts_dir = tmp.path().join(".pi").join("prompts");
+    let prompts_dir = tmp.path().join(".nini").join("prompts");
     std::fs::create_dir_all(&prompts_dir).unwrap();
     let mut f = std::fs::File::create(prompts_dir.join("greet.md")).unwrap();
     writeln!(f, "---\ndescription: Greet user\n---\nHello $1").unwrap();

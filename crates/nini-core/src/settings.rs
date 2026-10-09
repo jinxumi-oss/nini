@@ -85,14 +85,11 @@ pub fn load_settings(cwd: &Path) -> Settings {
 }
 
 pub fn user_settings_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)?;
-    Some(home.join(".pi").join("agent").join("settings.json"))
+    crate::paths::agent_file("settings.json")
 }
 
 pub fn project_settings_path(cwd: &Path) -> Option<PathBuf> {
-    Some(cwd.join(".pi").join("settings.json"))
+    Some(crate::paths::project_file(cwd, "settings.json"))
 }
 
 /// Load models.json (`~/.pi/agent/models.json` + `.pi/models.json`).
@@ -101,17 +98,10 @@ pub fn project_settings_path(cwd: &Path) -> Option<PathBuf> {
 /// schema (with `models: Vec<...>` arrays) is intentionally not implemented
 /// yet — providers' built-in catalogs are used instead.
 pub fn load_models_json(cwd: &Path) -> ModelsJson {
-    let user = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from);
-    let candidates = vec![
-        user.as_ref()
-            .map(|h| h.join(".pi").join("agent").join("models.json")),
-        Some(cwd.join(".pi").join("models.json")),
-    ];
+    let candidates = crate::paths::candidates(cwd, "models.json");
 
     let mut out = ModelsJson::default();
-    for path in candidates.into_iter().flatten() {
+    for path in candidates {
         if let Ok(text) = std::fs::read_to_string(&path) {
             if let Ok(parsed) = serde_json::from_str::<ModelsJson>(&text) {
                 out.providers.extend(parsed.providers);
@@ -163,7 +153,7 @@ mod tests {
     #[test]
     fn load_project_overrides_user() {
         let dir = tempdir().unwrap();
-        let pi_dir = dir.path().join(".pi");
+        let pi_dir = dir.path().join(".nini");
         std::fs::create_dir_all(&pi_dir).unwrap();
 
         let mut f = std::fs::File::create(pi_dir.join("settings.json")).unwrap();
@@ -177,7 +167,7 @@ mod tests {
     #[test]
     fn unknown_fields_are_tolerated() {
         let dir = tempdir().unwrap();
-        let pi_dir = dir.path().join(".pi");
+        let pi_dir = dir.path().join(".nini");
         std::fs::create_dir_all(&pi_dir).unwrap();
         let mut f = std::fs::File::create(pi_dir.join("settings.json")).unwrap();
         writeln!(
@@ -192,7 +182,7 @@ mod tests {
     #[test]
     fn load_models_json_merges_providers() {
         let dir = tempdir().unwrap();
-        let pi_dir = dir.path().join(".pi");
+        let pi_dir = dir.path().join(".nini");
         std::fs::create_dir_all(&pi_dir).unwrap();
         let mut f = std::fs::File::create(pi_dir.join("models.json")).unwrap();
         writeln!(

@@ -109,7 +109,7 @@ impl ProjectTrustStore {
         Some(self.decision.clone())
     }
     pub fn default_path() -> Option<std::path::PathBuf> {
-        Some(std::path::PathBuf::from(".pi/agent/trust.json"))
+        Some(std::path::PathBuf::from(".nini/agent/trust.json"))
     }
 
     pub fn save(&self, _path: &Path) -> Result<(), std::io::Error> {

@@ -111,7 +111,7 @@ pub fn user_prompts_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(
         PathBuf::from(home)
-            .join(".pi")
+            .join(".nini")
             .join("agent")
             .join("prompts"),
     )
@@ -119,7 +119,7 @@ pub fn user_prompts_dir() -> Option<PathBuf> {
 
 /// Default project-level prompt templates directory: `./.pi/prompts/`.
 pub fn project_prompts_dir(cwd: &Path) -> Option<PathBuf> {
-    Some(cwd.join(".pi").join("prompts"))
+    Some(crate::paths::project_file(cwd, "prompts"))
 }
 
 /// Load prompt templates from one or more paths (files or directories).
@@ -565,13 +565,18 @@ tags:
         std::env::set_var("HOME", "/tmp/test-home");
         assert_eq!(
             user_prompts_dir(),
-            Some(std::path::PathBuf::from("/tmp/test-home/.pi/agent/prompts"))
+            Some(std::path::PathBuf::from(
+                "/tmp/test-home/.nini/agent/prompts"
+            ))
         );
     }
 
     #[test]
     fn project_prompts_dir_under_cwd() {
         let dir = project_prompts_dir(std::path::Path::new("/some/cwd"));
-        assert_eq!(dir, Some(std::path::PathBuf::from("/some/cwd/.pi/prompts")));
+        assert_eq!(
+            dir,
+            Some(std::path::PathBuf::from("/some/cwd/.nini/prompts"))
+        );
     }
 }

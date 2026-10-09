@@ -451,7 +451,7 @@ mod p0_1_skills_tests {
 
     /// Create `<root>/.pi/skills/<name>/SKILL.md` and return `root`.
     fn make_project_with_skill(tmp: &std::path::Path, name: &str, desc: &str) -> PathBuf {
-        let dir = tmp.join(".pi").join("skills").join(name);
+        let dir = tmp.join(".nini").join("skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("SKILL.md"),

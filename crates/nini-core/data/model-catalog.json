@@ -18,12 +18,12 @@
    "cache_write": 12.5
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "max",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-haiku-4-5",
@@ -44,8 +44,8 @@
    "cache_write": 1.25
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-haiku-4-5-20251001",
@@ -66,8 +66,8 @@
    "cache_write": 1.25
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-opus-4-5",
@@ -88,8 +88,8 @@
    "cache_write": 6.25
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-opus-4-5-20251101",
@@ -110,8 +110,8 @@
    "cache_write": 6.25
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-opus-4-6",
@@ -132,10 +132,10 @@
    "cache_write": 6.25
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "max"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-opus-4-7",
@@ -156,11 +156,11 @@
    "cache_write": 6.25
   },
   "supports_temperature": false,
-  "cost_tiers": [],
   "thinking_levels": [
    "max",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-opus-4-8",
@@ -181,11 +181,11 @@
    "cache_write": 6.25
   },
   "supports_temperature": false,
-  "cost_tiers": [],
   "thinking_levels": [
    "max",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-opus-5",
@@ -206,11 +206,11 @@
    "cache_write": 6.25
   },
   "supports_temperature": false,
-  "cost_tiers": [],
   "thinking_levels": [
    "max",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-sonnet-4-5",
@@ -231,8 +231,8 @@
    "cache_write": 3.75
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-sonnet-4-5-20250929",
@@ -253,8 +253,8 @@
    "cache_write": 3.75
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-sonnet-4-6",
@@ -275,10 +275,10 @@
    "cache_write": 3.75
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "max"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "anthropic/claude-sonnet-5",
@@ -299,11 +299,11 @@
    "cache_write": 2.5
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "max",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "deepseek/deepseek-v4-flash",
@@ -323,14 +323,14 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
    "max",
    "medium",
    "minimal"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "deepseek/deepseek-v4-pro",
@@ -350,14 +350,14 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
    "max",
    "medium",
    "minimal"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/deep-research-max-preview-04-2026",
@@ -378,8 +378,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "google/deep-research-preview-04-2026",
@@ -400,8 +400,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-2.5-computer-use-preview-10-2025",
@@ -422,8 +422,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-2.5-flash",
@@ -444,8 +444,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-2.5-flash-lite",
@@ -466,8 +466,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-2.5-pro",
@@ -488,8 +488,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3-flash-preview",
@@ -510,10 +510,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3.1-flash-lite",
@@ -534,10 +534,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3.1-flash-lite-image",
@@ -558,10 +558,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3.1-flash-lite-preview",
@@ -582,10 +582,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3.1-flash-live-preview",
@@ -606,10 +606,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3.1-pro-preview",
@@ -630,14 +630,14 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
    "medium",
    "minimal",
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3.1-pro-preview-customtools",
@@ -658,14 +658,14 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
    "medium",
    "minimal",
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3.5-flash",
@@ -686,10 +686,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3.5-flash-lite",
@@ -710,10 +710,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3.6-flash",
@@ -734,10 +734,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-3.7-flash",
@@ -758,10 +758,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-flash-latest",
@@ -782,10 +782,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-flash-lite-latest",
@@ -806,10 +806,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemini-robotics-er-1.6-preview",
@@ -830,8 +830,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "google/gemma-4-26b-a4b-it",
@@ -852,14 +852,14 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
    "medium",
    "minimal",
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "google/gemma-4-31b-it",
@@ -880,14 +880,14 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
    "medium",
    "minimal",
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "groq/llama-3.1-8b-instant",
@@ -907,8 +907,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "groq/llama-3.3-70b-versatile",
@@ -928,8 +928,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "groq/openai/gpt-oss-120b",
@@ -949,7 +949,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -958,7 +957,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "groq/openai/gpt-oss-20b",
@@ -978,7 +978,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -987,7 +986,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "groq/openai/gpt-oss-safeguard-20b",
@@ -1007,7 +1007,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -1016,7 +1015,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "groq/qwen/qwen3.6-27b",
@@ -1037,7 +1037,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -1046,7 +1045,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "mistral/codestral-latest",
@@ -1066,8 +1066,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/devstral-2512",
@@ -1087,8 +1087,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/devstral-latest",
@@ -1108,8 +1108,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/devstral-medium-2507",
@@ -1129,8 +1129,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/devstral-medium-latest",
@@ -1150,8 +1150,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/devstral-small-2505",
@@ -1171,8 +1171,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/devstral-small-2507",
@@ -1192,8 +1192,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/labs-devstral-small-2512",
@@ -1214,8 +1214,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/magistral-medium-latest",
@@ -1235,8 +1235,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/magistral-small",
@@ -1256,8 +1256,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/ministral-3b-latest",
@@ -1277,8 +1277,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/ministral-8b-latest",
@@ -1298,8 +1298,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-large-2411",
@@ -1319,8 +1319,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-large-2512",
@@ -1341,8 +1341,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-large-latest",
@@ -1363,8 +1363,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-medium-2505",
@@ -1385,8 +1385,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-medium-2508",
@@ -1407,8 +1407,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-medium-2604",
@@ -1429,8 +1429,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-medium-3.5",
@@ -1451,8 +1451,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-medium-latest",
@@ -1473,8 +1473,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-nemo",
@@ -1494,8 +1494,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-small-2506",
@@ -1516,8 +1516,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-small-2603",
@@ -1538,8 +1538,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/mistral-small-latest",
@@ -1560,8 +1560,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/open-mistral-7b",
@@ -1581,8 +1581,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/open-mistral-nemo",
@@ -1602,8 +1602,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/open-mixtral-8x22b",
@@ -1623,8 +1623,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/open-mixtral-8x7b",
@@ -1644,8 +1644,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/pixtral-12b",
@@ -1666,8 +1666,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/pixtral-large-latest",
@@ -1688,8 +1688,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "mistral/voxtral-small-latest",
@@ -1709,8 +1709,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-4",
@@ -1730,8 +1730,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-4-turbo",
@@ -1752,8 +1752,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-4.1",
@@ -1774,8 +1774,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-4.1-mini",
@@ -1796,8 +1796,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-4.1-nano",
@@ -1818,8 +1818,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-4o",
@@ -1840,8 +1840,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-4o-2024-05-13",
@@ -1862,8 +1862,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-4o-2024-08-06",
@@ -1884,8 +1884,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-4o-2024-11-20",
@@ -1906,8 +1906,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-4o-mini",
@@ -1928,8 +1928,8 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
-  "thinking_levels": []
+  "thinking_levels": [],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5",
@@ -1950,7 +1950,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -1959,7 +1958,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5-chat-latest",
@@ -1980,10 +1980,10 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5-mini",
@@ -2004,7 +2004,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2013,7 +2012,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5-nano",
@@ -2034,7 +2034,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2043,7 +2042,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5-pro",
@@ -2064,7 +2064,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2073,7 +2072,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5.1",
@@ -2094,7 +2094,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2103,7 +2102,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5.2",
@@ -2124,7 +2124,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2133,7 +2132,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5.2-chat-latest",
@@ -2154,7 +2154,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2163,7 +2162,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5.2-pro",
@@ -2184,7 +2184,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2193,7 +2192,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5.3-chat-latest",
@@ -2214,11 +2214,11 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5.3-codex",
@@ -2239,7 +2239,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2248,7 +2247,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5.3-codex-spark",
@@ -2269,7 +2269,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2278,7 +2277,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5.4",
@@ -2299,15 +2299,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [
-   {
-    "input_tokens_above": 272000,
-    "input": 5,
-    "output": 22.5,
-    "cache_read": 0.5,
-    "cache_write": 0
-   }
-  ],
   "thinking_levels": [
    "high",
    "low",
@@ -2316,6 +2307,15 @@
    "minimal",
    "off",
    "xhigh"
+  ],
+  "cost_tiers": [
+   {
+    "input_tokens_above": 272000,
+    "input": 5,
+    "output": 22.5,
+    "cache_read": 0.5,
+    "cache_write": 0
+   }
   ]
  },
  {
@@ -2337,7 +2337,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2346,7 +2345,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5.4-nano",
@@ -2367,7 +2367,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2376,7 +2375,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/gpt-5.4-pro",
@@ -2397,15 +2397,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [
-   {
-    "input_tokens_above": 272000,
-    "input": 60,
-    "output": 270,
-    "cache_read": 0,
-    "cache_write": 0
-   }
-  ],
   "thinking_levels": [
    "high",
    "low",
@@ -2414,6 +2405,15 @@
    "minimal",
    "off",
    "xhigh"
+  ],
+  "cost_tiers": [
+   {
+    "input_tokens_above": 272000,
+    "input": 60,
+    "output": 270,
+    "cache_read": 0,
+    "cache_write": 0
+   }
   ]
  },
  {
@@ -2435,15 +2435,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [
-   {
-    "input_tokens_above": 272000,
-    "input": 10,
-    "output": 45,
-    "cache_read": 1,
-    "cache_write": 0
-   }
-  ],
   "thinking_levels": [
    "high",
    "low",
@@ -2452,6 +2443,15 @@
    "minimal",
    "off",
    "xhigh"
+  ],
+  "cost_tiers": [
+   {
+    "input_tokens_above": 272000,
+    "input": 10,
+    "output": 45,
+    "cache_read": 1,
+    "cache_write": 0
+   }
   ]
  },
  {
@@ -2473,15 +2473,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [
-   {
-    "input_tokens_above": 272000,
-    "input": 60,
-    "output": 270,
-    "cache_read": 0,
-    "cache_write": 0
-   }
-  ],
   "thinking_levels": [
    "high",
    "low",
@@ -2490,6 +2481,15 @@
    "minimal",
    "off",
    "xhigh"
+  ],
+  "cost_tiers": [
+   {
+    "input_tokens_above": 272000,
+    "input": 60,
+    "output": 270,
+    "cache_read": 0,
+    "cache_write": 0
+   }
   ]
  },
  {
@@ -2511,15 +2511,6 @@
    "cache_write": 0.25
   },
   "supports_temperature": true,
-  "cost_tiers": [
-   {
-    "input_tokens_above": 272000,
-    "input": 0.4,
-    "output": 1.8,
-    "cache_read": 0.04,
-    "cache_write": 0.5
-   }
-  ],
   "thinking_levels": [
    "high",
    "low",
@@ -2528,6 +2519,15 @@
    "minimal",
    "off",
    "xhigh"
+  ],
+  "cost_tiers": [
+   {
+    "input_tokens_above": 272000,
+    "input": 0.4,
+    "output": 1.8,
+    "cache_read": 0.04,
+    "cache_write": 0.5
+   }
   ]
  },
  {
@@ -2549,15 +2549,6 @@
    "cache_write": 6.25
   },
   "supports_temperature": true,
-  "cost_tiers": [
-   {
-    "input_tokens_above": 272000,
-    "input": 10,
-    "output": 45,
-    "cache_read": 1,
-    "cache_write": 12.5
-   }
-  ],
   "thinking_levels": [
    "high",
    "low",
@@ -2566,6 +2557,15 @@
    "minimal",
    "off",
    "xhigh"
+  ],
+  "cost_tiers": [
+   {
+    "input_tokens_above": 272000,
+    "input": 10,
+    "output": 45,
+    "cache_read": 1,
+    "cache_write": 12.5
+   }
   ]
  },
  {
@@ -2587,15 +2587,6 @@
    "cache_write": 2.5
   },
   "supports_temperature": true,
-  "cost_tiers": [
-   {
-    "input_tokens_above": 272000,
-    "input": 4,
-    "output": 18,
-    "cache_read": 0.4,
-    "cache_write": 5
-   }
-  ],
   "thinking_levels": [
    "high",
    "low",
@@ -2604,6 +2595,15 @@
    "minimal",
    "off",
    "xhigh"
+  ],
+  "cost_tiers": [
+   {
+    "input_tokens_above": 272000,
+    "input": 4,
+    "output": 18,
+    "cache_read": 0.4,
+    "cache_write": 5
+   }
   ]
  },
  {
@@ -2625,7 +2625,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2634,7 +2633,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/o1",
@@ -2655,7 +2655,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2664,7 +2663,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/o1-pro",
@@ -2685,7 +2685,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2694,7 +2693,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/o3",
@@ -2715,7 +2715,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2724,7 +2723,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/o3-mini",
@@ -2744,7 +2744,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2753,7 +2752,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/o3-pro",
@@ -2774,7 +2774,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2783,7 +2782,8 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  },
  {
   "id": "openai/o4-mini",
@@ -2804,7 +2804,6 @@
    "cache_write": 0
   },
   "supports_temperature": true,
-  "cost_tiers": [],
   "thinking_levels": [
    "high",
    "low",
@@ -2813,6 +2812,7 @@
    "minimal",
    "off",
    "xhigh"
-  ]
+  ],
+  "cost_tiers": []
  }
 ]

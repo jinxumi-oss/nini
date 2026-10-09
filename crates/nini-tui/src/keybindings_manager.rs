@@ -62,7 +62,7 @@ impl KeybindingsManager {
             }
         }
         if let Some(cwd) = cwd {
-            let path = cwd.join(".pi").join("keybindings.json");
+            let path = nini_core::paths::project_file(cwd, "keybindings.json");
             if path.exists() {
                 if let Err(e) = mgr.load_file(&path) {
                     eprintln!("[nini] keybindings: {} load failed: {e}", path.display());
@@ -169,7 +169,7 @@ pub fn user_keybindings_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     Some(
         PathBuf::from(home)
-            .join(".pi")
+            .join(".nini")
             .join("agent")
             .join("keybindings.json"),
     )

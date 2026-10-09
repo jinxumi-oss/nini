@@ -263,7 +263,7 @@ fn cmd_export(state: &mut AppState, _settings: &mut SettingsManager, _args: &str
     let html = render_transcript_html(&state.transcript_state.lines);
     let dir = std::env::var("HOME").ok().map(|h| {
         std::path::PathBuf::from(h)
-            .join(".pi")
+            .join(".nini")
             .join("agent")
             .join("exports")
     });
@@ -309,7 +309,7 @@ fn cmd_import(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
         return CommandResult::output(vec![
             "import <path-to-jsonl> — load a Pi-compatible session file".to_string(),
             "examples:".to_string(),
-            "  /import ~/.pi/agent/sessions/<project>/20260101-120000-abcd.jsonl".to_string(),
+            "  /import ~/.nini/agent/sessions/<project>/20260101-120000-abcd.jsonl".to_string(),
             "  /import ./my-session.jsonl".to_string(),
         ]);
     }
@@ -915,7 +915,7 @@ fn cmd_new(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -
         .as_deref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".pi")
+        .join(".nini")
         .join("agent")
         .join("sessions")
         .join(&cwd);
@@ -968,7 +968,9 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
             Some(h) => std::path::PathBuf::from(h),
             None => return Vec::new(),
         };
-        let base = home.join(".pi").join("agent").join("sessions");
+        let base = nini_core::paths::agent_dir()
+            .unwrap_or_else(|| home.join("fallback"))
+            .join("sessions");
         if !base.exists() {
             return Vec::new();
         }
@@ -1015,7 +1017,7 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     if entries.is_empty() {
         return CommandResult::output(vec![
             "No sessions found.".to_string(),
-            "Sessions are stored in ~/.pi/agent/sessions/".to_string(),
+            "Sessions are stored in ~/.nini/agent/sessions/".to_string(),
         ]);
     }
 
@@ -1171,7 +1173,7 @@ fn cmd_prompt(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     if args_trimmed.is_empty() {
         return CommandResult::output(vec![
             "Usage: /prompt <name> [args...]".to_string(),
-            "(prompt templates load from .pi/prompts/ and ~/.pi/agent/prompts/)".to_string(),
+            "(prompt templates load from .nini/prompts/ and ~/.nini/agent/prompts/)".to_string(),
         ]);
     }
     // Split into template-name + remaining args via shell-style
@@ -1209,7 +1211,7 @@ fn cmd_prompt(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
                 out.push("Available templates:".to_string());
                 out.extend(names);
             } else {
-                out.push("(no templates in .pi/prompts/ or ~/.pi/agent/prompts/)".to_string());
+                out.push("(no templates in .nini/prompts/ or ~/.nini/agent/prompts/)".to_string());
             }
             return CommandResult::output(out);
         }

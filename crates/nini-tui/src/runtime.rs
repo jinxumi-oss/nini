@@ -608,7 +608,7 @@ async fn run_loop(
                         let dir = home
                             .map(|h| std::path::PathBuf::from(h))
                             .unwrap_or_else(|| std::path::PathBuf::from("."))
-                            .join(".pi")
+                            .join(".nini")
                             .join("agent")
                             .join("sessions")
                             .join(&cwd_name);
@@ -642,7 +642,7 @@ async fn run_loop(
                         let trust_path = home.as_deref().and_then(|h| {
                             nini_core::project_trust::ProjectTrustStore::load(
                                 &std::path::PathBuf::from(h)
-                                    .join(".pi")
+                                    .join(".nini")
                                     .join("agent")
                                     .join("trust.json"),
                             )
@@ -941,7 +941,7 @@ fn apply_selector_result(
             let cwd = trust_sel.cwd.clone();
             if let Ok(home) = std::env::var("HOME") {
                 let path = std::path::PathBuf::from(home)
-                    .join(".pi")
+                    .join(".nini")
                     .join("agent")
                     .join("trust.json");
                 let mut store =

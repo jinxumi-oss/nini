@@ -127,7 +127,7 @@ impl SettingsManager {
     pub fn settings_path(&self) -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_default();
         PathBuf::from(home)
-            .join(".pi")
+            .join(".nini")
             .join("agent")
             .join("settings.json")
     }

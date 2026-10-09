@@ -125,7 +125,7 @@ fn cli_info_shows_skills() {
     assert!(out.contains("nini info"));
     assert!(out.contains("Settings"));
     assert!(out.contains("Skills"));
-    // Skills are environment-dependent: developers have ~/.pi/agent/skills/.
+    // Skills are environment-dependent: developers have ~/.nini/agent/skills/.
     // CI runners typically have none. We assert the rendered count matches
     // the header count rather than a minimum.
     let skill_count = out.lines().filter(|l| l.starts_with("  - ")).count();
