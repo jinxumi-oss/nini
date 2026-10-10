@@ -7,11 +7,13 @@
 //! v0.8 because it requires cross-task async user confirmation
 //! (see `docs/plans/v0.7-hook-parity.md` §M2).
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TrustLevel {
     Ask,
     Trusted,
@@ -25,7 +27,7 @@ impl Default for TrustLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TrustDecision {
     pub level: TrustLevel,
 }
@@ -95,27 +97,85 @@ pub struct ToolCall {
     pub cwd: String,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ProjectTrustStore {
+    /// The decision for a cwd with no entry of its own.
+    #[serde(default)]
     pub decision: TrustDecision,
+    #[serde(default)]
     cwd_map: HashMap<String, TrustDecision>,
 }
 
 impl ProjectTrustStore {
-    pub fn load(_path: &Path) -> Result<Self, std::io::Error> {
-        Ok(Self::default())
-    }
-    pub fn get(&self, _key: &str) -> Option<TrustDecision> {
-        Some(self.decision.clone())
-    }
-    pub fn default_path() -> Option<std::path::PathBuf> {
-        Some(std::path::PathBuf::from(".nini/agent/trust.json"))
+    /// Read the store.
+    ///
+    /// v0.7 through v0.10 had this as `load(_path) { Ok(Self::default()) }` —
+    /// it ignored the path and never read the file, so `/trust` showed the
+    /// user a per-project selector, reported success, and remembered
+    /// nothing. A missing file is a legitimate empty store; a *malformed*
+    /// one is an error, because silently treating an unreadable
+    /// security decision as "nothing is trusted" is not a default any
+    /// more than a zero cost is.
+    pub fn load(path: &Path) -> Result<Self, std::io::Error> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{}: {e}", path.display()),
+                )
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e),
+        }
     }
 
-    pub fn save(&self, _path: &Path) -> Result<(), std::io::Error> {
+    /// The decision in force for `cwd`: its own if it has one, otherwise
+    /// the store-wide default.
+    pub fn get(&self, key: &str) -> Option<TrustDecision> {
+        Some(self.get_for_cwd(key))
+    }
+
+    /// `~/.nini/agent/trust.json`, or wherever `NINI_AGENT_DIR` points.
+    ///
+    /// The previous version returned the *relative* `.nini/agent/trust.json`,
+    /// which resolved against the working directory rather than the home
+    /// directory — so the same decision landed in a different file
+    /// depending on where nini was launched from.
+    pub fn default_path() -> Option<std::path::PathBuf> {
+        crate::paths::agent_file("trust.json")
+    }
+
+    /// Write the store atomically, at 0600 on unix.
+    ///
+    /// Trust decisions are security state: a partially written file, or one
+    /// any local user can rewrite, is a store that cannot be relied on.
+    /// Write to a sibling temp file and rename, which is atomic within a
+    /// filesystem, then tighten the mode before the rename so the file is
+    /// never briefly world-readable.
+    pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let body = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, body.as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&tmp, mode)?;
+        }
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
-    pub fn clear(&mut self, _cwd: &str) {}
+
+    /// Forget one project's decision. Previously a no-op, so there was no
+    /// way back to "ask me again" once a directory had been trusted.
+    pub fn clear(&mut self, cwd: &str) {
+        self.cwd_map.remove(cwd);
+    }
 
     pub fn set(&mut self, cwd: &str, decision: TrustDecision) {
         self.cwd_map.insert(cwd.to_string(), decision);

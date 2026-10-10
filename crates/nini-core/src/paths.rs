@@ -80,6 +80,21 @@ pub fn project_file(cwd: &Path, name: &str) -> PathBuf {
     project_dir(cwd).join(name)
 }
 
+/// `~/.nini/agent/sessions` - where a conversation is recorded.
+pub fn sessions_dir() -> Option<PathBuf> {
+    agent_dir().map(|d| d.join("sessions"))
+}
+
+/// `~/.nini/agent/exports` - where `/export` writes its HTML snapshot.
+pub fn exports_dir() -> Option<PathBuf> {
+    agent_dir().map(|d| d.join("exports"))
+}
+
+/// `~/.nini/agent/trust.json` - per-project trust decisions.
+pub fn trust_file() -> Option<PathBuf> {
+    agent_file("trust.json")
+}
+
 /// The candidates for a project file, project first then user-level.
 ///
 /// Project-level overrides user-level, which is what every one of these

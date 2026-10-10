@@ -24,26 +24,53 @@
 use nini_core::paths;
 use std::path::{Path, PathBuf};
 
+/// `NINI_AGENT_DIR` and `HOME` are process-wide, and Cargo runs the tests
+/// in one binary on many threads.
+///
+/// The first version of this file carried the comment "serialised by the
+/// caller-visible lock below" above a `set_var` and had no lock. Four
+/// tests read and wrote the same variable concurrently, so
+/// `the_agent_directory_is_ninis` - which asserts the variable is *not*
+/// set - could observe another test's value. It passed because the
+/// interleaving was unlikely, not because anything was synchronised.
+///
+/// One lock covers the whole set-restore cycle, held across `f` as well as
+/// the writes, because the window that matters is between setting the
+/// value and the assertion reading it.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 /// Set `NINI_AGENT_DIR` for the duration of `f`.
 fn with_agent_dir<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+    let _guard = env_lock();
     let saved = std::env::var_os(paths::ENV_AGENT_DIR);
-    // SAFETY: serialised by the caller-visible lock below.
+    // SAFETY: every mutation in this file and in override_wiring.rs holds
+    // `env_lock`, so no other thread can observe a half-applied change.
     unsafe { std::env::set_var(paths::ENV_AGENT_DIR, dir) };
     let out = f();
-    match saved {
-        Some(v) => unsafe { std::env::set_var(paths::ENV_AGENT_DIR, v) },
-        None => unsafe { std::env::remove_var(paths::ENV_AGENT_DIR) },
+    unsafe {
+        match saved {
+            Some(v) => std::env::set_var(paths::ENV_AGENT_DIR, v),
+            None => std::env::remove_var(paths::ENV_AGENT_DIR),
+        }
     }
     out
 }
 
 fn without_override<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = env_lock();
     let saved = std::env::var_os(paths::ENV_AGENT_DIR);
     unsafe { std::env::remove_var(paths::ENV_AGENT_DIR) };
     let out = f();
-    match saved {
-        Some(v) => unsafe { std::env::set_var(paths::ENV_AGENT_DIR, v) },
-        None => unsafe { std::env::remove_var(paths::ENV_AGENT_DIR) },
+    unsafe {
+        match saved {
+            Some(v) => std::env::set_var(paths::ENV_AGENT_DIR, v),
+            None => std::env::remove_var(paths::ENV_AGENT_DIR),
+        }
     }
     out
 }
@@ -89,10 +116,10 @@ fn the_override_is_ninis_own() {
 
 #[test]
 fn a_blank_override_falls_through_to_the_default() {
+    let _guard = env_lock();
     let saved = std::env::var_os(paths::ENV_AGENT_DIR);
-    // SAFETY: this test is the only one touching the variable at a time in
-    // this binary; the others in this file that do use `with_agent_dir`
-    // restore whatever they found.
+    // SAFETY: `env_lock` is held for the whole set-restore cycle here and in
+    // `with_agent_dir` above, so no other thread can observe the blank value.
     unsafe { std::env::set_var(paths::ENV_AGENT_DIR, "   ") };
     let dir = paths::agent_dir().expect("a home directory");
     let expected = paths::home_dir()

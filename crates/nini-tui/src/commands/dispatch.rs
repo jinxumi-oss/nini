@@ -259,14 +259,9 @@ fn cmd_scoped_models(
 }
 
 fn cmd_export(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
-    // v1: write a minimal HTML snapshot of the transcript to ~/.pi/agent/exports/.
+    // A minimal HTML snapshot of the transcript, into the agent directory.
     let html = render_transcript_html(&state.transcript_state.lines);
-    let dir = std::env::var("HOME").ok().map(|h| {
-        std::path::PathBuf::from(h)
-            .join(".nini")
-            .join("agent")
-            .join("exports")
-    });
+    let dir = nini_core::paths::exports_dir();
     let path = match dir {
         Some(d) => {
             let _ = std::fs::create_dir_all(&d);
@@ -290,7 +285,10 @@ fn cmd_export(state: &mut AppState, _settings: &mut SettingsManager, _args: &str
                 format!("(failed to write {})", p.display())
             }
         }
-        None => "(no HOME — skipped)".to_string(),
+        None => format!(
+            "(no session directory — set {} or HOME — skipped)",
+            nini_core::paths::ENV_AGENT_DIR
+        ),
     };
     state.push_assistant(format!("(exported session to {path})"));
     state.push_divider();
@@ -309,7 +307,14 @@ fn cmd_import(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
         return CommandResult::output(vec![
             "import <path-to-jsonl> — load a Pi-compatible session file".to_string(),
             "examples:".to_string(),
-            "  /import ~/.nini/agent/sessions/<project>/20260101-120000-abcd.jsonl".to_string(),
+            // The second example is the one that matters. The first was
+            // changed from `~/.pi/...` to `~/.nini/...` by a blanket
+            // string replace in R3, which made it self-referential:
+            // importing a session from the directory it is already in.
+            // Reading a Pi-written session is exactly what the unchanged
+            // JSONL schema is for, and this line was its only in-product
+            // documentation.
+            "  /import ~/.pi/agent/sessions/<project>/20260101-120000-abcd.jsonl".to_string(),
             "  /import ./my-session.jsonl".to_string(),
         ]);
     }
@@ -905,24 +910,30 @@ fn cmd_new(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -
     state.invalidate_item_counts();
     state.run_state.tokens = Default::default();
 
-    // Derive a session file path: ~/.pi/agent/sessions/<project>/<timestamp>.jsonl
-    let home = std::env::var("HOME").ok();
-    let cwd = std::env::current_dir()
+    // Session file path: <agent dir>/sessions/<project>/<timestamp>.jsonl
+    let project = std::env::current_dir()
         .ok()
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "default".to_string());
-    let dir = home
-        .as_deref()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".nini")
-        .join("agent")
-        .join("sessions")
-        .join(&cwd);
-    let _ = std::fs::create_dir_all(&dir);
-    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let session_path = dir.join(format!("{ts}.jsonl"));
-    state.session_init(session_path);
+
+    match nini_core::paths::sessions_dir() {
+        Some(base) => {
+            let dir = base.join(&project);
+            let _ = std::fs::create_dir_all(&dir);
+            let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+            state.session_init(dir.join(format!("{ts}.jsonl")));
+        }
+        // No `HOME` and no `NINI_AGENT_DIR`: run the conversation, record
+        // nothing, and say so. The previous `unwrap_or_else(|| ".")` wrote
+        // `./.nini/agent/sessions/...` into the user's project.
+        None => {
+            state.session_init_ephemeral();
+            state.push_assistant(format!(
+                "(not recorded — set {} to give nini a place to keep sessions)",
+                nini_core::paths::ENV_AGENT_DIR
+            ));
+        }
+    }
 
     state.push_assistant("(started new session)".to_string());
     state.push_divider();
@@ -964,13 +975,13 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     // per-cwd subdirectories where nini actually writes its
     // sessions; v0.6 uses walkdir to find them all.
     fn session_entries() -> Vec<std::path::PathBuf> {
-        let home = match std::env::var("HOME").ok() {
-            Some(h) => std::path::PathBuf::from(h),
-            None => return Vec::new(),
+        // The previous version fell back to `$HOME/fallback/sessions` when
+        // the agent directory could not be resolved. That path exists
+        // nowhere and was never written to; it only ever made the listing
+        // look like it was looking somewhere.
+        let Some(base) = nini_core::paths::sessions_dir() else {
+            return Vec::new();
         };
-        let base = nini_core::paths::agent_dir()
-            .unwrap_or_else(|| home.join("fallback"))
-            .join("sessions");
         if !base.exists() {
             return Vec::new();
         }

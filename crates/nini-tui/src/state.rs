@@ -1481,6 +1481,24 @@ impl AppState {
     /// Initialize a new session for this working directory. Creates the session
     /// header and stores the file path for atomic writes.
     pub fn session_init(&mut self, path: PathBuf) {
+        self.session_begin();
+        self.session_state.session_path = Some(path);
+    }
+
+    /// Start a conversation that has nowhere to be written.
+    ///
+    /// Used when nini cannot work out where sessions live - no `HOME` and
+    /// no `NINI_AGENT_DIR`. The conversation still runs; it simply is not
+    /// recorded, and `session_path` stays `None` instead of pointing at
+    /// somewhere invented. `/new` used to fall back to `"."` here, so a
+    /// session file would quietly appear inside whatever project the user
+    /// happened to be standing in.
+    pub fn session_init_ephemeral(&mut self) {
+        self.session_begin();
+        self.session_state.session_path = None;
+    }
+
+    fn session_begin(&mut self) {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
@@ -1488,7 +1506,6 @@ impl AppState {
         let session = nini_session::Session::new(cwd);
         self.session_state.session_id = Some(id);
         self.session_state.session = Some(Arc::new(Mutex::new(session)));
-        self.session_state.session_path = Some(path);
     }
 
     /// Append a user or assistant message to the session. Call this BEFORE

@@ -15,7 +15,11 @@ import re
 import subprocess
 from collections import defaultdict
 
-ROOT = "/home/jin/nini"
+# Relative to this script, not to whoever happens to run it. The old
+# value pointed at one developer's checkout, so the tool could only be
+# run from that machine - the same machine-specific coupling R3
+# removed from the Rust sources.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRATES = ["nini-core", "nini-tui", "nini-ai", "nini-session",
           "nini-tools", "nini-cli", "nini-ext", "nini-conformance"]
 

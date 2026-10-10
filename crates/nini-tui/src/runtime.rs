@@ -598,20 +598,19 @@ async fn run_loop(
                         selector_query.clear();
                     }
                     "session" => {
-                        let home = std::env::var("HOME").ok();
                         let cwd = std::env::current_dir().ok();
                         let cwd_name = cwd
                             .as_ref()
                             .and_then(|p| p.file_name())
                             .map(|s| s.to_string_lossy().into_owned())
                             .unwrap_or_else(|| "default".to_string());
-                        let dir = home
-                            .map(|h| std::path::PathBuf::from(h))
-                            .unwrap_or_else(|| std::path::PathBuf::from("."))
-                            .join(".nini")
-                            .join("agent")
-                            .join("sessions")
-                            .join(&cwd_name);
+                        // An empty directory lists nothing, rather than
+                        // scanning a path built from `$HOME` directly -
+                        // which is what this did, so `NINI_AGENT_DIR` had
+                        // no effect on the session picker at all.
+                        let dir = nini_core::paths::sessions_dir()
+                            .map(|b| b.join(&cwd_name))
+                            .unwrap_or_default();
                         let sel = Box::new(crate::selectors::SessionSelector::from_dir(&dir));
                         active_selector = Some(sel);
                         selector_query.clear();
@@ -638,15 +637,8 @@ async fn run_loop(
                             .as_ref()
                             .map(|p| p.to_string_lossy().into_owned())
                             .unwrap_or_default();
-                        let home = std::env::var("HOME").ok();
-                        let trust_path = home.as_deref().and_then(|h| {
-                            nini_core::project_trust::ProjectTrustStore::load(
-                                &std::path::PathBuf::from(h)
-                                    .join(".nini")
-                                    .join("agent")
-                                    .join("trust.json"),
-                            )
-                            .ok()
+                        let trust_path = nini_core::paths::trust_file().and_then(|p| {
+                            nini_core::project_trust::ProjectTrustStore::load(&p).ok()
                         });
                         let current = trust_path.as_ref().and_then(|t| t.get(&cwd_str));
                         let sel = Box::new(crate::selectors::TrustSelector::new(cwd_str, current));
@@ -939,15 +931,16 @@ fn apply_selector_result(
         if let Some(decision) = trust_sel.result {
             // Persist to ProjectTrustStore.
             let cwd = trust_sel.cwd.clone();
-            if let Ok(home) = std::env::var("HOME") {
-                let path = std::path::PathBuf::from(home)
-                    .join(".nini")
-                    .join("agent")
-                    .join("trust.json");
+            if let Some(path) = nini_core::paths::trust_file() {
                 let mut store =
                     nini_core::project_trust::ProjectTrustStore::load(&path).unwrap_or_default();
                 store.set(&cwd, decision);
-                let _ = store.save(&path);
+                if let Err(e) = store.save(&path) {
+                    // This was `let _ =` on a `save` that wrote nothing at
+                    // all, so a trust decision that could not be recorded
+                    // looked exactly like one that had been.
+                    eprintln!("[nini] trust: could not write {}: {e}", path.display());
+                }
             }
         }
         return None;

@@ -108,6 +108,19 @@ def regenerate(source_dir: str) -> int:
                     return 1
                 compat = m.get("compat") or {}
                 cost = m["cost"]
+
+                # Prices are never defaulted. A missing cacheRead is a
+                # missing price, and inventing one is the exact defect
+                # this project removed when it stopped fabricating costs
+                # for models it had no numbers for. Either the source has
+                # the field or the regeneration is wrong.
+                for field in ("input", "output", "cacheRead", "cacheWrite"):
+                    if field not in cost:
+                        print(
+                            f"MISSING PRICE {m['provider']}/{mid}: cost.{field}",
+                            file=sys.stderr,
+                        )
+                        return 1
                 out[f"{m['provider']}/{mid}"] = {
                     # nini names models `provider/model` everywhere, so the
                     # catalog does too.
@@ -125,8 +138,14 @@ def regenerate(source_dir: str) -> int:
                         "cache_read": cost.get("cacheRead", 0),
                         "cache_write": cost.get("cacheWrite", 0),
                     },
+                    # Unlike a price, a missing `supportsTemperature` has
+                    # an upstream meaning - the model takes the default -
+                    # so this one may be defaulted. It is counted and
+                    # reported rather than applied silently.
                     "supports_temperature": bool(
                         compat.get("supportsTemperature", True)),
+                    # not serialised; used only for the reporting above
+                    "supports_temperature_source": "supportsTemperature" in compat,
                     "thinking_levels": sorted((m.get("thinkingLevelMap") or {}).keys()),
                     "cost_tiers": [
                         {
@@ -149,6 +168,31 @@ def regenerate(source_dir: str) -> int:
     if not ordered:
         print("no models for the providers nini implements", file=sys.stderr)
         return 1
+
+    # Counted before the provenance flag is dropped: `supports_temperature`
+    # is the one field allowed to take a default, and how many entries did
+    # so is worth knowing rather than assuming.
+    defaulted = sum(
+        1 for m in ordered if not m.pop("supports_temperature_source")
+    )
+    if defaulted:
+        print(
+            f"note: {defaulted} of {len(ordered)} models had no "
+            f"`compat.supportsTemperature` and took the default",
+            file=sys.stderr,
+        )
+
+    # Say what is about to be overwritten, and to how many entries. A wrong
+    # `--from` used to destroy 112 curated models with no output at all.
+    if os.path.exists(CATALOG):
+        with open(CATALOG) as f:
+            current = json.load(f)
+        if len(current) != len(ordered):
+            print(
+                f"note: replacing {len(current)} models with {len(ordered)}",
+                file=sys.stderr,
+            )
+
     with open(CATALOG, "w") as f:
         json.dump(ordered, f, indent=1)
         f.write("\n")
