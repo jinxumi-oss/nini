@@ -1,7 +1,7 @@
 //! v0.8.2: App factory + TUI bootstrap.
 //!
 //! The default `nini` (no subcommand) entry path. Owns:
-//!   * first-run setup detection (`startup_ui::*`)
+//!   * first-run detection (`startup_ui::*`)
 //!   * Settings loading + --use-theme override
 //!   * Provider construction + fallback to ProgrammedProvider
 //!   * Tool registry construction + CLI filtering
@@ -123,14 +123,24 @@ pub(crate) fn build_tui_run_config(
 pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
     use nini_tui::runtime::AgentDriver;
 
-    // First-run setup.
-    if let Ok(home) = std::env::var("HOME") {
-        let home_path = std::path::PathBuf::from(&home);
-        if startup_ui::needs_first_time_setup(&home_path) {
-            if let Err(e) = startup_ui::init_agent_dir(&home_path) {
-                eprintln!("[nini] first-run setup: {e}");
+    // First run.
+    //
+    // This used to read `$HOME` itself and hand the *home* directory to
+    // functions that wanted the agent directory, so it both ignored
+    // `NINI_AGENT_DIR` and looked at the wrong level of the tree. It also
+    // could not do anything: `needs_first_time_setup` returned `false` and
+    // `init_agent_dir` returned `Ok(())`.
+    let agent_dir = nini_core::paths::agent_dir();
+    if startup_ui::needs_first_time_setup(agent_dir.as_deref()) {
+        if let Some(dir) = agent_dir.as_deref() {
+            if let Err(e) = startup_ui::init_agent_dir(dir) {
+                eprintln!("[nini] first run: could not create {}: {e}", dir.display());
             }
         }
+    }
+    let overridden = std::env::var_os(nini_core::paths::ENV_AGENT_DIR).is_some();
+    if let Some(notice) = startup_ui::first_run_notice(agent_dir.as_deref(), overridden) {
+        eprintln!("[nini] {notice}");
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -462,7 +472,7 @@ mod p0_1_skills_tests {
     }
 
     /// Point `$HOME` at an empty temp dir so the developer's real
-    /// `~/.pi/agent/skills` cannot leak into the test.
+    /// `~/.nini/agent/skills` cannot leak into the test.
     fn isolate_home(tmp: &std::path::Path) {
         let home = tmp.join("fake-home");
         std::fs::create_dir_all(&home).unwrap();

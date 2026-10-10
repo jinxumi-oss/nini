@@ -1,9 +1,9 @@
-//! Settings loader: parse `~/.pi/agent/settings.json` + `.pi/settings.json`.
+//! Settings loader: parse `~/.nini/agent/settings.json` + `.pi/settings.json`.
 //!
 //! v1 reads only a subset of Pi's settings schema. Unknown keys are tolerated
 //! and not written back. Provider mirrors spec
 
-//! Settings loader: parse `~/.pi/agent/settings.json` + `.pi/settings.json`.
+//! Settings loader: parse `~/.nini/agent/settings.json` + `.pi/settings.json`.
 //!
 //! v1 reads only a subset of Pi's settings schema. Unknown keys are tolerated
 //! and not written back.
@@ -44,7 +44,7 @@ pub struct CompactionSettings {
     pub reserve_tokens: Option<u32>,
 }
 
-/// Load settings from user-level (`~/.pi/agent/settings.json`) and
+/// Load settings from user-level (`~/.nini/agent/settings.json`) and
 /// project-level (`.pi/settings.json`). Project-level overrides user-level on
 /// per-field collisions.
 pub fn load_settings(cwd: &Path) -> Settings {
@@ -92,7 +92,7 @@ pub fn project_settings_path(cwd: &Path) -> Option<PathBuf> {
     Some(crate::paths::project_file(cwd, "settings.json"))
 }
 
-/// Load models.json (`~/.pi/agent/models.json` + `.pi/models.json`).
+/// Load models.json (`~/.nini/agent/models.json` + `.pi/models.json`).
 ///
 /// v1: read-only; merge provider entries (project overrides user). The full
 /// schema (with `models: Vec<...>` arrays) is intentionally not implemented

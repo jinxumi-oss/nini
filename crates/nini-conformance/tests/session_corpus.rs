@@ -6,7 +6,7 @@
 //!
 //! Point `NINI_PI_SESSION_CORPUS` at a directory of Pi-written sessions to
 //! run it, e.g.
-//!   NINI_PI_SESSION_CORPUS=~/.pi/agent/sessions cargo test -p nini-conformance
+//!   NINI_PI_SESSION_CORPUS=~/.nini/agent/sessions cargo test -p nini-conformance
 //!
 //! Files nini itself wrote are excluded: they use the old snake_case keys and
 //! would otherwise be counted as Pi incompatibility rather than as the

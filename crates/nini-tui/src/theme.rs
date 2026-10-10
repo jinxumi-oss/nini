@@ -5,7 +5,7 @@
 //!   "look and feel" Pi ships with).
 //! - `Theme::light()` — pale background with darker accent.
 //!
-//! Users can load a custom JSON theme from `~/.pi/agent/theme.json` (or
+//! Users can load a custom JSON theme from `~/.nini/agent/theme.json` (or
 //! a project-local `./.pi/theme.json`) and merge it on top of the built-in
 //! dark theme via [`Theme::load_from_file`] / [`Theme::merge`].
 //!

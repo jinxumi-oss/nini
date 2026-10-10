@@ -107,6 +107,10 @@ fn every_location_the_user_notices_follows_the_override() {
         // project one is relative to the project, only the user-level one
         // belongs under the agent directory.
         let settings = paths::agent_file("settings.json").expect("file");
+        // and the function the TUI actually writes through. Asserting the
+        // resolver alone is how the previous version of this file missed
+        // that `SettingsManager::settings_path` built its own path.
+        let settings_written = nini_tui::settings::SettingsManager::default().settings_path();
         let model_candidates = paths::candidates(Path::new("/proj"), "models.json");
         let models_user = model_candidates[1].clone();
         let models_project = model_candidates[0].clone();
@@ -120,6 +124,7 @@ fn every_location_the_user_notices_follows_the_override() {
             ("exports", exports),
             ("trust", trust),
             ("settings", settings),
+            ("settings (as written by the TUI)", settings_written),
             ("models (user level)", models_user),
             ("skills", skills),
             ("resume listing", resume),
@@ -144,9 +149,13 @@ fn every_location_the_user_notices_follows_the_override() {
 }
 
 /// The inverse: with the override set and `HOME` pointing somewhere
-/// entirely different, nothing may come from `HOME`. Without this, an
-/// implementation that consults both would pass the test above whenever
-/// they happened to agree.
+/// entirely different, nothing may come from `HOME`.
+///
+/// This is the only test that can tell a resolver apart from a direct
+/// `$HOME` read. The test above sets both to the same directory, so the two
+/// agree and a bypass is invisible - which is exactly how
+/// `SettingsManager::settings_path` passed a test that was supposed to
+/// cover it.
 #[test]
 fn the_override_wins_over_home() {
     let override_dir = Dir::new("override");
@@ -163,6 +172,12 @@ fn the_override_wins_over_home() {
     let sessions = paths::sessions_dir().expect("dir");
     let exports = paths::exports_dir().expect("dir");
     let trust = paths::trust_file().expect("file");
+    // The TUI's own settings path. This one was missed the first time:
+    // `every_location_the_user_notices_follows_the_override` sets HOME and
+    // the override to the *same* directory, so a function reading $HOME
+    // directly produced an identical answer and the test stayed green. Only
+    // a case where the two disagree can tell them apart.
+    let settings = nini_tui::settings::SettingsManager::default().settings_path();
 
     unsafe {
         match home {
@@ -179,6 +194,7 @@ fn the_override_wins_over_home() {
         ("sessions", sessions),
         ("exports", exports),
         ("trust", trust),
+        ("settings (as written by the TUI)", settings),
     ] {
         assert!(
             got.starts_with(override_dir.path()),

@@ -1,6 +1,6 @@
 //! SettingsManager — persistence layer for user-editable settings plus
 //! the runtime knobs (theme name, model, thinking level, compaction
-//! budget). Loads from `~/.pi/agent/settings.json` on startup and writes
+//! budget). Loads from `~/.nini/agent/settings.json` on startup and writes
 //! back when flushed.
 //!
 //! ## JSON schema
@@ -125,11 +125,12 @@ impl SettingsManager {
     }
 
     pub fn settings_path(&self) -> PathBuf {
-        let home = std::env::var("HOME").unwrap_or_default();
-        PathBuf::from(home)
-            .join(".nini")
-            .join("agent")
-            .join("settings.json")
+        // This built the path out of `$HOME` directly, so
+        // `NINI_AGENT_DIR` had no effect on where settings are written or
+        // read - the eleventh call site to bypass the resolver, and the
+        // one the override test missed because it asserted
+        // `paths::agent_file("settings.json")` rather than this function.
+        nini_core::paths::agent_file("settings.json").unwrap_or_default()
     }
 
     /// Persist the in-memory settings to disk. Best-effort: a failed

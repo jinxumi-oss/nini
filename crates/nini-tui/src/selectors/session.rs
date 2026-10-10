@@ -1,7 +1,7 @@
 //! SessionSelector — picks a session JSONL file from the sessions directory.
 //!
 //! If `from_dir` is given, lists sessions in that directory; otherwise
-//! defaults to `~/.pi/agent/sessions/`. Each item's label is the relative
+//! defaults to `~/.nini/agent/sessions/`. Each item's label is the relative
 //! timestamp from the filename; description is the parsed cwd from the
 //! session header if readable.
 

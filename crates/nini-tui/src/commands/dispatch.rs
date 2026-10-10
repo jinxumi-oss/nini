@@ -18,7 +18,7 @@ use super::result::CommandResult;
 ///
 /// `args` is the raw input after the command name (whitespace-trimmed).
 /// For commands without an `argument_hint`, `args` should be empty.
-/// `settings` is used for commands that persist to ~/.pi/agent/settings.json
+/// `settings` is used for commands that persist to ~/.nini/agent/settings.json
 /// (e.g., /model, /thinking). Pass `&mut SettingsManager::default()` if persistence
 /// is not needed.
 pub fn dispatch(
@@ -666,7 +666,7 @@ fn cmd_clone(state: &mut AppState, _settings: &mut SettingsManager, _args: &str)
 fn cmd_trust(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
     // /trust [trusted|distrust|ask|list|clear]
     // Persists a TrustDecision for the current working directory
-    // in `~/.pi/agent/trust.json` (Pi-compatible).
+    // in `~/.nini/agent/trust.json` (Pi-compatible).
     use nini_core::project_trust::{ProjectTrustStore, TrustDecision};
     let parts: Vec<&str> = args.split_whitespace().collect();
     let sub = parts.first().copied().unwrap_or("trusted");
@@ -813,7 +813,7 @@ fn cmd_logout(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     // does now.
     let provider_arg = args.trim();
     // Map provider name → env var (Pi's mapping is in
-    // `~/.pi/agent/auth.json`; we keep an explicit table).
+    // `~/.nini/agent/auth.json`; we keep an explicit table).
     const KNOWN: &[(&str, &str)] = &[
         ("anthropic", "ANTHROPIC_API_KEY"),
         ("openai", "OPENAI_API_KEY"),
@@ -970,7 +970,7 @@ fn cmd_compact(state: &mut AppState, settings: &mut SettingsManager, _args: &str
 
 fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
     // /resume [n] — list available sessions or load by index.
-    // Scans ~/.pi/agent/sessions/ recursively for .jsonl files.
+    // Scans ~/.nini/agent/sessions/ recursively for .jsonl files.
     // v0.5 only read the top-level directory and missed the
     // per-cwd subdirectories where nini actually writes its
     // sessions; v0.6 uses walkdir to find them all.
@@ -1171,7 +1171,7 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
 fn cmd_prompt(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
     // /prompt <name> [args...]
     // Loads user-defined prompt templates from `.pi/prompts/` and
-    // `~/.pi/agent/prompts/`, then substitutes $1, $@, $ARGUMENTS
+    // `~/.nini/agent/prompts/`, then substitutes $1, $@, $ARGUMENTS
     // placeholders with positional / quoted args.
     let cwd = std::env::current_dir().ok();
     let cwd = match cwd.as_ref() {
@@ -1279,7 +1279,7 @@ fn cmd_help(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) 
 
 fn cmd_debug(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
     // Toggle verbose logging. The log file path mirrors Pi's
-    // ~/.pi/agent/log location; users can `tail -f` it.
+    // ~/.nini/agent/log location; users can `tail -f` it.
     let new_state = !state.ui_state.debug_logging;
     state.ui_state.debug_logging = new_state;
     let label = if new_state { "on" } else { "off" };

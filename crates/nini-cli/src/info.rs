@@ -8,7 +8,7 @@ use anyhow::Result;
 use nini_core::settings::load_settings;
 use nini_core::skills::load_skills;
 
-/// Print current `~/.pi/agent/settings.json` + loaded skills to stdout.
+/// Print current `~/.nini/agent/settings.json` + loaded skills to stdout.
 ///
 /// Run via `nini info`. Useful for debugging "why isn't my config
 /// taking effect" issues.

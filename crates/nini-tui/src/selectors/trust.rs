@@ -1,6 +1,6 @@
 //! TrustSelector — pick a trust level for the current working directory.
 //!
-//! The current decision is loaded from `~/.pi/agent/trust.json` (if it
+//! The current decision is loaded from `~/.nini/agent/trust.json` (if it
 //! exists) and tagged `is_current = true`. Levels: ask (always prompt),
 //! trusted (auto-approve), never (block all).
 

@@ -2175,7 +2175,7 @@ fn _typecheck_handle_is_used() {
 }
 
 /// Resolve a key against the built-in keymap plus any user overrides
-/// from `~/.pi/agent/keybindings.json`. The override file is loaded
+/// from `~/.nini/agent/keybindings.json`. The override file is loaded
 /// once on first use and cached for the process lifetime.
 pub fn resolve_with_user_overrides(key: Key) -> KeyAction {
     use crate::keybindings_manager::load_user_overrides;

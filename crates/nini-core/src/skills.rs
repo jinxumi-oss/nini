@@ -1,4 +1,4 @@
-//! Skills loader: parse `SKILL.md` files from `~/.pi/agent/skills/` and
+//! Skills loader: parse `SKILL.md` files from `~/.nini/agent/skills/` and
 //! `.pi/skills/`, including YAML frontmatter.
 //!
 //! Mirrors spec `packages/coding-agent/src/core/skills.ts`.
@@ -51,7 +51,7 @@ pub struct LoadSkillsResult {
     pub errors: Vec<String>,
 }
 
-/// Load skills from user-level (`~/.pi/agent/skills/`) and project-level
+/// Load skills from user-level (`~/.nini/agent/skills/`) and project-level
 /// (`.pi/skills/`) directories. Project-level skills shadow user-level
 /// when names collide.
 pub fn load_skills(cwd: &Path) -> LoadSkillsResult {
@@ -148,7 +148,7 @@ fn split_frontmatter(text: &str) -> (Option<String>, String) {
     (None, text.to_string())
 }
 
-/// User-level skills directory: `~/.pi/agent/skills/`.
+/// User-level skills directory: `~/.nini/agent/skills/`.
 pub fn user_skills_dir() -> Option<PathBuf> {
     crate::paths::agent_file("skills")
 }

@@ -56,7 +56,7 @@ impl Sandbox {
             .current_dir(&self.work)
             // Everything that could point at the developer's real state is
             // redirected or cleared. Without this the test would be
-            // reading the machine's own ~/.pi and proving nothing.
+            // reading the machine's own ~/.nini and proving nothing.
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env_remove("NINI_AGENT_DIR")
@@ -118,7 +118,7 @@ fn it_runs_with_no_pi_and_no_nini_directory() {
 }
 
 /// The negative half, which is the half that matters: nothing may read or
-/// write `~/.pi`, in either direction.
+/// write `~/.nini`, in either direction.
 #[test]
 fn it_never_touches_a_pi_directory() {
     let sb = Sandbox::new("nopidir");

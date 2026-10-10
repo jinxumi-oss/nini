@@ -106,7 +106,7 @@ pub struct LoadResult {
     pub diagnostics: Vec<PromptTemplateDiagnostic>,
 }
 
-/// Default user-level prompt templates directory: `~/.pi/agent/prompts/`.
+/// Default user-level prompt templates directory: `~/.nini/agent/prompts/`.
 pub fn user_prompts_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(

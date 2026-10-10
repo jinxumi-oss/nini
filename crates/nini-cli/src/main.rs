@@ -57,7 +57,7 @@ struct Args {
     fallback_base_urls: Vec<String>,
 
     /// Continue the most recent session. Finds the latest .jsonl file in
-    /// ~/.pi/agent/sessions/<cwd>/ and loads it.
+    /// ~/.nini/agent/sessions/<cwd>/ and loads it.
     #[arg(long, conflicts_with = "session_id")]
     continue_session: bool,
 

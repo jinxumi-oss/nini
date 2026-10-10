@@ -1,6 +1,6 @@
 //! KeybindingsManager: load and merge user-defined keybindings.
 //!
-//! Pi loads `~/.pi/agent/keybindings.json` and project-level
+//! Pi loads `~/.nini/agent/keybindings.json` and project-level
 //! `./.pi/keybindings.json` to let users override default bindings. nini
 //! follows the same pattern with a Rust-typed configuration format.
 //!
@@ -48,7 +48,7 @@ impl KeybindingsManager {
         Self::default()
     }
 
-    /// Load from `~/.pi/agent/keybindings.json` and (if `cwd` is given)
+    /// Load from `~/.nini/agent/keybindings.json` and (if `cwd` is given)
     /// `./.pi/keybindings.json`. Missing files are silently skipped.
     pub fn load(cwd: Option<&Path>) -> Self {
         let mut mgr = Self::new();
@@ -164,7 +164,7 @@ impl KeybindingsManager {
     }
 }
 
-/// Default path: `~/.pi/agent/keybindings.json`.
+/// Default path: `~/.nini/agent/keybindings.json`.
 pub fn user_keybindings_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     Some(

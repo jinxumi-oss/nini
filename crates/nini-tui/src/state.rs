@@ -1060,7 +1060,7 @@ pub struct ModelState {
     /// out of the status string.
     pub thinking_level: Option<String>,
     /// Models available for cycling with Ctrl+P (loaded from
-    /// `~/.pi/agent/models.json` or `models.json`). Empty means
+    /// `~/.nini/agent/models.json` or `models.json`). Empty means
     /// "use current model only".
     pub models_cycle: Vec<String>,
     /// Index of the currently-selected model in `models_cycle`. None if
@@ -1072,7 +1072,7 @@ pub struct ModelState {
     pub settings_path: Option<std::path::PathBuf>,
     /// Snapshot of `crate::settings::Settings` taken at app start.
     /// The auto-compaction trigger reads `reserve_tokens` from here.
-    /// Settings are loaded from `~/.pi/agent/settings.json` if present;
+    /// Settings are loaded from `~/.nini/agent/settings.json` if present;
     /// otherwise we use `Settings::default()`.
     pub settings_snapshot: crate::settings::Settings,
 }
@@ -1457,7 +1457,7 @@ impl AppState {
     }
 
     /// Construct with an explicit context-window size. The runtime
-    /// passes the value loaded from `~/.pi/agent/settings.json`; tests
+    /// passes the value loaded from `~/.nini/agent/settings.json`; tests
     /// (and the no-config path) use the default constructor above.
     pub fn with_context_window(model: String, context_window: u32) -> Self {
         Self::with_settings(model, context_window, crate::settings::Settings::default())

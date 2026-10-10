@@ -2,7 +2,7 @@
 //!
 //! v0.10 (R3): every one of these used to say `.pi`. nini read its settings,
 //! models, keybindings, prompts, skills and sessions out of
-//! `~/.pi/agent/`, wrote its sessions and exports back into it, and scanned
+//! `~/.nini/agent/`, wrote its sessions and exports back into it, and scanned
 //! Pi's session history to offer it in `/resume`. 894 references across 81
 //! files, 14 of them actual path construction and the rest commentary
 //! following from them.
@@ -38,7 +38,7 @@ pub const HOME_DIR_NAME: &str = ".nini";
 pub const PROJECT_DIR_NAME: &str = ".nini";
 
 /// The subdirectory that holds the agent's own state, mirroring Pi's
-/// `~/.pi/agent/` so the two layouts are legible side by side.
+/// `~/.nini/agent/` so the two layouts are legible side by side.
 pub const AGENT_SUBDIR: &str = "agent";
 
 pub fn home_dir() -> Option<PathBuf> {

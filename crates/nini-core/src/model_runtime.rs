@@ -231,7 +231,7 @@ pub fn resolve(provider: &str, model: &str) -> Option<ModelSpec> {
 
 /// Layer a user `models.json` over the shipped catalog.
 ///
-/// Pi reads `~/.pi/agent/models.json` and `./.pi/models.json`, and nini
+/// Pi reads `~/.nini/agent/models.json` and `./.pi/models.json`, and nini
 /// already looks in both places (`settings::load_models_json`). That file
 /// is *configuration* — which providers to use, their base URLs and keys —
 /// and its per-provider `models` list carries at most an id and a context

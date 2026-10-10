@@ -2,7 +2,7 @@
 //!
 //! Before this, every path nini touched went through `.pi`. It read
 //! `settings.json`, `models.json`, `keybindings.json`, `prompts/`,
-//! `skills/` and `sessions/` out of `~/.pi/agent/`, wrote sessions and
+//! `skills/` and `sessions/` out of `~/.nini/agent/`, wrote sessions and
 //! exports back into it, and offered Pi's own session history in `/resume`.
 //! Two installs shared one directory, so editing settings in one changed
 //! the other, and nini did not work on a machine where Pi had never been
@@ -82,7 +82,7 @@ fn the_agent_directory_is_ninis() {
         assert_eq!(
             paths::agent_dir(),
             Some(home.join(".nini").join("agent")),
-            "not `~/.pi/agent`: nini is a rewrite, not a client"
+            "not `~/.nini/agent`: nini is a rewrite, not a client"
         );
     });
 }

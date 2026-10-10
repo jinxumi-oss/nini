@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 /// Default command timeout for `!cmd` in the TUI. Shorter than the bash
 /// tool's 2-minute default because `!cmd` is interactive — users expect
-/// feedback quickly. Override via `~/.pi/agent/settings.json` `bashTimeoutMs`.
+/// feedback quickly. Override via `~/.nini/agent/settings.json` `bashTimeoutMs`.
 pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 
 /// Hard upper bound — protects against pathological `bashTimeoutMs` values
