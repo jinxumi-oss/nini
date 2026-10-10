@@ -133,22 +133,44 @@ fn cmd_tree(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) 
         out.push("(empty — use /new to start a session)".to_string());
     } else {
         for (i, id) in main_path.iter().enumerate() {
-            let _label = tree
-                .get_path_to(id)
-                .last()
-                .and_then(|_| tree.descendants(id).first().cloned())
-                .map(|_| String::new())
-                .unwrap_or_default();
-            out.push(format!("  {:>3}. {}", i + 1, id));
+            // This asked the tree two questions - the node's path to its
+            // root, and whether it has descendants - and then answered
+            // both with `map(|_| String::new())`. The label came out empty
+            // every time and was discarded on the next line regardless.
+            // What is worth showing beside a spine node is whether the
+            // conversation forked there.
+            let branches = tree.descendants(id).len();
+            let label = match branches {
+                0 => String::new(),
+                1 => "  (1 branch)".to_string(),
+                n => format!("  ({n} branches)"),
+            };
+            out.push(format!("  {:>3}. {id}{label}", i + 1));
         }
         // Show non-main branches (descendants of nodes not in the main path).
         let in_main: std::collections::HashSet<&String> = main_path.iter().collect();
         let mut branch_count = 0;
-        for id in &main_path {
-            for child_id in tree.descendants(id) {
-                if !in_main.contains(&child_id) {
+        // Walk the whole tree once from the root of the spine and list only
+        // the nodes that leave it. Iterating `descendants` of every spine
+        // node separately re-visits each node once per ancestor, so the
+        // same branch was counted as many times as it was deep.
+        let mut printed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let spine_roots: Vec<String> = tree
+            .roots()
+            .iter()
+            .filter(|r| in_main.contains(*r))
+            .cloned()
+            .collect();
+        for root in &spine_roots {
+            for node in tree.descendants(root) {
+                if in_main.contains(&node) {
+                    // On the spine: already listed above, with its branch
+                    // count.
+                    continue;
+                }
+                if printed.insert(node.clone()) {
                     branch_count += 1;
-                    out.push(format!("       └─ {} (branch {})", child_id, branch_count));
+                    out.push(format!("       └─ {node} (branch {branch_count})"));
                 }
             }
         }

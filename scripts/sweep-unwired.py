@@ -33,6 +33,50 @@ def rust_files():
 def is_test(path):
     return "/tests/" in path or path.endswith("/tests.rs")
 
+
+def blank_test_modules(src):
+    """Blank out `#[cfg(test)]` blocks, keeping the line count.
+
+    The sweep reports things unwired *in production*. A `#[cfg(test)] mod
+    tests` inside `src/` is not production. Reporting its contents buries
+    the real findings under noise: one run listed six `_name` parameters
+    from agent.rs that were all test helpers, and three of the `let _x =`
+    sites were guard bindings whose entire purpose is to be named.
+
+    Lines are replaced rather than deleted so reported line numbers still
+    point at the right source.
+    """
+    lines = src.split("\n")
+    out = list(lines)
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().startswith("#[cfg(test)]"):
+            depth = 0
+            started = False
+            j = i
+            while j < len(lines):
+                depth += lines[j].count("{") - lines[j].count("}")
+                if "{" in lines[j]:
+                    started = True
+                out[j] = ""
+                if started and depth <= 0:
+                    break
+                j += 1
+            i = j + 1
+            continue
+        i += 1
+    return "\n".join(out)
+
+
+def load_prod(path):
+    return blank_test_modules(open(path, errors="ignore").read())
+
+
+def is_guard_binding(line):
+    """`let _guard = MUTEX.lock()...` holds its value alive on purpose; it
+    is not a discarded result."""
+    return re.search(r"\blet\s+_\w*\b.*\.(lock|read|write)\(", line) is not None
+
 files = list(rust_files())
 prod = [f for f in files if not is_test(f)]
 blob = "\n".join(open(f, errors="ignore").read() for f in prod)
@@ -43,7 +87,7 @@ struct_re = re.compile(r"(?:pub\s+)?struct\s+(\w+)\s*\{")
 
 candidates = []
 for path in prod:
-    src = open(path, errors="ignore").read()
+    src = load_prod(path)
     cur_struct = None
     depth = 0
     for i, line in enumerate(src.split("\n"), 1):
@@ -91,8 +135,8 @@ print("=" * 78)
 discard = re.compile(r"\blet\s+_(?:mut\s+)?\w+\s*=")
 hits = defaultdict(list)
 for path in prod:
-    for i, line in enumerate(open(path, errors="ignore").read().split("\n"), 1):
-        if discard.search(line):
+    for i, line in enumerate(load_prod(path).split("\n"), 1):
+        if discard.search(line) and not is_guard_binding(line):
             hits[os.path.relpath(path, ROOT)].append((i, line.strip()))
 n = 0
 for f, items in sorted(hits.items()):
@@ -109,7 +153,7 @@ print("=" * 78)
 FN = re.compile(r"^\s*pub(?:\([a-z]+\)\s+)?fn\s+(\w+)\s*[(<]")
 defined = []
 for path in prod:
-    for i, line in enumerate(open(path, errors="ignore").read().split("\n"), 1):
+    for i, line in enumerate(load_prod(path).split("\n"), 1):
         m = FN.match(line)
         if m:
             defined.append((m.group(1), os.path.relpath(path, ROOT), i))
@@ -135,7 +179,7 @@ print("=" * 78)
 UND = re.compile(r"\b_[a-z]\w*\s*:\s*")
 hits2 = defaultdict(list)
 for path in prod:
-    for i, line in enumerate(open(path, errors="ignore").read().split("\n"), 1):
+    for i, line in enumerate(load_prod(path).split("\n"), 1):
         if UND.search(line) and "fn " in line:
             hits2[os.path.relpath(path, ROOT)].append((i, line.strip()))
 n = 0
