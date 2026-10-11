@@ -23,7 +23,6 @@ pub mod commands;
 pub mod components;
 pub mod dynamic_border;
 pub mod editor;
-pub mod event_bus;
 pub mod file_completion;
 pub mod help_overlay;
 pub mod hyperlink;

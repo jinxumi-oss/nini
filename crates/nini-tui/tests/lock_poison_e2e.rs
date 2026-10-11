@@ -126,24 +126,12 @@ fn a_runtime_tick_survives_a_poisoned_lock() {
     }
 }
 
-#[test]
-fn the_global_event_bus_survives_a_poisoning_panic() {
-    // A poisoned *global* outlives every session, so a single panic
-    // would make the next run of nini panic on its first emitted event.
-    use nini_tui::event_bus;
-    use nini_tui::event_bus::AppEvent;
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = event_bus::global();
-        panic!("poison the global bus");
-    }));
-    assert!(result.is_err());
-
-    // Must not panic on the next use.
-    for _ in 0..3 {
-        event_bus::global().emit(AppEvent::ThemeChanged("x".into()));
-    }
-}
+// The event bus exercised here is gone. It was a stub - `emit` took an
+// `AppEvent` and dropped it - `runtime.rs` locked the global and
+// discarded what it emitted, and keeping a lock-disciplined shell
+// around an object that carried nothing is how the stub survived this
+// long. The `lock_state` discipline is asserted above and is the part
+// that still matters.
 
 #[test]
 fn a_panic_in_one_region_does_not_take_down_unrelated_work() {

@@ -474,9 +474,12 @@ async fn run_loop(
     };
 
     // Spawn theme watcher (best-effort; falls back silently if dirs missing).
-    let cwd = std::env::current_dir().ok();
     let (theme_tx, mut theme_rx) = tokio::sync::mpsc::unbounded_channel();
-    let _watcher = crate::theme_watcher::spawn_theme_watcher(cwd.as_deref(), theme_tx);
+    // Watch the file the settings were actually loaded from, not one
+    // derived from `cwd`: they differ whenever settings come from the
+    // agent directory, which is the usual case.
+    let watched = lock_state(&shared).model_state.settings_path.clone();
+    let _watcher = crate::theme_watcher::spawn_theme_watcher(watched, theme_tx);
 
     // v0.8.5: SINGLE shared `watch` channel between runtime and ALL
     // agent tasks spawned during this session. Replaces v0.7.4's
@@ -754,21 +757,25 @@ async fn run_loop(
             Some(theme_event) = theme_rx.recv() => {
                 // Theme file changed — reload from settings.
                 use crate::theme_watcher::ThemeEvent;
-                // Also publish to the global event bus for other modules.
-                let bus = crate::event_bus::global();
                 match theme_event {
-                    ThemeEvent::Changed(path) | ThemeEvent::Removed(path) => {
-                        let mut settings = crate::settings::SettingsManager::default();
+                    ThemeEvent::Changed(_) | ThemeEvent::Removed(_) => {
+                        // `SettingsManager::default()`: the reload read a
+                        // *default* manager, not the user's settings, so
+                        // this would have replaced whatever theme they had
+                        // with "dark". Same throwaway-default shape as
+                        // `/thinking` and `/settings` had.
+                        let path = lock_state(&shared).model_state.settings_path.clone();
+                        let mut settings = match path {
+                            Some(p) => crate::settings::SettingsManager::load_from_disk(p),
+                            None => crate::settings::SettingsManager::default(),
+                        };
                         let name = settings.theme_name();
                         lock_state(&shared).ui_state.theme_name = name.clone();
                         theme = settings.theme();
-                        let _ = bus.emit(crate::event_bus::AppEvent::ThemeChanged(
-                            name.unwrap_or_default(),
-                        ));
-                        let _ = path; // suppress unused
-                    }
-                    ThemeEvent::Error(_, msg) => {
-                        eprintln!("[nini] theme watcher error: {msg}");
+                        // `name` is applied above; all that was left
+                        // here was formatting a status line the event
+                        // bus used to receive and discard.
+                        let _ = name;
                     }
                 }
             }
