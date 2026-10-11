@@ -114,9 +114,35 @@ impl SettingsManager {
         self.settings.clone()
     }
 
+    /// Set the theme on both copies of the field.
+    ///
+    /// `SettingsManager` keeps its own `theme` for the running process and
+    /// an inner `Settings` for serialisation, and `flush` writes the inner
+    /// one. Assigning `mgr.theme = ...` therefore changed what the session
+    /// used and not what the file would contain - the same drift that made
+    /// `/thinking` persist a value nothing read, in a third place.
+    pub fn set_theme<T: std::fmt::Display>(&mut self, theme: T) {
+        let t = theme.to_string();
+        self.theme = t.clone();
+        self.settings.theme = t;
+    }
+
     pub fn set_default_model<T: std::fmt::Display>(&mut self, model: T) {
         self.default_model = Some(model.to_string());
         self.settings.default_model = Some(model.to_string());
+    }
+
+    /// The persisted thinking level, accepting either spelling.
+    ///
+    /// `/thinking` writes `default_thinking_level`; `nini-core::Settings`
+    /// reads both it and the legacy `thinking_level`. Going through one
+    /// accessor means the two structs cannot drift apart again - which is
+    /// how `/thinking` came to persist a value nobody read.
+    pub fn effective_thinking_level(&self) -> Option<&str> {
+        self.settings
+            .default_thinking_level
+            .as_deref()
+            .or(self.default_thinking_level.as_deref())
     }
 
     pub fn set_default_thinking_level<T: std::fmt::Display>(&mut self, level: T) {
@@ -170,8 +196,6 @@ impl SettingsManager {
             Err(_) => Self::default(),
         }
     }
-
-    pub fn set_model_thinking_level(&mut self, _model: &str, _level: &str) {}
 }
 
 impl std::ops::Deref for SettingsManager {

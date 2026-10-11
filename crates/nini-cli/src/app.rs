@@ -100,16 +100,20 @@ pub(crate) fn build_tui_run_config(
             tools,
             &skills_prompt,
         )),
-        // v0.10 (R1f): finally hand the persisted thinking level to the
-        // provider. `settings.thinking_level` has been written and read
-        // back since v0.8, and `/thinking` validates the exact vocabulary
-        // Pi uses — but `Request` had no field for it, so nothing was ever
-        // transmitted. `None` (unset / unparseable) leaves the field out of
-        // the body entirely, which is what Pi does when `reasoning` is
-        // absent.
+        // v0.10 (R1f): hand the persisted thinking level to the provider.
+        // `Request` had no field for it, so nothing was transmitted.
+        //
+        // The comment here used to claim `settings.thinking_level` "has
+        // been written and read back since v0.8". It had not: `/thinking`
+        // wrote `default_thinking_level`, this read `thinking_level`, and
+        // nothing in production ever assigned the latter. Both spellings
+        // are accepted, since Pi's own file uses `defaultThinkingLevel`.
+        // `None` (unset / unparseable) leaves the field out of the body
+        // entirely, which is what Pi does when `reasoning` is absent.
         reasoning: settings
-            .thinking_level
+            .default_thinking_level
             .as_deref()
+            .or(settings.thinking_level.as_deref())
             .and_then(|l| l.parse::<nini_core::provider::ThinkingLevel>().ok()),
         ..RunConfig::new(cfg_model)
     };
@@ -400,7 +404,11 @@ async fn run_tui_bootstrap(
                 state.model_state.provider = Some(cfg.provider.clone());
             }
             // Seed initial thinking level from settings.
-            if let Some(t) = nini_core::settings::load_settings(&cwd).thinking_level {
+            // Reads the field `/thinking` actually writes. This read
+            // `thinking_level`, which nothing wrote, so the status bar
+            // started every session at "off" no matter what was saved.
+            let saved = nini_core::settings::load_settings(&cwd);
+            if let Some(t) = saved.default_thinking_level.or(saved.thinking_level) {
                 state.model_state.thinking_level = Some(t);
             }
             // v0.9.2 (P0-1): this used to call `load_skills` a THIRD

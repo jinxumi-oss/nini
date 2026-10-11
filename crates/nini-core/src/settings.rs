@@ -16,8 +16,20 @@ use std::path::{Path, PathBuf};
 pub struct Settings {
     #[serde(default)]
     pub provider: Option<String>,
+    /// Pi and `nini-core` spell this `model`; `nini-tui::Settings` writes
+    /// `defaultModel`. `/model` therefore persisted into a field nothing
+    /// read - the same drift as `thinking_level`, one level up.
+    #[serde(default, alias = "defaultModel")]
+    pub default_model: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    /// Pi persists this as `defaultThinkingLevel`
+    /// (`pi-coding-agent/src/core/settings-manager.ts:753`).
+    #[serde(default, alias = "defaultThinkingLevel")]
+    pub default_thinking_level: Option<String>,
+    /// nini's earlier spelling. Written by nothing - `/thinking` has always
+    /// written `default_thinking_level` - and read here only so a settings
+    /// file from an older nini is not silently ignored.
     #[serde(default)]
     pub thinking_level: Option<String>,
     #[serde(default)]
@@ -65,6 +77,9 @@ pub fn load_settings(cwd: &Path) -> Settings {
     // Project overrides user
     if project_s.provider.is_some() {
         user_s.provider = project_s.provider;
+    }
+    if project_s.default_model.is_some() {
+        user_s.default_model = project_s.default_model;
     }
     if project_s.model.is_some() {
         user_s.model = project_s.model;

@@ -895,6 +895,26 @@ fn drop_and_signal(_text: String, done: Arc<Notify>) {
 
 /// Apply a confirmed selector's result to AppState. Returns the new model
 /// name if the selector was ModelSelector (caller writes to state).
+/// Persist a thinking level for the next run.
+///
+/// Loads the existing file first: `flush` writes the whole `Settings`, so
+/// starting from a default manager would erase the user's theme and model
+/// to record one word about thinking.
+///
+/// Without a settings path there is nowhere to write, and this does not
+/// invent one - it reports, and the caller says so.
+fn persist_thinking_level(path: Option<&std::path::Path>, level: &str) {
+    let Some(path) = path else {
+        eprintln!("[nini] thinking level set to {level} for this session only (no settings file)");
+        return;
+    };
+    let mut settings = crate::settings::SettingsManager::load_from_disk(path.to_path_buf());
+    settings.set_default_thinking_level(level);
+    if let Err(e) = settings.flush() {
+        eprintln!("[nini] thinking level not saved: {e}");
+    }
+}
+
 fn apply_selector_result(
     mut selector: Box<dyn crate::selector::SelectorState + Send>,
     shared: &SharedState,
@@ -922,8 +942,13 @@ fn apply_selector_result(
         .downcast_mut::<ThinkingSelector>()
     {
         if let Some(level) = &think_sel.result {
-            let mut settings = SettingsManager::default();
-            settings.set_default_thinking_level(level.clone());
+            // This built `SettingsManager::default()`, wrote the level into
+            // it, and dropped it. Nothing was loaded from the settings file
+            // and nothing was written back, so choosing a level from the
+            // selector had no effect at all.
+            let path = lock_state(shared).model_state.settings_path.clone();
+            persist_thinking_level(path.as_deref(), level);
+            lock_state(shared).model_state.thinking_level = Some(level.clone());
         }
         return None;
     }
@@ -1246,18 +1271,17 @@ fn cycle_thinking(state: &mut crate::state::AppState, direction: i32) {
         new_pos -= n;
     }
     let new_level = LEVELS[new_pos as usize];
-    let mut settings = match &state.model_state.settings_path {
-        Some(p) => crate::settings::SettingsManager::load_from_disk(p.clone()),
-        None => crate::settings::SettingsManager::default(),
-    };
-    // If a model is selected and the user has a per-model override, write
-    // to the override; otherwise update the default.
-    let model = state.model_state.model.clone();
-    if !model.is_empty() {
-        settings.set_model_thinking_level(&model, new_level);
-    } else {
-        settings.set_default_thinking_level(new_level);
-    }
+    // The per-model branch called `set_model_thinking_level`, an empty
+    // function, so `/thinking` persisted nothing whenever a model was
+    // selected - the normal case. And neither branch called `flush`, so
+    // even the working one never reached disk.
+    //
+    // There is no per-model level to write. Pi persists one knob,
+    // `defaultThinkingLevel`
+    // (`pi-coding-agent/src/core/settings-manager.ts:753`); its per-model
+    // levels come from the `--models` CLI scope (`core/model-resolver.ts:
+    // 295`, `provider/*:high`), a runtime concept nini does not have.
+    persist_thinking_level(state.model_state.settings_path.as_deref(), new_level);
     // Also update live state so the selector stays in sync.
     state.model_state.thinking_level = Some(new_level.to_string());
     state.run_state.status = format!("thinking: {new_level}");

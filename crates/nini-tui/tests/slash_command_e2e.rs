@@ -138,6 +138,11 @@ fn model_command_no_args_returns_usage() {
 // =====================================================================
 #[test]
 fn thinking_command_validates_levels() {
+    // `/thinking` flushes - that is the point, it is how the level survives
+    // a restart. Without this guard the test wrote to the developer's real
+    // `~/.nini/agent/settings.json`, which it did exactly once before the
+    // guard was added.
+    let _agent_dir_guard = nini_core::paths::agent_lock();
     let mut state = AppState::new("test");
     let mut settings = SettingsManager::default();
 

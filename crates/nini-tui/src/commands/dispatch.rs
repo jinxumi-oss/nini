@@ -197,6 +197,14 @@ fn cmd_thinking(state: &mut AppState, settings: &mut SettingsManager, args: &str
         return CommandResult::output(vec![format!("Usage: /thinking <{}>", valid.join("|"))]);
     }
     settings.set_default_thinking_level(args);
+    // Written but never flushed, so `/thinking high` was gone the moment
+    // nini exited. `settings` here is the manager the runtime loaded from
+    // the real file, so flushing keeps the user's other settings.
+    if let Err(e) = settings.flush() {
+        state.push_assistant(format!("(thinking level set for this session only: {e})"));
+        state.push_divider();
+        return CommandResult::output(vec![format!("thinking → {args} (not saved)")]);
+    }
     state.push_assistant(format!("(thinking level: {args})"));
     state.push_divider();
     CommandResult::output(vec![format!("thinking → {args}")])

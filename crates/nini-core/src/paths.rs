@@ -109,3 +109,69 @@ pub fn candidates(cwd: &Path, name: &str) -> Vec<PathBuf> {
     }
     out
 }
+
+/// Points `NINI_AGENT_DIR` at a fresh temporary directory, and restores it
+/// on drop.
+///
+/// Everything nini persists is written by whichever code happens to hold
+/// the process-wide `NINI_AGENT_DIR`, and `SettingsManager::flush`
+/// resolves its path at call time. A test that exercises a persisting
+/// command therefore writes to the developer's real `~/.nini/agent/` unless
+/// it redirects that variable - which `slash_command_e2e.rs` did not, and
+/// `/thinking high` duly overwrote a real settings file before this guard
+/// existed.
+///
+/// The lock is process-wide because the environment is: cargo runs one
+/// binary on many threads, and two tests redirecting the same variable at
+/// once would see each other's directories. It is held for the guard's
+/// whole lifetime, which is why this is a guard and not a closure.
+pub struct AgentDirGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    saved: Option<std::ffi::OsString>,
+    path: PathBuf,
+}
+
+impl Drop for AgentDirGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match self.saved.take() {
+                Some(v) => std::env::set_var(ENV_AGENT_DIR, v),
+                None => std::env::remove_var(ENV_AGENT_DIR),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+impl AgentDirGuard {
+    /// The sandbox directory. Point a `SettingsManager` at
+    /// `<this>/settings.json`, or just call the code under test.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+pub fn agent_lock() -> AgentDirGuard {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let lock: MutexGuard<'static, ()> = LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let mut path = std::env::temp_dir();
+    path.push(format!("nini-agent-sandbox-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("agent sandbox directory");
+
+    let saved = std::env::var_os(ENV_AGENT_DIR);
+    unsafe { std::env::set_var(ENV_AGENT_DIR, &path) };
+
+    AgentDirGuard {
+        _lock: lock,
+        saved,
+        path,
+    }
+}
