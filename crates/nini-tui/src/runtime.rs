@@ -646,9 +646,17 @@ async fn run_loop(
                         selector_query.clear();
                     }
                     "settings" => {
-                        let sel = Box::new(crate::selectors::SettingsSelector::new(
-                            crate::settings::SettingsManager::default(),
-                        ));
+                        // Built from `SettingsManager::default()`, so it
+                        // listed a fabricated model, theme and thinking
+                        // level no matter what the user had configured -
+                        // the same throwaway-default shape as the
+                        // `/thinking` selector had.
+                        let path = lock_state(&shared).model_state.settings_path.clone();
+                        let manager = match path {
+                            Some(p) => crate::settings::SettingsManager::load_from_disk(p),
+                            None => crate::settings::SettingsManager::default(),
+                        };
+                        let sel = Box::new(crate::selectors::SettingsSelector::new(manager));
                         active_selector = Some(sel);
                         selector_query.clear();
                     }
@@ -1025,12 +1033,20 @@ fn apply_selector_result(
         .state_as_any_mut()
         .downcast_mut::<SettingsSelector>()
     {
-        // Apply the toggle/cycle. The settings manager inside the selector
-        // persists to disk via its internal mechanism.
-        let new_model = settings_sel
-            .apply(0)
-            .map(|_| settings_sel.settings.model_name());
-        new_model.and_then(|s| if s.is_empty() { None } else { Some(s) })
+        // The comment here used to claim "the settings manager inside the
+        // selector persists to disk via its internal mechanism". There is
+        // no manager inside the selector, only a snapshot, and nothing was
+        // persisted. It then called `apply(0)`, which ignored its index, so
+        // picking "theme" or "thinking" returned the model name and this
+        // function reported a model change that had not happened.
+        //
+        // What it returns now is the category the user picked. No
+        // sub-selector is opened yet - see the module doc in
+        // `selectors/settings.rs` - so nothing else changes.
+        let _picked = settings_sel
+            .picked_category(settings_sel.selected)
+            .map(str::to_string);
+        None
     } else if let Some(palette) = selector
         .state_as_any_mut()
         .downcast_mut::<crate::command_palette::CommandPalette>()
