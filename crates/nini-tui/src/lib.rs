@@ -34,6 +34,8 @@ pub mod markdown;
 pub mod render;
 pub mod rich;
 pub mod runtime;
+/// Transcript scrollbar (v0.10) — geometry aligned with Pi's `layout.ts`.
+pub mod scrollbar;
 pub mod selector;
 pub mod selectors;
 pub mod settings;

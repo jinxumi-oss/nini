@@ -411,6 +411,15 @@ async fn run_tui_bootstrap(
             if let Some(t) = saved.default_thinking_level.or(saved.thinking_level) {
                 state.model_state.thinking_level = Some(t);
             }
+            // v0.10: `settings.fullscreenScrollbar`, matching Pi's
+            // `getFullscreenScrollbar()` (`settings-manager.ts:1151`).
+            // Seeded here for the same reason as the thinking level: the
+            // setting exists, the renderer needs it, and nothing else is a
+            // place where both are in scope. Unset means Pi's default,
+            // `auto`.
+            state.ui_state.fullscreen_scrollbar = nini_tui::scrollbar::ScrollbarMode::from_setting(
+                saved.fullscreen_scrollbar.as_deref(),
+            );
             // v0.9.2 (P0-1): this used to call `load_skills` a THIRD
             // time (the v0.5 version loaded once and threw the result
             // away; `build_tui_run_config` loads again). Three

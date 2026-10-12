@@ -1644,6 +1644,8 @@ fn handle_key(
             Arc::make_mut(&mut state.transcript_state).scroll_offset =
                 (state.transcript_state.scroll_offset + step).min(max_offset);
             Arc::make_mut(&mut state.transcript_state).autoscroll = false;
+            // v0.10: keeps the scrollbar lit for TRANSIENT_HIDE_MS.
+            state.mark_scroll_activity();
         }
         KeyAction::ToggleCollapse => {
             // Toggle collapsed on the most-recent collapsible transcript
@@ -1679,6 +1681,7 @@ fn handle_key(
             } else {
                 Arc::make_mut(&mut state.transcript_state).scroll_offset -= step;
             }
+            state.mark_scroll_activity();
         }
         KeyAction::ScrollToBottom => {
             // v0.8.4 (ux-001): snap the transcript back to the live
@@ -1688,6 +1691,7 @@ fn handle_key(
             // stick to the bottom.
             Arc::make_mut(&mut state.transcript_state).scroll_offset = 0;
             Arc::make_mut(&mut state.transcript_state).autoscroll = true;
+            state.mark_scroll_activity();
         }
         KeyAction::Noop => {}
     }

@@ -8,7 +8,7 @@
 //! them trivially testable without a terminal.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 // `session` is held across `.await` points in the agent task, so it
 // needs the async mutex. The render cache is only ever touched from the
@@ -869,6 +869,13 @@ pub struct AppState {
     /// The value is recomputed every frame, so a stale read costs one
     /// keypress and self-corrects on the next frame.
     pub page_lines: Arc<AtomicUsize>,
+    /// v0.10: milliseconds since the epoch of the last scroll action, used
+    /// by the scrollbar's `auto` mode to fade itself out
+    /// (`scroll-view.ts` `transientScrollbarVisible` + a 1000 ms timer).
+    /// nini compares timestamps rather than owning a timer, which gives the
+    /// same result with no background task. Atomic for the same reason as
+    /// `page_lines`: the render path takes `&AppState`.
+    pub scroll_activity: Arc<AtomicU64>,
     /// v0.8.5: `Arc<TranscriptState>` so that `AppState::clone()` is
     /// O(1) instead of deep-cloning every TranscriptLine (each
     /// ToolResult can carry ~25 KB of file content, so 14 parallel
@@ -1175,6 +1182,11 @@ pub struct UiState {
     /// footer between a short hint set and an extended hint set so the
     /// user can see ALL key bindings without scrolling.
     pub help_extended: bool,
+    /// `settings.fullscreenScrollbar`: when the transcript scrollbar is
+    /// painted. Mirrors Pi's `ScrollViewScrollbar`, default `auto`.
+    /// Held here rather than read from the settings manager on every frame,
+    /// for the same reason `theme_name` is.
+    pub fullscreen_scrollbar: crate::scrollbar::ScrollbarMode,
     /// Set by F1 to signal that the help selector should close on the
     /// next loop iteration (avoids the user having to press Esc).
     pub close_help: bool,
@@ -1358,6 +1370,7 @@ impl Clone for UiState {
             theme_name: self.theme_name.clone(),
             last_diff: self.last_diff,
             help_extended: self.help_extended,
+            fullscreen_scrollbar: self.fullscreen_scrollbar,
             close_help: self.close_help,
             search: self.search.clone(),
             // Box<dyn> is not Clone — drop selector (mirrors v0.8.0 clone_for_render)
@@ -1368,12 +1381,21 @@ impl Clone for UiState {
     }
 }
 
+impl UiState {
+    /// The transcript scrollbar mode. The renderer reads this rather than
+    /// the settings manager, which it does not hold.
+    pub fn scrollbar_mode(&self) -> crate::scrollbar::ScrollbarMode {
+        self.fullscreen_scrollbar
+    }
+}
+
 impl Default for UiState {
     fn default() -> Self {
         Self {
             theme_name: None,
             last_diff: None,
             help_extended: false,
+            fullscreen_scrollbar: crate::scrollbar::ScrollbarMode::default(),
             close_help: false,
             search: None,
             selector: None,
@@ -1398,6 +1420,7 @@ impl Clone for AppState {
             // from-scratch case.
             item_cache: Arc::clone(&self.item_cache),
             page_lines: Arc::clone(&self.page_lines),
+            scroll_activity: Arc::clone(&self.scroll_activity),
             run_state: self.run_state.clone(),
             model_state: self.model_state.clone(),
             session_state: self.session_state.clone(),
@@ -1413,6 +1436,7 @@ impl Default for AppState {
             transcript_state: Arc::new(TranscriptState::default()),
             item_cache: Arc::new(StdMutex::new(TranscriptItemCache::default())),
             page_lines: Arc::new(AtomicUsize::new(1)),
+            scroll_activity: Arc::new(AtomicU64::new(0)),
             run_state: RunState::default(),
             model_state: ModelState::default(),
             session_state: SessionState::default(),
@@ -1970,6 +1994,18 @@ impl AppState {
     /// render path. Falls back to 1 before the first frame.
     pub fn page_lines(&self) -> usize {
         self.page_lines.load(Ordering::Relaxed).max(1)
+    }
+
+    /// Record that the user just scrolled, so the scrollbar's `auto` mode
+    /// stays lit for `TRANSIENT_HIDE_MS`.
+    pub fn mark_scroll_activity(&self) {
+        self.scroll_activity
+            .store(crate::scrollbar::now_millis(), Ordering::Relaxed);
+    }
+
+    /// Milliseconds since the last scroll action.
+    pub fn scroll_activity_ms(&self) -> u64 {
+        self.scroll_activity.load(Ordering::Relaxed)
     }
 
     pub fn transcript_len(&self) -> usize {

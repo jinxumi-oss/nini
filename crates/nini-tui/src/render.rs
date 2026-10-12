@@ -863,6 +863,11 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     }
     let total_items: usize = items_per_line.iter().sum();
 
+    // v0.10 (scrollbar): how far the viewport sits from the live tail, in
+    // rendered rows. 0 at the tail; also 0 in autoscroll mode, which is
+    // correct — following the output means being at the bottom.
+    let mut items_skipped_from_bottom: usize = 0;
+
     // v0.10: publish how many lines one page covers, so PageUp scrolls a
     // page instead of the single line it used to scroll. Computed here
     // because this is the only scope that has both the per-line row counts
@@ -921,6 +926,11 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
             items_to_skip_from_bottom += items_per_line[i];
             lines_skipped += 1;
         }
+        // Captured before the loop below consumes it. The scrollbar needs the
+        // same number, and recomputing it here would mean running the same
+        // two loops twice per frame.
+        items_skipped_from_bottom = items_to_skip_from_bottom;
+
         // Now collect items from the bottom, skipping
         // `items_to_skip_from_bottom` items, until we have visible_height.
         let mut budget = visible_height;
@@ -951,6 +961,43 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     if visible_items.is_empty() && total_lines == 0 && state.input.text.is_empty() {
         render_welcome_card(f, theme, area);
         return;
+    }
+
+    // v0.10: the transcript scrollbar, on the area's last column.
+    //
+    // Painted after the list and the two overflow indicators so it wins the
+    // cell. Pi does the same (`layout.ts:293` `paintScrollbar` runs over the
+    // composed screen row).
+    //
+    // Pi's `always` mode also narrows the content by one column
+    // (`scroll-view.ts` `getContentWidth`). nini does not, in any mode: the
+    // bar overwrites the last cell rather than reflowing the transcript,
+    // because reflowing would move text under the reader every time the bar
+    // appears and disappears.
+    let mode = state.ui_state.scrollbar_mode();
+    let since_scroll = crate::scrollbar::now_millis().saturating_sub(state.scroll_activity_ms());
+    if crate::scrollbar::should_draw(mode, total_items, visible_height, since_scroll) {
+        if let Some(g) = crate::scrollbar::geometry(
+            area.x,
+            area.y,
+            area.width,
+            area.height,
+            total_items,
+            visible_height,
+            items_skipped_from_bottom,
+        ) {
+            // One line per thumb row. The first version rendered
+            // `"█".repeat(height)` as a single string into a one-column
+            // area: that is a two-cell token, so ratatui clipped it to one
+            // character and every row below the first stayed blank. The e2e
+            // test caught it by asserting the thumb is contiguous.
+            let style = theme.bg_style("scrollbarThumb");
+            let rows: Vec<RLine> = (0..g.thumb_height.max(1))
+                .map(|_| RLine::from(Span::styled("\u{2588}", style)))
+                .collect();
+            let bar_area = Rect::new(g.column, g.thumb_top, 1, g.thumb_height);
+            f.render_widget(Paragraph::new(rows), bar_area);
+        }
     }
 
     // v0.8.9 (P1-5): last-resort backstop. If the transcript is

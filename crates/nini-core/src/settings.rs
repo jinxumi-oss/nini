@@ -38,6 +38,15 @@ pub struct Settings {
     pub compaction: Option<CompactionSettings>,
     #[serde(default)]
     pub theme: Option<String>,
+    /// When the transcript scrollbar is painted.
+    ///
+    /// Pi: `settings-manager.ts:139` —
+    /// `fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"`.
+    /// Feeds `ScrollView.isScrollbarVisible` (`scroll-view.ts:71-77`).
+    /// Anything unrecognised coerces to `auto`, matching
+    /// `getFullscreenScrollbar()` (`settings-manager.ts:1151-1154`).
+    #[serde(default, alias = "fullscreenScrollbar")]
+    pub fullscreen_scrollbar: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
