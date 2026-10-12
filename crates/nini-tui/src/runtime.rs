@@ -1632,23 +1632,31 @@ fn handle_key(
             }
         }
         KeyAction::ScrollUp => {
-            // v0.8.4 (ux-001): this action is bound to PageUp (10-line
-            // jump) AND `k` (single-line vim step). We can't tell them
-            // apart from the action alone, so use a 1-row step; PageUp
-            // users can simply press it 10 times. A 10-row step would
-            // make `k` jump too far for vim-style scrolling.
+            // v0.10: one page, not one line. `page_lines` is computed by
+            // the renderer, which is the only scope holding both the
+            // per-line row counts and the viewport height. It used to be a
+            // hardcoded `1` with the reasoning that "PageUp users can simply
+            // press it 10 times" — which does not hold, because
+            // `scroll_offset` counts TranscriptLines and one line renders
+            // as anywhere from one row to fifty (a folded tool result).
             let max_offset = state.transcript_state.lines.len().saturating_sub(1);
-            let step = 1usize;
+            let step = state.page_lines();
             Arc::make_mut(&mut state.transcript_state).scroll_offset =
                 (state.transcript_state.scroll_offset + step).min(max_offset);
             Arc::make_mut(&mut state.transcript_state).autoscroll = false;
         }
         KeyAction::ToggleCollapse => {
             // Toggle collapsed on the most-recent collapsible transcript
-            // line. The user can scroll first (PageUp/PageDown) to put a
-            // specific line at the top, then press Ctrl+O; for the
-            // common "fold the last tool output" use-case, scrolling is
-            // unnecessary because we default to the tail.
+            // line.
+            //
+            // The comment here used to add: "The user can scroll first
+            // (PageUp/PageDown) to put a specific line at the top, then
+            // press Ctrl+O." That interaction does not exist — the code
+            // below starts at `total - 1` and `scroll_offset` is never
+            // read. It described a feature and sat next to code that did
+            // the opposite, which is worse than no comment. Either the
+            // scroll-aware behaviour gets written or the claim stays gone;
+            // as of v0.10 it is not implemented and the test below says so.
             let total = state.transcript_len();
             if total > 0 {
                 let mut idx = total - 1;
@@ -1664,10 +1672,7 @@ fn handle_key(
             }
         }
         KeyAction::ScrollDown => {
-            // v0.8.4 (ux-001): same reasoning as ScrollUp — 1-row step
-            // for both PageDown and `j` so vim users get the expected
-            // single-line motion.
-            let step = 1usize;
+            let step = state.page_lines();
             if state.transcript_state.scroll_offset <= step {
                 Arc::make_mut(&mut state.transcript_state).scroll_offset = 0;
                 Arc::make_mut(&mut state.transcript_state).autoscroll = true;

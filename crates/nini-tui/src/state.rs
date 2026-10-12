@@ -8,6 +8,7 @@
 //! them trivially testable without a terminal.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 // `session` is held across `.await` points in the agent task, so it
 // needs the async mutex. The render cache is only ever touched from the
@@ -854,6 +855,20 @@ pub struct AppState {
     /// Invalidate with [`AppState::invalidate_item_counts`] whenever
     /// line *indices* shift.
     pub item_cache: Arc<StdMutex<TranscriptItemCache>>,
+    /// v0.10: how many `TranscriptLine`s one page of scrolling covers.
+    ///
+    /// Published by the render path, because that is the only place that
+    /// knows both the per-line row counts and the viewport height — and
+    /// `ScrollUp` used to guess. It guessed `1`, which meant a single
+    /// PageUp moved anywhere from one to fifty rows depending on which
+    /// line it landed on: a folded tool result is many rows tall, a
+    /// divider is one.
+    ///
+    /// Atomic rather than a plain field for the same reason as
+    /// `item_cache`: `render_frame` takes `&AppState` and must not mutate.
+    /// The value is recomputed every frame, so a stale read costs one
+    /// keypress and self-corrects on the next frame.
+    pub page_lines: Arc<AtomicUsize>,
     /// v0.8.5: `Arc<TranscriptState>` so that `AppState::clone()` is
     /// O(1) instead of deep-cloning every TranscriptLine (each
     /// ToolResult can carry ~25 KB of file content, so 14 parallel
@@ -1382,6 +1397,7 @@ impl Clone for AppState {
             // coincident line, and `invalidate_item_counts` for the
             // from-scratch case.
             item_cache: Arc::clone(&self.item_cache),
+            page_lines: Arc::clone(&self.page_lines),
             run_state: self.run_state.clone(),
             model_state: self.model_state.clone(),
             session_state: self.session_state.clone(),
@@ -1396,6 +1412,7 @@ impl Default for AppState {
             input: InputBuffer::new(),
             transcript_state: Arc::new(TranscriptState::default()),
             item_cache: Arc::new(StdMutex::new(TranscriptItemCache::default())),
+            page_lines: Arc::new(AtomicUsize::new(1)),
             run_state: RunState::default(),
             model_state: ModelState::default(),
             session_state: SessionState::default(),
@@ -1947,6 +1964,12 @@ impl AppState {
         Arc::make_mut(&mut self.transcript_state)
             .lines
             .push(TranscriptLine::Divider);
+    }
+
+    /// Rows one page of transcript scrolling covers, as published by the
+    /// render path. Falls back to 1 before the first frame.
+    pub fn page_lines(&self) -> usize {
+        self.page_lines.load(Ordering::Relaxed).max(1)
     }
 
     pub fn transcript_len(&self) -> usize {

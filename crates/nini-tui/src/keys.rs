@@ -4,7 +4,13 @@
 //! resolves against `KeyBinding` rules to produce `KeyAction`s the app
 //! actually understands.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers as CtMods};
+// `KeyCode` is re-exported rather than imported: `Key` exposes it as a
+// `pub` field, so keeping the type private left an integration test unable
+// to construct a key at all — `resolve` was only reachable from the unit
+// tests inside this file. That is how Ctrl+K's duplicate binding survived
+// review: nothing outside the crate could ask the question.
+pub use crossterm::event::KeyCode;
+use crossterm::event::{KeyEvent, KeyModifiers as CtMods};
 
 /// Modifier mask. Wraps crossterm's `KeyModifiers` so we don't leak
 /// crossterm into the rest of the crate.
@@ -371,28 +377,33 @@ pub fn default_keymap() -> Vec<KeyBinding> {
             key: Key::new(KeyCode::Char('g'), ctrl),
             action: OpenExternalEditor,
         },
-        // Scroll
+        // Scroll.
+        //
+        // v0.10: this table used to bind Ctrl+K to ScrollUp as well as to
+        // KillToLineEnd above. `resolve` returns the first match, so
+        // KillToLineEnd always won and ScrollUp was unreachable — upward
+        // scrolling had no working key while Ctrl+J still scrolled down.
+        // Both vim bindings are gone now.
+        //
+        // Removing them rather than moving them is the alignment: Pi's
+        // keybindings (pi-tui/src/keybindings.ts:160-174) define
+        // `tui.altScreen.pageUp` / `pageDown` and a `halfPageUp` /
+        // `halfPageDown` pair, and no vim-motion scroll at all. nini is a
+        // rewrite of Pi, so the surface it exposes should be the one Pi
+        // exposes. Ctrl+K is load-bearing on its own — it is the readline,
+        // bash and Pi binding for kill-to-end-of-line — and binding it to
+        // two things cannot be made correct by ordering.
+        //
+        // Ctrl+J went for a second reason: it is LF. Most terminals send
+        // `\r` for Enter and crossterm reports that as `KeyCode::Enter`, so
+        // the two do not collide today, but a terminal configured to send
+        // `\n` would have had its Enter key swallowed by a scroll action.
         KeyBinding {
             key: Key::new(KeyCode::PageUp, KeyModifiers::NONE),
             action: ScrollUp,
         },
         KeyBinding {
             key: Key::new(KeyCode::PageDown, KeyModifiers::NONE),
-            action: ScrollDown,
-        },
-        // v0.8.4 (ux-001): vim-style single-line scroll so the user can
-        // skim without losing context. We use Ctrl+J / Ctrl+K (vim
-        // motion with the Ctrl modifier) instead of plain `j` / `k`
-        // because plain `j` / `k` would clobber typing them into the
-        // editor input — especially inside the completion popup where
-        // the user expects `j` to move the highlight down. PageUp /
-        // PageDown are unchanged.
-        KeyBinding {
-            key: Key::new(KeyCode::Char('k'), ctrl),
-            action: ScrollUp,
-        },
-        KeyBinding {
-            key: Key::new(KeyCode::Char('j'), ctrl),
             action: ScrollDown,
         },
         // v0.8.4 (ux-001): Shift+End snaps back to the live message
@@ -592,26 +603,24 @@ mod tests {
     // ---------------------------------------------------------------
     // v0.10: the duplicate-key oracle this file was missing.
     //
-    // Ctrl+K is bound twice — `KillToLineEnd` above and `ScrollUp` further
-    // down — and `resolve` returns the first match, so `ScrollUp` is
-    // unreachable by keyboard. Upward scrolling has no working vim key;
-    // Ctrl+J (`ScrollDown`) is bound once and works. That asymmetry is the
-    // whole of "the transcript will not scroll".
+    // Ctrl+K was bound twice — `KillToLineEnd` and `ScrollUp` — and
+    // `resolve` returns the first match, so `ScrollUp` was unreachable by
+    // keyboard. Upward scrolling had no working key while Ctrl+J still
+    // scrolled down, which is the whole of "the transcript will not
+    // scroll".
     //
-    // Marked `#[ignore]` rather than deleted, following the convention in
-    // the plan (section 13.1): a red test here is an executable statement of
-    // a defect, and the existing `ctrl_k_kills_to_line_end` test passes
-    // while this one fails — the first asserts the correct winner, the
-    // second asserts that no second binding exists at all.
+    // The two comments in the table contradicted each other, and both were
+    // true when written: line 324 said the palette moved to Ctrl+Shift+K
+    // "so we don't break either muscle memory", line 383 added vim-style
+    // scrolling on the same key. Neither author could see the other.
     //
-    // The two comments in the table also contradict each other. Line 324:
-    // "The command palette lives on Ctrl+Shift+K instead so we don't break
-    // either muscle memory." Line 383: "vim-style single-line scroll".
-    // Both were true when written; together they cost the user the key.
+    // `ctrl_k_kills_to_line_end` above passed the whole time, because it
+    // asserts the correct winner and cannot notice that a second binding
+    // exists. This one closes that hole: it does not care which action
+    // wins, only that there is exactly one.
     // ---------------------------------------------------------------
 
     #[test]
-    #[ignore = "BUG: Ctrl+K is bound to both KillToLineEnd and ScrollUp"]
     fn no_key_is_bound_to_two_actions() {
         let km = default_keymap();
         let mut seen: Vec<(Key, String)> = Vec::new();

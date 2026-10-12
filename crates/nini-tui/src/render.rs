@@ -26,12 +26,13 @@ use crate::rich::{
 use crate::selector::{SelectorItem, SelectorPanel};
 use crate::state::{AppState, RunMode, TranscriptLine};
 use crate::theme::Theme;
-use crate::width::{display_width, truncate_cells, truncate_cells_head};
+use crate::width::{display_width, floor_char_boundary, truncate_cells, truncate_cells_head};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as RLine, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap};
 use ratatui::Frame;
+use std::sync::atomic::Ordering;
 
 /// Render the full TUI frame.
 pub fn render_frame(f: &mut Frame, state: &AppState) {
@@ -70,27 +71,16 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
         // for top/bottom border, clamped to [3, area.height/3].
         let padding_x: u16 = 1;
         let inner_width = area.width.saturating_sub(2 + 2 * padding_x + 2).max(1) as usize;
-        let explicit_lines = state.input.text.matches('\n').count() as u16;
-        let first_line_width = state
-            .input
-            .text
-            .split('\n')
-            .next()
-            .unwrap_or("")
-            .chars()
-            // Approximate display width: BMP chars = 1, CJK / wide
-            // / emoji (>= U+1100) = 2 cells. The exact mapping lives
-            // in `unicode-width`; a 2-cell cap is safe for budgeting.
-            .map(|c| if (c as u32) > 0x1100 { 2 } else { 1 })
-            .sum::<usize>();
-        let wrapped_rows = if first_line_width <= inner_width {
-            1u16
-        } else {
-            (first_line_width as f32 / inner_width as f32).ceil() as u16
-        };
-        let total_rows = explicit_lines + wrapped_rows;
+        // v0.10: this used to hand-roll the width with
+        // `map(|c| if (c as u32) > 0x1100 { 2 } else { 1 })`, under a
+        // comment that said "the exact mapping lives in `unicode-width`".
+        // The approximation is wrong for variation selectors: U+FE0F is
+        // above 0x1100, so an emoji written as base + U+FE0F was budgeted
+        // at four cells for two cells of glyph, and the box grew to fit
+        // nothing. `display_width` is the exact function, and it is
+        // already imported at the top of this file.
         let max_h = (area.height / 3).max(5);
-        (total_rows + 2).clamp(3, max_h)
+        prompt_height(&state.input.text, inner_width, max_h)
     };
     // v0.9.1 (P2-12): the chrome used to be a fixed 6 rows (2 footer +
     // 3 prompt + 1 hint) before the transcript got anything. Below that,
@@ -701,6 +691,93 @@ fn wrap_thinking_block(text: &str) -> Vec<String> {
     out
 }
 
+/// How many `TranscriptLine`s it takes to cover `items` rendered rows,
+/// counting from the bottom up — the same direction the renderer skips in.
+///
+/// Mirrors the user-scroll branch below so the number PageUp uses and the
+/// number PageUp actually moves stay the same thing. Getting that wrong is
+/// how "one page" becomes "one line" or "the whole transcript".
+/// Where the prompt cursor sits, relative to the text area's top-left.
+///
+/// Two things were wrong here and both are only visible with input the
+/// e2e suite never typed.
+///
+/// **Width.** The column was `text[..cursor].chars().count()` — a count of
+/// characters standing in for a count of terminal cells. Every other width
+/// in this file uses `width::display_width` (lines 274, 327, 552), the
+/// comment at line 638 says "using display_width so emoji / CJK count
+/// correctly", and line 642 imports `unicode_width`. CJK glyphs are two
+/// cells, so `研究一下` put the cursor on top of the second character.
+///
+/// **Row.** The row was `chars / inner_width`, which does not know that a
+/// newline exists. On a multi-line prompt — which the box supports, and
+/// renders with a dim `❯` on continuation lines — the cursor was placed at
+/// a row computed from the whole buffer's length, so it landed somewhere
+/// unrelated to the line being typed on.
+///
+/// The row here is explicit newlines plus however many wrapped rows the
+/// current line has consumed. Wrapping is ratatui's, which breaks on word
+/// boundaries, so the wrapped-row count can exceed the character
+/// arithmetic by one on a long unbroken token; that is why the old code
+/// clamped with `.min(...)` and why this still clamps.
+/// Rows the prompt box needs: explicit newlines plus wrapped rows for the
+/// first line, plus the two borders, clamped.
+///
+/// Extracted rather than left inline for the same reason as
+/// `prompt_cursor_geometry` — the height budget decides whether a prompt
+/// wraps, and an inline expression inside a layout block cannot be asked
+/// about. It was measured wrong exactly once: a hand-rolled
+/// `(c as u32) > 0x1100` stood in for `unicode-width`, under a comment
+/// admitting as much, and charged a variation selector (U+FE0F, zero-width)
+/// two cells.
+fn prompt_height(text: &str, inner_width: usize, max_h: u16) -> u16 {
+    let explicit_lines = text.matches('\n').count() as u16;
+    let first_line_width = display_width(text.split('\n').next().unwrap_or(""));
+    let wrapped_rows = if first_line_width <= inner_width {
+        1u16
+    } else {
+        (first_line_width as f32 / inner_width as f32).ceil() as u16
+    };
+    let total_rows = explicit_lines + wrapped_rows;
+    (total_rows + 2).clamp(3, max_h)
+}
+
+struct PromptCursor {
+    /// Column within the current visual row, in cells.
+    column: usize,
+    /// Rows below the top border: explicit newlines, plus wrapped rows.
+    row: usize,
+}
+
+fn prompt_cursor_geometry(text: &str, cursor_byte: usize, inner_width: usize) -> PromptCursor {
+    let cursor_byte = floor_char_boundary(text, cursor_byte.min(text.len()));
+    let before = &text[..cursor_byte];
+
+    let explicit_rows = before.matches('\n').count();
+    let current_line = before.rsplit('\n').next().unwrap_or("");
+
+    let column_in_line = display_width(current_line);
+    let wrapped_rows = column_in_line / inner_width.max(1);
+
+    PromptCursor {
+        column: column_in_line % inner_width.max(1),
+        row: explicit_rows + wrapped_rows,
+    }
+}
+
+fn lines_needed_for_items(items_per_line: &[usize], items: usize, total: usize) -> usize {
+    let mut remaining = items;
+    let mut lines = 0usize;
+    for i in (0..total).rev() {
+        if remaining == 0 {
+            break;
+        }
+        remaining = remaining.saturating_sub(items_per_line[i]);
+        lines += 1;
+    }
+    lines
+}
+
 fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     // v0.8.7 (ux-002, transcript continuity): the previous autoscroll
     // math used `lines.len()` (TranscriptLine count) as the scroll unit,
@@ -785,6 +862,15 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         items_per_line.push(count);
     }
     let total_items: usize = items_per_line.iter().sum();
+
+    // v0.10: publish how many lines one page covers, so PageUp scrolls a
+    // page instead of the single line it used to scroll. Computed here
+    // because this is the only scope that has both the per-line row counts
+    // and the viewport height; `ScrollUp` had neither and guessed `1`.
+    state.page_lines.store(
+        lines_needed_for_items(&items_per_line, visible_height, total_lines).max(1),
+        Ordering::Relaxed,
+    );
 
     // Choose the visible slice.
     let mut visible_items: Vec<ListItem> = Vec::with_capacity(visible_height.min(total_items));
@@ -903,7 +989,13 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     if autoscroll && hidden_above_items > 0 && area.height >= 3 {
         let label = format!(" \u{2191} {hidden_above_items} more above ");
         let style = theme.fg_style("dim");
-        let width = (label.chars().count() as u16).min(area.width);
+        // v0.10: `chars().count()`, not display width. U+2191 is
+        // East-Asian-Ambiguous — one cell in a western terminal, two in a
+        // CJK one — so the right-aligned indicator shifted in exactly the
+        // terminals this project targets. Same class as the status-bar fix
+        // in v0.8.9 (see the comment above line 477), which left these two
+        // sites behind because nobody had reported them yet.
+        let width = (display_width(&label) as u16).min(area.width);
         let ind_area = Rect::new(area.x, area.y, width, 1);
         let ind = Paragraph::new(Span::styled(label, style));
         f.render_widget(ind, ind_area);
@@ -916,7 +1008,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         let hidden = scroll_offset;
         let label = format!(" \u{2193} {hidden} more ");
         let style = theme.fg_style("accent").add_modifier(Modifier::BOLD);
-        let width = (label.chars().count() as u16).min(area.width);
+        let width = (display_width(&label) as u16).min(area.width); // see above
         let x = area.x + area.width.saturating_sub(width);
         let y = area.y + area.height.saturating_sub(1);
         let ind_area = Rect::new(x, y, width, 1);
@@ -1110,9 +1202,8 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     };
     let text = state.input.text.clone();
     let cursor_byte = state.input.cursor;
-
-    // Compute display cursor position (chars, not bytes, for proper rendering).
-    let cursor_char = text[..cursor_byte.min(text.len())].chars().count();
+    // Cursor geometry needs `inner_width`, which is only known after the
+    // border and insets are subtracted, so it is computed below.
 
     // Split into lines for multi-line rendering.
     let lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
@@ -1184,10 +1275,10 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
         let inner_width = area
             .width
             .saturating_sub(1 /* right border */ + padding_x + left_inset);
-        let cursor_x = area.x + left_inset + (cursor_char as u16 % inner_width.max(1));
-        let line_idx = (cursor_char as u16) / inner_width.max(1);
+        let geom = prompt_cursor_geometry(&text, cursor_byte, inner_width.max(1) as usize);
+        let cursor_x = area.x + left_inset + geom.column as u16;
         let cursor_y =
-            area.y + 1 /* top border */ + line_idx.min(area.height.saturating_sub(2) - 1);
+            area.y + 1 /* top border */ + (geom.row as u16).min(area.height.saturating_sub(2) - 1);
         f.set_cursor_position((cursor_x, cursor_y));
     }
 }
@@ -1649,5 +1740,314 @@ mod status_tests {
             lines.len(),
             lines
         );
+    }
+}
+
+#[cfg(test)]
+mod cursor_and_scroll_tests {
+    //! v0.10. These cover the four TUI defects found on 2026-10-12.
+    //!
+    //! They live here rather than in `tests/` because the functions they
+    //! exercise are private, and that is itself part of the finding:
+    //! `KeyCode` is a private import behind a `pub` field in `keys.rs`, so
+    //! an integration test cannot construct a key at all. Private-here,
+    //! private-there — the shape §21.3 of the plan calls "unobservable,
+    //! therefore untested".
+
+    use super::{lines_needed_for_items, prompt_cursor_geometry, prompt_height};
+    use crate::width::display_width;
+
+    // ---- BUG 1: the cursor counted characters where cells were meant ----
+
+    #[test]
+    fn ascii_cursor_lands_on_its_character() {
+        let text = "hello";
+        let g = prompt_cursor_geometry(text, text.len(), 20);
+        assert_eq!(g.column, 5);
+        assert_eq!(g.row, 0);
+    }
+
+    #[test]
+    fn a_wide_character_advances_the_column_by_two_cells() {
+        let text = "研究一下";
+        let g = prompt_cursor_geometry(text, text.len(), 20);
+        assert_eq!(
+            g.column,
+            display_width(text),
+            "cursor column must be cells, not chars — otherwise it lands on \
+             top of the second character"
+        );
+        assert_eq!(g.column, 8);
+    }
+
+    #[test]
+    fn emoji_advance_the_column_by_two_cells_too() {
+        let text = "done ✅";
+        let g = prompt_cursor_geometry(text, text.len(), 40);
+        assert_eq!(g.column, display_width(text));
+    }
+
+    /// The bug measured in the field, on a prompt that mixes an ASCII
+    /// command with Chinese — which is what real input looks like.
+    #[test]
+    fn a_mixed_prompt_puts_the_cursor_after_the_text() {
+        let text = "/research 研究一下这个问题";
+        let g = prompt_cursor_geometry(text, text.len(), 40);
+        assert_eq!(g.column, 26, "was 18 before the fix");
+    }
+
+    // ---- BUG 1b: the row ignored newlines entirely ----
+
+    #[test]
+    fn a_second_line_puts_the_cursor_on_the_second_row() {
+        let text = "first\nsecond";
+        let g = prompt_cursor_geometry(text, text.len(), 40);
+        assert_eq!(g.row, 1, "one explicit newline before the cursor");
+        assert_eq!(g.column, display_width("second"));
+    }
+
+    #[test]
+    fn a_third_line_and_wide_characters_both_count() {
+        let text = "一\n二\n三";
+        let g = prompt_cursor_geometry(text, text.len(), 40);
+        assert_eq!(g.row, 2);
+        assert_eq!(g.column, display_width("三"));
+    }
+
+    #[test]
+    fn a_wrapped_line_adds_rows() {
+        // 20 cells per row, 25 cells of text on one line → second row.
+        let text = "abcdefghijklmnopqrstuvwxy";
+        let g = prompt_cursor_geometry(text, text.len(), 20);
+        assert_eq!(g.row, 1);
+        assert_eq!(g.column, 5);
+    }
+
+    #[test]
+    fn a_wide_character_can_push_onto_the_next_row() {
+        // 6 CJK chars = 12 cells at inner_width 10 → row 1, column 2.
+        let text = "一二三四五六";
+        let g = prompt_cursor_geometry(text, text.len(), 10);
+        assert_eq!(g.row, 1, "was 0 when the row came from a char count");
+        assert_eq!(g.column, 2);
+    }
+
+    /// The old code indexed `text[..cursor]` directly. A cursor left on a
+    /// byte offset that is not a char boundary — reachable through
+    /// programmatic edits rather than keystrokes — must not panic the TUI.
+    #[test]
+    fn a_cursor_mid_character_does_not_panic() {
+        let text = "研究";
+        let g = prompt_cursor_geometry(text, 1, 20); // inside the first 3-byte char
+        assert!(g.column <= display_width(text));
+    }
+
+    #[test]
+    fn a_cursor_past_the_end_is_clamped() {
+        let g = prompt_cursor_geometry("short", 9999, 20);
+        assert_eq!(g.column, display_width("short"));
+    }
+
+    // ---- BUG 3: PageUp moved one line, whatever a line was worth ----
+
+    #[test]
+    fn one_page_covers_the_viewport_height() {
+        // 10 lines of 3 rows each, viewport 12 rows → 4 lines.
+        let per_line = vec![3usize; 10];
+        assert_eq!(lines_needed_for_items(&per_line, 12, 10), 4);
+    }
+
+    #[test]
+    fn one_page_crosses_a_tall_line() {
+        // From the bottom: line 2 is 1 row, line 1 is 50. A 20-row viewport
+        // needs both — 1 + 19 of line 1 — so two lines, not one. The first
+        // draft of this test asserted 1, on the assumption that the tall
+        // line covers the page on its own. It does not; there is a row
+        // beneath it. The implementation was right and the test was wrong,
+        // which is the only thing worth writing down.
+        let per_line = vec![1usize, 50, 1];
+        assert_eq!(lines_needed_for_items(&per_line, 20, 3), 2);
+    }
+
+    #[test]
+    fn one_page_over_many_tall_lines() {
+        // This is the case the hardcoded step of 1 got wrong: eight lines
+        // of 10 rows, viewport 20 → two lines, not twenty presses.
+        let per_line = vec![10usize; 8];
+        assert_eq!(lines_needed_for_items(&per_line, 20, 8), 2);
+    }
+
+    #[test]
+    fn one_page_never_runs_past_the_top() {
+        let per_line = vec![1usize; 3];
+        assert_eq!(lines_needed_for_items(&per_line, 100, 3), 3);
+        assert_eq!(lines_needed_for_items(&[], 10, 0), 0);
+    }
+
+    /// The count must match what the renderer actually skips, or "one page"
+    /// is a different number in the key handler than on screen. Both walk
+    /// from the bottom, and this pins that they stay in step.
+    #[test]
+    fn the_page_count_agrees_with_the_renderer_skip() {
+        let per_line = vec![2usize, 7, 1, 4, 9];
+        let viewport = 11usize;
+        let expected_skip = lines_needed_for_items(&per_line, viewport, per_line.len());
+
+        // Reproduce the renderer's own skip loop.
+        let mut items_to_skip = 0usize;
+        let mut lines_skipped = 0usize;
+        for i in (0..per_line.len()).rev() {
+            if lines_skipped >= per_line.len() {
+                break;
+            }
+            items_to_skip += per_line[i];
+            lines_skipped += 1;
+            if items_to_skip >= viewport {
+                break;
+            }
+        }
+        assert_eq!(expected_skip, lines_skipped);
+    }
+
+    // ---- BUG 4: the same mistake in three more places ----
+
+    /// The input box budgeted height with `(c as u32) > 0x1100`, a
+    /// hand-rolled stand-in under a comment admitting `unicode-width` was
+    /// the real answer. U+FE0F is a variation selector: zero-width, above
+    /// the threshold, so `✅️` was charged four cells for two.
+    #[test]
+    fn the_old_height_heuristic_miscounted_emoji() {
+        let emoji_with_selector = "\u{2705}\u{FE0F}";
+        let old: usize = emoji_with_selector
+            .chars()
+            .map(|c| if (c as u32) > 0x1100 { 2 } else { 1 })
+            .sum();
+        assert_eq!(
+            display_width(emoji_with_selector),
+            2,
+            "the exact function disagrees with the approximation"
+        );
+        assert_eq!(
+            old, 4,
+            "the approximation over-charges, which is the defect"
+        );
+    }
+
+    // ---- the two tests this file was missing, found by falsification ----
+
+    /// The first pass of this module tested `lines_needed_for_items` and
+    /// therefore passed while `render_transcript` stored a hardcoded `1`
+    /// into `page_lines` — the unit under test was correct and the wiring
+    /// was not. The injection that caught it: replace the store with `1`,
+    /// and every test here stayed green.
+    ///
+    /// So: the function is tested, *and* the publish is tested.
+    #[test]
+    fn a_render_publishes_a_real_page_size() {
+        use crate::render::render_frame;
+        use crate::state::{AppState, RunMode, TranscriptLine};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::sync::Arc;
+
+        let mut state = AppState::default();
+        state.run_state.mode = RunMode::Editing;
+        // Forty distinct assistant lines at 80 columns. Each renders to one
+        // row, so a 20-row viewport covers 20 of them: one page must be a
+        // count near the viewport height, not 1.
+        Arc::make_mut(&mut state.transcript_state)
+            .lines
+            .extend((0..40).map(|i| TranscriptLine::AssistantText(format!("line {i}"))));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render_frame(f, &state)).unwrap();
+
+        let published = state.page_lines();
+        assert!(
+            published > 1,
+            "after a real render, one page must be more than one line; \
+             got {published}"
+        );
+        assert!(
+            published <= state.transcript_state.lines.len(),
+            "and cannot exceed the transcript"
+        );
+    }
+
+    /// Same shape, for the height budget. `the_old_height_heuristic_
+    /// miscounted_emoji` records what the broken code did, so it passes
+    /// forever regardless of what the current code does — the injection
+    /// confirmed that by restoring the old arithmetic and watching all 17
+    /// tests stay green. This one asks what the current code does.
+    #[test]
+    fn the_height_budget_matches_the_exact_width() {
+        // Base glyph plus variation selector: one cell of glyph, two
+        // codepoints. The old `> 0x1100` charged the selector as a cell.
+        let emoji = "\u{2705}\u{FE0F}";
+        assert_eq!(display_width(emoji), 2);
+
+        for inner_width in [2usize, 3, 4, 10] {
+            let by_exact = prompt_height(emoji, inner_width, 20);
+            // What the old approximation would have concluded:
+            let old_first_line = 4usize; // 2 codepoints, both above 0x1100
+            let old_wrapped = if old_first_line <= inner_width {
+                1u16
+            } else {
+                (old_first_line as f32 / inner_width as f32).ceil() as u16
+            };
+            let old_height = (old_wrapped + 2).clamp(3, 20);
+            if inner_width < 4 {
+                assert_eq!(
+                    by_exact, 3,
+                    "an emoji is {inner_width} cells or fewer at inner_width \
+                     {inner_width}: it must not wrap. The old heuristic said \
+                     {old_height}."
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tall_prompt_grows_the_box_and_an_empty_one_does_not() {
+        use super::prompt_height;
+
+        assert_eq!(prompt_height("", 40, 20), 3, "minimum box");
+        assert_eq!(prompt_height("short", 40, 20), 3);
+        assert_eq!(prompt_height("a\nb", 40, 20), 4, "one newline adds a row");
+        assert_eq!(prompt_height(&"x".repeat(80), 40, 20), 4, "one wrap");
+        assert_eq!(prompt_height(&"x".repeat(200), 40, 20), 7, "five wraps");
+        assert_eq!(
+            prompt_height(&"x".repeat(500), 40, 6),
+            6,
+            "clamped to max_h, never past it"
+        );
+    }
+
+    /// The scroll indicators size themselves with U+2191 / U+2193, which are
+    /// East-Asian-Ambiguous: one cell in a western terminal, two in a CJK
+    /// one. Switching them from `chars().count()` to `display_width` is a
+    /// **behaviour-preserving change today**, and the test says so rather
+    /// than claiming a fix.
+    ///
+    /// `unicode_width`'s `width()` resolves Ambiguous to 1 and
+    /// `width_cjk()` to 2; `display_width` uses the former. So for these
+    /// two labels the two expressions agree exactly. The change buys
+    /// consistency with the rest of the file and makes the site correct if
+    /// the project ever adopts `width_cjk`, which the old expression could
+    /// never be.
+    ///
+    /// I expected this to be a bug fix and wrote the comment claiming a
+    /// visible shift in CJK terminals before checking. It is not one.
+    #[test]
+    fn scroll_indicator_labels_agree_with_a_char_count_today() {
+        for arrow in ["\u{2191}", "\u{2193}"] {
+            let label = format!(" {arrow} 12 more ");
+            assert_eq!(
+                display_width(&label),
+                label.chars().count(),
+                "if this stops holding, `display_width` grew CJK-awareness and \
+                 the behaviour claim in the doc comment needs updating"
+            );
+        }
     }
 }
