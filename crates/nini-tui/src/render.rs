@@ -765,18 +765,7 @@ fn prompt_cursor_geometry(text: &str, cursor_byte: usize, inner_width: usize) ->
     }
 }
 
-fn lines_needed_for_items(items_per_line: &[usize], items: usize, total: usize) -> usize {
-    let mut remaining = items;
-    let mut lines = 0usize;
-    for i in (0..total).rev() {
-        if remaining == 0 {
-            break;
-        }
-        remaining = remaining.saturating_sub(items_per_line[i]);
-        lines += 1;
-    }
-    lines
-}
+use crate::scrollbar::lines_needed_for_items;
 
 fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     // v0.8.7 (ux-002, transcript continuity): the previous autoscroll
@@ -876,6 +865,22 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         lines_needed_for_items(&items_per_line, visible_height, total_lines).max(1),
         Ordering::Relaxed,
     );
+    // v0.10: hand the mouse the row counts it cannot compute itself. A
+    // scrollbar drag arrives as a pixel offset and has to become a
+    // `scroll_offset`, which counts lines.
+    if let Ok(mut heights) = state.line_heights.lock() {
+        *heights = items_per_line.clone();
+    }
+    if let Ok(mut vp) = state.transcript_viewport.lock() {
+        *vp = crate::scrollbar::Viewport {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height,
+            content_height: total_items,
+            viewport_height: visible_height,
+        };
+    }
 
     // Choose the visible slice.
     let mut visible_items: Vec<ListItem> = Vec::with_capacity(visible_height.min(total_items));

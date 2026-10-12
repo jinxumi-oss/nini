@@ -202,6 +202,134 @@ impl ScrollbarMode {
     }
 }
 
+/// Milliseconds since the Unix epoch.
+///
+/// Only ever compared against another reading of the same clock, so
+/// `SystemTime` is enough and pulls in no dependency.
+pub fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// How many `TranscriptLine`s it takes to cover `items` rendered rows,
+/// counting from the bottom up — the same direction the renderer skips in.
+///
+/// Mirrors the user-scroll branch in `render.rs` so the number PageUp uses
+/// and the number PageUp actually moves stay the same thing.
+pub fn lines_needed_for_items(items_per_line: &[usize], items: usize, total: usize) -> usize {
+    let mut remaining = items;
+    let mut lines = 0usize;
+    for i in (0..total).rev() {
+        if remaining == 0 {
+            break;
+        }
+        remaining = remaining.saturating_sub(items_per_line[i]);
+        lines += 1;
+    }
+    lines
+}
+
+/// Everything a mouse event needs to act on the transcript.
+///
+/// Published by the render pass, because `row` and the per-line row counts
+/// only exist there. A pointer position alone is not enough: the same `y` is
+/// a different scroll position at a different terminal height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Viewport {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    /// Total rendered rows in the transcript.
+    pub content_height: usize,
+    /// Rows the viewport shows.
+    pub viewport_height: usize,
+}
+
+impl Viewport {
+    pub fn geometry(&self, items_skipped_from_bottom: usize) -> Option<ScrollbarGeometry> {
+        geometry(
+            self.x,
+            self.y,
+            self.width,
+            self.height,
+            self.content_height,
+            self.viewport_height,
+            items_skipped_from_bottom,
+        )
+    }
+
+    /// Is `(x, y)` on the scrollbar column, within the track?
+    ///
+    /// Pi's `getScrollbarTargetAt` matches the column and the track: grabbing
+    /// the rail above or below the thumb is still a grab, which is how a
+    /// reader jumps to a position in one press.
+    pub fn hits_column(&self, x: u16, y: u16) -> bool {
+        x == self.x + self.width.saturating_sub(1)
+            && y >= self.y
+            && y < self.y.saturating_add(self.height)
+    }
+}
+
+/// Convert a thumb offset within the track into a `scroll_offset`.
+///
+/// Pi's half of the drag (`tui-alt-screen.ts:741-760`):
+///
+/// ```ts
+/// const maxThumbOffset = geometry.trackHeight - geometry.thumbHeight;
+/// const thumbOffset = clamp(event.y - geometry.trackTop - grabOffset);
+/// const scrollTop = round((thumbOffset / maxThumbOffset) * geometry.maxScrollTop);
+/// scrollView.scrollTo(scrollTop);
+/// ```
+///
+/// Then the part Pi does not have to write: turning a top-down row position
+/// into nini's bottom-up line count, using the row heights the renderer
+/// measured.
+///
+/// `None` when there is nothing to scroll, which is also the signal that a
+/// drag should not start.
+pub fn line_offset_for_thumb_offset(
+    line_heights: &[usize],
+    thumb_offset: usize,
+    geometry: &ScrollbarGeometry,
+) -> Option<usize> {
+    if line_heights.is_empty() || geometry.max_scroll_top == 0 {
+        return None;
+    }
+    let max_thumb_offset = (geometry.track_height - geometry.thumb_height) as usize;
+    let thumb_offset = thumb_offset.min(max_thumb_offset);
+
+    // Pi's `scrollTop`, measured from the top.
+    let scroll_top = if max_thumb_offset == 0 {
+        0
+    } else {
+        ((thumb_offset as f64 / max_thumb_offset as f64) * geometry.max_scroll_top as f64).round()
+            as usize
+    };
+
+    // nini measures from the bottom.
+    let items_skipped = geometry.max_scroll_top.saturating_sub(scroll_top);
+    Some(lines_needed_for_items(
+        line_heights,
+        items_skipped,
+        line_heights.len(),
+    ))
+}
+
+/// Rows a wheel notch moves, matching Pi's `wheelScrollLines`
+/// (`tui-alt-screen.ts:144-146`), whose default is 3.
+///
+/// Expressed in *lines* because that is the unit `scroll_offset` counts, so
+/// this is not Pi's arithmetic exactly — that difference is the line-vs-cell
+/// gap already recorded in the plan.
+pub fn wheel_lines() -> usize {
+    WHEEL_SCROLL_LINES
+}
+
+/// Pi's `wheelScrollLines` default.
+pub const WHEEL_SCROLL_LINES: usize = 3;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,17 +482,164 @@ mod tests {
         );
         assert_eq!(ScrollbarMode::default(), ScrollbarMode::Auto);
     }
-}
 
-/// Milliseconds since the Unix epoch.
-///
-/// Only ever compared against another reading of the same clock, so
-/// `SystemTime` is enough and pulls in no dependency. Panics on a clock set
-/// before 1970 are not reachable here — `saturating_sub` at the call site
-/// covers a zero reading.
-pub fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    // ---- mouse: thumb offset -> line offset ----
+
+    /// Forty transcript lines, each two rendered rows, in a 17-row viewport.
+    fn tall_lines() -> Vec<usize> {
+        vec![2usize; 40]
+    }
+
+    fn viewport_of() -> Viewport {
+        Viewport {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 17,
+            content_height: 80,
+            viewport_height: 17,
+        }
+    }
+
+    #[test]
+    fn the_column_is_the_areas_last_one() {
+        let vp = Viewport {
+            x: 4,
+            y: 3,
+            width: 80,
+            height: 17,
+            ..viewport_of()
+        };
+        assert!(vp.hits_column(4 + 79, 3));
+        assert!(vp.hits_column(83, 19));
+        assert!(!vp.hits_column(82, 10), "one column to the left");
+        assert!(!vp.hits_column(83, 2), "above the track");
+        assert!(!vp.hits_column(83, 20), "below the track");
+    }
+
+    #[test]
+    fn a_thumb_at_the_bottom_means_the_live_tail() {
+        let vp = viewport_of();
+        let g = vp.geometry(0).unwrap();
+        let next = line_offset_for_thumb_offset(&tall_lines(), (17 - g.thumb_height) as usize, &g)
+            .unwrap();
+        assert_eq!(
+            next, 0,
+            "dragging the thumb to the bottom returns to the tail"
+        );
+    }
+
+    /// The top of the track means one viewport's worth of rows hidden, which
+    /// in lines is however many lines those rows occupy - not all of them.
+    ///
+    /// The first draft asserted 40, on the assumption that "top" meant "every
+    /// line skipped". It does not: `maxScrollTop` is `contentHeight -
+    /// viewportHeight` = 80 - 17 = 63 rows, and at two rows per line that is
+    /// 32 lines. Skipping all 40 would hide 80 rows, twice as much as the
+    /// viewport can scroll.
+    #[test]
+    fn a_thumb_at_the_top_hides_exactly_one_viewport() {
+        let vp = viewport_of();
+        let g = vp.geometry(0).unwrap();
+        let next = line_offset_for_thumb_offset(&tall_lines(), 0, &g).unwrap();
+        assert_eq!(g.max_scroll_top, 63);
+        assert_eq!(next, 32, "63 rows at 2 rows per line");
+        assert!(next < tall_lines().len(), "and not every line");
+    }
+
+    #[test]
+    fn a_drag_moves_monotonically() {
+        let vp = viewport_of();
+        let g = vp.geometry(0).unwrap();
+        let travel = (17 - g.thumb_height) as usize;
+        let mut previous = usize::MAX;
+        for step in 0..=travel {
+            let offset = line_offset_for_thumb_offset(&tall_lines(), step, &g).unwrap();
+            assert!(
+                offset <= previous,
+                "step {step}: offset went from {previous} up to {offset}"
+            );
+            previous = offset;
+        }
+    }
+
+    #[test]
+    fn a_drag_past_the_track_clamps_rather_than_wrapping() {
+        let vp = viewport_of();
+        let g = vp.geometry(0).unwrap();
+        let huge = line_offset_for_thumb_offset(&tall_lines(), 99_999, &g).unwrap();
+        let bottom =
+            line_offset_for_thumb_offset(&tall_lines(), (17 - g.thumb_height) as usize, &g)
+                .unwrap();
+        assert_eq!(
+            huge, bottom,
+            "clamped to the end of the track, which is the live tail"
+        );
+
+        let top = line_offset_for_thumb_offset(&tall_lines(), 0, &g).unwrap();
+        assert_ne!(huge, top, "and certainly not wrapped round to the top");
+    }
+
+    #[test]
+    fn nothing_to_scroll_is_not_a_drag() {
+        let vp = Viewport {
+            content_height: 10,
+            viewport_height: 17,
+            ..viewport_of()
+        };
+        assert!(vp.geometry(0).is_none());
+    }
+
+    /// Empty heights means no frame has been drawn, or the transcript is
+    /// empty. Either way there is nothing to convert, and the drag must be
+    /// refused rather than silently scrolling to zero.
+    #[test]
+    fn without_measured_heights_a_drag_is_refused() {
+        let vp = viewport_of();
+        let g = vp.geometry(0).unwrap();
+        assert!(line_offset_for_thumb_offset(&[], 5, &g).is_none());
+    }
+
+    /// Uneven lines are the reason the conversion exists at all: forty lines
+    /// of equal height would let a character count stand in for a row count.
+    #[test]
+    fn uneven_lines_still_land_on_the_right_row() {
+        let heights: Vec<usize> = (0..40).map(|i| if i % 5 == 0 { 7 } else { 1 }).collect();
+        let total: usize = heights.iter().sum();
+        let vp = Viewport {
+            content_height: total,
+            ..viewport_of()
+        };
+        let g = vp.geometry(0).unwrap();
+
+        let top = line_offset_for_thumb_offset(&heights, 0, &g).unwrap();
+        let top_rows: usize = heights[..top].iter().sum();
+
+        // Lines are discrete, so converting `maxScrollTop` rows into whole
+        // lines rounds *up*: the last line pulled in overshoots. The first
+        // draft asserted `top_rows == max_scroll_top` and got 77 against 71.
+        // What is actually guaranteed is that at least a viewport is hidden
+        // and that the overshoot is under one line.
+        let tallest = heights.iter().copied().max().unwrap_or(1);
+        assert!(
+            top_rows >= g.max_scroll_top,
+            "the top must hide a full viewport: {top_rows} < {}",
+            g.max_scroll_top
+        );
+        assert!(
+            top_rows < g.max_scroll_top + tallest,
+            "and must not overshoot by a whole line: {top_rows} vs {}",
+            g.max_scroll_top
+        );
+
+        let bottom =
+            line_offset_for_thumb_offset(&heights, (17 - g.thumb_height) as usize, &g).unwrap();
+        assert_eq!(bottom, 0);
+    }
+
+    #[test]
+    fn the_wheel_moves_pi_s_default_number_of_lines() {
+        assert_eq!(wheel_lines(), WHEEL_SCROLL_LINES);
+        assert_eq!(wheel_lines(), 3);
+    }
 }

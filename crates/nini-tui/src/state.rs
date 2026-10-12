@@ -869,6 +869,22 @@ pub struct AppState {
     /// The value is recomputed every frame, so a stale read costs one
     /// keypress and self-corrects on the next frame.
     pub page_lines: Arc<AtomicUsize>,
+    /// v0.10: per-line rendered row counts, as measured by the renderer.
+    ///
+    /// The render path is the only place that knows how tall each
+    /// `TranscriptLine` is, and the mouse needs that to convert a scrollbar
+    /// drag into a `scroll_offset`. Without it the only honest conversion is
+    /// "assume one row per line", which is the same mistake PageUp used to
+    /// make.
+    ///
+    /// Published wholesale rather than read back out of `item_cache`,
+    /// because the cache is keyed by width and a miss would leave the
+    /// conversion with nothing to work from.
+    pub line_heights: Arc<StdMutex<Vec<usize>>>,
+    /// v0.10: where the transcript was last drawn. A mouse event carries
+    /// only a screen position, and turning that into a scroll position
+    /// requires knowing which rectangle it landed in.
+    pub transcript_viewport: Arc<StdMutex<crate::scrollbar::Viewport>>,
     /// v0.10: milliseconds since the epoch of the last scroll action, used
     /// by the scrollbar's `auto` mode to fade itself out
     /// (`scroll-view.ts` `transientScrollbarVisible` + a 1000 ms timer).
@@ -1187,6 +1203,10 @@ pub struct UiState {
     /// Held here rather than read from the settings manager on every frame,
     /// for the same reason `theme_name` is.
     pub fullscreen_scrollbar: crate::scrollbar::ScrollbarMode,
+    /// v0.10: a scrollbar drag in progress, or `None`. Set on a left press
+    /// over the bar's column, cleared on release. `None` therefore means
+    /// "not dragging", which is what every mouse event checks first.
+    pub scrollbar_drag: Option<crate::runtime::ScrollbarDrag>,
     /// Set by F1 to signal that the help selector should close on the
     /// next loop iteration (avoids the user having to press Esc).
     pub close_help: bool,
@@ -1371,6 +1391,7 @@ impl Clone for UiState {
             last_diff: self.last_diff,
             help_extended: self.help_extended,
             fullscreen_scrollbar: self.fullscreen_scrollbar,
+            scrollbar_drag: self.scrollbar_drag,
             close_help: self.close_help,
             search: self.search.clone(),
             // Box<dyn> is not Clone — drop selector (mirrors v0.8.0 clone_for_render)
@@ -1396,6 +1417,7 @@ impl Default for UiState {
             last_diff: None,
             help_extended: false,
             fullscreen_scrollbar: crate::scrollbar::ScrollbarMode::default(),
+            scrollbar_drag: None,
             close_help: false,
             search: None,
             selector: None,
@@ -1420,6 +1442,8 @@ impl Clone for AppState {
             // from-scratch case.
             item_cache: Arc::clone(&self.item_cache),
             page_lines: Arc::clone(&self.page_lines),
+            line_heights: Arc::clone(&self.line_heights),
+            transcript_viewport: Arc::clone(&self.transcript_viewport),
             scroll_activity: Arc::clone(&self.scroll_activity),
             run_state: self.run_state.clone(),
             model_state: self.model_state.clone(),
@@ -1436,6 +1460,8 @@ impl Default for AppState {
             transcript_state: Arc::new(TranscriptState::default()),
             item_cache: Arc::new(StdMutex::new(TranscriptItemCache::default())),
             page_lines: Arc::new(AtomicUsize::new(1)),
+            line_heights: Arc::new(StdMutex::new(Vec::new())),
+            transcript_viewport: Arc::new(StdMutex::new(crate::scrollbar::Viewport::default())),
             scroll_activity: Arc::new(AtomicU64::new(0)),
             run_state: RunState::default(),
             model_state: ModelState::default(),

@@ -12,7 +12,7 @@ use crate::render::render_frame_with_theme;
 use crate::selector::SelectorItem;
 use crate::state::{AppState, RunMode, TranscriptLine};
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyEvent};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEvent};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -423,6 +423,13 @@ where
     crate::signals::mark_raw_mode(true);
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    // v0.10: mouse capture, for wheel scrolling and dragging the transcript
+    // scrollbar. crossterm's `EnableMouseCapture` emits
+    // 1000+1002+1003+1015+1006; Pi uses 1000+1002+1004+1006 and
+    // deliberately leaves out 1003 (all-motion reporting) so a stationary
+    // pointer sends nothing. crossterm offers no narrower mode, so `Moved`
+    // is dropped in `handle_mouse` instead. Recorded in the plan.
+    execute!(stdout, EnableMouseCapture)?;
     crate::signals::mark_alt_screen(true);
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -432,6 +439,9 @@ where
     let result = run_loop(&mut terminal, shared, agent_driver).await;
 
     terminal.show_cursor()?;
+    // Must go before leaving the alt screen or the shell inherits a
+    // reporting mode and starts eating clicks.
+    let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     disable_raw_mode()?;
     crate::signals::mark_raw_mode(false);
@@ -726,6 +736,9 @@ async fn run_loop(
                         } else {
                             handle_key(k, &shared, &agent_driver, done, event_tx.clone());
                         }
+                    }
+                    Some(Ok(Event::Mouse(m))) => {
+                        let _ = handle_mouse(m, &shared);
                     }
                     Some(Ok(Event::Resize(_, _))) => { /* ratatui handles */ }
                     Some(Ok(_)) => {}
@@ -1189,6 +1202,7 @@ fn handle_external_editor_dance(
     // stdout immediately.
     {
         let mut stdout = stdout();
+        let _ = execute!(stdout, DisableMouseCapture);
         let _ = execute!(stdout, LeaveAlternateScreen);
         let _ = disable_raw_mode();
         crate::signals::mark_alt_screen(false);
@@ -1695,6 +1709,144 @@ fn handle_key(
         }
         KeyAction::Noop => {}
     }
+}
+
+// ---------------------------------------------------------------------------
+// Mouse
+// ---------------------------------------------------------------------------
+
+/// A scrollbar drag in progress.
+///
+/// Pi's `ScrollbarDrag` (`tui-alt-screen.ts:114-117`) is exactly these two
+/// fields: which scroll view, and how far below the thumb's top the pointer
+/// grabbed it. The grab offset is what makes a drag feel attached rather than
+/// teleporting - the thumb keeps the same point under the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollbarDrag {
+    /// `event.y - geometry.thumbTop` at the moment of the press.
+    /// Signed, because Pi's is (`event.y - geometry.thumbTop`,
+    /// `tui-alt-screen.ts:777`) and a press *above* the thumb gives a
+    /// negative offset. The first version used `u16` with a saturating
+    /// subtraction, which silently turned "grabbed two rows above the thumb"
+    /// into "grabbed the thumb's top" — the pointer then jumps the thumb up
+    /// by two rows the instant the drag starts. Found by a test that was
+    /// itself wrong for an unrelated reason and had to be fixed first.
+    pub grab_offset: i32,
+}
+
+/// Handle one mouse event.
+///
+/// Returns whether it was consumed. Everything here is deliberately
+/// narrow: wheel, scrollbar drag, and hover. Pi also does text selection
+/// and right-click paste, and nini does not yet - see the plan.
+pub fn handle_mouse(m: crossterm::event::MouseEvent, shared: &SharedState) -> bool {
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    let mut state = lock_state(shared);
+
+    // `Moved` arrives for every pointer motion because crossterm enables
+    // 1003. Pi leaves that mode off. Nothing here acts on motion alone, so
+    // it is dropped rather than forcing a redraw.
+    if matches!(m.kind, MouseEventKind::Moved) {
+        return false;
+    }
+
+    // Overlays own the pointer while they are up: a wheel event inside a
+    // selector scrolls the list, not the transcript behind it.
+    if state.ui_state.selector.is_some() || state.ui_state.completion.is_some() {
+        return false;
+    }
+
+    let current_offset = state.transcript_state.scroll_offset;
+
+    match m.kind {
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let up = matches!(m.kind, MouseEventKind::ScrollUp);
+            let step = crate::scrollbar::wheel_lines();
+            let max_offset = state.transcript_state.lines.len().saturating_sub(1);
+            let next = if up {
+                current_offset.saturating_add(step).min(max_offset)
+            } else {
+                current_offset.saturating_sub(step)
+            };
+            if next != current_offset {
+                Arc::make_mut(&mut state.transcript_state).scroll_offset = next;
+                Arc::make_mut(&mut state.transcript_state).autoscroll = next == 0;
+                state.mark_scroll_activity();
+                return true;
+            }
+            false
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            let vp = match transcript_viewport(&state) {
+                Some(v) => v,
+                None => return false,
+            };
+            let Some(g) = vp.geometry(current_offset) else {
+                return false;
+            };
+            if !vp.hits_column(m.column, m.row) {
+                return false;
+            }
+            // Grabbing the rail above or below the thumb starts a drag too,
+            // which is how a single press jumps. The thumb then snaps to the
+            // pointer minus this offset.
+            let grab_offset = m.row as i32 - g.thumb_top as i32;
+            state.ui_state.scrollbar_drag = Some(ScrollbarDrag { grab_offset });
+            state.mark_scroll_activity();
+            true
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            let Some(drag) = state.ui_state.scrollbar_drag else {
+                return false;
+            };
+            let vp = match transcript_viewport(&state) {
+                Some(v) => v,
+                None => return false,
+            };
+            let Some(g) = vp.geometry(current_offset) else {
+                return false;
+            };
+            let heights = state
+                .line_heights
+                .lock()
+                .map(|h| h.clone())
+                .unwrap_or_default();
+            let thumb_offset = (m.row as i64 - vp.y as i64 - drag.grab_offset as i64)
+                .clamp(0, i64::from(u16::MAX)) as usize;
+            if let Some(next) =
+                crate::scrollbar::line_offset_for_thumb_offset(&heights, thumb_offset, &g)
+            {
+                let max_offset = state.transcript_state.lines.len().saturating_sub(1);
+                let next = next.min(max_offset);
+                if next != current_offset {
+                    Arc::make_mut(&mut state.transcript_state).scroll_offset = next;
+                    Arc::make_mut(&mut state.transcript_state).autoscroll = next == 0;
+                    state.mark_scroll_activity();
+                }
+            }
+            true
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            if state.ui_state.scrollbar_drag.take().is_some() {
+                state.mark_scroll_activity();
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// The transcript's on-screen rectangle, as last drawn.
+///
+/// The render pass is the only place that knows it, so it is published
+/// alongside `line_heights`. Without a prior frame there is nothing to hit
+/// and every mouse event is a no-op, which is the correct answer for the
+/// first few milliseconds of startup.
+pub fn transcript_viewport(state: &AppState) -> Option<crate::scrollbar::Viewport> {
+    state.transcript_viewport.lock().ok().map(|v| *v)
 }
 
 /// Submit handler: extract text, intercept slash commands, otherwise spawn agent.
