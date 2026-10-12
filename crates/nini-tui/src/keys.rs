@@ -588,4 +588,48 @@ mod tests {
         assert!(m.contains(KeyModifiers::SHIFT));
         assert!(!m.contains(KeyModifiers::ALT));
     }
+
+    // ---------------------------------------------------------------
+    // v0.10: the duplicate-key oracle this file was missing.
+    //
+    // Ctrl+K is bound twice — `KillToLineEnd` above and `ScrollUp` further
+    // down — and `resolve` returns the first match, so `ScrollUp` is
+    // unreachable by keyboard. Upward scrolling has no working vim key;
+    // Ctrl+J (`ScrollDown`) is bound once and works. That asymmetry is the
+    // whole of "the transcript will not scroll".
+    //
+    // Marked `#[ignore]` rather than deleted, following the convention in
+    // the plan (section 13.1): a red test here is an executable statement of
+    // a defect, and the existing `ctrl_k_kills_to_line_end` test passes
+    // while this one fails — the first asserts the correct winner, the
+    // second asserts that no second binding exists at all.
+    //
+    // The two comments in the table also contradict each other. Line 324:
+    // "The command palette lives on Ctrl+Shift+K instead so we don't break
+    // either muscle memory." Line 383: "vim-style single-line scroll".
+    // Both were true when written; together they cost the user the key.
+    // ---------------------------------------------------------------
+
+    #[test]
+    #[ignore = "BUG: Ctrl+K is bound to both KillToLineEnd and ScrollUp"]
+    fn no_key_is_bound_to_two_actions() {
+        let km = default_keymap();
+        let mut seen: Vec<(Key, String)> = Vec::new();
+        let mut conflicts: Vec<String> = Vec::new();
+
+        for b in &km {
+            if let Some((_, previous)) = seen.iter().find(|(k, _)| *k == b.key) {
+                conflicts.push(format!("{:?} -> {previous} and {:?}", b.key.code, b.action));
+            } else {
+                seen.push((b.key, format!("{:?}", b.action)));
+            }
+        }
+
+        assert!(
+            conflicts.is_empty(),
+            "the same key is bound more than once; `resolve` returns the \
+             first, so every later binding is unreachable:\n  {}",
+            conflicts.join("\n  ")
+        );
+    }
 }
