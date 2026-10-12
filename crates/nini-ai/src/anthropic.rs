@@ -70,7 +70,7 @@ impl Provider for AnthropicProvider {
         Box::pin(try_stream! {
             // Translate request
             let body = build_request_body(&req)?;
-            let url = format!("{base_url}/v1/messages");
+            let url = crate::api_url::anthropic_messages_url(&base_url);
             let response = client
                 .post(&url)
                 .header("x-api-key", &api_key)

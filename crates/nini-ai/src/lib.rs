@@ -19,6 +19,12 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// SSE parser and streaming types.
 pub mod sse;
 
+/// Endpoint URL construction, one function per dialect.
+///
+/// v0.10 (M0): these were inline `format!` calls inside each `stream()`.
+/// See the module docs for which vendor-SDK rule each one reproduces.
+pub mod api_url;
+
 /// LLM-backed conversation summarization (used for auto-compaction).
 pub mod summarizer;
 

@@ -66,7 +66,7 @@ impl Provider for OpenAiResponsesProvider {
             // item of the right type. For Phase 2 we translate text messages
             // 1:1; tool use + tool result items use their Responses equivalents.
             let body = build_request_body(&req)?;
-            let url = format!("{base_url}/v1/responses");
+            let url = crate::api_url::responses_url(&base_url);
             let response = client
                 .post(&url)
                 .bearer_auth(&api_key)

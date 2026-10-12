@@ -81,62 +81,61 @@ impl Provider for OpenAiProvider {
         let compat = self.compat;
 
         Box::pin(try_stream! {
-                let body = build_request_body_for(&req, compat)?;
-                let url = format!("{base_url}{}/chat/completions",
-        if base_url.ends_with("/v1") { "" } else { "/v1" });
-                let response = client
-                    .post(&url)
-                    .bearer_auth(&api_key)
-                    .header("content-type", "application/json")
-                    .body(body)
-                    .send()
-                    .await?;
+            let body = build_request_body_for(&req, compat)?;
+            let url = crate::api_url::chat_completions_url(&base_url);
+            let response = client
+                .post(&url)
+                .bearer_auth(&api_key)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await?;
 
-                let status = response.status();
-                if status.is_success() {
-                    let mut byte_stream = response.bytes_stream();
-                    let mut parser = SseParser::new();
-                    let mut state = StreamState::default();
+            let status = response.status();
+            if status.is_success() {
+                let mut byte_stream = response.bytes_stream();
+                let mut parser = SseParser::new();
+                let mut state = StreamState::default();
 
-                    while let Some(chunk_result) = byte_stream.next().await {
-                        let chunk = chunk_result?;
-                        for sse_event in parser.feed(&chunk).map_err(|e| ProviderError::Sse(e.to_string()))? {
-                            if let Some(ev) = translate_sse(&sse_event, &mut state) {
-                                yield ev;
-                            }
-                        }
-                    }
-                    for ev in parser.flush() {
-                        if let Some(ev) = translate_sse(&ev, &mut state) {
+                while let Some(chunk_result) = byte_stream.next().await {
+                    let chunk = chunk_result?;
+                    for sse_event in parser.feed(&chunk).map_err(|e| ProviderError::Sse(e.to_string()))? {
+                        if let Some(ev) = translate_sse(&sse_event, &mut state) {
                             yield ev;
                         }
                     }
-                    // v0.8.4 (bugfix): the previous version finished here,
-                    // so the agent loop saw `None` from the stream and
-                    // broke out *without* ever observing a
-                    // `MessageStop`. With no Stop event, agent.rs had no
-                    // way to know the model had finished its turn: tool
-                    // calls stayed half-built (no Stop line in the
-                    // transcript), and on the next iteration the agent
-                    // returned Idle without the model ever producing a
-                    // visible assistant message after running a tool.
-                    //
-                    // `finalize` flushes any remaining queued
-                    // ToolCallStop bodies AND emits the terminal
-                    // MessageStop with the recorded finish_reason (or
-                    // "stop" as a default if the model never sent one).
-                    // Yield every event it produces so the agent loop
-                    // sees the full turn boundary.
-                    for ev in finalize(&mut state, None) {
+                }
+                for ev in parser.flush() {
+                    if let Some(ev) = translate_sse(&ev, &mut state) {
                         yield ev;
                     }
-                } else {
-                    Err(ProviderError::Api {
-                        status: status.as_u16(),
-                        message: format!("request failed: {}", status),
-                    })?;
                 }
-            })
+                // v0.8.4 (bugfix): the previous version finished here,
+                // so the agent loop saw `None` from the stream and
+                // broke out *without* ever observing a
+                // `MessageStop`. With no Stop event, agent.rs had no
+                // way to know the model had finished its turn: tool
+                // calls stayed half-built (no Stop line in the
+                // transcript), and on the next iteration the agent
+                // returned Idle without the model ever producing a
+                // visible assistant message after running a tool.
+                //
+                // `finalize` flushes any remaining queued
+                // ToolCallStop bodies AND emits the terminal
+                // MessageStop with the recorded finish_reason (or
+                // "stop" as a default if the model never sent one).
+                // Yield every event it produces so the agent loop
+                // sees the full turn boundary.
+                for ev in finalize(&mut state, None) {
+                    yield ev;
+                }
+            } else {
+                Err(ProviderError::Api {
+                    status: status.as_u16(),
+                    message: format!("request failed: {}", status),
+                })?;
+            }
+        })
     }
 }
 
@@ -960,52 +959,6 @@ pub fn build_request_for_test(req: &Request) -> serde_json::Value {
     let built = OpenAiRequest::from_neutral(req, OpenAiCompat::default())
         .expect("a neutral request must convert to the wire format");
     serde_json::to_value(built).expect("the wire request must serialise")
-}
-
-/// v0.7.3 (UX test) — openai-compat URL construction. Different
-/// OpenAI-compatible providers expose different URL conventions:
-///   * Official OpenAI: `https://api.openai.com` (no /v1 in base)
-///   * OpenRouter:     `https://openrouter.ai/api` (no /v1 in base)
-///   * m.aiio.chat:    `https://m.aiio.chat/v1` (HAS /v1 in base)
-///
-/// The original `format!("{base_url}/v1/chat/completions")` would
-/// double-append `/v1` for the third style and hit a 404/HTML page
-/// instead of the API. The fix: skip the `/v1` prefix when the
-/// base_url already ends with it.
-#[cfg(test)]
-mod url_construction_tests {
-    #[test]
-    fn appends_v1_when_missing() {
-        let base_url = "https://api.openai.com";
-        let url = format!(
-            "{base_url}{}/chat/completions",
-            if base_url.ends_with("/v1") { "" } else { "/v1" }
-        );
-        assert_eq!(url, "https://api.openai.com/v1/chat/completions");
-    }
-
-    #[test]
-    fn skips_v1_when_already_present() {
-        let base_url = "https://m.aiio.chat/v1";
-        let url = format!(
-            "{base_url}{}/chat/completions",
-            if base_url.ends_with("/v1") { "" } else { "/v1" }
-        );
-        assert_eq!(url, "https://m.aiio.chat/v1/chat/completions");
-    }
-
-    #[test]
-    fn handles_trailing_slash() {
-        let base_url = "https://example.com/v1/";
-        let url = format!(
-            "{base_url}{}/chat/completions",
-            if base_url.ends_with("/v1") { "" } else { "/v1" }
-        );
-        // Trailing slash on /v1/ means we DON'T recognize it as the
-        // /v1 suffix, so we append /v1 again. This is a known minor
-        // quirk — users shouldn't add trailing slashes.
-        assert_eq!(url, "https://example.com/v1//v1/chat/completions");
-    }
 }
 
 #[derive(Debug, Deserialize)]
