@@ -152,16 +152,98 @@ fn candidates_put_the_project_first() {
     });
 }
 
-/// The whole point, stated as a sweep: no production source file may still
-/// build a path under `.pi`.
+/// The whole point, stated as a sweep: no production source file may build a
+/// path under `.pi` without registering it.
 ///
 /// A grep in a test is unusual, and it is here because the failure mode is
 /// textual - a path reappearing in one call site is invisible to every
 /// behavioural test in the suite. `scripts/sweep-unwired.py` checks the same
 /// shape of thing by a different route; this one is the assertion that
 /// keeps it from regressing silently.
+///
+/// # Narrowed in v0.10 (M3) — and why that made it stricter, not weaker
+///
+/// This started as a blanket ban. R3 introduced it when nini read *everything*
+/// out of Pi's directory, including state that only makes sense with Pi
+/// installed. The intent was right and the assertion was broader than the
+/// intent: it treated reading Pi's skills directory and reading Pi's
+/// credential store as the same act.
+///
+/// They are not the same act. `SKILL.md` is the Anthropic agent-skills
+/// format — prose on disk, not Pi's private state. Not reading it stops nini
+/// using an ecosystem it is meant to plug into, which is the opposite of the
+/// failure this test was written to prevent. On this machine that was 19 Pi
+/// skills and 15 Claude Code skills, none of them visible to nini.
+///
+/// So the rule is now the boundary rather than a blanket ban:
+///
+/// > **Assets are shared, credentials are not; formats are compatible,
+/// > runtime dependencies are not.**
+///
+/// Narrowing an assertion usually weakens it, so the exceptions are held to
+/// a stricter standard than the ban they replace. An ecosystem read must be
+/// registered in [`ALLOWED_ECOSYSTEM_READS`] **and** the total number of
+/// `.pi` constructions must equal the registered count, so adding one more
+/// read of anything - skills, state, or `auth.json` - changes the count and
+/// fails whether or not anyone remembered to register it. The credential
+/// boundary also gets its own test below, so it does not rest on this one.
 #[test]
-fn no_source_file_still_builds_a_pi_path() {
+fn no_source_file_reads_pi_state_without_registering_it() {
+    let offenders = pi_path_constructs();
+
+    let allowed = ALLOWED_ECOSYSTEM_READS
+        .iter()
+        .map(|(file, suffix)| (*file, *suffix))
+        .collect::<Vec<_>>();
+
+    // Counted before filtering, so an unregistered read fails even when the
+    // line it adds happens to contain the word "skills".
+    assert_eq!(
+        offenders.len(),
+        allowed.len(),
+        "nini reads Pi's state without registering it. Expected exactly {} \
+         registered ecosystem reads, found {}:\n  {}",
+        allowed.len(),
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+
+    let mut unexplained: Vec<String> = offenders
+        .iter()
+        .filter(|offender| {
+            !allowed
+                .iter()
+                .any(|(file, suffix)| offender.contains(file) && offender.contains(suffix))
+        })
+        .cloned()
+        .collect();
+    unexplained.sort();
+
+    assert!(
+        unexplained.is_empty(),
+        "nini must not read Pi's directories beyond the registered asset \
+         reads. Unregistered:\n  {}",
+        unexplained.join("\n  ")
+    );
+}
+
+/// The only `join(".pi")` constructions allowed in the workspace: nini-core's
+/// skills loader reading the two **skills** directories.
+///
+/// Both end in `"skills"`, and the total count is asserted by
+/// [`no_source_file_reads_pi_state_without_registering_it`], so this list
+/// cannot quietly grow. Note what is absent and must stay absent: Pi's
+/// `auth.json`, its sessions, its settings.
+const ALLOWED_ECOSYSTEM_READS: &[(&str, &str)] = &[
+    // `h.join(".pi").join("agent").join("skills")` — user-level Pi skills
+    ("src/skills.rs", "join(\"skills\")"),
+    // `cwd.join(".pi").join("skills")` — project-level Pi skills
+    ("src/skills.rs", "join(\"skills\")"),
+];
+
+/// Every `.pi` / `.piagent` path construction in the workspace, as
+/// `path:line: text`.
+fn pi_path_constructs() -> Vec<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
@@ -187,13 +269,96 @@ fn no_source_file_still_builds_a_pi_path() {
         }
         walk_rs(&src, &name, &mut offenders);
     }
+    offenders
+}
+
+/// The boundary an allowlist cannot express on its own: no source file may
+/// name a credential store belonging to another agent.
+///
+/// The skills exception is deliberately not extended here. Reading
+/// `~/.pi/agent/skills` is reading prose; reading `~/.pi/agent/auth.json` is
+/// reading somebody's API key. `6abadd9` is the record of what happens when
+/// that gets argued as parity instead of decided.
+#[test]
+fn no_source_file_can_reach_another_agents_credentials() {
+    // Calibrated, and the first version was not. Matching the bare word
+    // "credentials" flagged `/login` and `/logout`, whose user-visible
+    // strings say "nini uses environment variables for credentials" -
+    // text about credentials, not a path to one. The signal that matters is
+    // a credential *filename* being joined into a path, so that is what is
+    // matched. Same lesson as the detector calibration note in the plan:
+    // an uncalibrated check hands you its own false positives dressed up
+    // as findings.
+    const CREDENTIAL_FILENAMES: &[&str] = &[
+        "auth.json",
+        "credentials.json",
+        ".credentials",
+        "api-keys.json",
+    ];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root");
+    let mut offenders: Vec<String> = Vec::new();
+
+    for entry in std::fs::read_dir(root.join("crates"))
+        .expect("crates dir")
+        .flatten()
+    {
+        let crate_dir = entry.path();
+        let name = crate_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !name.starts_with("nini-") {
+            continue;
+        }
+        let src = crate_dir.join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        walk_for_credential_paths(&src, CREDENTIAL_FILENAMES, &mut offenders);
+    }
 
     assert!(
         offenders.is_empty(),
-        "nini must not read or write Pi's directories. Still building a \\
-         `.pi` path in:\n  {}",
+        "nini must never construct a path to another agent's credentials:\n  {}",
         offenders.join("\n  ")
     );
+}
+
+fn walk_for_credential_paths(dir: &Path, filenames: &[&str], out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_for_credential_paths(&path, filenames, out);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (n, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            // The `join(` guard is what separates "a path to a credential
+            // store" from "a sentence about credentials".
+            if line.contains("join(") {
+                for name in filenames {
+                    if line.contains(name) {
+                        out.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn walk_rs(dir: &Path, crate_name: &str, out: &mut Vec<String>) {

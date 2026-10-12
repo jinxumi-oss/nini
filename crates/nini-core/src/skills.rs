@@ -1,5 +1,38 @@
-//! Skills loader: parse `SKILL.md` files from `~/.nini/agent/skills/` and
-//! `.pi/skills/`, including YAML frontmatter.
+//! Skills loader: parse `SKILL.md` files from nini's own directories and
+//! from the directories other agents keep theirs in.
+//!
+//! # The boundary this module draws
+//!
+//! nini is a rewrite of Pi, not a channel into one. Two consequences, and
+//! they point in opposite directions:
+//!
+//!   * **Runtime paths are nini's own** (`~/.nini/agent/`). Nothing here
+//!     starts, requires, or reads the private state of another agent.
+//!   * **Skill *files* are shared, portable assets.** `SKILL.md` is the
+//!     Anthropic agent-skills format, not a Pi invention. A skill directory
+//!     is prose on disk; reading one creates no dependency on the agent that
+//!     wrote it.
+//!
+//! v0.10 (M3) fixed what R3 broke. R3 moved every path from `.pi` to `.nini`
+//! to stop nini being a channel, and it moved the skills directory with
+//! them. That was the right rule applied one step too far: it closed the
+//! only cross-ecosystem door nini had. On a machine with Pi installed, nini
+//! could see zero of the 19 skills Pi had, and none of the 15 Claude Code
+//! had either, while its status bar sat there claiming a clean install.
+//!
+//! The rule this module now implements, in one line:
+//!
+//! > **Assets are shared, credentials are not; formats are compatible,
+//! > runtime dependencies are not.**
+//!
+//! The falsifiable form of that rule is the one `clean_home.rs` checks:
+//! **delete `~/.pi` entirely and nini must keep working**, with fewer
+//! skills. A skill directory that vanishes must never be load-bearing.
+//!
+//! What is deliberately *not* read from another agent's directory:
+//! `auth.json`, any credential, any key. Those are the channel R3 closed
+//! and `6abadd9` kept closed — see the revert for why parity does not
+//! settle it.
 //!
 //! Mirrors spec `packages/coding-agent/src/core/skills.ts`.
 
@@ -25,14 +58,20 @@ pub struct Skill {
     pub body: String,
     pub base_dir: PathBuf,
     pub source: SkillSource,
+    /// Which agent's directory this skill was read from.
+    ///
+    /// Carried rather than discarded because "nini loaded 34 skills" is a
+    /// different claim from "nini loaded 34 skills, 19 of which Pi wrote",
+    /// and only the second one can be acted on when two of them disagree.
+    pub origin: SkillOrigin,
     pub disable_model_invocation: bool,
 }
 
 /// Where a skill was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
-    User,    // ~/.nini/agent/skills/
-    Project, // .nini/skills/
+    User,    // a user-level directory, e.g. ~/.nini/agent/skills/
+    Project, // a project-level directory, e.g. <cwd>/.nini/skills/
 }
 
 impl SkillSource {
@@ -44,6 +83,40 @@ impl SkillSource {
     }
 }
 
+/// Which agent's directory a skill came from.
+///
+/// This is about *provenance*, not priority — [`SkillSource`] decides which
+/// directory wins a name collision, and within one level nini's own
+/// directory wins over an ecosystem one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillOrigin {
+    /// nini's own directory.
+    Nini,
+    /// Pi's directory. Read-only, data only.
+    Pi,
+    /// Claude Code's directory. Read-only, data only.
+    Claude,
+}
+
+impl SkillOrigin {
+    /// The label shown to the user, e.g. in `nini info`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            SkillOrigin::Nini => "nini",
+            SkillOrigin::Pi => "pi",
+            SkillOrigin::Claude => "claude",
+        }
+    }
+}
+
+/// One directory that skills are loaded from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillRoot {
+    pub source: SkillSource,
+    pub origin: SkillOrigin,
+    pub dir: PathBuf,
+}
+
 /// Result of loading skills.
 #[derive(Debug, Clone, Default)]
 pub struct LoadSkillsResult {
@@ -51,23 +124,91 @@ pub struct LoadSkillsResult {
     pub errors: Vec<String>,
 }
 
-/// Load skills from user-level (`~/.nini/agent/skills/`) and project-level
-/// (`.pi/skills/`) directories. Project-level skills shadow user-level
-/// when names collide.
+/// Load skills from every directory nini will read.
+///
+/// Own directories first-class; other agents' directories read for their
+/// `SKILL.md` files only. See the module docs for why that is a dependency
+/// on nothing.
 pub fn load_skills(cwd: &Path) -> LoadSkillsResult {
+    load_skills_from_roots(&skill_roots(
+        crate::paths::home_dir().as_deref(),
+        crate::paths::agent_dir().as_deref(),
+        cwd,
+    ))
+}
+
+/// Every directory skills are loaded from, **ordered lowest priority
+/// first** — later entries shadow earlier ones on a name collision.
+///
+/// The order encodes two rules, in this sequence:
+///   1. project beats user, and
+///   2. within a level, nini's own directory beats an ecosystem's.
+///
+/// Rule 2 is what keeps a nini user's edits authoritative without making
+/// Pi's directory unreadable: a name present in both resolves to nini's
+/// copy, and every other name is picked up.
+///
+/// `home` and `agent_dir` are parameters rather than lookups so a test can
+/// point them at a scratch directory. Reading the real `$HOME` from a test
+/// is how `thinking_persistence.rs` once overwrote this machine's actual
+/// settings file.
+pub fn skill_roots(home: Option<&Path>, agent_dir: Option<&Path>, cwd: &Path) -> Vec<SkillRoot> {
+    let mut roots = Vec::new();
+    if let Some(h) = home {
+        roots.push(SkillRoot {
+            source: SkillSource::User,
+            origin: SkillOrigin::Pi,
+            dir: h.join(".pi").join("agent").join("skills"),
+        });
+        roots.push(SkillRoot {
+            source: SkillSource::User,
+            origin: SkillOrigin::Claude,
+            dir: h.join(".claude").join("skills"),
+        });
+    }
+    if let Some(a) = agent_dir {
+        roots.push(SkillRoot {
+            source: SkillSource::User,
+            origin: SkillOrigin::Nini,
+            dir: a.join("skills"),
+        });
+    }
+    roots.push(SkillRoot {
+        source: SkillSource::Project,
+        origin: SkillOrigin::Pi,
+        dir: cwd.join(".pi").join("skills"),
+    });
+    roots.push(SkillRoot {
+        source: SkillSource::Project,
+        origin: SkillOrigin::Claude,
+        dir: cwd.join(".claude").join("skills"),
+    });
+    roots.push(SkillRoot {
+        source: SkillSource::Project,
+        origin: SkillOrigin::Nini,
+        dir: crate::paths::project_file(cwd, "skills"),
+    });
+    roots
+}
+
+/// Load from an explicit root list. The seam `load_skills` is built on, so
+/// the precedence rules above are testable without a `$HOME`.
+pub fn load_skills_from_roots(roots: &[SkillRoot]) -> LoadSkillsResult {
     let mut result = LoadSkillsResult::default();
-    let user_dir = user_skills_dir();
-    let project_dir = project_skills_dir(cwd);
 
     let mut all: Vec<Skill> = Vec::new();
-    if let Some(d) = user_dir {
-        load_from_dir(&d, SkillSource::User, &mut all, &mut result.errors);
-    }
-    if let Some(d) = project_dir {
-        load_from_dir(&d, SkillSource::Project, &mut all, &mut result.errors);
+    for root in roots {
+        load_from_dir(
+            &root.dir,
+            root.source,
+            root.origin,
+            &mut all,
+            &mut result.errors,
+        );
     }
 
-    // Project-level shadows user-level on name collision
+    // `all` is in root order (lowest first), so reversing and taking the
+    // first `or_insert` makes the last definition win.
     let mut by_name: std::collections::BTreeMap<String, Skill> = std::collections::BTreeMap::new();
     for s in all.into_iter().rev() {
         by_name.entry(s.name.clone()).or_insert(s);
@@ -76,7 +217,13 @@ pub fn load_skills(cwd: &Path) -> LoadSkillsResult {
     result
 }
 
-fn load_from_dir(dir: &Path, source: SkillSource, out: &mut Vec<Skill>, errors: &mut Vec<String>) {
+fn load_from_dir(
+    dir: &Path,
+    source: SkillSource,
+    origin: SkillOrigin,
+    out: &mut Vec<Skill>,
+    errors: &mut Vec<String>,
+) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -90,14 +237,14 @@ fn load_from_dir(dir: &Path, source: SkillSource, out: &mut Vec<Skill>, errors: 
         if !skill_md.is_file() {
             continue;
         }
-        match load_skill_file(&skill_md, source) {
+        match load_skill_file(&skill_md, source, origin) {
             Ok(skill) => out.push(skill),
             Err(e) => errors.push(format!("{}: {}", skill_md.display(), e)),
         }
     }
 }
 
-fn load_skill_file(path: &Path, source: SkillSource) -> Result<Skill, String> {
+fn load_skill_file(path: &Path, source: SkillSource, origin: SkillOrigin) -> Result<Skill, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let (fm, body) = split_frontmatter(&text);
     let fm: SkillFrontmatter = match fm {
@@ -125,6 +272,7 @@ fn load_skill_file(path: &Path, source: SkillSource) -> Result<Skill, String> {
         body,
         base_dir,
         source,
+        origin,
         disable_model_invocation: fm.disable_model_invocation.unwrap_or(false),
     })
 }
@@ -148,12 +296,19 @@ fn split_frontmatter(text: &str) -> (Option<String>, String) {
     (None, text.to_string())
 }
 
-/// User-level skills directory: `~/.nini/agent/skills/`.
+/// nini's own user-level skills directory: `~/.nini/agent/skills/`.
+///
+/// This is nini's directory and the one it writes to. It is **not** the
+/// only one it reads — see [`skill_roots`] for the full list.
 pub fn user_skills_dir() -> Option<PathBuf> {
     crate::paths::agent_file("skills")
 }
 
-/// Project-level skills directory: `<cwd>/.pi/skills/`.
+/// nini's own project-level skills directory: `<cwd>/.nini/skills/`.
+///
+/// Not the only one read either; `<cwd>/.pi/skills/` and
+/// `<cwd>/.claude/skills/` are read for their `SKILL.md` files. See
+/// [`skill_roots`].
 pub fn project_skills_dir(cwd: &Path) -> Option<PathBuf> {
     Some(crate::paths::project_file(cwd, "skills"))
 }
@@ -237,6 +392,7 @@ mod tests {
             body: String::new(),
             base_dir: PathBuf::from("/home/jin/.nini/agent/skills/firecrawl"),
             source: SkillSource::User,
+            origin: SkillOrigin::Nini,
             disable_model_invocation: false,
         };
         let out = format_skills_for_prompt(&[skill]);
@@ -264,6 +420,7 @@ mod tests {
             body: String::new(),
             base_dir: PathBuf::from("/tmp"),
             source: SkillSource::User,
+            origin: SkillOrigin::Nini,
             disable_model_invocation: false,
         };
         let out = format_skills_for_prompt(&[skill]);
@@ -283,6 +440,7 @@ mod tests {
             body: String::new(),
             base_dir: PathBuf::from("/tmp/visible"),
             source: SkillSource::User,
+            origin: SkillOrigin::Nini,
             disable_model_invocation: false,
         };
         let hidden = Skill {

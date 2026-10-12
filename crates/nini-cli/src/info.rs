@@ -6,7 +6,7 @@
 use anyhow::Result;
 
 use nini_core::settings::load_settings;
-use nini_core::skills::load_skills;
+use nini_core::skills::{load_skills, SkillOrigin};
 
 /// Print current `~/.nini/agent/settings.json` + loaded skills to stdout.
 ///
@@ -23,13 +23,29 @@ pub(crate) async fn run_info() -> Result<()> {
     println!("  thinking_level: {:?}", settings.thinking_level);
     println!();
     let skills_result = load_skills(&cwd);
+    // v0.10 (M3): skills are read from nini's directories *and* from the
+    // directories other agents keep theirs in, so "20 loaded" is not an
+    // answer a user can act on — they need to know how many are theirs and
+    // how many they are borrowing, especially when two of them collide.
+    let from_nini = skills_result
+        .skills
+        .iter()
+        .filter(|s| s.origin == SkillOrigin::Nini)
+        .count();
     println!(
-        "Skills ({} loaded, {} errors):",
+        "Skills ({} loaded — {from_nini} nini's own, {} from other agents; {} errors):",
         skills_result.skills.len(),
+        skills_result.skills.len() - from_nini,
         skills_result.errors.len()
     );
     for s in &skills_result.skills {
-        println!("  - {} ({}) -- {}", s.name, s.source.label(), s.description);
+        println!(
+            "  - {} ({}, from {}) -- {}",
+            s.name,
+            s.source.label(),
+            s.origin.label(),
+            s.description.lines().next().unwrap_or_default()
+        );
     }
     for e in &skills_result.errors {
         println!("  ! error: {e}");
