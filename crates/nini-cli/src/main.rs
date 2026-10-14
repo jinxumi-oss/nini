@@ -21,8 +21,42 @@ pub(crate) mod prompt_setup;
 pub(crate) mod provider_factory;
 pub(crate) mod tool_registry;
 
+/// v0.10: the build's identity, embedded by `build.rs`.
+///
+/// `nini 0.9.1` on its own cannot answer "am I running what I just built",
+/// and `~/.local/bin/nini` is a symlink into `target/`, so the question is
+/// worth asking. `+dirty` appears when the tree was modified at build time,
+/// because a commit id otherwise reads as "exactly this".
+fn build_identity() -> String {
+    let commit = option_env!("NINI_BUILD_COMMIT").unwrap_or("unknown");
+    let when = option_env!("NINI_BUILD_TIME").unwrap_or("unknown");
+    let dirty = option_env!("NINI_BUILD_DIRTY").unwrap_or("false");
+    let suffix = if dirty == "true" { " +dirty" } else { "" };
+    format!("{commit}{suffix} ({when})")
+}
+
+/// What `nini --version` prints.
+///
+/// Pi's is `pi-coding-agent 0.84.2` — package name and version, nothing
+/// more, and it ships from npm so there is no build to identify. nini is
+/// built from a checkout and can go stale, so it says more.
+///
+/// Leaks one short string, once, when clap builds its command. `--version`
+/// is the only caller.
+fn version_line() -> &'static str {
+    Box::leak(
+        // No leading "nini": clap prints the program name itself, and the
+        // first version of this line read `nini nini 0.9.1`.
+        format!("{} - {}", env!("CARGO_PKG_VERSION"), build_identity()).into_boxed_str(),
+    )
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "nini", about = "Pi-compatible Rust coding agent", version)]
+#[command(
+    name = "nini",
+    about = "Pi-compatible Rust coding agent",
+    version = version_line()
+)]
 struct Args {
     #[command(subcommand)]
     cmd: Option<Cmd>,

@@ -462,3 +462,71 @@ fn cli_help_flag_lists_all_flags() {
     assert!(out.contains("--offline"), "missing --offline in help");
     assert!(out.contains("--export"), "missing --export in help");
 }
+
+/// v0.10. `nini --version` has to answer "am I running what I just built".
+///
+/// `~/.local/bin/nini` is a symlink into `target/`, and `install.sh`
+/// downloads a prebuilt archive without compiling anything, so a stale
+/// binary is indistinguishable from a fresh one — until 2026-10-12, when a
+/// session's worth of TUI fixes were invisible because `--version` printed
+/// `nini 0.9.1` for both builds.
+#[test]
+fn version_carries_the_build_identity() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .arg("--version")
+        .output()
+        .expect("run nini --version");
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    assert!(v.starts_with("nini "), "got {v:?}");
+    assert!(
+        !v.contains("nini nini"),
+        "clap prints the program name; the version line must not repeat it: {v:?}"
+    );
+    assert!(
+        v.contains(env!("CARGO_PKG_VERSION")),
+        "the crate version must appear: {v:?}"
+    );
+    // `<commit> (+dirty)? (<build time>)`
+    let has_commit = v.split_whitespace().any(|w| {
+        w.len() >= 7
+            && w.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+            && w.chars().any(|c| c.is_ascii_digit())
+    });
+    assert!(has_commit, "expected a git commit in {v:?}");
+    assert!(
+        v.contains('(') && v.contains(')'),
+        "expected a build timestamp in {v:?}"
+    );
+}
+
+/// `+dirty` is not decoration: a commit id otherwise reads as "exactly this",
+/// when the tree may have had more on top of it.
+#[test]
+fn a_dirty_build_says_so() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .arg("--version")
+        .output()
+        .expect("run nini --version");
+    let v = String::from_utf8_lossy(&out.stdout);
+    let dirty_marker = v.contains("+dirty");
+    // Assert the relationship, not the value: under `cargo test` the tree is
+    // almost always dirty (the test binary itself does not modify it, but
+    // edits made after the build do), and pinning either outcome would make
+    // this fail on a clean CI checkout.
+    if dirty_marker {
+        assert!(
+            v.contains(ENV_COMMIT),
+            "+dirty without a commit to attribute it to: {v:?}"
+        );
+    }
+    assert!(
+        v.contains(ENV_COMMIT) || v.contains("unknown"),
+        "always name a commit or say it is unknown: {v:?}"
+    );
+}
+
+const ENV_COMMIT: &str = match option_env!("NINI_BUILD_COMMIT") {
+    Some(c) => c,
+    None => "",
+};
