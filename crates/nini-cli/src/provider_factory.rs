@@ -469,13 +469,71 @@ mod tests {
     /// live in this binary's own test module and use their own variable
     /// names, but the process still runs tests in parallel, so the call is
     /// guarded the way `std` documents.
+    /// Every variable these tests touch, so a developer's shell cannot decide
+    /// whether they pass.
+    ///
+    /// v0.10: `an_api_key_on_the_command_line_reaches_every_provider` only
+    /// ever cleared the API-key variables. `openai-compat` also needs
+    /// `OPENAI_BASE_URL`, so on a machine where it happened to be exported -
+    /// `~/.bashrc:317-318` sets it here - the test passed, and in a clean
+    /// environment or CI it failed on a provider the flag *does* reach. The
+    /// bug was never in `--api-key`; the bug was a test whose verdict came
+    /// from the ambient environment.
+    ///
+    /// Variables a developer's shell may export that change the outcome,
+    /// mapped to the fixed value used while the assertion runs.
+    ///
+    /// The `*_BASE_URL` ones are given a value rather than removed, because
+    /// `openai-compat` refuses to construct without one and the point of the
+    /// test is `--api-key`, not `OPENAI_BASE_URL`. The credentials are
+    /// removed, because those are what would mask the flag.
+    ///
+    /// `PI_CODING_AGENT_DIR` is here for a different reason: it points at a
+    /// config directory, and nini must not be reading anybody's.
+    const AMBIENT: &[(&str, Option<&str>)] = &[
+        ("OPENAI_BASE_URL", Some("http://test.invalid/v1")),
+        ("ANTHROPIC_BASE_URL", Some("http://test.invalid")),
+        ("GOOGLE_BASE_URL", Some("http://test.invalid/v1")),
+        ("DEEPSEEK_BASE_URL", Some("http://test.invalid/v1")),
+        ("GROQ_BASE_URL", Some("http://test.invalid/v1")),
+        ("MISTRAL_BASE_URL", Some("http://test.invalid/v1")),
+        ("COHERE_BASE_URL", Some("http://test.invalid/v1")),
+        ("GEMINI_API_KEY", None),
+        ("PI_CODING_AGENT_DIR", None),
+    ];
+
+    /// Process-wide lock for the tests that mutate the environment.
+    ///
+    /// `with_env_unset` removes and restores process-global variables, and
+    /// the test harness runs tests in parallel. Two of these tests touching
+    /// `OPENAI_API_KEY` at once is a data race on the environment: one
+    /// restores a value the other has already removed. That is the second
+    /// reason the `--api-key` test had a verdict nobody could reproduce —
+    /// the first was the unneutralised `OPENAI_BASE_URL`.
+    ///
+    /// Same shape as `nini_core::paths::agent_lock()`, which exists for the
+    /// same reason on the agent directory.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn with_env_unset<T>(names: &[&str], f: impl FnOnce() -> T) -> T {
-        let saved: Vec<(String, Option<String>)> = names
+        let _guard = env_guard();
+        let mut all: Vec<&str> = names.to_vec();
+        all.extend(AMBIENT.iter().map(|(n, _)| *n));
+        let saved: Vec<(String, Option<String>)> = all
             .iter()
             .map(|n| (n.to_string(), std::env::var(n).ok()))
             .collect();
         for (n, _) in &saved {
             unsafe { std::env::remove_var(n) };
+        }
+        for (n, value) in AMBIENT {
+            if let Some(v) = value {
+                unsafe { std::env::set_var(n, v) };
+            }
         }
         let out = f();
         for (n, v) in saved {

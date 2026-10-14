@@ -12,7 +12,7 @@
 //! | inline code   | `mdCode`              | dim                  |
 //! | link label    | `mdLink`              | underline            |
 //! | link URL      | `mdLinkUrl`           | dim                  |
-//! | code block    | `mdCodeBlock` + `mdCodeBlockBorder` | border + body |
+//! | code block    | `mdCodeBlock` + `mdCodeBlockBorder` | ``` fences + body |
 //! | blockquote    | `mdQuote` + `mdQuoteBorder`        | italic + `│ `  |
 //! | list bullet   | `mdListBullet`        | `- ` / `1. `        |
 //! | hr            | `mdHr`                | `─` × width          |
@@ -485,20 +485,35 @@ impl<'a> MdState<'a> {
         self.pending.push(Span::styled(code.to_string(), s));
     }
 
+    /// Code block: ```lang / body / ```.
+    ///
+    /// v0.10: the borders used to be `\u{2500}` rules — five, the lang, five,
+    /// over a hardcoded 21 below. Two defects came out of that:
+    ///
+    ///   * **Not Pi's shape.** `pi-tui/src/components/markdown.ts:522,535`
+    ///     fences a code block with backticks, not a rule. A transcript that
+    ///     is mostly bash and file excerpts therefore drew a horizontal rule
+    ///     above and below every block, which reads as "every line is
+    ///     underlined" once there is more than a screenful. Reported as a
+    ///     rendering bug; the cause was a rule where Pi puts a fence.
+    ///   * **The two borders did not match.** The top was `12 + lang.len()`
+    ///     columns and the bottom a fixed 21, so every block was framed
+    ///     unevenly.
+    ///
+    /// The theme slot was already Pi's (`theme.ts:1278`,
+    /// `codeBlockBorder: theme.fg("mdCodeBlockBorder", ...)`), which makes
+    /// this the third time nini's theme schema was ported and the component
+    /// that uses it was not - after `scrollbarThumb` and
+    /// `default_thinking_level`.
     fn flush_code_block(&mut self) {
         let lang = self.in_code.take().unwrap_or_default();
         let border = self.theme.fg_style("mdCodeBlockBorder");
         let body_style = self.theme.fg_style("mdCodeBlock");
-        let label = if lang.is_empty() {
-            "code".to_string()
-        } else {
-            lang.clone()
-        };
-        // Top border with lang label
-        self.out.push(Line::from(Span::styled(
-            format!("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500} {label} \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"),
-            border,
-        )));
+        // `markdown.ts:522` - three backticks then the language, and nothing
+        // else. The old version substituted the placeholder "code" when
+        // there was no language; Pi emits a bare fence.
+        self.out
+            .push(Line::from(Span::styled(format!("```{lang}"), border)));
         // Body lines: 2-space indent + code color. The Text event for a
         // fenced code block may contain newlines (pulldown-cmark emits
         // raw bytes), so split on \n to render each line separately.
@@ -512,11 +527,9 @@ impl<'a> MdState<'a> {
             self.out
                 .push(Line::from(Span::styled(format!("  {content}"), body_style)));
         }
-        // Bottom border
-        self.out.push(Line::from(Span::styled(
-            "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string(),
-            border,
-        )));
+        // Bottom fence — `markdown.ts:535`, always bare.
+        self.out
+            .push(Line::from(Span::styled("```".to_string(), border)));
     }
 
     // -- link URL handling (called between Start/End Link) ----------------
@@ -829,5 +842,116 @@ mod tests {
             .unwrap();
         // Some line between Title and body should be empty.
         assert!(body_idx > 1);
+    }
+
+    // ---------------------------------------------------------------
+    // v0.10: the code block fence.
+    //
+    // Reported as "every line is underlined once there is more than a
+    // screenful". The cause was a `─` rule above and below every block,
+    // where Pi uses ``` fences — and 342 unit tests passed throughout,
+    // because none of them looked at the characters.
+    // ---------------------------------------------------------------
+
+    fn render(text: &str) -> String {
+        render_markdown(text, &theme())
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_code_block_is_fenced_with_backticks_not_a_rule() {
+        let out = render("```rust\nlet x = 1;\n```");
+        assert!(
+            out.contains("```rust"),
+            "the opening fence should be ```rust, got:\n{out}"
+        );
+        assert!(
+            out.trim_end().ends_with("```"),
+            "the closing fence should be a bare ```, got:\n{out}"
+        );
+        assert!(
+            !out.contains('─'),
+            "a code block must not draw a horizontal rule anywhere:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_fence_without_a_language_is_bare() {
+        // The old code substituted the placeholder "code". Pi emits nothing.
+        let out = render("```\nplain\n```");
+        assert!(
+            out.lines().any(|l| l.trim() == "```"),
+            "expected a bare ``` fence, got:\n{out}"
+        );
+        assert!(
+            !out.contains("code"),
+            "the placeholder language is gone, got:\n{out}"
+        );
+    }
+
+    /// Not "the fences are the same width" — Pi's own are not:
+    /// ```` ```rust ```` is seven columns and ```` ``` ```` is three. That
+    /// asymmetry is invisible because a fence is a marker; it is only
+    /// conspicuous when the same shape is drawn with a rule, which is what
+    /// made the old `12 + lang.len()` versus a fixed 21 read as a broken
+    /// frame.
+    ///
+    /// The first draft of this test asserted equal widths and failed on
+    /// correct code — the same paragraph that argued they differ was written
+    /// twenty minutes earlier in the same investigation. What is asserted
+    /// here is the property that actually matters: both fences are fences.
+    #[test]
+    fn both_fences_are_fences_not_rules() {
+        let out = render("```rust\na\n```");
+        let fences: Vec<&str> = out
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with('`'))
+            .collect();
+        assert_eq!(
+            fences,
+            vec!["```rust", "```"],
+            "expected Pi's exact fences in:\n{out}"
+        );
+    }
+
+    /// The defect was only visible in bulk: one rule per block is easy to
+    /// miss, two hundred is not.
+    #[test]
+    fn a_code_heavy_transcript_draws_no_rules() {
+        let mut text = String::new();
+        for i in 0..50 {
+            text.push_str(&format!("```bash\necho step {i}\n```\n\n"));
+        }
+        let out = render(&text);
+        assert_eq!(
+            out.matches('─').count(),
+            0,
+            "a screenful of code blocks must not produce a single rule"
+        );
+        assert_eq!(out.matches("```bash").count(), 50);
+    }
+
+    #[test]
+    fn a_horizontal_rule_still_draws_a_rule() {
+        // The fix is scoped to code fences. A real markdown `hr` is Pi's
+        // `mdHr` and must keep rendering as a rule.
+        let out = render("above\n\n---\n\nbelow");
+        assert!(
+            out.contains('─'),
+            "a markdown hr is not a code block and should still be a rule:\n{out}"
+        );
+        assert!(
+            !out.contains("```"),
+            "and it must not become a fence:\n{out}"
+        );
     }
 }
