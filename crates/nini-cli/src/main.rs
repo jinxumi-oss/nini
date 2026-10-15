@@ -346,6 +346,13 @@ async fn main() -> Result<()> {
                 &fallback_keys,
                 &fallback_base_urls,
                 api_key.as_deref(),
+                &app::AppConfig {
+                    tools: tools.clone(),
+                    exclude_tools: exclude_tools.clone(),
+                    no_tools,
+                    no_builtin_tools,
+                    ..app::AppConfig::for_tool_selection()
+                },
             )
             .await
         }
@@ -372,6 +379,13 @@ async fn main() -> Result<()> {
                 &fallback_keys,
                 &fallback_base_urls,
                 api_key.as_deref(),
+                &app::AppConfig {
+                    tools: tools.clone(),
+                    exclude_tools: exclude_tools.clone(),
+                    no_tools,
+                    no_builtin_tools,
+                    ..app::AppConfig::for_tool_selection()
+                },
             )
             .await
         }

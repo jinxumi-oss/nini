@@ -81,7 +81,13 @@ async fn the_hook_is_called_on_an_overflow_stop() {
             summary: "SUMMARY FROM THE SESSION".into(),
             tokens_before: 999,
             tokens_after: 10,
-            messages: msgs[..2].to_vec(),
+            // v0.10 (fix): the seeded history is 20 messages over a
+            // 150-token budget, so the **threshold** check now fires before
+            // the first request — with only the new user message in hand
+            // (`agent.rs`, Pi `agent-session.ts:1098` Case 2). Slicing a
+            // fixed 2 here would panic on the first call and mask what this
+            // test is about.
+            messages: msgs[..msgs.len().min(2)].to_vec(),
         })
     }));
 

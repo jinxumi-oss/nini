@@ -1414,6 +1414,7 @@ name = "nini-cli"
 version = "0.9.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "futures-util",

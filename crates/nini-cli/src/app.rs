@@ -54,6 +54,30 @@ pub(crate) struct AppConfig {
     pub no_skills: bool,
 }
 
+impl AppConfig {
+    /// The subset of the config that tool assembly actually reads.
+    ///
+    /// v0.10 (fix): `nini -p` and `nini demo` need a config to pass to
+    /// `build_run_tools`, but not the model/prompt fields. Naming the
+    /// ignored ones here keeps the struct's growth from turning every
+    /// call site into a place where a tool flag can be forgotten.
+    pub(crate) fn for_tool_selection() -> Self {
+        Self {
+            provider: String::new(),
+            model: String::new(),
+            fallback_keys: Vec::new(),
+            fallback_base_urls: Vec::new(),
+            tools: Vec::new(),
+            exclude_tools: Vec::new(),
+            no_tools: false,
+            no_builtin_tools: false,
+            use_theme: None,
+            api_key: None,
+            no_skills: false,
+        }
+    }
+}
+
 /// Build the `RunConfig` (model + system prompt) for a TUI session,
 /// plus the number of skills the prompt actually carries.
 ///
@@ -70,6 +94,37 @@ pub(crate) struct AppConfig {
 /// class this release exists to remove.
 ///
 /// `no_skills` mirrors `--no-skills`.
+/// v0.10 (fix): the tool set a run will actually use.
+///
+/// Two things happen here, in this order, and the order is the point:
+///
+/// 1. the CLI filters (`--tools`, `--exclude-tools`, `--no-tools`,
+///    `--no-builtin-tools`) decide *which* tools exist;
+/// 2. the project-trust gate wraps *those* — installed after, so it cannot
+///    guard a tool the run will not use, and installed here rather than
+///    inside `build_tools` so an extension that registers its own tool
+///    cannot arrive ungated.
+///
+/// Extracted as a function so the sequence can be asserted. The gate was
+/// missing from production entirely while every one of its own unit tests
+/// passed; an assembly that lives inline in `run_tui` cannot be tested,
+/// which is the same seam problem v0.9.2 (P0-1) had to solve for skills.
+pub(crate) fn build_run_tools(
+    cfg: &AppConfig,
+    cwd: &std::path::Path,
+) -> nini_core::tool::ToolRegistry {
+    nini_core::trust_gate::apply_project_trust(
+        tool_registry::filter_tools(
+            tool_registry::build_tools(),
+            &cfg.tools,
+            &cfg.exclude_tools,
+            cfg.no_tools,
+            cfg.no_builtin_tools,
+        ),
+        cwd,
+    )
+}
+
 pub(crate) fn build_tui_run_config(
     settings: &nini_core::settings::Settings,
     cwd: &std::path::Path,
@@ -176,13 +231,7 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         )) as Arc<dyn Provider>
     });
 
-    let shared_tools = tool_registry::filter_tools(
-        tool_registry::build_tools(),
-        &cfg.tools,
-        &cfg.exclude_tools,
-        cfg.no_tools,
-        cfg.no_builtin_tools,
-    );
+    let shared_tools = build_run_tools(&cfg, &cwd);
 
     // v0.9.2 (P0-1): `build_tui_run_config` injects the skills block and
     // returns how many it advertised, so the status bar and the prompt
@@ -301,6 +350,8 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
                         sink.push(nini_tui::runtime::AgentEventLite::Usage(
                             usage.input_tokens,
                             usage.output_tokens,
+                            usage.cache_read_tokens,
+                            usage.cache_write_tokens,
                         ));
                         // v0.8.4 (ux-001, pi-parity): surface non-success
                         // stop reasons at the end of the assistant turn.
@@ -716,6 +767,158 @@ mod p0_1_skills_tests {
                 .matches("<skill>")
                 .count(),
             "status bar count and prompt contents disagree under --no-skills"
+        );
+    }
+}
+
+#[cfg(test)]
+mod trust_wiring_tests {
+    //! v0.10 (fix) — the trust gate existed, `/trust` existed, and nothing
+    //! in a real run ever consulted the gate.
+    //!
+    //! This module asserts the *assembly*, not the gate. The gate itself is
+    //! covered in `nini-core/tests/trust_gate.rs`; what only exists here is
+    //! the fact that the run's tools are the gated ones. A test that built
+    //! its own registry would have passed against a binary that never called
+    //! `apply_project_trust` at all.
+
+    use super::*;
+
+    fn cfg() -> AppConfig {
+        AppConfig {
+            provider: "fixture".into(),
+            model: "test-model".into(),
+            fallback_keys: Vec::new(),
+            fallback_base_urls: Vec::new(),
+            tools: Vec::new(),
+            exclude_tools: Vec::new(),
+            no_tools: false,
+            no_builtin_tools: false,
+            use_theme: None,
+            api_key: None,
+            no_skills: false,
+        }
+    }
+
+    #[test]
+    fn the_run_tools_carry_a_before_hook() {
+        let tools = build_run_tools(&cfg(), std::path::Path::new("/tmp"));
+        let mut gated = 0;
+        let mut total = 0;
+        for t in tools.tools() {
+            total += 1;
+            if t.before().is_some() {
+                gated += 1;
+            }
+        }
+        assert_eq!(total, 6, "the six built-ins should survive the filters");
+        assert_eq!(
+            gated, total,
+            "{gated}/{total} tools carry the trust gate — a run built from \
+             these tools would not enforce `/trust`"
+        );
+    }
+
+    /// The filters run first, so the gate is installed on exactly the tools
+    /// the run will use — no more (guarding tools that never run) and no
+    /// fewer.
+    #[test]
+    fn the_gate_follows_the_cli_filters() {
+        let mut c = cfg();
+        c.exclude_tools = vec!["bash".into(), "write".into()];
+        let tools = build_run_tools(&c, std::path::Path::new("/tmp"));
+        let names: Vec<String> = tools.tools().map(|t| t.name().to_string()).collect();
+        assert_eq!(names.len(), 4, "exclusions were not applied: {names:?}");
+        for n in &names {
+            assert!(
+                !n.contains("bash") && !n.contains("write"),
+                "excluded tool survived: {names:?}"
+            );
+        }
+        for t in tools.tools() {
+            assert!(t.before().is_some(), "{} is ungated", t.name());
+        }
+    }
+
+    /// `apply_project_trust` returns the registry untouched when there is no
+    /// agent directory at all (a tarball install, a CI sandbox). That path
+    /// must not panic and must not drop tools.
+    #[test]
+    fn a_missing_agent_directory_still_yields_working_tools() {
+        let tools = build_run_tools(&cfg(), std::path::Path::new("/tmp"));
+        assert_eq!(tools.tools().count(), 6);
+    }
+}
+
+#[cfg(test)]
+mod print_mode_tool_tests {
+    //! v0.10 (fix) — `nini -p` and `nini demo` called
+    //! `tool_registry::build_tools()` directly.
+    //!
+    //! Two consequences, both invisible from the TUI:
+    //!
+    //! 1. `--tools`, `--exclude-tools`, `--no-tools` and `--no-builtin-tools`
+    //!    were accepted, documented in `--help`, and applied to nothing.
+    //!    `nini --no-tools -p "…"` still gave the model six tools.
+    //! 2. The project trust gate, installed in the TUI path, was absent —
+    //!    so a directory the user marked untrusted could still be written by
+    //!    every scripted and CI invocation.
+    //!
+    //! These assert the *shared* assembly, which is the point: one function
+    //! builds the tool set for every entry point, so the next entry point
+    //! cannot quietly get a different one.
+
+    use super::*;
+
+    fn cfg_with(exclude: &[&str]) -> AppConfig {
+        let mut c = AppConfig::for_tool_selection();
+        c.exclude_tools = exclude.iter().map(|s| s.to_string()).collect();
+        c
+    }
+
+    #[test]
+    fn print_mode_honours_exclude_tools() {
+        let tools = build_run_tools(&cfg_with(&["bash"]), std::path::Path::new("/tmp"));
+        let names: Vec<String> = tools.tools().map(|t| t.name().to_string()).collect();
+        assert!(
+            !names.iter().any(|n| n == "bash"),
+            "`nini --exclude-tools bash -p …` still had bash: {names:?}"
+        );
+        assert_eq!(names.len(), 5);
+    }
+
+    #[test]
+    fn print_mode_honours_no_tools() {
+        let mut c = AppConfig::for_tool_selection();
+        c.no_tools = true;
+        let tools = build_run_tools(&c, std::path::Path::new("/tmp"));
+        assert_eq!(tools.tools().count(), 0, "`--no-tools` still had tools");
+    }
+
+    #[test]
+    fn print_mode_carries_the_trust_gate_like_the_tui() {
+        let tools = build_run_tools(&cfg_with(&[]), std::path::Path::new("/tmp"));
+        for t in tools.tools() {
+            assert!(
+                t.before().is_some(),
+                "{} is ungated in the -p path",
+                t.name()
+            );
+        }
+    }
+
+    /// The constructor exists so the two callers cannot drift apart; this is
+    /// the property that makes it worth having.
+    #[test]
+    fn the_default_tool_config_excludes_nothing() {
+        let c = AppConfig::for_tool_selection();
+        assert!(c.tools.is_empty() && c.exclude_tools.is_empty());
+        assert!(!c.no_tools && !c.no_builtin_tools);
+        assert_eq!(
+            build_run_tools(&c, std::path::Path::new("/tmp"))
+                .tools()
+                .count(),
+            6
         );
     }
 }

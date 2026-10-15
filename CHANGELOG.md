@@ -1,3 +1,133 @@
+## v0.10 — Three chains that were built and never connected (UNRELEASED)
+
+A long task used to break in one specific shape: it would run, cross
+the context window, and die. Not with an error — with the history
+intact, nothing compacted, and a retry that could not succeed. The
+cause was not one bug but a **category**: nini accumulates working
+code that is never connected to anything, and the suite is green
+because every test exercises the piece rather than the assembly.
+
+Tests: **1280 → 1311**.
+
+| Area | Change |
+|---|---|
+| **Compaction** | Pi's `_checkCompaction` runs after *every* assistant message; nini's ran between submissions. A run of 50 tool turns compacted **zero** times. Restored, routed through the session hook. |
+| **Overflow** | The detector's error-message branch was dead — the production call passed `None`, and real 400s arrive on `StreamEvent::Error`, a different branch that treated them as fatal. Rewritten to Pi's three cases. |
+| **Recovery** | No `_overflowRecoveryAttempted` equivalent: a failed compaction `continue`d with the same oversized context until `max_iterations`. Bounded at one, with an actionable message. |
+| **Context bar** | `set_status_bar_usage` had no caller, so the status bar could only draw `ctx 0%`. `Usage` also dropped the cache counters Pi includes. Both wired. |
+| **Project trust** | `/trust` persisted a decision and nothing ever read it during a run. A directory marked untrusted ran `bash`, `write` and `edit` anyway. Enforced through `BeforeExecute`. |
+| **`-p` / `demo`** | Both called `build_tools()` directly, ignoring `--tools` / `--exclude-tools` / `--no-tools` **and** the trust gate. A restriction that holds in the TUI and evaporates in `-p` is not a restriction. |
+
+### Fix — a long run never compacted (Pi `agent-session.ts:1098` Case 2)
+
+`agent.rs:956-975` had removed the in-run threshold check, on the
+correct observation that a self-compaction never reached the session.
+The follow-through was wrong: compaction moved to a check that runs
+*between submissions*, and a single run never reaches it. A run of
+50 tool turns therefore crossed the window with compaction disabled
+for its entire life.
+
+The check is back, routed through the session hook R2a built, so the
+fold is persisted and the model's context and the session agree:
+
+```rust
+if let Some(result) = self.maybe_compact_at_threshold() {
+    yield AgentEvent::Compacted { … };
+    continue;   // the request below is built from the compacted history
+}
+```
+
+Gated on a hook being present. Without one there is nowhere to persist
+a summary, and an Agent that folds its own history records nothing —
+the exact divergence A3 was right to object to.
+
+### Fix — overflow detection could not see a real overflow
+
+`agent.rs:1146` called `is_context_overflow(&stop_reason, None, …)`.
+The `None` was the error message, so the only branch that matches a
+real HTTP 400 (`overflow.rs:18-31`) never ran in the product. The
+providers report the failure on `StreamEvent::Error`
+(`nini-ai/src/openai.rs:418`), which reached a different arm that
+classifies it as non-retryable (`agent.rs:216`) and ends the run.
+
+`overflow.rs` is now Pi's three cases
+(`pi-ai/src/utils/overflow.ts:134-162`): error-message patterns with
+the non-overflow exclusions first (a throttled request must never
+discard real history), silent overflow on a *successful* response
+whose input exceeds the window, and the length-stop-with-no-output
+case. The `Error` arm consults it before deciding fatality.
+
+`is_recoverable_length` also gained Pi's `desiredMaxOutput > 0` guard
+(`overflow.ts:172`) — without it an unset `max_tokens` resolved to a
+`0 < 0` comparison that happened to be false for the wrong reason.
+
+### Fix — recovery is bounded and says why
+
+Pi allows one compact-and-retry
+(`agent-session.ts:329/2001`) and, on the second failure, emits:
+*"Context overflow recovery failed after one compact-and-retry
+attempt. Try reducing context or switching to a larger-context
+model."*
+
+nini had no bound: `agent.rs:1179` `continue`d with an identical
+oversized history, which overflowed again, until `max_iterations`
+(50) tripped and the user saw `TooManyIterations` — a message that
+says nothing about context.
+
+The turn that hit the ceiling is now dropped whole — no assistant
+message, no tool calls, no `turn_end` — and the request is rebuilt
+from the compacted history, which is Pi's `willRetry`.
+
+One deliberate deviation from Pi's ordering: a `length` stop that
+*carried tool calls* is not compacted. Pi refuses that batch on
+purpose (`agent-loop.ts:122`: *"its arguments may be truncated"*), and
+compacting instead would run tools whose arguments were cut
+mid-string. The next turn's threshold check does the compressing.
+
+### Fix — the status bar's context bar (`set_status_bar_usage`)
+
+The writer, the two fields and the renderer (`render.rs:390-405`,
+`ctx 42% [████░░░░]`) all existed. Nothing called the writer, so
+`context_used` stayed at its initialiser for the life of the process.
+`AgentEventLite::Usage` also carried `(input, output)` and dropped the
+cache counters, so the number could not have been right once wired:
+Pi budgets with `totalTokens || input + output + cacheRead + cacheWrite`
+(`compaction/compaction.ts:146`), and on a provider with prompt
+caching the cached read is most of the context.
+
+Context used is the **latest** turn, not a running total — the next
+request carries the last context plus the answer to it.
+
+### Fix — `/trust` now decides something
+
+`ProjectTrustStore` has been fully implemented since v0.9.2 (atomic
+0600 writes, per-cwd map, four levels, `check()`), `/trust` persists
+and reads it back — and `check()` had **zero production callers**. The
+`BeforeExecute` surface that exists to host such a gate had no
+production implementation either, though the agent loop consults it
+(`agent.rs:2019`).
+
+So a security control displayed a decision and enforced nothing, which
+converts "I marked this directory unsafe" into a belief. The gate
+rides `BeforeExecute`, is keyed on the **session** directory rather
+than the argument path (otherwise "untrust this repo" evaporates the
+moment a call reads one file from elsewhere), and tells the user how
+to change it when it denies.
+
+`Ask` — the default, and the level a user who has never run `/trust`
+is at — still allows. Turning a first release of this gate into a
+prompt would break every existing session on upgrade.
+
+### Fix — `-p` and `demo` had no tool policy at all
+
+`nini -p "…"` is what CI and every script calls. It built its tool set
+with `tool_registry::build_tools()` directly, so `--tools`,
+`--exclude-tools`, `--no-tools` and `--no-builtin-tools` were accepted,
+documented in `--help`, and applied to nothing — and the trust gate was
+absent with it. All three entry points now share `build_run_tools`.
+
+---
+
 ## v0.9.2 — Things that told you they worked when they didn't (UNRELEASED)
 
 The v0.8.9 and v0.9.1 releases fixed crashes. This one fixes a
@@ -103,13 +233,13 @@ targets:
 
 | # | Gap | State |
 |---|---|---|
-| P0-2 | `ProjectTrustStore::load`/`save`/`get`/`clear` are all no-ops and `check()` has **zero call sites** — project trust is entirely unenforced. Worse, `default_path()` returns a CWD-relative `.pi/agent/trust.json` while the selector writes `~/.pi/agent/trust.json`. | ⬜ security |
+| P0-2 | `ProjectTrustStore::load`/`save`/`get`/`clear` are all no-ops and `check()` has **zero call sites** — project trust is entirely unenforced. Worse, `default_path()` returns a CWD-relative `.pi/agent/trust.json` while the selector writes `~/.pi/agent/trust.json`. | ✅ v0.10：store 自 v0.9.2 起已真实实现；本轮把 `check()` 接进 `BeforeExecute` 执行闸门（`nini-core/src/trust_gate.rs`） |
 | P0-3 | 16 further CLI flags are dropped in `main.rs` and advertised in `--help`. 6 others are warned about; 13 work. | ⬜ |
 | P1-1 | `/debug` toggles a flag with no consumers; `tracing` is declared in four crates and initialised nowhere. There is no logging. | ⬜ |
 | P1-2 | Theme hot-reload does not exist. `notify` is a declared, unused dependency. | ⬜ |
 | P1-3 | `/tree` is broken in three layers, and would still render a straight line once two of them were fixed, because `/fork` creates no branches. | ⬜ |
 | P1-4 | `/reload` counts skills and discards the result. | ⬜ |
-| P1-7 | `set_status_bar_usage` is dead, so `context_window` is always 0 — the status-bar context bar and `/status`'s context line never render. The test at `status_lines.rs:73` sets the field by hand, which is why it is green. | ⬜ |
+| P1-7 | `set_status_bar_usage` is dead, so `context_window` is always 0 — the status-bar context bar and `/status`'s context line never render. The test at `status_lines.rs:73` sets the field by hand, which is why it is green. | ✅ v0.10：`Usage` 事件（含 cache 计数）经 setter 写入 context bar |
 | — | `/share` returns "not yet implemented". | ⬜ |
 
 Roughly 1,400 lines of unreferenced code remain (`nini-ext`,

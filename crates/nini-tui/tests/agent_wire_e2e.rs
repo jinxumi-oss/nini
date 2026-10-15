@@ -114,6 +114,8 @@ fn make_fixture_driver(
                         sink.push(AgentEventLite::Usage(
                             usage.input_tokens,
                             usage.output_tokens,
+                            usage.cache_read_tokens,
+                            usage.cache_write_tokens,
                         ));
                         AgentEventLite::TurnEnd
                     }
@@ -298,8 +300,8 @@ async fn token_usage_accumulates() {
     let shared = shared_state(AppState::new("test-model"));
     let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
-    sink.push(AgentEventLite::Usage(100, 50));
-    sink.push(AgentEventLite::Usage(200, 100));
+    sink.push(AgentEventLite::Usage(100, 50, 0, 0));
+    sink.push(AgentEventLite::Usage(200, 100, 0, 0));
 
     let snapshot = shared.lock().unwrap().clone();
     assert_eq!(snapshot.run_state.tokens.input, 300);

@@ -116,7 +116,16 @@ pub enum AgentEventLite {
     /// same process and the arithmetic is testable through the sink. Sending
     /// a precomputed number across a boundary made it possible for that
     /// number to be a constant, which is exactly what happened.
-    Usage(u32, u32),
+    /// `input`, `output`, `cache_read`, `cache_write`.
+    ///
+    /// v0.10 (fix): the cache half was dropped on the floor. Pi prices and
+    /// budgets a turn with `calculateContextTokens(usage) = totalTokens ||
+    /// input + output + cacheRead + cacheWrite` (`compaction/compaction.ts:146`),
+    /// and a cached read is most of the context on any provider that has
+    /// prompt caching — so a two-field variant cannot compute the context
+    /// bar, and the bar was therefore never drawn (`context_used` stayed at
+    /// 0, so `render.rs` rendered `ctx 0%` or nothing at all).
+    Usage(u32, u32, u32, u32),
     /// Agent phase transition. Mirrors `AgentEvent::PhaseChanged` from
     /// nini-core but as a lightweight payload (just the phase name).
     PhaseChanged(String),
@@ -323,13 +332,29 @@ impl AgentSink {
                         .lines
                         .push(TranscriptLine::StopNotice(label));
                 }
-                AgentEventLite::Usage(input, output) => {
+                AgentEventLite::Usage(input, output, cache_read, cache_write) => {
                     s.run_state.tokens.input += input as u64;
                     s.run_state.tokens.output += output as u64;
                     // Priced against the model the TUI currently has
                     // selected, which is the one that produced this turn.
-                    s.run_state.cost_usd +=
-                        nini_core::model_lookup::turn_cost(&s.model_state.model, input, output);
+                    let cost = s.run_state.cost_usd
+                        + nini_core::model_lookup::turn_cost(&s.model_state.model, input, output);
+                    // v0.10 (fix): context used is the *latest* turn's
+                    // context, not a running total — the next request sends
+                    // the last context plus the answer to it, so a sum over
+                    // turns would grow without bound.
+                    //
+                    // Routed through the setter that already existed for
+                    // this and had no caller: the renderer reads the two
+                    // fields, the setter is their only intended writer, and
+                    // writing them here instead would have left the two
+                    // paths able to disagree.
+                    let window = s.run_state.context_window;
+                    let used = input
+                        .saturating_add(output)
+                        .saturating_add(cache_read)
+                        .saturating_add(cache_write);
+                    s.set_status_bar_usage(cost, window, used);
                 }
                 AgentEventLite::PhaseChanged(_) => {
                     // Already handled at top of this match (set status).

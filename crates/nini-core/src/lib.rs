@@ -21,6 +21,7 @@ pub mod provider;
 pub mod settings;
 pub mod skills;
 pub mod tool;
+pub mod trust_gate;
 
 pub use agent::{
     AbortHandle, Agent, AgentError, AgentEvent, CompactionHook, CompactionResult, RunConfig,

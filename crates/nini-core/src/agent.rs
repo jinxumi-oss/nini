@@ -532,6 +532,20 @@ pub struct Agent {
     /// Retry attempt counter for transient LLM errors. Reset to 0 after
     /// each successful message stop.
     retry_attempt: u32,
+    /// v0.10 (fix): how many compact-and-retry recoveries this run has
+    /// attempted after a context overflow.
+    ///
+    /// Pi bounds this at exactly one (`_overflowRecoveryAttempted`,
+    /// `agent-session.ts:329`): the second failure emits a specific,
+    /// actionable error and stops. Without a bound, a compaction that
+    /// cannot shrink the context re-sends the identical oversized request
+    /// until `max_iterations` trips, and the user sees `TooManyIterations`
+    /// — a message that says nothing about context.
+    overflow_recovery_attempted: bool,
+    /// v0.10 (fix): estimated tokens at the last in-run threshold
+    /// compaction. Used only to detect a compaction that did not actually
+    /// shrink the context, so the loop cannot compact forever.
+    last_compaction_tokens: Option<u32>,
     /// True while an auto-compaction is in progress. Submit handler
     /// queues user input instead of spawning an agent (Pi
     /// _pendingNextTurnMessages equivalent).
@@ -582,6 +596,8 @@ impl Agent {
             pending_next_turn_messages: Vec::new(),
             phase: AgentPhase::Idle,
             retry_attempt: 0,
+            overflow_recovery_attempted: false,
+            last_compaction_tokens: None,
             hooks,
         }
     }
@@ -772,6 +788,91 @@ impl Agent {
         crate::compaction::should_compact(self.estimated_tokens(), &self.config.compaction)
     }
 
+    /// Compact the history the way Pi does: through the caller's hook when
+    /// the driver supplied one (so the session persists it), otherwise in
+    /// this Agent's own memory.
+    ///
+    /// Returns `None` when there was nothing to compact.
+    ///
+    /// v0.10 (fix) — `last_usage` is cleared on success. That snapshot
+    /// describes the context *before* the fold; keeping it makes
+    /// [`Agent::estimated_tokens`] report the old, larger number forever,
+    /// which is precisely what drives an unbounded compact-retry loop.
+    fn compact_history_via_hook(&mut self) -> Option<CompactionResult> {
+        let tokens_before = self.estimated_tokens();
+        let result = match &self.config.compact {
+            Some(hook) => {
+                let snapshot = self.messages.clone();
+                hook.run(&snapshot)?
+            }
+            None => {
+                let summary_fn = |msgs: &[Message], _prev: Option<String>| {
+                    let entries: Vec<crate::Entry> = msgs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| {
+                            crate::Entry::message(
+                                format!("cmsg_{i}"),
+                                None,
+                                (i as u64) + 1,
+                                AgentMessage {
+                                    role: m.role,
+                                    content: m.content.clone(),
+                                    timestamp: 0,
+                                },
+                            )
+                        })
+                        .collect();
+                    crate::compaction::generate_local_summary(&entries)
+                };
+                let out = self.compact_history(summary_fn);
+                CompactionResult {
+                    summary: out.summary,
+                    tokens_before: out.tokens_before,
+                    tokens_after: out.tokens_after,
+                    // Empty means "the Agent already rewrote its own
+                    // history"; `compact_history` did the splice.
+                    messages: Vec::new(),
+                }
+            }
+        };
+        if !result.messages.is_empty() {
+            self.messages = result.messages.clone();
+        }
+        self.last_usage = None;
+        self.last_compaction_tokens = Some(tokens_before);
+        Some(result)
+    }
+
+    /// v0.10 (fix): the in-run threshold check.
+    ///
+    /// Pi runs `_checkCompaction` after **every** assistant message
+    /// (`agent-session.ts:1098`), so a run that is 30 tool turns long
+    /// compacts when its context crosses the line rather than when the API
+    /// finally refuses. nini only compacted between submissions
+    /// (`runtime.rs:2102`), which a single run never reaches — that is the
+    /// whole shape of "short tasks are fine, long tasks break".
+    ///
+    /// Deliberately gated on a hook being present: without one there is
+    /// nowhere to persist the summary, and an Agent that folds its own
+    /// history records nothing, leaving the model and the session
+    /// describing different conversations. The overflow path below still
+    /// falls back to self-compaction, because there the alternative is a
+    /// dead run.
+    fn maybe_compact_at_threshold(&mut self) -> Option<CompactionResult> {
+        if self.config.compact.is_none() || !self.should_compact() {
+            return None;
+        }
+        // A compaction that did not shrink the context must not be retried
+        // on every iteration.
+        if let (Some(prev), now) = (self.last_compaction_tokens, self.estimated_tokens()) {
+            if now >= prev {
+                return None;
+            }
+        }
+        self.compact_history_via_hook()
+    }
+
     /// Run compaction on the current message history. Returns the
     /// compaction output. v1 uses the deterministic local summary; future
     /// versions pass an LLM-backed `summary_fn`.
@@ -954,6 +1055,22 @@ impl Agent {
                     Err(AgentError::TooManyIterations(config.max_iterations))?;
                 }
 
+                // v0.10 (fix): the threshold check that A3 removed, restored
+                // — but routed through the session hook instead of folding
+                // this Agent's memory in place, which is the part A3 was
+                // right about. Pi: `agent-session.ts:1098` `_checkCompaction`
+                // after every assistant message, Case 2 (threshold).
+                if let Some(result) = self.maybe_compact_at_threshold() {
+                    self.set_phase(AgentPhase::Working);
+                    yield AgentEvent::Compacted {
+                        summary: result.summary.clone(),
+                        tokens_before: result.tokens_before,
+                    };
+                    // The request below is built from the compacted
+                    // history, so there is nothing to retry.
+                    continue;
+                }
+
                 // v0.10 (R2a/A3): the threshold compaction that used to live
                 // here is gone.
                 //
@@ -1041,6 +1158,13 @@ impl Agent {
                     std::collections::HashMap::new();
                 let mut last_usage = Usage::default();
                 let mut stop_reason = "end_turn".to_string();
+                // v0.10 (fix): set when a compaction just rewrote the
+                // history, so the turn that triggered it is discarded and
+                // the request is rebuilt — Pi's `willRetry`
+                // (`agent-session.ts:2021` → `_handlePostAgentRun` →
+                // `agent.continue()`). Without it the failed assistant turn
+                // is appended *after* the compaction and the two disagree.
+                let mut retry_after_compaction = false;
 
                 {
                     use futures_util::StreamExt;
@@ -1142,96 +1266,154 @@ impl Agent {
                                 // compact and retry. Mirrors Pi's
                                 // _checkCompaction() (the same triggers
                                 // we use in nini).
-                                let recoverable = crate::overflow::is_context_overflow(
+                                let overflowed = crate::overflow::is_context_overflow(
                                     &stop_reason,
                                     None, // error message is in MessageStop
                                     Some(&usage),
                                     Some(config.compaction.context_window),
-                                ) || crate::overflow::is_recoverable_length(
+                                );
+                                // v0.10 (fix): a length stop that *carried
+                                // tool calls* is not a context problem, it is
+                                // a truncated serialisation — and Pi refuses
+                                // the whole batch on purpose
+                                // (`agent-loop.ts:122` →
+                                // `failToolCallsFromTruncatedMessage`: "its
+                                // arguments may be truncated"). Compacting
+                                // instead would run tools whose arguments were
+                                // cut mid-string. Pi compacts such a turn later,
+                                // at the session layer, once the rejection has
+                                // been reported; the in-run threshold check
+                                // below does the same job on the next turn.
+                                let truncated_answer = crate::overflow::is_recoverable_length(
                                     &stop_reason,
                                     usage.output_tokens,
                                     config.max_tokens.unwrap_or(0),
-                                );
+                                ) && tool_calls.is_empty();
+                                let recoverable = overflowed || truncated_answer;
                                 last_usage = usage;
-                                if recoverable
-                                    && crate::compaction::should_compact(
-                                        self.estimated_tokens(),
-                                        &config.compaction,
-                                    )
-                                {
-                                    // v0.10 (R2a/A3b): prefer the caller's
-                                    // hook, which can reach the session.
-                                    //
-                                    // The fallback below compacts this
-                                    // Agent's memory and records nothing,
-                                    // so an overflow was the one case where
-                                    // the model's context changed with no
-                                    // trace on disk. With a hook, the
-                                    // sequence is Pi's: compact, persist,
-                                    // rebuild the context, continue with
-                                    // it.
-                                    let compacted = match &config.compact {
-                                        Some(hook) => {
-                                            let snapshot = self.messages.clone();
-                                            match hook.run(&snapshot) {
-                                                Some(r) => {
-                                                    self.messages = r.messages.clone();
-                                                    r
-                                                }
-                                                None => {
-                                                    // Nothing to compact.
-                                                    // Leave the history
-                                                    // alone and let the
-                                                    // run continue.
-                                                    continue;
-                                                }
-                                            }
+                                // v0.10 (fix): the threshold conjunct that
+                                // used to guard this block is gone. Pi's
+                                // overflow branch does not consult the
+                                // budget — it is already past the window,
+                                // and an estimate that says otherwise is
+                                // exactly what left the run with no way
+                                // forward (`agent-session.ts:1994-2021`).
+                                if recoverable {
+                                    if self.overflow_recovery_attempted {
+                                        // Pi: one recovery, then say so
+                                        // (`agent-session.ts:2001-2011`).
+                                        let msg = "Context overflow recovery \
+                                            failed after one compact-and-retry \
+                                            attempt. Try reducing context or \
+                                            switching to a larger-context model.";
+                                        yield AgentEvent::Error {
+                                            message: msg.to_string(),
+                                        };
+                                        self.set_phase(AgentPhase::Idle);
+                                        yield AgentEvent::PhaseChanged(AgentPhase::Idle);
+                                        return;
+                                    }
+                                    self.overflow_recovery_attempted = true;
+                                    // Drop the failed assistant turn before
+                                    // compacting: Pi removes it from state so
+                                    // the summary is not written *about* the
+                                    // error response
+                                    // (`agent-session.ts:2016-2019`).
+                                    if matches!(
+                                        self.messages.last().map(|m| m.role),
+                                        Some(Role::Assistant)
+                                    ) {
+                                        self.messages.pop();
+                                    }
+                                    match self.compact_history_via_hook() {
+                                        Some(r) => {
+                                            yield AgentEvent::Compacted {
+                                                summary: r.summary.clone(),
+                                                tokens_before: r.tokens_before,
+                                            };
+                                            retry_after_compaction = true;
+                                            break 'outer;
                                         }
                                         None => {
-                                            let summary_fn =
-                                                |msgs: &[Message], _prev: Option<String>| {
-                                                    let entries: Vec<crate::Entry> = msgs
-                                                        .iter()
-                                                        .enumerate()
-                                                        .map(|(i, m)| {
-                                                            crate::Entry::message(
-                                                                format!("cmsg_{i}"),
-                                                                None,
-                                                                (i as u64) + 1,
-                                                                AgentMessage {
-                                                                    role: m.role,
-                                                                    content: m
-                                                                        .content
-                                                                        .clone(),
-                                                                    timestamp: 0,
-                                                                },
-                                                            )
-                                                        })
-                                                        .collect();
-                                                    crate::compaction::generate_local_summary(
-                                                        &entries,
-                                                    )
-                                                };
-                                            let out = self.compact_history(summary_fn);
-                                            CompactionResult {
-                                                summary: out.summary,
-                                                tokens_before: out.tokens_before,
-                                                tokens_after: out.tokens_after,
-                                                messages: Vec::new(),
-                                            }
+                                            // Nothing could be compacted, so
+                                            // a retry would send the same
+                                            // oversized history and overflow
+                                            // identically. Pi's `compact()`
+                                            // returns false in this situation
+                                            // and the run ends; silently
+                                            // looping to `max_iterations` was
+                                            // the bug.
+                                            let msg = "Context overflow and \
+                                                nothing left to compact — \
+                                                ending this run. Start a new \
+                                                session or run /compact.";
+                                            yield AgentEvent::Error {
+                                                message: msg.to_string(),
+                                            };
+                                            self.set_phase(AgentPhase::Idle);
+                                            yield AgentEvent::PhaseChanged(AgentPhase::Idle);
+                                            return;
                                         }
-                                    };
-                                    yield AgentEvent::Compacted {
-                                        summary: compacted.summary.clone(),
-                                        tokens_before: compacted.tokens_before,
-                                    };
-                                    yield AgentEvent::Error { message: format!(
-                                        "auto-compaction (overflow): tokens before={} after={}",
-                                        compacted.tokens_before, compacted.tokens_after
-                                    )};
+                                    }
                                 }
                             }
                             Some(Ok(StreamEvent::Error { message })) => {
+                                // v0.10 (fix): this is where a real context
+                                // overflow arrives. Providers map HTTP 400 to
+                                // `StreamEvent::Error` (`nini-ai/src/openai.rs:418`),
+                                // and the check that existed only in the
+                                // `MessageStop` arm passed `None` for the
+                                // message — so the detector never saw the
+                                // text and this arm classified it as a fatal,
+                                // non-retryable error. A long run that crossed
+                                // the window therefore ended here, with the
+                                // history intact and nothing compacted.
+                                //
+                                // Pi: `overflow.ts:136` Case 1 on the
+                                // assistant message, then
+                                // `_checkCompaction` → `_runAutoCompaction`.
+                                let overflowed = crate::overflow::is_context_overflow(
+                                    "error",
+                                    Some(&message),
+                                    None,
+                                    Some(config.compaction.context_window),
+                                );
+                                if overflowed {
+                                    if self.overflow_recovery_attempted {
+                                        yield AgentEvent::Error {
+                                            message: "Context overflow recovery \
+                                                failed after one compact-and-retry \
+                                                attempt. Try reducing context or \
+                                                switching to a larger-context model."
+                                                .to_string(),
+                                        };
+                                        self.set_phase(AgentPhase::Idle);
+                                        yield AgentEvent::PhaseChanged(AgentPhase::Idle);
+                                        return;
+                                    }
+                                    self.overflow_recovery_attempted = true;
+                                    match self.compact_history_via_hook() {
+                                        Some(r) => {
+                                            yield AgentEvent::Compacted {
+                                                summary: r.summary.clone(),
+                                                tokens_before: r.tokens_before,
+                                            };
+                                            retry_after_compaction = true;
+                                            break 'outer;
+                                        }
+                                        None => {
+                                            yield AgentEvent::Error {
+                                                message: format!(
+                                                    "Context overflow and nothing left \
+                                                     to compact: {message}"
+                                                ),
+                                            };
+                                            self.set_phase(AgentPhase::Idle);
+                                            yield AgentEvent::PhaseChanged(AgentPhase::Idle);
+                                            return;
+                                        }
+                                    }
+                                }
                                 if is_retryable_error(&message)
                                     && self.retry_attempt < config.retry.max_retries
                                     && !abort.is_aborted()
@@ -1293,6 +1475,14 @@ impl Agent {
                         continue;
                     }
                 }
+                // v0.10 (fix): the turn that hit the ceiling is dropped
+                // whole — no assistant message, no tool calls, no `turn_end`.
+                // The next iteration rebuilds the request from the compacted
+                // history.
+                if retry_after_compaction {
+                    continue;
+                }
+
                 // Anything still in flight when the stream ended never
                 // got a Stop. Push it with whatever args it accumulated
                 // so the tools still run instead of the call vanishing.
@@ -3877,5 +4067,123 @@ mod context_hook_tests {
             .filter(|m| m.role == Role::Assistant)
             .count();
         assert_eq!(assistant_count, 1);
+    }
+}
+
+#[cfg(test)]
+mod compaction_recovery_tests {
+    use super::*;
+
+    /// A provider that is never called: both tests exercise the compaction
+    /// path directly rather than through a request.
+    struct Unused;
+
+    impl crate::provider::Provider for Unused {
+        fn name(&self) -> &'static str {
+            "unused"
+        }
+        fn capabilities(&self) -> crate::provider::Capabilities {
+            crate::provider::Capabilities::default()
+        }
+        fn stream(
+            &self,
+            _req: crate::provider::Request,
+        ) -> std::pin::Pin<
+            Box<
+                dyn futures_util::Stream<
+                        Item = Result<crate::provider::StreamEvent, crate::provider::ProviderError>,
+                    > + Send
+                    + 'static,
+            >,
+        > {
+            Box::pin(futures_util::stream::empty())
+        }
+    }
+
+    fn seeded(n: usize) -> Vec<Message> {
+        (0..n)
+            .map(|i| Message {
+                role: if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: vec![ContentBlock::Text {
+                    text: format!("message {i} {}", "x".repeat(50)),
+                }],
+                timestamp: 0,
+            })
+            .collect()
+    }
+
+    fn cfg() -> RunConfig {
+        let mut c = RunConfig::new("test-model");
+        c.compaction.context_window = 200;
+        c.compaction.reserve_tokens = 50;
+        c.compaction.keep_recent_tokens = 40;
+        c
+    }
+
+    /// Pi rebuilds context from the messages actually in state after a
+    /// compaction (`agent-session.ts:2160-2163`), so the newest usage
+    /// describes the compacted conversation. nini caches `last_usage`
+    /// beside the history: leaving it behind makes `estimated_tokens()` —
+    /// and therefore the status-bar context bar and every later threshold
+    /// check — report the pre-compaction number forever.
+    #[test]
+    fn compaction_clears_the_cached_usage_snapshot() {
+        let mut agent = Agent::new(Arc::new(Unused), crate::tool::ToolRegistry::new(), cfg());
+        agent.seed(seeded(20));
+        agent.last_usage = Some(crate::provider::Usage {
+            input_tokens: 9999,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        });
+        agent.set_compaction_hook(CompactionHook::new(|msgs| {
+            Some(CompactionResult {
+                summary: "S".into(),
+                tokens_before: 9999,
+                tokens_after: 10,
+                messages: msgs[..2].to_vec(),
+            })
+        }));
+
+        assert!(agent.last_usage.is_some(), "precondition");
+        agent.compact_history_via_hook().expect("the hook compacts");
+        assert!(
+            agent.last_usage.is_none(),
+            "the usage snapshot from before the fold survived — every later \
+             token estimate is computed from a context that no longer exists"
+        );
+        assert!(
+            agent.last_compaction_tokens.unwrap_or(0) >= 9999,
+            "the pre-compaction estimate was not recorded, so the no-shrink \
+             guard has nothing to compare against"
+        );
+    }
+
+    /// A compaction that does not shrink the context must not be retried on
+    /// every subsequent turn.
+    #[test]
+    fn a_compaction_that_does_not_shrink_is_not_repeated() {
+        let mut agent = Agent::new(Arc::new(Unused), crate::tool::ToolRegistry::new(), cfg());
+        agent.seed(seeded(20));
+        agent.set_compaction_hook(CompactionHook::new(|msgs| {
+            // Returns the *same* history: the pathological case.
+            Some(CompactionResult {
+                summary: "S".into(),
+                tokens_before: 9999,
+                tokens_after: 9999,
+                messages: msgs.to_vec(),
+            })
+        }));
+
+        assert!(agent.maybe_compact_at_threshold().is_some(), "first pass");
+        assert!(
+            agent.maybe_compact_at_threshold().is_none(),
+            "the second turn compacted again from an unchanged context — this \
+             is an infinite compaction loop wearing a threshold check's clothes"
+        );
     }
 }

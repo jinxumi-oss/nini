@@ -35,7 +35,7 @@ async fn a_turn_against_a_priced_model_adds_cost() {
     let (state, sink) = sink_for("priced", "anthropic/claude-sonnet-4-5");
 
     // 1M in + 1M out on Sonnet: 3 + 15 = 18 USD at Pi's rates.
-    sink.push(AgentEventLite::Usage(1_000_000, 1_000_000));
+    sink.push(AgentEventLite::Usage(1_000_000, 1_000_000, 0, 0));
 
     let cost = state.lock().unwrap().run_state.cost_usd;
     assert!(
@@ -53,8 +53,8 @@ async fn a_turn_against_a_priced_model_adds_cost() {
 #[tokio::test]
 async fn tokens_still_accumulate() {
     let (state, sink) = sink_for("tokens", "anthropic/claude-sonnet-4-5");
-    sink.push(AgentEventLite::Usage(100, 250));
-    sink.push(AgentEventLite::Usage(7, 9));
+    sink.push(AgentEventLite::Usage(100, 250, 0, 0));
+    sink.push(AgentEventLite::Usage(7, 9, 0, 0));
 
     let g = state.lock().unwrap();
     assert_eq!(g.run_state.tokens.input, 107);
@@ -65,9 +65,9 @@ async fn tokens_still_accumulate() {
 #[tokio::test]
 async fn cost_accumulates_across_turns() {
     let (state, sink) = sink_for("accumulate", "anthropic/claude-sonnet-4-5");
-    sink.push(AgentEventLite::Usage(1_000_000, 0));
+    sink.push(AgentEventLite::Usage(1_000_000, 0, 0, 0));
     let after_one = state.lock().unwrap().run_state.cost_usd;
-    sink.push(AgentEventLite::Usage(1_000_000, 0));
+    sink.push(AgentEventLite::Usage(1_000_000, 0, 0, 0));
     let after_two = state.lock().unwrap().run_state.cost_usd;
 
     assert!((after_one - 3.0).abs() < 1e-6, "{after_one}");
@@ -83,7 +83,7 @@ async fn cost_accumulates_across_turns() {
 #[tokio::test]
 async fn an_unpriced_model_contributes_nothing_rather_than_a_guess() {
     let (state, sink) = sink_for("unknown", "acme/never-heard-of-it");
-    sink.push(AgentEventLite::Usage(1_000_000, 1_000_000));
+    sink.push(AgentEventLite::Usage(1_000_000, 1_000_000, 0, 0));
 
     assert_eq!(
         state.lock().unwrap().run_state.cost_usd,
@@ -99,6 +99,6 @@ async fn an_unpriced_model_contributes_nothing_rather_than_a_guess() {
 #[tokio::test]
 async fn a_bare_model_id_is_priced_too() {
     let (state, sink) = sink_for("bare", "claude-sonnet-4-5");
-    sink.push(AgentEventLite::Usage(1_000_000, 0));
+    sink.push(AgentEventLite::Usage(1_000_000, 0, 0, 0));
     assert!((state.lock().unwrap().run_state.cost_usd - 3.0).abs() < 1e-6);
 }

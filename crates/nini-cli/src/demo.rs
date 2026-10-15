@@ -14,7 +14,7 @@ use nini_core::settings::load_settings;
 use nini_core::skills::{format_skills_for_prompt, load_skills};
 use nini_core::{Agent, AgentEvent, RunConfig};
 
-use crate::{prompt_setup, provider_factory, tool_registry};
+use crate::{prompt_setup, provider_factory};
 
 /// Scripted autonomous demo run (no API key needed).
 ///
@@ -29,6 +29,7 @@ pub(crate) async fn run_demo(
     fallback_keys: &[String],
     fallback_base_urls: &[String],
     api_key: Option<&str>,
+    tool_cfg: &crate::app::AppConfig,
 ) -> Result<()> {
     eprintln!("[demo] task: {task}");
     eprintln!("[demo] provider: {provider} | model: {model}");
@@ -50,7 +51,13 @@ pub(crate) async fn run_demo(
         fallback_base_urls,
         api_key,
     )?;
-    let tools = tool_registry::build_tools();
+    // v0.10 (fix): the same assembly the TUI uses. This called
+    // `build_tools()` directly, which meant `nini -p "..."` — the entry
+    // point every CI job and script uses — silently ignored
+    // `--tools`/`--exclude-tools`/`--no-tools` *and* the project trust
+    // decision. A restriction that holds in the TUI and evaporates in
+    // `-p` is not a restriction.
+    let tools = crate::app::build_run_tools(tool_cfg, &cwd);
     let system = prompt_setup::settings_to_system_prompt(&settings, &cwd, &tools, &skills_prompt);
     let config = RunConfig {
         model: model.to_string(),
@@ -116,6 +123,7 @@ pub(crate) async fn run_print(
     fallback_keys: &[String],
     fallback_base_urls: &[String],
     api_key: Option<&str>,
+    tool_cfg: &crate::app::AppConfig,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let settings = load_settings(&cwd);
@@ -135,7 +143,13 @@ pub(crate) async fn run_print(
         fallback_base_urls,
         api_key,
     )?;
-    let tools = tool_registry::build_tools();
+    // v0.10 (fix): the same assembly the TUI uses. This called
+    // `build_tools()` directly, which meant `nini -p "..."` — the entry
+    // point every CI job and script uses — silently ignored
+    // `--tools`/`--exclude-tools`/`--no-tools` *and* the project trust
+    // decision. A restriction that holds in the TUI and evaporates in
+    // `-p` is not a restriction.
+    let tools = crate::app::build_run_tools(tool_cfg, &cwd);
     let system = prompt_setup::settings_to_system_prompt(&settings, &cwd, &tools, &skills_prompt);
     let config = RunConfig {
         model: model.to_string(),

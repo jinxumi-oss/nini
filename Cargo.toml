@@ -31,6 +31,7 @@ bytes = "1.8"
 futures-util = "0.3"
 futures-core = "0.3"
 async-stream = "0.3"
+async-trait = "0.1"
 pin-project-lite = "0.2"
 
 # Serialization
