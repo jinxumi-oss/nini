@@ -193,6 +193,81 @@ pub fn skill_roots(home: Option<&Path>, agent_dir: Option<&Path>, cwd: &Path) ->
 
 /// Load from an explicit root list. The seam `load_skills` is built on, so
 /// the precedence rules above are testable without a `$HOME`.
+/// v0.10 (fix): load skills from paths the user named explicitly
+/// (`--skill a,b,c`).
+///
+/// Distinct from [`load_skills`] in two ways that matter, both of which
+/// `--help` promises:
+///
+/// * **"Overrides automatic skill discovery."** A user who names one
+///   directory gets that directory. Appending it to the discovered set would
+///   mean the flag cannot be used to *narrow* anything, which is the only
+///   reason to reach for it.
+/// * **A path that is not there is an error.** `load_from_dir` returns
+///   silently on a missing directory, which is right for discovery (most
+///   candidate roots do not exist on most machines) and wrong for an
+///   explicit path: the user typed it, and an empty skill set that looks
+///   like "I have no skills installed" sends them looking in the wrong
+///   place.
+pub fn load_skills_from_paths(paths: &[std::path::PathBuf]) -> LoadSkillsResult {
+    let mut result = LoadSkillsResult::default();
+    let mut roots = Vec::new();
+    for p in paths {
+        match std::fs::metadata(p) {
+            Ok(meta) if meta.is_file() => {
+                // `--skill path/to/SKILL.md` — one skill, named directly.
+                match load_skill_file(p, SkillSource::User, SkillOrigin::Nini) {
+                    Ok(sk) => result.skills.push(sk),
+                    Err(e) => result.errors.push(format!("{}: {e}", p.display())),
+                }
+            }
+            Ok(meta) if meta.is_dir() => {
+                // A directory *containing* SKILL.md is itself one skill —
+                // which is what `~/.claude/skills/my-skill` is, and what a
+                // user who copied one skill somewhere expects to be able to
+                // name. Anything else is a skills *root*, whose
+                // subdirectories each hold a SKILL.md.
+                if p.join("SKILL.md").is_file() {
+                    match load_skill_file(&p.join("SKILL.md"), SkillSource::User, SkillOrigin::Nini)
+                    {
+                        Ok(sk) => result.skills.push(sk),
+                        Err(e) => result.errors.push(format!("{}: {e}", p.display())),
+                    }
+                } else {
+                    roots.push(SkillRoot {
+                        source: SkillSource::User,
+                        origin: SkillOrigin::Nini,
+                        dir: p.clone(),
+                    });
+                }
+            }
+            Ok(_) => {
+                result
+                    .errors
+                    .push(format!("--skill {}: not a file or directory", p.display()));
+            }
+            Err(e) => result.errors.push(format!("--skill {}: {e}", p.display())),
+        }
+    }
+    // Merge rather than replace: some paths contributed one skill directly
+    // (a named SKILL.md, or a directory that is itself one) and the rest
+    // contributed roots. Explicitly named skills win a name collision —
+    // `--skill` is an override, so it should not be shadowed by a root
+    // listed after it.
+    let loaded = load_skills_from_roots(&roots);
+    let mut by_name: std::collections::BTreeMap<String, Skill> = loaded
+        .skills
+        .into_iter()
+        .map(|s| (s.name.clone(), s))
+        .collect();
+    for sk in result.skills {
+        by_name.entry(sk.name.clone()).or_insert(sk);
+    }
+    result.skills = by_name.into_values().collect();
+    result.errors.extend(loaded.errors);
+    result
+}
+
 pub fn load_skills_from_roots(roots: &[SkillRoot]) -> LoadSkillsResult {
     let mut result = LoadSkillsResult::default();
 

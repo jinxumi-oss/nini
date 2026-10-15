@@ -30,7 +30,45 @@ pub(crate) fn settings_to_system_prompt(
     tools: &nini_core::tool::ToolRegistry,
     skills_prompt: &str,
 ) -> String {
-    let mut s = String::from("You are nini, a Pi-compatible Rust coding agent.\n");
+    settings_to_system_prompt_with(settings, cwd, tools, skills_prompt, None, None)
+}
+
+/// The assembler, with the two CLI overrides Pi has.
+///
+/// Pi: `buildSystemPrompt` (`pi-coding-agent/src/core/system-prompt.ts:28-68`)
+///
+/// ```text
+/// 41  const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
+/// 46  if (customPrompt) {
+/// 47      let prompt = customPrompt;          // the base is REPLACED
+/// 49      if (appendSection) prompt += appendSection;
+/// 55      … <project_context> (AGENTS.md)
+/// 66      … formatSkillsForPrompt(skills)
+/// 68  } else { … the normal base … }
+/// ```
+///
+/// v0.10 (fix): `--system-prompt` and `--append-system-prompt` were
+/// destructured as `_` in `main.rs` — accepted, described in `--help` as
+/// "Override the system prompt" / "Append to the system prompt", and dropped.
+/// Everything appended *after* the base stays appended after a custom base:
+/// the skills block, the tool self-descriptions and the working-directory
+/// hint are not part of the base, they are what surrounds it.
+pub(crate) fn settings_to_system_prompt_with(
+    settings: &nini_core::settings::Settings,
+    cwd: &std::path::Path,
+    tools: &nini_core::tool::ToolRegistry,
+    skills_prompt: &str,
+    custom_prompt: Option<&str>,
+    append_prompt: Option<&str>,
+) -> String {
+    let mut s = match custom_prompt {
+        Some(p) if !p.trim().is_empty() => {
+            let mut s = p.to_string();
+            s.push('\n');
+            s
+        }
+        _ => String::from("You are nini, a Pi-compatible Rust coding agent.\n"),
+    };
     // v0.8.5: surface the working directory so the model uses relative
     // paths for read/grep/find/write/edit. Without this, models often
     // guess `/home/<user>/<file>` for project files — which fails
@@ -54,6 +92,13 @@ pub(crate) fn settings_to_system_prompt(
     // "Available tools: bash, read, write, edit, grep, find" line is
     // replaced with Pi-style "## Tool self-descriptions" + "## Tool usage
     // guidelines" sections built from the live registry.
+    if let Some(extra) = append_prompt {
+        if !extra.trim().is_empty() {
+            s.push_str("\n\n");
+            s.push_str(extra);
+            s.push('\n');
+        }
+    }
     let mut s =
         nini_core::tool::build_system_prompt_with_contributions(Some(&s), tools).unwrap_or(s);
     s.push_str(skills_prompt);
@@ -141,6 +186,133 @@ mod tests {
         assert!(
             prompt.contains("relative paths"),
             "system prompt must hint that relative paths are resolved against cwd"
+        );
+    }
+    // ---------------------------------------------------------------------------
+    // 1. --system-prompt / --append-system-prompt reach the prompt
+    // ---------------------------------------------------------------------------
+
+    /// Pi's rule (`system-prompt.ts:46-68`): `--system-prompt` **replaces** the
+    /// base, and everything else — append, project context, skills — still lands
+    /// on top of it.
+    #[test]
+    fn a_custom_system_prompt_replaces_the_base_and_keeps_the_skills_block() {
+        let settings = nini_core::settings::Settings::default();
+        let tools = nini_core::tool::ToolRegistry::new();
+        let skills =
+            "\n<available_skills>\n<skill><name>demo</name></skill>\n</available_skills>\n";
+
+        let prompt = settings_to_system_prompt_with(
+            &settings,
+            std::path::Path::new("/tmp"),
+            &tools,
+            skills,
+            Some("You are a terse assistant."),
+            None,
+        );
+
+        assert!(
+            prompt.starts_with("You are a terse assistant."),
+            "the custom prompt must be the base, got: {}",
+            &prompt.chars().take(80).collect::<String>()
+        );
+        assert!(
+            !prompt.contains("You are nini, a Pi-compatible Rust coding agent."),
+            "the default base survived a custom prompt — both are being sent and \
+         the model has no way to tell which one wins"
+        );
+        assert!(
+            prompt.contains("<available_skills>"),
+            "the skills block is dropped when a custom prompt is set; it is \
+         appended to the base, not part of it"
+        );
+    }
+
+    /// `--append-system-prompt` **adds** to the base — the base stays.
+    #[test]
+    fn an_append_system_prompt_adds_to_the_base() {
+        let tools = nini_core::tool::ToolRegistry::new();
+        let prompt = settings_to_system_prompt_with(
+            &nini_core::settings::Settings::default(),
+            std::path::Path::new("/tmp"),
+            &tools,
+            "",
+            None,
+            Some("Always run cargo test before reporting done."),
+        );
+        assert!(
+            prompt.contains("You are nini, a Pi-compatible Rust coding agent."),
+            "the base prompt was replaced by an append"
+        );
+        assert!(
+            prompt.contains("Always run cargo test before reporting done."),
+            "the appended instruction is not in the prompt"
+        );
+    }
+
+    /// Both together: replace, then append. Order matters and Pi fixes it
+    /// (`system-prompt.ts:47-51`).
+    #[test]
+    fn append_lands_after_the_custom_base() {
+        let tools = nini_core::tool::ToolRegistry::new();
+        let prompt = settings_to_system_prompt_with(
+            &nini_core::settings::Settings::default(),
+            std::path::Path::new("/tmp"),
+            &tools,
+            "",
+            Some("BASE-MARKER"),
+            Some("APPEND-MARKER"),
+        );
+        let base = prompt.find("BASE-MARKER").expect("base present");
+        let app = prompt.find("APPEND-MARKER").expect("append present");
+        assert!(base < app, "the append must come after the base it extends");
+    }
+
+    /// The working-directory hint is not decoration: without it models address
+    /// files by absolute path outside the project (`prompt_setup.rs:37-41`).
+    /// A custom prompt must not lose it.
+    #[test]
+    fn a_custom_prompt_still_gets_the_working_directory() {
+        let tools = nini_core::tool::ToolRegistry::new();
+        let prompt = settings_to_system_prompt_with(
+            &nini_core::settings::Settings::default(),
+            std::path::Path::new("/work/project"),
+            &tools,
+            "",
+            Some("Be terse."),
+            None,
+        );
+        assert!(
+            prompt.contains("/work/project"),
+            "the cwd hint vanished with the base prompt: {prompt}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // 4. --thinking reaches the request
+    // ---------------------------------------------------------------------------
+
+    /// `RunConfig` carries `thinking`, `settings.thinking_level` is rendered into
+    /// the prompt text, and `agent.rs` now forwards the level to the provider
+    /// (v0.10 R1f). The CLI's `--thinking` is the only piece missing, so the
+    /// level a user asks for on the command line never reaches the API.
+    #[test]
+    fn a_thinking_level_from_the_command_line_reaches_the_config() {
+        let mut settings = nini_core::settings::Settings::default();
+        settings.thinking_level = Some("high".into());
+        let tools = nini_core::tool::ToolRegistry::new();
+        let prompt = settings_to_system_prompt_with(
+            &settings,
+            std::path::Path::new("/tmp"),
+            &tools,
+            "",
+            None,
+            None,
+        );
+        assert!(
+            prompt.contains("high"),
+            "the thinking level is not in the prompt, so it is not in the \
+         request context: {prompt}"
         );
     }
 }

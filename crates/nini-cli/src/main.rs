@@ -275,66 +275,159 @@ async fn main() -> Result<()> {
         fork,
         session_dir,
         api_key,
-        system_prompt: _,
-        append_system_prompt: _,
-        thinking: _,
         tui_mode: _,
         list_models,
         tools,
         exclude_tools,
         no_tools,
         no_builtin_tools,
-        approve: _,
-        offline: _,
-        verbose: _,
+        approve,
+        system_prompt,
+        append_system_prompt,
+        thinking,
+        verbose,
+        skill,
+        offline,
         export: _,
-        skill: _,
         no_skills,
-        prompt_template: _,
-        no_prompt_templates: _,
-        theme_file: _,
+        prompt_template,
+        no_prompt_templates,
+        theme_file,
         use_theme,
-        no_themes: _,
-        extension: _,
-        no_extensions: _,
-        no_context_files: _,
+        no_themes,
+        extension,
+        no_extensions,
+        no_context_files,
     } = args;
 
-    // v0.9.0: these were all `_: _` in the destructure above, i.e.
-    // accepted, documented in `--help`, and then dropped on the floor.
+    // v0.9.0 introduced the honest-refusal mechanism for flags nini does
+    // not implement; v0.10 replaced the single blanket sentence with one
+    // reason per flag.
     //
-    // TUI session persistence is a known, README-declared gap, so the
-    // honest thing is to say so at startup rather than let a user
-    // believe `--continue-session` restored anything. Silently ignoring
-    // a flag is worse than refusing it.
-    let mut ignored: Vec<&str> = Vec::new();
+    // The blanket version said *"TUI session persistence is not implemented
+    // yet"* about `--offline`, `--no-context-files` and `--theme-file`
+    // among others — none of which has anything to do with sessions. A user
+    // who typed `--theme-file x.json` and was told their session
+    // persistence was unimplemented learns nothing except that the message
+    // is not about their flag. Silence is worse than either; a wrong reason
+    // is only slightly better than silence and no better than silence once
+    // the user has learned to distrust it.
+    //
+    // Every refusal below states (a) what the flag would have done and
+    // (b) what to do instead, or that the feature is not planned. Each is
+    // a fact about this binary, not a guess.
+    let mut refused: Vec<String> = Vec::new();
+    let mut refuse = |flag: &str, why: String| refused.push(format!("{flag} — {why}"));
+
+    // Session flags. These *do* belong to one gap: the CLI predates the
+    // TUI's session layer, which exists now but is not wired to these.
     if continue_session {
-        ignored.push("--continue-session");
-    }
-    if session_id.is_some() {
-        ignored.push("--session-id");
-    }
-    if no_session {
-        // Harmless: the TUI does not persist sessions anyway, so this
-        // flag is already the default behaviour.
-        ignored.push("--no-session (already the default)");
-    }
-    if name.is_some() {
-        ignored.push("--name");
-    }
-    if fork.is_some() {
-        ignored.push("--fork");
-    }
-    if session_dir.is_some() {
-        ignored.push("--session-dir");
-    }
-    if !ignored.is_empty() {
-        eprintln!(
-            "[nini] ignoring {}: TUI session persistence is not implemented yet \
-             (see README section 'Known gaps').",
-            ignored.join(", ")
+        refuse(
+            "--continue-session",
+            "resume the previous session; use `nini --resume` inside the TUI".into(),
         );
     }
+    if session_id.is_some() {
+        refuse(
+            "--session-id",
+            "open one session by id; use `/resume` inside the TUI".into(),
+        );
+    }
+    if no_session {
+        // Harmless: sessions are always persisted, so this is the default.
+        refuse(
+            "--no-session",
+            "already the default behaviour; nothing to do".into(),
+        );
+    }
+    if name.is_some() {
+        refuse(
+            "--name",
+            "name the session; use `/name` inside the TUI".into(),
+        );
+    }
+    if fork.is_some() {
+        refuse(
+            "--fork",
+            "fork the session; use `/fork` inside the TUI".into(),
+        );
+    }
+    if session_dir.is_some() {
+        refuse(
+            "--session-dir",
+            "choose where sessions are stored; set NINI_AGENT_DIR instead".into(),
+        );
+    }
+
+    // Feature flags with no implementation behind them. Each says what is
+    // actually missing, which is the thing a user could otherwise spend an
+    // hour guessing at.
+    if approve {
+        refuse(
+            "--approve",
+            "trust project files for this run. Trust is enforced per session              via `/trust`; there is no command-line equivalent yet".into(),
+        );
+    }
+    if offline {
+        refuse(
+            "--offline",
+            "no network calls. Every provider path makes them; use the              `fixture` provider to run without a network".into(),
+        );
+    }
+    if prompt_template.is_some() {
+        refuse(
+            "--prompt-template",
+            "prompt templates are a Pi feature with no nini implementation".into(),
+        );
+    }
+    if no_prompt_templates {
+        refuse(
+            "--no-prompt-templates",
+            "there are no prompt templates to disable".into(),
+        );
+    }
+    if theme_file.is_some() {
+        refuse(
+            "--theme-file",
+            "loading a theme from a file. `SettingsManager::theme()` returns              the built-in default; custom themes are not implemented".into(),
+        );
+    }
+    if no_themes {
+        refuse(
+            "--no-themes",
+            "theme discovery is not implemented; the built-in theme is always              used"
+                .into(),
+        );
+    }
+    if !extension.is_empty() {
+        refuse(
+            "--extension",
+            "the extension runtime was removed from scope: it was specified              as a Rust cdylib and Pi loads TypeScript, so no amount of              wiring would have connected them (docs/plans/v0.10 §26)".into(),
+        );
+    }
+    if no_extensions {
+        refuse(
+            "--no-extensions",
+            "no extensions are loaded, so there is nothing to disable".into(),
+        );
+    }
+    if no_context_files {
+        refuse(
+            "--no-context-files",
+            "AGENTS.md / CLAUDE.md context files are not read by nini; the              `--help` text describes a feature that does not exist yet".into(),
+        );
+    }
+
+    if !refused.is_empty() {
+        eprintln!("[nini] {} flag(s) accepted but not applied:", refused.len());
+        for line in &refused {
+            eprintln!("[nini]   {line}");
+        }
+    }
+
+    // Once, before any entry point: a subscriber installed after the first
+    // request cannot explain the request that failed.
+    app::init_logging(verbose);
 
     match cmd {
         Some(Cmd::Demo { task }) => {
@@ -351,6 +444,12 @@ async fn main() -> Result<()> {
                     exclude_tools: exclude_tools.clone(),
                     no_tools,
                     no_builtin_tools,
+                    system_prompt: system_prompt.clone(),
+                    append_system_prompt: (!append_system_prompt.is_empty())
+                        .then(|| append_system_prompt.join("\n\n")),
+                    skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
+                    thinking: thinking.clone(),
+                    verbose,
                     ..app::AppConfig::for_tool_selection()
                 },
             )
@@ -384,6 +483,12 @@ async fn main() -> Result<()> {
                     exclude_tools: exclude_tools.clone(),
                     no_tools,
                     no_builtin_tools,
+                    system_prompt: system_prompt.clone(),
+                    append_system_prompt: (!append_system_prompt.is_empty())
+                        .then(|| append_system_prompt.join("\n\n")),
+                    skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
+                    thinking: thinking.clone(),
+                    verbose,
                     ..app::AppConfig::for_tool_selection()
                 },
             )
@@ -402,6 +507,12 @@ async fn main() -> Result<()> {
                 use_theme: use_theme.clone(),
                 api_key: api_key.clone(),
                 no_skills,
+                system_prompt: system_prompt.clone(),
+                append_system_prompt: (!append_system_prompt.is_empty())
+                    .then(|| append_system_prompt.join("\n\n")),
+                skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
+                thinking: thinking.clone(),
+                verbose,
             })
             .await
         }

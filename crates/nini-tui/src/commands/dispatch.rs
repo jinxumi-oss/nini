@@ -1372,15 +1372,37 @@ fn cmd_help(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) 
 }
 
 fn cmd_debug(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
-    // Toggle verbose logging. The log file path mirrors Pi's
-    // ~/.nini/agent/log location; users can `tail -f` it.
+    // v0.10: this used to flip `ui_state.debug_logging` and print a
+    // confirmation. Nothing read the field, `tracing` was initialised
+    // nowhere, and `--verbose` was dropped at the CLI boundary — so the one
+    // diagnostic action the product documented produced no diagnostic
+    // output.
+    //
+    // It now moves the real switch (`nini_core::logging`), which the CLI's
+    // subscriber filters on, and reports where the output goes so the
+    // command is actionable rather than merely confirmatory.
     let new_state = !state.ui_state.debug_logging;
     state.ui_state.debug_logging = new_state;
-    let label = if new_state { "on" } else { "off" };
-    CommandResult::output(vec![format!(
-        "debug logging: {label} ({} per keystroke)",
-        if new_state { "logging" } else { "stopped" }
-    )])
+    nini_core::logging::set_debug(new_state);
+
+    let mut out = vec![format!(
+        "debug logging: {}",
+        if new_state { "on" } else { "off" }
+    )];
+    match nini_core::logging::log_path() {
+        Some(p) => {
+            out.push(format!("log: {}", p.display()));
+            out.push("tail -f that file; it also takes effect immediately".to_string());
+        }
+        None => out.push(
+            "no agent directory, so there is nowhere to log (set HOME or NINI_AGENT_DIR)"
+                .to_string(),
+        ),
+    }
+    if new_state {
+        tracing::debug!("/debug: debug logging enabled");
+    }
+    CommandResult::output(out)
 }
 
 fn cmd_status(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {

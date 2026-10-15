@@ -7,7 +7,7 @@ cause was not one bug but a **category**: nini accumulates working
 code that is never connected to anything, and the suite is green
 because every test exercises the piece rather than the assembly.
 
-Tests: **1280 → 1324**.
+Tests: **1280 → 1341**.
 
 | Area | Change |
 |---|---|
@@ -18,6 +18,8 @@ Tests: **1280 → 1324**.
 | **Project trust** | `/trust` persisted a decision and nothing ever read it during a run. A directory marked untrusted ran `bash`, `write` and `edit` anyway. Enforced through `BeforeExecute`. |
 | **`-p` / `demo`** | Both called `build_tools()` directly, ignoring `--tools` / `--exclude-tools` / `--no-tools` **and** the trust gate. A restriction that holds in the TUI and evaporates in `-p` is not a restriction. |
 | **`/fork`** | Copied transcript lines into a local variable and printed a count. No session, no file, no branch — so `/tree` had nothing to draw. Now `createBranchedSession`. |
+| **CLI flags** | 16 accepted, described in `--help`, dropped. 5 now work; 11 refused with a reason naming the flag. |
+| **Logging** | `tracing` initialised nowhere; `/debug` flipped a flag with no consumers. There was no logging at all. |
 
 ### Fix — a long run never compacted (Pi `agent-session.ts:1098` Case 2)
 
@@ -168,6 +170,56 @@ literally `assert_eq!(lines.len(), before + 2)` for "the echo +
 divider", pinning the marker line that was *not* a fork. They now
 assert what the command is for: a new file, the retained prefix, a
 parent link, and a live state that became the branch.
+
+### Fix — flags that were accepted and dropped
+
+Sixteen flags were destructured as `_` in `main.rs`. The comment above
+the destructure said it plainly: *"these were all `_: _` … i.e. accepted,
+documented in `--help`, and then dropped on the floor."*
+
+**Five now work**, each against Pi's definition rather than a guess:
+
+| Flag | Behaviour | Pi |
+|---|---|---|
+| `--system-prompt` | Replaces the base; skills, tool descriptions and the cwd hint still land on top | `system-prompt.ts:46-68` |
+| `--append-system-prompt` | Appended to whatever base is in force, after it | `system-prompt.ts:41,49-51` |
+| `--skill` | **Overrides** discovery, as its help says. Accepts a skills root, a single skill directory, or a `SKILL.md` | — |
+| `--thinking` | Reaches `RunConfig::reasoning`, and beats the settings file | `main.ts:487` |
+| `--verbose` | Starts the log before the first event | — |
+
+**Eleven are now refused individually.** The old blanket message said
+*"TUI session persistence is not implemented yet"* about `--offline`,
+`--theme-file` and `--no-context-files` among others — none of which
+has anything to do with sessions. A wrong reason is only marginally
+better than silence, and worse once the user has learned to distrust it.
+Each refusal now states what the flag would have done and what to use
+instead.
+
+`--skill`'s "overrides" is the operative word: appending to the
+discovered set would make the flag unable to *narrow* anything, which
+is the only reason to reach for it. A path that is not there is an
+error rather than an empty skill set that looks like "I have no
+skills installed".
+
+### Fix — there was no logging
+
+`/debug` flipped `ui_state.debug_logging` and printed a confirmation;
+nothing read the field. `tracing-subscriber` was a declared, unused
+dependency. A user who hit a problem had one documented diagnostic
+action, and it produced no output.
+
+`/debug` and `--verbose` now move one process-wide switch
+(`nini_core::logging`). The subscriber is installed once, at DEBUG, and
+the switch gates whether the call sites emit fine-grained events — a
+`reload`-based filter would have to be threaded through every
+construction site to stay reachable from a slash command, to change a
+single predicate.
+
+Output goes to `~/.nini/agent/log`, the location `/debug`'s help text
+has always named. Initialised once in `main` before any entry point:
+it lived in `run_tui`, so `nini -p` and `nini demo` — the entry points
+CI uses — installed no subscriber at all. Same shape as the tool-policy
+gap above: wired for one entry point, invisible for the others.
 
 ---
 

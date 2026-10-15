@@ -52,6 +52,22 @@ pub(crate) struct AppConfig {
     /// actually *injecting* skills, because a new always-on feature with
     /// no working opt-out is not shippable.
     pub no_skills: bool,
+    /// v0.10 (P0-3 B-class): `--system-prompt`. Replaces the base prompt;
+    /// skills and tool descriptions still land on top, as in Pi's
+    /// `buildSystemPrompt` (`system-prompt.ts:46-68`).
+    pub system_prompt: Option<String>,
+    /// v0.10: `--append-system-prompt`. Added to whatever base is in force.
+    pub append_system_prompt: Option<String>,
+    /// v0.10: `--skill <paths>`. *Overrides* discovery, per its help text.
+    pub skill_paths: Vec<std::path::PathBuf>,
+    /// v0.10: `--thinking <level>`. Beats the settings file, as in Pi
+    /// (`main.ts:487`: "Explicit --thinking still takes precedence").
+    pub thinking: Option<String>,
+    /// v0.10: `--verbose`. Consumed once by `init_logging` at the top of
+    /// `main`, before any entry point runs; kept here so the flag that
+    /// produced it and the config that carried it stay in one struct.
+    #[allow(dead_code)]
+    pub verbose: bool,
 }
 
 impl AppConfig {
@@ -74,6 +90,11 @@ impl AppConfig {
             use_theme: None,
             api_key: None,
             no_skills: false,
+            system_prompt: None,
+            append_system_prompt: None,
+            skill_paths: Vec::new(),
+            thinking: None,
+            verbose: false,
         }
     }
 }
@@ -139,6 +160,20 @@ pub(crate) fn build_tui_run_config(
     // v0.9.2 (P0-1): this used to be `let skills_prompt = "";`.
     let (skills_prompt, skills_in_prompt) = if cfg.no_skills {
         (String::new(), 0)
+    } else if !cfg.skill_paths.is_empty() {
+        // `--help`: "Overrides automatic skill discovery." A user naming one
+        // directory gets that directory — appending it to the discovered set
+        // would make the flag unable to narrow anything, which is the only
+        // reason to reach for it.
+        let skills = nini_core::skills::load_skills_from_paths(&cfg.skill_paths);
+        for e in &skills.errors {
+            eprintln!("[nini] {e}");
+        }
+        let n = skills.skills.len();
+        (
+            nini_core::skills::format_skills_for_prompt(&skills.skills),
+            n,
+        )
     } else {
         let skills = load_skills(cwd);
         let n = skills.skills.len();
@@ -149,11 +184,13 @@ pub(crate) fn build_tui_run_config(
     };
     let config = RunConfig {
         model: cfg_model.clone(),
-        system: Some(prompt_setup::settings_to_system_prompt(
+        system: Some(prompt_setup::settings_to_system_prompt_with(
             settings,
             cwd,
             tools,
             &skills_prompt,
+            cfg.system_prompt.as_deref(),
+            cfg.append_system_prompt.as_deref(),
         )),
         // v0.10 (R1f): hand the persisted thinking level to the provider.
         // `Request` had no field for it, so nothing was transmitted.
@@ -165,11 +202,19 @@ pub(crate) fn build_tui_run_config(
         // are accepted, since Pi's own file uses `defaultThinkingLevel`.
         // `None` (unset / unparseable) leaves the field out of the body
         // entirely, which is what Pi does when `reasoning` is absent.
-        reasoning: settings
-            .default_thinking_level
+        // The command line beats the file: it was typed for this
+        // invocation. Pi orders it the same way (`main.ts:487`).
+        reasoning: cfg
+            .thinking
             .as_deref()
-            .or(settings.thinking_level.as_deref())
-            .and_then(|l| l.parse::<nini_core::provider::ThinkingLevel>().ok()),
+            .and_then(|l| l.parse::<nini_core::provider::ThinkingLevel>().ok())
+            .or_else(|| {
+                settings
+                    .default_thinking_level
+                    .as_deref()
+                    .or(settings.thinking_level.as_deref())
+                    .and_then(|l| l.parse::<nini_core::provider::ThinkingLevel>().ok())
+            }),
         ..RunConfig::new(cfg_model)
     };
     (config, skills_in_prompt)
@@ -179,6 +224,85 @@ pub(crate) fn build_tui_run_config(
 ///
 /// Returns `Ok(())` on clean exit (Ctrl+C, Ctrl+D, /quit) or an
 /// error if initialization fails (e.g., unknown provider).
+/// Install logging.
+///
+/// v0.10: called once from `main` before any entry point runs. It used to
+/// live inside `run_tui`, which meant `nini -p …` and `nini demo` — the
+/// entry points CI uses — initialised no subscriber at all, so `--verbose`
+/// produced nothing there. The same shape as the tool-policy gap: wired for
+/// one entry point, invisible for the others.
+pub(crate) fn init_logging(verbose: bool) {
+    match nini_core::logging::log_path() {
+        None => {
+            if verbose {
+                eprintln!(
+                    "[nini] --verbose has nowhere to log: no agent directory \
+                     (HOME and NINI_AGENT_DIR are both unset)"
+                );
+            }
+        }
+        Some(path) => {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let file = match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    if verbose {
+                        eprintln!("[nini] cannot open {}: {e}", path.display());
+                    }
+                    return;
+                }
+            };
+            // The subscriber is installed once, statically, at DEBUG.
+            // `/debug` does not rebuild it — it gates whether the *call
+            // sites* emit the fine-grained events at all
+            // (`if logging::is_debug() { tracing::debug!(…) }`).
+            //
+            // The alternative, a dynamic `EnvFilter`/`filter_fn` driven by
+            // the same flag, would put the switch in the filter rather than
+            // at the emit site: the flag would then decide what is
+            // recordable, which is a different claim from "the user asked
+            // for more detail", and it would need the filter-reload
+            // machinery threaded through every construction site.
+            //
+            // `MakeWriter` wants `&mut File`, hence the lock inside a
+            // wrapper. A poisoned lock discards the line: logging must never
+            // be the thing that fails.
+            struct Sink(std::sync::Mutex<std::fs::File>);
+            // `MakeWriter` is implemented for `Arc<W>` when `&W: Write`, so
+            // the impl belongs on the reference, not the value.
+            impl std::io::Write for &Sink {
+                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                    match self.0.lock() {
+                        Ok(mut f) => f.write(buf),
+                        Err(_) => Ok(buf.len()),
+                    }
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    match self.0.lock() {
+                        Ok(mut f) => f.flush(),
+                        Err(_) => Ok(()),
+                    }
+                }
+            }
+            let _ = tracing_subscriber::fmt()
+                .with_writer(std::sync::Arc::new(Sink(std::sync::Mutex::new(file))))
+                .with_ansi(false)
+                .with_max_level(tracing::Level::DEBUG)
+                .try_init();
+            if verbose {
+                nini_core::logging::set_debug(true);
+                tracing::debug!("--verbose: logging to {}", path.display());
+            }
+        }
+    }
+}
+
 pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
     use nini_tui::runtime::AgentDriver;
 
@@ -494,6 +618,40 @@ async fn run_tui_bootstrap(
 }
 
 #[cfg(test)]
+/// Shared by the skills tests and the flag-wiring tests.
+///
+/// `load_skills` reads `$HOME/.nini/agent/skills`, so any test that touches
+/// it must serialise against every other test that does — two suites with
+/// two locks would be two suites that could interleave.
+pub(crate) mod p0_1_skills_tests_support {
+    pub(crate) static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Point HOME (and the agent directory) at a scratch directory.
+    pub(crate) fn isolate_home(root: &std::path::Path) {
+        unsafe {
+            std::env::set_var("HOME", root);
+            std::env::set_var("NINI_AGENT_DIR", root.join(".nini").join("agent"));
+        }
+    }
+
+    /// Create `<root>/.nini/skills/<name>/SKILL.md` and return `<root>`.
+    pub(crate) fn make_project_with_skill(
+        root: &std::path::Path,
+        name: &str,
+        desc: &str,
+    ) -> std::path::PathBuf {
+        let dir = root.join(".nini").join("skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {desc}\n---\n\nbody\n"),
+        )
+        .unwrap();
+        root.to_path_buf()
+    }
+}
+
+#[cfg(test)]
 mod p0_1_skills_tests {
     //! v0.9.2 (P0-1) — "the TUI told the user it loaded their skills, then
     //! built a system prompt containing none of them."
@@ -503,13 +661,9 @@ mod p0_1_skills_tests {
     //! user-visible status bar still said "loaded N skills" while the
     //! model had never heard of them.
 
+    use super::p0_1_skills_tests_support::*;
     use super::*;
     use std::path::PathBuf;
-
-    /// `load_skills` reads `$HOME/.pi/agent/skills`, so tests that touch
-    /// it must not run concurrently. (Same reason
-    /// `tests/slash_command_e2e.rs` has a HOME_LOCK.)
-    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn base_config() -> AppConfig {
         AppConfig {
@@ -524,6 +678,11 @@ mod p0_1_skills_tests {
             use_theme: None,
             api_key: None,
             no_skills: false,
+            system_prompt: None,
+            append_system_prompt: None,
+            skill_paths: Vec::new(),
+            thinking: None,
+            verbose: false,
         }
     }
 
@@ -797,6 +956,11 @@ mod trust_wiring_tests {
             use_theme: None,
             api_key: None,
             no_skills: false,
+            system_prompt: None,
+            append_system_prompt: None,
+            skill_paths: Vec::new(),
+            thinking: None,
+            verbose: false,
         }
     }
 
@@ -919,6 +1083,146 @@ mod print_mode_tool_tests {
                 .tools()
                 .count(),
             6
+        );
+    }
+}
+
+#[cfg(test)]
+mod cli_flag_wiring_tests {
+    //! v0.10: five flags were accepted, documented in `--help`, and dropped at
+    //! the CLI boundary.
+    //!
+    //! `prompt_setup.rs` has unit tests for the assembler's behaviour — that
+    //! a custom prompt replaces the base, that an append lands after it. All
+    //! of them passed while the flags were discarded, because the assembler
+    //! was never handed anything to do. These tests are about the wiring: the
+    //! values reach the assembler at all.
+
+    use super::super::app::p0_1_skills_tests_support::*;
+    use super::*;
+
+    fn cfg_with_system(custom: Option<&str>, append: Option<&str>) -> AppConfig {
+        let mut c = AppConfig::for_tool_selection();
+        c.system_prompt = custom.map(str::to_string);
+        c.append_system_prompt = append.map(str::to_string);
+        c
+    }
+
+    fn system_of(cfg: &AppConfig) -> String {
+        let settings = nini_core::settings::Settings::default();
+        let (run_cfg, _) = build_tui_run_config(
+            &settings,
+            std::path::Path::new("/tmp"),
+            &nini_core::tool::ToolRegistry::new(),
+            cfg,
+        );
+        run_cfg.system.unwrap_or_default()
+    }
+
+    #[test]
+    fn system_prompt_reaches_the_run_config() {
+        let system = system_of(&cfg_with_system(Some("CUSTOM-BASE"), None));
+        assert!(
+            system.contains("CUSTOM-BASE"),
+            "--system-prompt never reached the prompt: {system}"
+        );
+        assert!(
+            !system.contains("You are nini, a Pi-compatible Rust coding agent."),
+            "the default base is still being sent alongside the custom one"
+        );
+    }
+
+    #[test]
+    fn append_system_prompt_reaches_the_run_config() {
+        let system = system_of(&cfg_with_system(None, Some("APPEND-ONLY")));
+        assert!(
+            system.contains("APPEND-ONLY"),
+            "--append-system-prompt never reached the prompt: {system}"
+        );
+        assert!(
+            system.contains("You are nini, a Pi-compatible Rust coding agent."),
+            "an append must not replace the base"
+        );
+    }
+
+    /// `--thinking` beats the settings file. Pi orders it the same way
+    /// (`main.ts:487`: "Explicit --thinking still takes precedence"), and a
+    /// user who typed it wants it for this run.
+    #[test]
+    fn thinking_on_the_command_line_beats_the_settings_file() {
+        let mut settings = nini_core::settings::Settings::default();
+        settings.default_thinking_level = Some("low".into());
+
+        let mut cfg = AppConfig::for_tool_selection();
+        cfg.thinking = Some("high".into());
+        let (run_cfg, _) = build_tui_run_config(
+            &settings,
+            std::path::Path::new("/tmp"),
+            &nini_core::tool::ToolRegistry::new(),
+            &cfg,
+        );
+        assert_eq!(
+            run_cfg.reasoning,
+            Some(nini_core::provider::ThinkingLevel::High),
+            "the settings file won over the flag"
+        );
+
+        // With no flag the file still applies.
+        let (from_file, _) = build_tui_run_config(
+            &settings,
+            std::path::Path::new("/tmp"),
+            &nini_core::tool::ToolRegistry::new(),
+            &AppConfig::for_tool_selection(),
+        );
+        assert_eq!(
+            from_file.reasoning,
+            Some(nini_core::provider::ThinkingLevel::Low)
+        );
+    }
+
+    /// `--skill` *overrides* discovery, as its help text says. This is the
+    /// only reason to reach for the flag: narrowing.
+    #[test]
+    fn skill_paths_override_automatic_discovery() {
+        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        isolate_home(tmp.path());
+        let cwd = make_project_with_skill(tmp.path(), "discovered", "found automatically");
+
+        // Discovery alone finds the project skill.
+        let (auto_cfg, auto_n) = build_tui_run_config(
+            &nini_core::settings::Settings::default(),
+            &cwd,
+            &nini_core::tool::ToolRegistry::new(),
+            &AppConfig::for_tool_selection(),
+        );
+        assert_eq!(auto_n, 1);
+        assert!(auto_cfg.system.unwrap().contains("discovered"));
+
+        // Naming a different directory replaces it.
+        let other = tmp.path().join("other-skills");
+        let one = other.join("named");
+        std::fs::create_dir_all(&one).unwrap();
+        std::fs::write(
+            one.join("SKILL.md"),
+            "---\nname: named\ndescription: chosen by flag\n---\n\nbody\n",
+        )
+        .unwrap();
+
+        let mut cfg = AppConfig::for_tool_selection();
+        cfg.skill_paths = vec![other];
+        let (flag_cfg, flag_n) = build_tui_run_config(
+            &nini_core::settings::Settings::default(),
+            &cwd,
+            &nini_core::tool::ToolRegistry::new(),
+            &cfg,
+        );
+        assert_eq!(flag_n, 1, "--skill did not override discovery");
+        let system = flag_cfg.system.unwrap();
+        assert!(system.contains("named"), "{system}");
+        assert!(
+            !system.contains("discovered"),
+            "the discovered skill survived an explicit --skill: {system}"
         );
     }
 }

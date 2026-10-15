@@ -1343,3 +1343,45 @@ fn prompt_command_no_args_shows_usage() {
         _ => panic!("expected Output"),
     }
 }
+
+/// v0.10: `/debug` used to flip `ui_state.debug_logging` and print a
+/// confirmation. Nothing read the field, so the one diagnostic action the
+/// product documented produced no diagnostic output.
+///
+/// This asserts the *switch*, not the message: a test that only checked the
+/// printed text passed against the version that did nothing.
+#[test]
+fn debug_command_moves_the_real_logging_switch() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let before = nini_core::logging::is_debug();
+
+    let r = dispatch(&mut state, &mut settings, CommandId::Debug, "");
+    assert!(matches!(r.outcome, CommandOutcome::Output(_)));
+    assert_eq!(
+        nini_core::logging::is_debug(),
+        !before,
+        "/debug reported a change without moving the switch the subscriber \
+         filters on"
+    );
+    assert_ne!(
+        state.ui_state.debug_logging,
+        before == true,
+        "the UI flag and the logging switch must not drift apart"
+    );
+
+    // Toggling back restores the previous state rather than latching.
+    let r2 = dispatch(&mut state, &mut settings, CommandId::Debug, "");
+    assert!(matches!(r2.outcome, CommandOutcome::Output(_)));
+    assert_eq!(nini_core::logging::is_debug(), before);
+
+    let text = match r2.outcome {
+        CommandOutcome::Output(lines) => lines.join("\n"),
+        _ => unreachable!(),
+    };
+    assert!(
+        text.contains("log:") || text.contains("nowhere to log"),
+        "/debug does not say where the output goes, so it is not actionable: \
+         {text}"
+    );
+}
