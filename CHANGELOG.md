@@ -1,4 +1,4 @@
-## v0.10 — Three chains that were built and never connected (UNRELEASED)
+## v0.10 — Three chains that were built and never connected (2026-10-15)
 
 A long task used to break in one specific shape: it would run, cross
 the context window, and die. Not with an error — with the history
@@ -271,7 +271,11 @@ gap above: wired for one entry point, invisible for the others.
 
 ---
 
-## v0.9.2 — Things that told you they worked when they didn't (UNRELEASED)
+## v0.9.2 — Things that told you they worked when they didn't
+
+> **Never released.** These fixes are in the v0.10 release above; tagging a
+> v0.9.2 for them would have produced two releases of the same code, and the
+> numbers below (950 tests) describe a state that never shipped.
 
 The v0.8.9 and v0.9.1 releases fixed crashes. This one fixes a
 different class of problem: **nini reporting success it had not

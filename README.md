@@ -2,9 +2,9 @@
 
 > A Pi-compatible coding agent, rewritten in Rust.
 
-[![Status](https://img.shields.io/badge/status-v0.9.1-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.10.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-937%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1357%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -18,7 +18,7 @@ settings, and models.json keep working.
 - **Single 5.4 MB binary** instead of a Node.js toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **937 unit + integration tests**, including property-based SSE fuzz and
+- **1357 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -123,30 +123,32 @@ hints. Type `/` to summon the slash-command autocomplete. Press
 
 All 28 Pi-compatible commands are recognized. The ones marked **stub**
 output a "not yet implemented" message instead of taking real action.
+A flag or command that nini does not implement is **refused with a reason
+naming it** — never accepted and dropped.
 
 | Command | Argument | Status |
 |---|---|---|
-| `/settings` | — | stub |
+| `/settings` | — | real (selector) |
 | `/model` | `<provider/model>` | partial (sets state, not persisted) |
-| `/tree` | — | stub |
+| `/tree` | — | real (ASCII tree of the session) |
 | `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | partial (validates, not persisted) |
-| `/scoped-models` | — | stub |
+| `/scoped-models` | — | stub (no scoping model) |
 | `/export` | — | full (writes HTML to `~/.pi/agent/exports/`) |
-| `/import` | — | stub |
+| `/import` | `<path>` | real |
 | `/share` | — | stub |
 | `/copy` | — | partial (prints to stdout, no clipboard) |
 | `/name` | `<name>` | partial (in-memory only, not persisted) |
 | `/session` | — | partial (in-memory state, no session file) |
-| `/changelog` | — | stub |
+| `/changelog` | — | real |
 | `/hotkeys` | — | full (keybinding list) |
-| `/fork` | — | stub |
-| `/clone` | — | stub |
+| `/fork` | `[n]` / `at n` | real (writes a branch session file) |
+| `/clone` | — | real (copies the session file) |
 | `/trust` | — | partial (in-memory only) |
-| `/login` | `<provider>` | stub |
-| `/logout` | — | stub |
+| `/login` | `<provider>` | lists providers + where to put the key |
+| `/logout` | — | tells you what to unset (cannot mutate the parent shell) |
 | `/new` | — | full (clears transcript) |
-| `/compact` | — | stub |
-| `/resume` | — | stub |
+| `/compact` | — | real (session-layer compaction) |
+| `/resume` | — | real (session picker) |
 | `/reload` | — | full (re-reads skills) |
 | `/quit` | — | full |
 
@@ -167,18 +169,26 @@ nini reads and writes the same file formats as Pi v0.85.1:
 You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.
 
-## Known limitations (v0.5.0 alpha)
+## Known limitations (as of v0.10)
 
-These are intentional gaps and will be filled in subsequent releases.
-File an issue if you need any of them sooner.
+Verified against this binary, not carried over from an older README.
 
-- 12 slash commands are stubbed; 11 are partial (see table above)
-- Compaction uses a deterministic local summary, not LLM-based
-- Session persistence (`--continue` / `--session <id>`) is not wired into the TUI
+- `/share` is the one command that returns "not yet implemented". The rest
+  of the 28 dispatch; `/tree`, `/fork` and `/settings` are real
+- Compaction uses a deterministic local summary, not an LLM-based one
+- `--continue-session` / `--session-id` / `--fork` on the command line are
+  refused with a pointer to the TUI command; sessions themselves are
+  persisted, and `/resume` and `/fork` work there
+- No LLM-backed *branch* summary: `/fork` creates a real branch, but Pi's
+  `navigateTree` (moving to another node inside one file, optionally
+  summarising what was abandoned) is not implemented
 - 5 of ~51 Pi providers implemented natively; configure the rest via `models.json`
 - No OAuth / device-flow auth — env API keys only
-- No extension runtime (deferred to v2)
-- Model/thinking/name changes are in-memory only; not persisted to `settings.json`
+- No extension runtime. Removed from scope deliberately: it was specified
+  as a Rust cdylib while Pi loads TypeScript, so the two have no common
+  execution model. See `docs/plans/v0.10-pi-parity-refactor.md` §26
+- Prompt templates and AGENTS.md / CLAUDE.md context files are refused with
+  a reason rather than silently ignored
 
 ## Architecture
 
@@ -192,7 +202,10 @@ crates/
 ├── nini-session/ # JSONL v4 codec + legacy-v3 bridge
 ├── nini-tui/     # keys + state + render + runtime + slash commands + autocomplete
 ├── nini-cli/     # `nini` binary entry point
-└── nini-ext/     # extension runtime stub (deferred to v2)
+├── nini-conformance/  # Pi parity oracles — no product code, only
+│                 #   statements about Pi that can go red
+└── nini-ext/     # empty. Kept in the workspace with a header saying why;
+                  #   its route was disproved (see the plan, §26)
 ```
 
 The dependency direction is `nini-cli` → `nini-tui` → `nini-core` →
@@ -210,9 +223,19 @@ cargo clippy --workspace --all-targets
 ```
 
 The test suite includes property-based fuzz (`proptest`) for the SSE
-parser, end-to-end CLI tests that spawn the compiled binary, and 6
-TUI integration suites using `ratatui::backend::TestBackend` for
-frame-level snapshot assertions.
+parser, end-to-end CLI tests that spawn the compiled binary, TUI
+integration suites using `ratatui::backend::TestBackend` for
+frame-level snapshot assertions, and a `nini-conformance` crate that
+holds **only** Pi-parity oracles — executable statements about Pi 0.84.2
+that a change to nini can falsify.
+
+The rule for conformance tests: fixtures come from real Pi output, never
+from nini's own. A test that round-trips nini against itself cannot catch
+a wire-format bug, because the bug is symmetric — that is how a
+`stop_reason` / `stopReason` casing difference survived 950 green tests.
+
+Every fix in this release was verified by re-injecting the defect and
+confirming the specific test goes red.
 
 ### Adding a new provider
 
