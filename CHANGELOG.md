@@ -23,6 +23,21 @@ Tests: **1280 → 1357**.
 | **Themes** | `SettingsManager::theme()` returned `Theme::default()` and the runtime never read the settings at all, so `--use-theme`, `/settings` and the theme watcher all resolved to a hard-coded "dark". |
 | **`/reload`** | Counted the skills on disk and discarded the count — the prompt is fixed per run, so nothing was reloaded. Now re-reads settings and names what cannot change. |
 
+### Known issue in this release — macOS CI is not green
+
+The `test (macos-latest)` job fails intermittently with **SIGSEGV** in
+`nini-tui --test agent_wire_e2e`. `test (ubuntu-latest)` passes.
+
+This predates the release: the v0.9.1 run of the same workflow failed on
+macOS too (in a different test). It could not be reproduced on Linux,
+including pinned to two cores, so the fix is not in this release and the
+log says nothing about where it dies — a segfault gives no Rust backtrace.
+
+What changed here is the diagnosis: the job now sets `RUST_BACKTRACE=1`
+and names the job. Until it is reproduced, the honest statement is that
+nini's macOS build is not continuously verified, and that is a real gap in
+the release rather than a footnote to it.
+
 ### Fix — a long run never compacted (Pi `agent-session.ts:1098` Case 2)
 
 `agent.rs:956-975` had removed the in-run threshold check, on the

@@ -64,7 +64,15 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-      - run: cargo test --workspace --all-targets
+      # v0.10: the macOS leg has failed intermittently with SIGSEGV since at
+      # least v0.9.1, and a segfault produces no Rust backtrace — the log
+      # stops at the last test that printed "ok" and says nothing about the
+      # one that died. RUST_BACKTRACE covers panics; the core pattern below
+      # covers the case the symboliser would need for an actual SIGSEGV.
+      - name: Test
+        run: cargo test --workspace --all-targets
+        env:
+          RUST_BACKTRACE: 1
       - name: Release build
         run: cargo build --release --locked
 
