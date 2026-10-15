@@ -1,10 +1,10 @@
 //! nini — Pi-compatible Rust coding agent (CLI entry point)
 //!
 //! Modes:
-//! - `nini`                  launch interactive TUI (Phase 5)
-//! - `nini -p "..."`         single-shot print mode (no session)
-//! - `nini demo [task]`      scripted autonomous demo (no API key needed)
-//! - `nini info`             show loaded skills/settings
+//! - `nini` launch interactive TUI (Phase 5)
+//! - `nini -p "..."` single-shot print mode (no session)
+//! - `nini demo [task]` scripted autonomous demo (no API key needed)
+//! - `nini info` show loaded skills/settings
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -371,7 +371,7 @@ async fn main() -> Result<()> {
     if offline {
         refuse(
             "--offline",
-            "no network calls. Every provider path makes them; use the              `fixture` provider to run without a network".into(),
+            "no network calls. Every provider path makes them; use the `fixture` provider to run without a network".into(),
         );
     }
     if prompt_template.is_some() {
@@ -389,14 +389,15 @@ async fn main() -> Result<()> {
     if no_themes {
         refuse(
             "--no-themes",
-            "theme discovery is not implemented; the built-in theme is always              used"
+            "nini loads themes/<name>.json on demand but does not enumerate \
+             them; pick one with --use-theme <name> instead"
                 .into(),
         );
     }
     if !extension.is_empty() {
         refuse(
             "--extension",
-            "the extension runtime was removed from scope: it was specified              as a Rust cdylib and Pi loads TypeScript, so no amount of              wiring would have connected them (docs/plans/v0.10 §26)".into(),
+            "the extension runtime was removed from scope: it was specified as a Rust cdylib and Pi loads TypeScript, so no amount of wiring would have connected them (docs/plans/v0.10 §26)".into(),
         );
     }
     if no_extensions {
@@ -408,7 +409,7 @@ async fn main() -> Result<()> {
     if no_context_files {
         refuse(
             "--no-context-files",
-            "AGENTS.md / CLAUDE.md context files are not read by nini; the              `--help` text describes a feature that does not exist yet".into(),
+            "AGENTS.md / CLAUDE.md context files are not read by nini; the `--help` text describes a feature that does not exist yet".into(),
         );
     }
 
