@@ -298,6 +298,16 @@ mod theme_resolution_tests {
 
     use super::*;
 
+    /// These tests mutate `HOME` and `NINI_AGENT_DIR`, which are
+    /// process-global, and `cargo test` runs test functions in parallel
+    /// *within this same binary* — the theme-resolution tests, the render
+    /// status tests and the settings tests all live here. Without this lock
+    /// one test's `remove_var` lands in the middle of another's lookup.
+    ///
+    /// The same reason `tests/slash_command_e2e.rs` and
+    /// `tests/theme_wiring.rs` have one.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// An agent directory holding `<name>.json`, which is where Pi looks
     /// (`join(globalBaseDir, "themes")`, `package-manager.ts:2367`).
     fn with_theme_file(
@@ -335,6 +345,7 @@ mod theme_resolution_tests {
 
     #[test]
     fn the_built_in_light_theme_is_selectable_by_name() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         isolate(tmp.path());
         let mut m = SettingsManager::default();
@@ -352,6 +363,7 @@ mod theme_resolution_tests {
 
     #[test]
     fn dark_is_still_the_default() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         isolate(tmp.path());
         let mut m = SettingsManager::default();
@@ -365,6 +377,7 @@ mod theme_resolution_tests {
 
     #[test]
     fn a_theme_file_in_the_agent_directory_is_loaded_by_name() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, mut m) = with_theme_file("midnight", &[("accent", "#ff00ff")]);
         isolate(tmp.path());
         let t = m.theme();
@@ -387,6 +400,7 @@ mod theme_resolution_tests {
     /// anyone, rather than copied into every agent directory.
     #[test]
     fn a_theme_value_that_is_a_path_is_loaded_from_it() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         isolate(tmp.path());
         let file = tmp.path().join("solarized.json");
@@ -412,6 +426,7 @@ mod theme_resolution_tests {
     /// mode this whole release exists to remove.
     #[test]
     fn an_unresolvable_theme_name_falls_back_and_does_not_pretend() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         isolate(tmp.path());
         let mut m = SettingsManager::default();
@@ -428,6 +443,7 @@ mod theme_resolution_tests {
     /// the name, the two must not disagree.
     #[test]
     fn theme_name_and_the_resolved_theme_agree_for_builtins() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         isolate(tmp.path());
         let mut m = SettingsManager::default();

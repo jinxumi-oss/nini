@@ -1674,11 +1674,22 @@ mod status_tests {
 
     // ---- new Pi-style 2-line layout assertions ----
 
+    /// v0.10: this asserted `~/nini` against a hard-coded
+    /// `/home/jin/nini`. The tilde substitution reads `$HOME`, so the
+    /// assertion held only on the machine it was written on and failed on
+    /// every runner (`HOME=/home/runner`) — the CI log for this commit is
+    /// one line long and says so.
+    ///
+    /// A test that encodes a developer's home directory is not a test of the
+    /// product; it is a test of the machine. The path is now derived from
+    /// `$HOME` so the property — *the home prefix is replaced by `~`* — is
+    /// what is asserted, and it is asserted on every machine.
     #[test]
     fn footer_pwd_line_shows_cwd_and_branch() {
         use crate::state::AppState;
+        let home = std::env::var("HOME").expect("HOME is set on every CI runner");
         let mut state = AppState::new("m");
-        state.session_state.cwd = Some(std::path::PathBuf::from("/home/jin/nini"));
+        state.session_state.cwd = Some(std::path::PathBuf::from(format!("{home}/nini")));
         state.session_state.git_branch = Some("main".into());
         state.session_state.session_id = Some("a1b2c3d4e5f6".into());
         let line = pwd_line_text(&state);
