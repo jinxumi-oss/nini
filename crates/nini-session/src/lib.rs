@@ -399,6 +399,115 @@ impl Session {
         id
     }
 
+    /// v0.10 (fix): create a **branch** of this session at a path
+    /// position, Pi's default `position: "before"`.
+    ///
+    /// Pi: `createBranchedSession(leafId)`
+    /// (`pi-coding-agent/src/core/session-manager.ts:1412-1489`), whose
+    /// caller resolves the position first
+    /// (`agent-session-runtime.ts:277-287`):
+    ///
+    /// ```text
+    ///  "before" → targetLeafId = selectedEntry.parentId
+    ///             selectedText = extractUserMessageText(…)   // back into the editor
+    ///  "at"     → targetLeafId = selectedEntry.id
+    /// ```
+    ///
+    /// So "before" drops the selected entry — the user gets that message
+    /// back in the editor to re-send, which is why the text is returned
+    /// alongside. "at" keeps it. Both exist in Pi and they are different
+    /// actions, so both exist here rather than being guessed at.
+    ///
+    /// The label handling is not cosmetic: a `LabelEntry` is a real tree
+    /// node, so dropping one without re-chaining would orphan every
+    /// descendant that hung off it, and `get_path()` would return a
+    /// one-entry branch that compaction and `/tree` both walk.
+    ///
+    /// `position` is 1-based over the current path, matching what `/fork`
+    /// lists.
+    pub fn fork_at(&self, position: usize) -> Result<Self, SessionError> {
+        self.fork_resolved(position, false)
+    }
+
+    /// The same branch, keeping the entry at `position` —
+    /// Pi's `position: "at"`.
+    pub fn fork_at_inclusive(&self, position: usize) -> Result<Self, SessionError> {
+        self.fork_resolved(position, true)
+    }
+
+    fn fork_resolved(&self, position: usize, inclusive: bool) -> Result<Self, SessionError> {
+        let path = self.get_path();
+        if position == 0 || position > path.len() {
+            return Err(SessionError::Other(format!(
+                "fork point {position} is out of range (1..={})",
+                path.len()
+            )));
+        }
+        let keep = if inclusive { position } else { position - 1 };
+
+        let mut entries: Vec<SessionEntry> = Vec::with_capacity(keep);
+        let mut parent_id: Option<String> = None;
+        for entry in &path[..keep] {
+            if matches!(entry, SessionEntry::Label(_)) {
+                continue;
+            }
+            let mut cloned = (*entry).clone();
+            cloned.set_parent_id(parent_id.clone());
+            parent_id = Some(cloned.id().to_string());
+            entries.push(cloned);
+        }
+
+        let mut header = SessionHeader::new_fork(self.header.cwd.clone(), self.header.id.clone());
+        header.id = format!("u_{}", Uuid::new_v4());
+        Ok(Self {
+            header,
+            entries,
+            skipped_lines: 0,
+        })
+    }
+
+    /// The user messages a `/fork` can branch from, as
+    /// `(1-based position in the path, entry id, first line of text)`.
+    ///
+    /// Pi builds the same list for its fork selector
+    /// (`agent-session.ts:3098`: *"Get all user messages from session for
+    /// fork selector"*). Deriving it from the session rather than from the
+    /// transcript matters: the transcript is a *rendering* of the session
+    /// and can hold lines the session does not (notices, dividers) or miss
+    /// ones it does.
+    pub fn fork_points(&self) -> Vec<ForkPoint> {
+        let ordinal = std::sync::atomic::AtomicUsize::new(1);
+        self.get_path()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                let SessionEntry::Message(m) = e else {
+                    return None;
+                };
+                let nini_core::entries::AgentMessage::User(u) = &m.message else {
+                    return None;
+                };
+                let text = match &u.content {
+                    nini_core::entries::StringOrContentBlocks::String(s) => s.clone(),
+                    nini_core::entries::StringOrContentBlocks::Blocks(b) => b
+                        .iter()
+                        .filter_map(|c| match c {
+                            nini_core::entries::ContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(""),
+                };
+                Some(ForkPoint {
+                    ordinal: ordinal.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                    position: i + 1,
+                    entry_id: e.id().to_string(),
+                    preview: text.lines().next().unwrap_or("").chars().take(60).collect(),
+                })
+            })
+            .collect()
+    }
+
     /// P0.2: link a flat legacy file into a chain, in file order.
     ///
     /// nini wrote every entry with `parentId: null` for most of its life, so
@@ -1090,4 +1199,37 @@ mod tests {
             panic!("expected ToolResult");
         }
     }
+}
+
+/// One place `/fork` can branch from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkPoint {
+    /// 1-based index **in the list the user sees** — `/fork 2` means the
+    /// second user message, not the second entry.
+    ///
+    /// Two different numbers because only some entries are user messages:
+    /// a four-turn conversation has eight entries and three fork points at
+    /// path positions 1, 3 and 5. Exposing the path position as the
+    /// user-facing number is how `/fork 2` ends up "invalid" on a session
+    /// that plainly has a second question to branch from.
+    pub ordinal: usize,
+    /// 1-based position of the entry in the session's current path. This is
+    /// what [`Session::fork_at`] and [`Session::fork_at_inclusive`] take.
+    pub position: usize,
+    /// Id of the entry at that position.
+    pub entry_id: String,
+    /// First line of the user's text, truncated for display.
+    pub preview: String,
+}
+
+/// Where a forked session is written: `<timestamp>_<session id>.jsonl`.
+///
+/// Pi derives the same shape at `session-manager.ts:1433`
+/// (`fileTimestamp.replace(/[:.]/g, "-")` + `_` + session id), and
+/// lexical ordering of the names is what makes `/resume` list newest-last.
+/// The id is embedded rather than a counter so two sessions created in the
+/// same millisecond still sort deterministically and stay nameable.
+pub fn fork_path_for(dir: &Path, header: &SessionHeader) -> PathBuf {
+    let stamp = header.timestamp.replace(':', "-").replace('.', "-");
+    dir.join(format!("{stamp}_{}.jsonl", header.id))
 }

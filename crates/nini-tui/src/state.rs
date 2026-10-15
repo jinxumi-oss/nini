@@ -1569,9 +1569,18 @@ impl AppState {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let id = uuid::Uuid::now_v7().to_string();
         let session = nini_session::Session::new(cwd);
-        self.session_state.session_id = Some(id);
+        // v0.10 (fix): the id in `session_state` was a second, unrelated
+        // `Uuid::now_v7()`, while the session itself carries
+        // `u_{v4}` in its header. So the number the status bar showed and
+        // the number written into the file's header were different values
+        // for the same conversation — and `/fork`, which names its parent by
+        // header id (`createBranchedSession`, `session-manager.ts:1441`),
+        // produced a parent reference nothing could resolve.
+        //
+        // `session_load` has always read the id off the header; only this
+        // path invented one. One source of truth.
+        self.session_state.session_id = Some(session.header.id.clone());
         self.session_state.session = Some(Arc::new(Mutex::new(session)));
     }
 

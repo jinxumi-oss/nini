@@ -7,7 +7,7 @@ cause was not one bug but a **category**: nini accumulates working
 code that is never connected to anything, and the suite is green
 because every test exercises the piece rather than the assembly.
 
-Tests: **1280 → 1311**.
+Tests: **1280 → 1324**.
 
 | Area | Change |
 |---|---|
@@ -17,6 +17,7 @@ Tests: **1280 → 1311**.
 | **Context bar** | `set_status_bar_usage` had no caller, so the status bar could only draw `ctx 0%`. `Usage` also dropped the cache counters Pi includes. Both wired. |
 | **Project trust** | `/trust` persisted a decision and nothing ever read it during a run. A directory marked untrusted ran `bash`, `write` and `edit` anyway. Enforced through `BeforeExecute`. |
 | **`-p` / `demo`** | Both called `build_tools()` directly, ignoring `--tools` / `--exclude-tools` / `--no-tools` **and** the trust gate. A restriction that holds in the TUI and evaporates in `-p` is not a restriction. |
+| **`/fork`** | Copied transcript lines into a local variable and printed a count. No session, no file, no branch — so `/tree` had nothing to draw. Now `createBranchedSession`. |
 
 ### Fix — a long run never compacted (Pi `agent-session.ts:1098` Case 2)
 
@@ -125,6 +126,48 @@ with `tool_registry::build_tools()` directly, so `--tools`,
 `--exclude-tools`, `--no-tools` and `--no-builtin-tools` were accepted,
 documented in `--help`, and applied to nothing — and the trust gate was
 absent with it. All three entry points now share `build_run_tools`.
+
+### Fix — `/fork` was a message, not a branch
+
+`cmd_fork` copied `transcript_state.lines[..cut_at]` into a local
+variable, appended the text `[fork] branch cut at user msg #N` to the
+current transcript, and reported how many entries it had kept. Nothing
+else happened. The code said so in a comment: *"We don't actually
+create a new JSONL file here."*
+
+So the branch could not be resumed (no file), `/tree` had no second
+leaf to draw (v0.9.2's gap list: *"/fork creates no branches"*), and
+the 585 lines of `branch_summary.rs` had no caller.
+
+Pi writes a new session file whose entries are the retained path,
+re-chained, under a header naming its parent
+(`session-manager.ts:1412-1489`), then replaces the live runtime with
+it (`agent-session-runtime.ts:318-325`). That is what happens now.
+
+Two details that are not cosmetic:
+
+- **`LabelEntry` re-chaining.** A label is a real tree node, so
+  dropping one without re-linking orphans everything beneath it and
+  `get_path()` returns a one-entry branch — which compaction, `/tree`
+  and `/fork` all walk.
+- **`session_id` was a second, unrelated id.** `session_begin()`
+  minted a `Uuid::now_v7()` while the session carried `u_{v4}` in its
+  header, so the number in the status bar and the number in the file
+  were different values for the same conversation, and a fork's
+  `parentSession` reference named something nothing could resolve.
+  `session_load` already read the id off the header; only this path
+  invented one.
+
+Both of Pi's positions are supported, because they are different
+actions: `/fork 2` branches *before* the second question and hands its
+text back (Pi's default, which returns `selectedText` for the editor),
+`/fork at 2` branches *at* it and keeps it.
+
+The four `/fork` tests asserted the old behaviour — one of them
+literally `assert_eq!(lines.len(), before + 2)` for "the echo +
+divider", pinning the marker line that was *not* a fork. They now
+assert what the command is for: a new file, the retained prefix, a
+parent link, and a live state that became the branch.
 
 ---
 

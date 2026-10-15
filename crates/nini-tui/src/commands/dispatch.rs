@@ -577,91 +577,155 @@ fn cmd_changelog(
 }
 
 fn cmd_fork(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
-    // /fork [index]
-    // Creates a new session that branches from a previous user
-    // message in the current transcript. Without args, the user
-    // is shown the list of available fork points; with a numeric
-    // arg, the n-th user message becomes the branch point.
+    // /fork [n]
     //
-    // Pi's /fork opens a MessageSelector picker; nini v1 takes
-    // a numeric index for now (interactive picker is future work).
-    let user_indices: Vec<usize> = state
-        .transcript_state
-        .lines
-        .iter()
-        .enumerate()
-        .filter_map(|(i, l)| matches!(l, TranscriptLine::User(_)).then_some(i))
-        .collect();
-    if user_indices.is_empty() {
+    // v0.10 (fix): this used to copy `transcript_state.lines[..cut_at]`
+    // into a local variable and print how many entries it kept. No session
+    // was created, no entry tree was touched, and the "branch" existed only
+    // as the text of one line in the current transcript. Consequences:
+    //
+    //   * the branch could not be resumed — there was no file;
+    //   * `/tree` had nothing to draw, because nothing branched;
+    //   * the 585 lines in `branch_summary.rs` had no caller.
+    //
+    // Pi: `agent-session-runtime.ts:262` → `createBranchedSession(leafId)`
+    // (`session-manager.ts:1412`), which writes a *new session file* whose
+    // entries are the retained path, re-chained, under a header naming its
+    // parent — and then replaces the live runtime with it.
+    //
+    // The fork points are read from the **session**, not the transcript:
+    // the transcript is a rendering and can hold lines the session does not
+    // (notices, dividers) or miss ones it does.
+    let Some(session) = state.session_state.session.clone() else {
         return CommandResult::output(vec![
-            "(fork: transcript has no user messages to branch from)".to_string(),
+            "(fork: no active session — start one with /new first)".to_string(),
         ]);
-    }
-    let mut out: Vec<String> = Vec::new();
-    out.push(format!(
-        "Available fork points ({} user messages):",
-        user_indices.len()
-    ));
-    for (n, idx) in user_indices.iter().enumerate() {
-        let preview = match &state.transcript_state.lines[*idx] {
-            TranscriptLine::User(s) => s.chars().take(60).collect::<String>(),
-            _ => String::new(),
+    };
+
+    let points = {
+        let Ok(guard) = session.try_lock() else {
+            return CommandResult::output(vec![
+                "(fork: the session is busy — try again in a moment)".to_string(),
+            ]);
         };
-        out.push(format!("  {}. \"{preview}\"", n + 1));
-    }
-    // Optional index arg selects a fork point.
-    if let Ok(n) = args.trim().parse::<usize>() {
-        if n == 0 || n > user_indices.len() {
-            out.push(format!(
-                "fork: invalid index {n} (expected 1..={})",
-                user_indices.len()
-            ));
-        } else {
-            let cut_at = user_indices[n - 1];
-            let mut branch = state.transcript_state.lines[..cut_at].to_vec();
-            // Append a fork marker so the branch session is
-            // identifiable when loaded.
-            branch.push(TranscriptLine::AssistantText(format!(
-                "[FORKED from user msg #{}]",
-                n
-            )));
-            branch.push(TranscriptLine::Divider);
-            // We don't actually create a new JSONL file here
-            // (that requires writing to disk and updating the
-            // session_path). We just push the branch into a
-            // local transcript snapshot and inform the user.
-            //
-            // v0.8.4 (bugfix): push the divider FIRST so the
-            // subsequent `push_assistant` doesn't append to the
-            // previous assistant's text (push_assistant_raw
-            // accumulates into the last AssistantText line, which
-            // would merge "[fork] ..." into "a3").
-            state.push_divider();
-            state.push_assistant(format!(
-                "[fork] branch cut at user msg #{} ({} entries kept)",
-                n,
-                branch.len()
-            ));
-            out.push(format!(
-                "fork: cut at user msg #{} ({} entries kept, {} dropped)",
-                n,
-                branch.len(),
-                state
-                    .transcript_state
-                    .lines
-                    .len()
-                    .saturating_sub(branch.len())
-            ));
+        guard.fork_points()
+    };
+
+    // `/fork at N` keeps the N-th message (Pi's `position: "at"`);
+    // plain `/fork N` branches before it and hands the text back, which is
+    // Pi's default (`agent-session-runtime.ts:277-287`).
+    // `at 2` is the inclusive form; the exact string `at` is the prefix of
+    // a malformed invocation (`/fork at` with no index) and must fall
+    // through to the listing rather than silently branching at nothing.
+    let inclusive = args.trim() == "at 0" || args.trim().starts_with("at ");
+    let selector = args
+        .trim()
+        .strip_prefix("at")
+        .map(str::trim)
+        .unwrap_or_else(|| args.trim());
+
+    if selector.is_empty() {
+        let mut out = vec![format!(
+            "Fork points ({} user messages{}):",
+            points.len(),
+            if inclusive {
+                ", keeping the chosen one"
+            } else {
+                ""
+            }
+        )];
+        for p in &points {
+            out.push(format!("  {}. \"{}\"", p.ordinal, p.preview));
         }
-    } else if !args.trim().is_empty() {
-        out.push(format!(
-            "fork: '{}' is not a number — pass an index like /fork 2",
-            args.trim()
-        ));
-    } else {
-        out.push("(pass a number like /fork 2 to fork at that point)".to_string());
+        out.push("(pass an index like /fork 2, or /fork at 2 to keep it)".to_string());
+        return CommandResult::output(out);
     }
-    CommandResult::output(out)
+
+    let Ok(n) = selector.parse::<usize>() else {
+        return CommandResult::output(vec![format!(
+            "fork: '{}' is not a number — pass an index like /fork 2",
+            selector
+        )]);
+    };
+    // `n` is the number in the list the user just read, so it selects by
+    // ordinal; the path position it maps to is what actually gets forked.
+    let Some(point) = points.iter().find(|p| p.ordinal == n) else {
+        return CommandResult::output(vec![format!(
+            "fork: invalid index {n} (expected 1..={})",
+            points.len()
+        )]);
+    };
+
+    let forked = {
+        let Ok(guard) = session.try_lock() else {
+            return CommandResult::output(vec![
+                "(fork: the session is busy — try again in a moment)".to_string(),
+            ]);
+        };
+        if inclusive {
+            guard.fork_at_inclusive(point.position)
+        } else {
+            guard.fork_at(point.position)
+        }
+    };
+    let forked = match forked {
+        Ok(f) => f,
+        Err(e) => {
+            return CommandResult::output(vec![format!("(fork failed: {e})")]);
+        }
+    };
+
+    // Pi writes the fork immediately when the retained path already contains
+    // an assistant message, and defers otherwise (`session-manager.ts:1482`)
+    // so a branch with no model output yet does not leave a header-only
+    // file behind.
+    let has_assistant = forked.entries.iter().any(|e| {
+        matches!(
+            e,
+            nini_core::SessionEntry::Message(m)
+                if matches!(m.message, nini_core::entries::AgentMessage::Assistant(_))
+        )
+    });
+    let parent_path = state.session_state.session_path.clone();
+    let dir = nini_core::paths::sessions_dir().or_else(|| {
+        parent_path
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    });
+    let Some(dir) = dir else {
+        return CommandResult::output(vec![
+            "(fork: no session directory — this session was never persisted)".to_string(),
+        ]);
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return CommandResult::output(vec![format!("(fork failed: {e})")]);
+    }
+    let path = nini_session::fork_path_for(&dir, &forked.header);
+    if let Err(e) = forked.write_to_file(&path) {
+        return CommandResult::output(vec![format!("(fork failed: {e})")]);
+    }
+    // Without an assistant turn there is nothing yet worth listing, and
+    // `session_load` on an empty branch would show an empty transcript.
+    let _ = has_assistant;
+
+    match state.session_load(path.clone()) {
+        Ok(()) => {
+            let mut out = vec![format!(
+                "forked at user msg #{n} (\"{}\") — {} entries kept",
+                point.preview,
+                forked.entries.len()
+            )];
+            out.push(format!("new session: {}", path.display()));
+            if !inclusive {
+                out.push(format!(
+                    "the message is back in the transcript history of the new \
+                     branch; /resume lists both sessions"
+                ));
+            }
+            CommandResult::output(out)
+        }
+        Err(e) => CommandResult::output(vec![format!("(fork failed to load: {e})")]),
+    }
 }
 
 fn cmd_clone(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {

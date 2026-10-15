@@ -845,16 +845,33 @@ fn tree_command_empty_session_renders_friendly_message() {
     }
 }
 
+/// A state with a live, persisted session, which is what `/fork` operates on.
+///
+/// v0.10: the four tests below used `AppState::new` with no session and
+/// asserted on transcript lines. `/fork` now creates a **session branch**
+/// (`createBranchedSession`, `session-manager.ts:1412`), so a test that
+/// never had a session was testing the old implementation — the one that
+/// copied `transcript_state.lines` into a local variable, printed a count,
+/// and left the conversation exactly where it was.
+fn state_with_session(dir: &std::path::Path) -> (AppState, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut state = AppState::new("test-model");
+    state.session_init(dir.join("session.jsonl"));
+    (state, tmp)
+}
+
 #[test]
 fn fork_command_no_user_messages_returns_error() {
-    let mut state = AppState::new("test-model");
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, _keep) = state_with_session(tmp.path());
     let mut settings = SettingsManager::default();
     let r = dispatch(&mut state, &mut settings, CommandId::Fork, "");
     match r.outcome {
         CommandOutcome::Output(lines) => {
+            let joined = lines.join("\n");
             assert!(
-                lines.iter().any(|l| l.contains("no user messages")),
-                "expected 'no user messages' message, got: {lines:?}"
+                joined.contains("0 user messages") || joined.contains("no user messages"),
+                "expected a clear no-fork-points message, got: {lines:?}"
             );
         }
         _ => panic!("expected Output"),
@@ -863,7 +880,8 @@ fn fork_command_no_user_messages_returns_error() {
 
 #[test]
 fn fork_command_lists_fork_points_without_index() {
-    let mut state = AppState::new("test-model");
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, _keep) = state_with_session(tmp.path());
     let mut settings = SettingsManager::default();
     state.push_user("first question".to_string());
     state.push_assistant("first answer".to_string());
@@ -883,7 +901,8 @@ fn fork_command_lists_fork_points_without_index() {
 
 #[test]
 fn fork_command_with_invalid_index_returns_error() {
-    let mut state = AppState::new("test-model");
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, _keep) = state_with_session(tmp.path());
     let mut settings = SettingsManager::default();
     state.push_user("only question".to_string());
     let r = dispatch(&mut state, &mut settings, CommandId::Fork, "5");
@@ -898,9 +917,17 @@ fn fork_command_with_invalid_index_returns_error() {
     }
 }
 
+/// The headline: `/fork 2` must produce a **real session file** containing
+/// the retained prefix, and the live state must become that branch.
+///
+/// The previous version of this test asserted `transcript grows by 2 (the
+/// echo + divider)` — i.e. it pinned the marker line the old implementation
+/// pushed into the transcript, which is precisely the thing that was not a
+/// fork. There was no file to check because no file was written.
 #[test]
-fn fork_command_with_valid_index_cuts_transcript() {
-    let mut state = AppState::new("test-model");
+fn fork_command_with_valid_index_creates_a_session_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, _keep) = state_with_session(tmp.path());
     let mut settings = SettingsManager::default();
     state.push_user("first".to_string());
     state.push_assistant("a1".to_string());
@@ -908,19 +935,72 @@ fn fork_command_with_valid_index_cuts_transcript() {
     state.push_assistant("a2".to_string());
     state.push_user("third".to_string());
     state.push_assistant("a3".to_string());
-    let before = state.transcript_state.lines.len();
+
+    let original_id = state.session_state.session_id.clone();
     let r = dispatch(&mut state, &mut settings, CommandId::Fork, "2");
-    match r.outcome {
-        CommandOutcome::Output(lines) => {
-            assert!(
-                lines.iter().any(|l| l.contains("fork: cut at user msg #2")),
-                "expected cut confirmation, got: {lines:?}"
-            );
-        }
+    let lines = match r.outcome {
+        CommandOutcome::Output(lines) => lines,
         _ => panic!("expected Output"),
-    }
-    // Transcript grows by 2 (the echo + divider).
-    assert_eq!(state.transcript_state.lines.len(), before + 2);
+    };
+    let joined = lines.join("\n");
+    assert!(
+        joined.contains("forked at user msg #2"),
+        "expected a real fork confirmation, got: {lines:?}"
+    );
+
+    // A new file, named like Pi's (`<timestamp>_<id>.jsonl`), holding the
+    // retained prefix under a header that names its parent.
+    let path = state
+        .session_state
+        .session_path
+        .clone()
+        .expect("the fork must switch to a real session file");
+    assert_ne!(
+        path.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("session.jsonl"),
+        true,
+        "/fork must write a new file, not reuse the parent's name"
+    );
+    let forked = nini_session::Session::read_from_file(&path).expect("the fork is readable");
+    assert_eq!(
+        forked.entries.len(),
+        2,
+        "branching before user msg #2 retains the two entries that precede it"
+    );
+    assert_eq!(
+        forked.header.parent_session.as_deref(),
+        original_id.as_deref(),
+        "the fork does not name the session it branched from"
+    );
+    assert_ne!(
+        state.session_state.session_id.as_deref(),
+        original_id.as_deref(),
+        "the live state is still the parent session after /fork"
+    );
+}
+
+/// Pi's `position: "at"` keeps the chosen message; the default drops it and
+/// hands the text back.
+#[test]
+fn fork_at_keeps_the_branch_point_while_fork_drops_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, _keep) = state_with_session(tmp.path());
+    let mut settings = SettingsManager::default();
+    state.push_user("first".to_string());
+    state.push_assistant("a1".to_string());
+    state.push_user("second".to_string());
+    state.push_assistant("a2".to_string());
+
+    dispatch(&mut state, &mut settings, CommandId::Fork, "at 2");
+    let path = state.session_state.session_path.clone().unwrap();
+    let forked = nini_session::Session::read_from_file(&path).expect("readable");
+    assert_eq!(
+        forked.entries.len(),
+        3,
+        "`/fork at 2` must retain the branch point itself"
+    );
 }
 
 #[test]
