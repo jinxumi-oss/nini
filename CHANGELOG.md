@@ -7,7 +7,7 @@ cause was not one bug but a **category**: nini accumulates working
 code that is never connected to anything, and the suite is green
 because every test exercises the piece rather than the assembly.
 
-Tests: **1280 → 1341**.
+Tests: **1280 → 1357**.
 
 | Area | Change |
 |---|---|
@@ -20,6 +20,8 @@ Tests: **1280 → 1341**.
 | **`/fork`** | Copied transcript lines into a local variable and printed a count. No session, no file, no branch — so `/tree` had nothing to draw. Now `createBranchedSession`. |
 | **CLI flags** | 16 accepted, described in `--help`, dropped. 5 now work; 11 refused with a reason naming the flag. |
 | **Logging** | `tracing` initialised nowhere; `/debug` flipped a flag with no consumers. There was no logging at all. |
+| **Themes** | `SettingsManager::theme()` returned `Theme::default()` and the runtime never read the settings at all, so `--use-theme`, `/settings` and the theme watcher all resolved to a hard-coded "dark". |
+| **`/reload`** | Counted the skills on disk and discarded the count — the prompt is fixed per run, so nothing was reloaded. Now re-reads settings and names what cannot change. |
 
 ### Fix — a long run never compacted (Pi `agent-session.ts:1098` Case 2)
 
@@ -170,6 +172,52 @@ literally `assert_eq!(lines.len(), before + 2)` for "the echo +
 divider", pinning the marker line that was *not* a fork. They now
 assert what the command is for: a new file, the retained prefix, a
 parent link, and a live state that became the branch.
+
+### Fix — a theme system where the theme was the missing part
+
+871 lines of `theme.rs`: the built-ins, `load_from_file`, `parse`,
+`merge`, the full Pi palette, serde. `--use-theme` writing the field.
+`/settings` offering a picker. A watcher reloading on file change.
+
+And `SettingsManager::theme()`:
+
+```rust
+pub fn theme(&mut self) -> crate::theme::Theme {
+    crate::theme::Theme::default()      // the name is never read
+}
+```
+
+Worse, `runtime.rs` did not use `SettingsManager` at all — it built
+`SettingsManager::default()`, whose theme field is the literal `"dark"`.
+So the theme a user picked in `/settings`, the theme named by
+`--use-theme`, and the theme in `settings.json` all stopped there, while
+the **watcher** correctly re-read the real file and changed the colours
+mid-session to something startup had never agreed with.
+
+Resolution follows Pi (`settings-manager.ts:737-740`,
+`package-manager.ts:2367`): `dark` / `light` are built-ins; a value
+containing a `/` is a **path** (which is how a theme becomes shareable
+rather than something every user copies); anything else names a file in
+the agent's `themes/` directory. The rules live in `Theme::resolve`, which
+both startup and the watcher call, so the two cannot disagree.
+
+An unresolvable name falls back to dark **and says so on stderr**.
+
+`--theme-file`, refused in the previous entry with the reason *"custom
+themes are not implemented"*, is honoured again — that reason was wrong.
+
+### Fix — `/reload` reported a reload that did not happen
+
+It counted the skills on disk and threw the count away. The skills a
+session carries live in the system prompt built at startup, so counting
+them changed nothing the model can see.
+
+It now re-reads the settings file, re-derives the context window (a
+catalogue lookup, so a settings edit can move it), reports what changed
+(`dark → light`), and says plainly that skills need a restart. The model
+is deliberately *not* switched: `RunConfig` is cloned once per run, so
+changing it here would leave the status bar and the provider disagreeing
+until the next prompt — the class of bug R1e fixed for `/model`.
 
 ### Fix — flags that were accepted and dropped
 

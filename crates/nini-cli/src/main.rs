@@ -386,12 +386,6 @@ async fn main() -> Result<()> {
             "there are no prompt templates to disable".into(),
         );
     }
-    if theme_file.is_some() {
-        refuse(
-            "--theme-file",
-            "loading a theme from a file. `SettingsManager::theme()` returns              the built-in default; custom themes are not implemented".into(),
-        );
-    }
     if no_themes {
         refuse(
             "--no-themes",
@@ -504,7 +498,12 @@ async fn main() -> Result<()> {
                 exclude_tools: exclude_tools.clone(),
                 no_tools,
                 no_builtin_tools,
-                use_theme: use_theme.clone(),
+                // v0.10: `--theme-file` and `--use-theme` are the same
+                // field. Pi treats a theme value containing a slash as a path
+                // (`settings-manager.ts:739`), so a file argument and a name
+                // argument converge on one value and `theme()` resolves both.
+                // An explicit file wins.
+                use_theme: theme_file.clone().or_else(|| use_theme.clone()),
                 api_key: api_key.clone(),
                 no_skills,
                 system_prompt: system_prompt.clone(),

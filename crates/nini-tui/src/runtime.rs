@@ -432,6 +432,31 @@ where
     state
 }
 
+/// The theme the session starts with, and the name the status bar shows.
+///
+/// v0.10: extracted from `run` for the same reason `initial_state` was
+/// (see its doc comment) — the sequence lives inside an `async fn` behind a
+/// TTY, so a test cannot reach it, which is exactly how
+/// `SettingsManager::default()`'s hard-coded "dark" survived every test in
+/// the file. Two callers must agree on the answer — startup and the theme
+/// watcher — so the function both of them use is the thing under test.
+pub fn startup_theme(shared: &SharedState) -> (String, crate::theme::Theme) {
+    let name = {
+        let g = lock_state(shared);
+        let from_settings = g.model_state.settings_snapshot.theme.clone();
+        if from_settings.trim().is_empty() {
+            "dark".to_string()
+        } else {
+            from_settings
+        }
+    };
+    let theme = crate::theme::Theme::resolve(&name);
+    // Mirror the resolved name into AppState so the status bar shows what is
+    // actually in use rather than what was asked for.
+    lock_state(shared).ui_state.theme_name = Some(theme.name.clone());
+    (theme.name.clone(), theme)
+}
+
 pub async fn run<F>(bootstrap: F, agent_driver: AgentDriver, initial_model: &str) -> Result<()>
 where
     F: FnOnce(&mut AppState),
@@ -499,14 +524,7 @@ async fn run_loop(
     // Load the user's configured theme once. Hot-reload via theme watcher:
     // when a theme file changes, the watcher emits a `ThemeEvent` and we
     // reload from settings.
-    let mut theme = {
-        let mut settings = crate::settings::SettingsManager::default();
-        let name = settings.theme_name();
-        // Mirror the theme name into AppState so the status bar can
-        // render it without holding the settings lock.
-        lock_state(&shared).ui_state.theme_name = name.clone();
-        settings.theme()
-    };
+    let (_theme_name, mut theme) = startup_theme(&shared);
 
     // Spawn theme watcher (best-effort; falls back silently if dirs missing).
     let (theme_tx, mut theme_rx) = tokio::sync::mpsc::unbounded_channel();

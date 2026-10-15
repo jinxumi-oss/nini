@@ -1345,15 +1345,73 @@ fn cmd_prompt(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
 }
 
 fn cmd_reload(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
-    // Reload skills from disk; provider/models are read at startup.
+    // Reload what can actually change mid-session.
     let cwd = std::env::current_dir().ok();
-    let new_count = cwd
+    let mut out: Vec<String> = Vec::new();
+    // v0.10: this counted the skills on disk and threw the count away.
+    // The skills a session carries live in the system prompt the CLI built
+    // at startup, so counting them changes nothing the model can see — the
+    // command reported a reload that did not happen.
+    //
+    // The honest reload is: re-read the settings from the same path they
+    // were loaded from, resolve the theme again, re-derive the context
+    // window (a model catalogue lookup, so a settings edit can change it),
+    // and say what actually changed. Skills cannot be reloaded without a
+    // new session — the prompt is fixed for the life of a run — so they are
+    // reported as requiring a restart rather than claimed to be reloaded.
+    let before_theme = state.model_state.settings_snapshot.theme.clone();
+    let before_window = state.run_state.context_window;
+    let before_model = state.model_state.model.clone();
+
+    if let Some(path) = state.model_state.settings_path.clone() {
+        if !path.exists() {
+            out.push(format!("no settings file at {}", path.display()));
+        } else {
+            let reloaded = SettingsManager::load_from_disk(path.clone());
+            state.model_state.settings_snapshot = reloaded.get();
+            // The context window is derived from the catalogue for the
+            // selected model, so a settings edit can move it even when the
+            // model did not change.
+            state.refresh_context_window();
+            out.push(format!("reloaded settings from {}", path.display()));
+        }
+    } else {
+        out.push("no settings file to reload".to_string());
+    }
+
+    let after = state.model_state.settings_snapshot.clone();
+    if after.theme != before_theme {
+        out.push(format!(
+            "theme: {} → {} (applies on the next draw)",
+            before_theme, after.theme
+        ));
+    }
+    if state.run_state.context_window != before_window {
+        out.push(format!(
+            "context window: {before_window} → {}",
+            state.run_state.context_window
+        ));
+    }
+    // The model is deliberately *not* switched here. `RunConfig` is cloned
+    // once per run, so changing it mid-session would leave the status bar
+    // and the provider disagreeing until the next prompt — the same class
+    // of bug R1e fixed for the TUI's own model selector.
+    let _ = before_model;
+
+    let on_disk = cwd
         .as_deref()
         .map(|c| nini_core::skills::load_skills(c).skills.len())
         .unwrap_or(0);
-    state.push_assistant(format!("(reloaded {new_count} skills from disk)"));
+    out.push(format!(
+        "skills: {on_disk} on disk (the system prompt is fixed for this          session — restart nini to pick them up)"
+    ));
+
+    if out.len() == 1 {
+        out.push("nothing changed".to_string());
+    }
+    state.push_assistant(format!("(reload: {})", out.join("; ")));
     state.push_divider();
-    CommandResult::output(vec![format!("reload: {new_count} skills")])
+    CommandResult::output(out)
 }
 
 fn cmd_quit(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {

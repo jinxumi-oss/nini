@@ -180,3 +180,44 @@ fn the_flag_set_is_not_empty() {
     assert!(flags.len() > 10, "help parsing broke: {flags:?}");
     assert!(flags.contains(&"--system-prompt".to_string()), "{flags:?}");
 }
+
+/// `--theme-file` was refused last release with the reason *"custom themes
+/// are not implemented"*. That was wrong in a way worth pinning: the theme
+/// module has `Theme::dark/light`, `load_from_file`, `parse` and `merge`
+/// (871 lines, full Pi palette). What was missing was one function's
+/// dispatch. So the flag is now honoured rather than refused with a stale
+/// excuse.
+#[test]
+fn theme_file_is_no_longer_refused() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .args([
+            "--theme-file",
+            "/tmp/whatever.json",
+            "-p",
+            "hi",
+            "--provider",
+            "fixture",
+        ])
+        .output()
+        .expect("nini runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("--theme-file"),
+        "--theme-file is still refused with a stale reason:\n{stderr}"
+    );
+}
+
+/// `--use-theme light` must not be refused either, and must reach the
+/// theme resolver rather than being dropped at the CLI boundary.
+#[test]
+fn use_theme_is_not_refused() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .args(["--use-theme", "light", "-p", "hi", "--provider", "fixture"])
+        .output()
+        .expect("nini runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("--use-theme"),
+        "--use-theme is still refused:\n{stderr}"
+    );
+}

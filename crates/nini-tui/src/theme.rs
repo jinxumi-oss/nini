@@ -243,6 +243,69 @@ impl Theme {
         }
     }
 
+    /// Resolve a theme *name* into a `Theme`.
+    ///
+    /// Pi's rules (`settings-manager.ts:737-740`, `package-manager.ts:2367`):
+    ///
+    /// * `dark` / `light` (or empty) — the built-ins;
+    /// * a value containing a `/` is a **path**. Pi's `getTheme()` returns
+    ///   `undefined` for those, which is how it distinguishes a name from a
+    ///   file; it is what makes a theme shareable instead of something
+    ///   every user copies into their own agent directory;
+    /// * anything else names `<name>.json` in the agent's `themes/`
+    ///   directory.
+    ///
+    /// Lives here rather than in `SettingsManager` because **two** callers
+    /// need it and neither owns the settings: the TUI resolves the name at
+    /// startup, and the theme watcher re-resolves it when the file changes.
+    /// When the watcher used its own manager the two could disagree — the
+    /// watcher correctly re-read `settings.json` and changed the colours,
+    /// while startup had read a default that happened to say "dark".
+    ///
+    /// An unresolvable name falls back to dark **and says so**. A screen
+    /// that silently stays dark after the user typed a theme name is the
+    /// failure mode this whole release exists to remove.
+    pub fn resolve(name: &str) -> Self {
+        let name = name.trim();
+        match name {
+            "" | "dark" => return Self::dark(),
+            "light" => return Self::light(),
+            _ => {}
+        }
+
+        if name.contains('/') || name.contains('\\') {
+            let path = std::path::PathBuf::from(name);
+            let path = if path.extension().is_none() {
+                path.with_extension("json")
+            } else {
+                path
+            };
+            return match Self::load_from_file(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("[nini] theme {name}: {e}; falling back to dark");
+                    Self::dark()
+                }
+            };
+        }
+
+        let Some(dir) = nini_core::paths::agent_file("themes") else {
+            eprintln!("[nini] theme {name}: no agent directory to look in; using dark");
+            return Self::dark();
+        };
+        let path = dir.join(format!("{name}.json"));
+        match Self::load_from_file(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!(
+                    "[nini] theme {name}: {e}. Put it at {} or choose dark|light.",
+                    path.display()
+                );
+                Self::dark()
+            }
+        }
+    }
+
     /// Load a theme from a JSON file. Falls back to `Theme::dark()` if the
     /// file is missing; returns an error for malformed JSON or unparsable
     /// color values.

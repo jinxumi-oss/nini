@@ -1385,3 +1385,76 @@ fn debug_command_moves_the_real_logging_switch() {
          {text}"
     );
 }
+
+/// v0.10: `/reload` counted the skills on disk and discarded the count. The
+/// skills a session carries live in the system prompt built at startup, so
+/// the count changed nothing the model can see — the command reported a
+/// reload that had not happened.
+///
+/// These assert the two things that make it honest: a settings edit is
+/// actually applied, and anything that genuinely cannot change is *named*
+/// as needing a restart rather than claimed.
+#[test]
+fn reload_applies_a_settings_edit_and_says_what_it_could_not() {
+    let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let settings_path = tmp.path().join("settings.json");
+
+    let mut state = AppState::new("test-model");
+    state.model_state.settings_path = Some(settings_path.clone());
+    let mut settings = SettingsManager::default();
+    settings.theme = "dark".into();
+    state.model_state.settings_snapshot = settings.get();
+
+    // The user edits settings.json while nini is running.
+    std::fs::write(
+        &settings_path,
+        r#"{"theme":"light","context_window":123456}"#,
+    )
+    .unwrap();
+
+    let r = dispatch(&mut state, &mut settings, CommandId::Reload, "");
+    let lines = match r.outcome {
+        CommandOutcome::Output(lines) => lines,
+        _ => panic!("expected Output"),
+    };
+    let joined = lines.join("\n");
+
+    assert!(
+        state.model_state.settings_snapshot.theme == "light",
+        "/reload did not apply the edited theme: {:?}",
+        state.model_state.settings_snapshot.theme
+    );
+    assert!(
+        joined.contains("dark → light"),
+        "/reload did not report the change it made: {joined}"
+    );
+    assert!(
+        joined.contains("restart"),
+        "/reload must say that skills need a restart rather than implying \
+         they were reloaded: {joined}"
+    );
+    assert!(
+        joined.contains("skills"),
+        "/reload should still report the on-disk skill count: {joined}"
+    );
+}
+
+/// With nothing to reload, say so rather than inventing a change.
+#[test]
+fn reload_without_a_settings_file_says_so() {
+    let mut state = AppState::new("test-model");
+    state.model_state.settings_path = None;
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Reload, "");
+    let lines = match r.outcome {
+        CommandOutcome::Output(lines) => lines,
+        _ => panic!("expected Output"),
+    };
+    let joined = lines.join("\n");
+    assert!(joined.contains("no settings file"), "got: {joined}");
+    assert!(
+        joined.contains("restart"),
+        "the skills caveat applies with or without a settings file: {joined}"
+    );
+}
