@@ -215,6 +215,17 @@ impl std::ops::Deref for SettingsManager {
     }
 }
 
+/// The process environment is global and `cargo test` runs the tests in a
+/// module on parallel threads, so every test in this file that moves `HOME`
+/// or `NINI_AGENT_DIR` has to hold this — whichever module it sits in.
+///
+/// One lock per process on purpose: environment variables are process-wide,
+/// so two test binaries cannot tread on each other. The `ENV_LOCK`s in
+/// `tests/` guard their own binaries against the module-local tests, not
+/// against each other.
+#[cfg(test)]
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +270,10 @@ mod tests {
 
     #[test]
     fn flush_round_trip() {
+        // v0.10.1: this moves `HOME` and was the one test in this module
+        // that did not take the environment lock, so it raced the
+        // theme-resolution tests in the same binary.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let prev_home = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp.path());
@@ -306,7 +321,13 @@ mod theme_resolution_tests {
     ///
     /// The same reason `tests/slash_command_e2e.rs` and
     /// `tests/theme_wiring.rs` have one.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ///
+    /// v0.10.1: the lock used to be declared *here*, so it excluded only
+    /// this module. `flush_round_trip` in `mod tests` moves `HOME` as well,
+    /// ran unlocked in this same binary, and lost the race — which showed
+    /// up as an intermittent `flush failed` on macOS, where the machine is
+    /// slow enough to widen the window. It now takes the file-level lock
+    /// below. A lock per module is a lock that does not exclude.
 
     /// An agent directory holding `<name>.json`, which is where Pi looks
     /// (`join(globalBaseDir, "themes")`, `package-manager.ts:2367`).
