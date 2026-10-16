@@ -93,22 +93,29 @@ jobs:
           echo "running: $BIN $FLAGS"
           for i in $(seq 1 "$ATTEMPTS"); do
             echo "=========== attempt $i ==========="
+            # `-k` runs on termination; `-o` after `run` does NOT, because
+            # `run` never returns when the process dies. That is why the
+            # first two runs produced a 36-line log with no stack: the
+            # backtrace command was never reached.
             xcrun lldb --batch \
               -o "settings set target.load-cwd-lldbinit false" \
+              -k "thread backtrace all -e true -c 60" \
+              -k "thread info" \
+              -k "image lookup -a \$pc -v" \
+              -k "quit" \
               -o "run" \
-              -o "thread backtrace all" \
-              -o "register read rip rdi rsi rdx rbx rbp rsp r8 r9 r10 r11 r12 r13 r14 r15 rax rdx" \
-              -o "quit" \
               -- "$BIN" $FLAGS > "stack-$i.log" 2>&1
-            if grep -qE "EXC_BAD_ACCESS|SIGSEGV|stop reason" "stack-$i.log"; then
+            if grep -qE "EXC_BAD_ACCESS|SIGSEGV" "stack-$i.log"; then
               echo ">>> crash reproduced on attempt $i"
               break
             fi
             echo ">>> attempt $i: no crash"
           done
           set -e
-          echo "---- tail of the last attempt ----"
-          tail -60 stack-*.log 2>/dev/null || true
+          echo "---- stack sizes ----"
+          wc -l stack-*.log
+          echo "---- the crashing thread, with frames ----"
+          grep -A 40 'EXC_BAD_ACCESS' stack-*.log | head -60
 
       - name: Diagnostic reports
         # macOS also drops an .ips crash report; keep it even when lldb
