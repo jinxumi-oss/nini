@@ -99,9 +99,18 @@ jobs:
             # backtrace command was never reached.
             xcrun lldb --batch \
               -o "settings set target.load-cwd-lldbinit false" \
-              -k "thread backtrace all -e true -c 60" \
-              -k "thread info" \
+              -k "thread select 3" \
+              -k "thread backtrace -e true -c 60" \
+              -k "thread select 1" \
+              -k "thread backtrace -e true -c 6" \
+              -k "register read sp fp pc x0 x1 x2 x16" \
+              -k "frame info" \
+              -k "memory read --size 8 --format x --count 6 \$sp" \
+              -k "thread select 3" \
+              -k "memory read --size 8 --format x --count 4 \$sp" \
+              -k "thread select 1" \
               -k "image lookup -a \$pc -v" \
+              -k "thread backtrace all -e true -c 8" \
               -k "quit" \
               -o "run" \
               -- "$BIN" $FLAGS > "stack-$i.log" 2>&1

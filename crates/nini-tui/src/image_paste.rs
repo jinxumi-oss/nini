@@ -252,6 +252,13 @@ mod paste_flow_tests {
 /// Returns `None` if the clipboard has no image (or is unavailable).
 /// Returns `Err` on I/O / arboard errors.
 pub fn paste_image_with_size_from_clipboard() -> io::Result<Option<(PathBuf, u64)>> {
+    // v0.10.1: the guard covers this entry point too. `apply_action`'s
+    // PasteImage arm - the actual Ctrl+V path in the product - goes through
+    // *this* function, not through `paste_image_from_clipboard`, and the
+    // first version of the fix guarded only the latter. The macOS leg kept
+    // dying in the same test after it: the test calls `apply_action` first
+    // and then the other function, so one of the two was unguarded.
+    let _guard = crate::clipboard::clipboard_guard();
     let mut cb = arboard::Clipboard::new()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clipboard open: {e}")))?;
     let img = match cb.get_image() {
