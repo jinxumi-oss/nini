@@ -328,7 +328,7 @@ mod theme_resolution_tests {
     /// up as an intermittent `flush failed` on macOS, where the machine is
     /// slow enough to widen the window. It now takes the file-level lock
     /// below. A lock per module is a lock that does not exclude.
-
+    ///
     /// An agent directory holding `<name>.json`, which is where Pi looks
     /// (`join(globalBaseDir, "themes")`, `package-manager.ts:2367`).
     fn with_theme_file(
