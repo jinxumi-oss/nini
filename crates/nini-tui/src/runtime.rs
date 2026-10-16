@@ -365,6 +365,19 @@ impl AgentSink {
                     s.run_state.abort_signal = None; // clear stale abort signal
                 }
             }
+        } else {
+            // v0.10.1 (diagnosis): the agent's events stopped reaching the
+            // transcript after the first run in a long session, with no
+            // error anywhere — and this `if let Ok` is the only place that
+            // can swallow them. A poisoned mutex keeps returning `Err`
+            // forever, so one panic anywhere in code that holds the state
+            // lock silently disables every later turn. `lock_state` and
+            // `LiveConfigHooks` recover poisoning via `into_inner`; this
+            // path did not, which is why only the agent went quiet.
+            tracing::error!(
+                "agent event dropped: the state lock is poisoned — every later \
+                 agent event is being discarded"
+            );
         }
         // v0.8.5: notify via shared watch channel. send() ignores
         // the error if the receiver (runtime loop) has been dropped,
