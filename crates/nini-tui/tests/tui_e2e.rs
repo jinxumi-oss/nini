@@ -90,7 +90,10 @@ fn drive(state: &mut AppState, key: Key) {
         }
         KeyAction::Abort => {
             if state.run_state.mode == RunMode::Running {
-                state.run_state.mode = RunMode::Aborted;
+                // v0.10.1: mirrors the runtime — an interrupt hands the
+                // editor back instead of parking in an input-less mode.
+                state.run_state.mode = RunMode::Editing;
+                state.run_state.status = "aborted".to_string();
             } else {
                 state.input.clear();
             }
@@ -609,19 +612,20 @@ fn running_mode_status_bar() {
 }
 
 // ====================================================================
-// Test 17: Aborted mode shows [aborted]
+// Test 17: an interrupted turn still says so
 // ====================================================================
+// v0.10.1: there is no `Aborted` mode any more. The label lives in
+// `run_state.status`, which is what this asserts — the intent is "the user
+// can still see the turn was cut short", not "there is a mode called
+// Aborted".
 #[test]
-fn aborted_mode_status_bar() {
+fn interrupted_turn_status_bar() {
     let mut state = AppState::new("test-model");
-    state.run_state.mode = RunMode::Aborted;
-    // Set the runtime status string to indicate abort.
     state.run_state.status = "aborted".to_string();
     let frame = render_to_text(&state, 80, 24);
-    // Aborted is Idle phase; the status string carries the abort label.
     assert!(
         frame.contains("aborted") || frame.contains("[aborted]"),
-        "aborted mode missing in frame"
+        "aborted label missing in frame"
     );
 }
 

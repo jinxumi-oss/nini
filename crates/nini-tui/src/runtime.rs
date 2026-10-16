@@ -1634,11 +1634,23 @@ fn handle_key(
                 state.run_state.pending_quit = None;
                 state.run_state.status = "ready".to_string();
             } else if state.run_state.mode == RunMode::Running {
-                // Signal the agent to abort, then mark mode as Aborted.
+                // Signal the agent to abort, then hand the editor back.
                 if let Some(sig) = state.run_state.abort_signal.as_ref() {
                     sig.notify_waiters();
                 }
-                state.run_state.mode = RunMode::Aborted;
+                // v0.10.1 (fix): this used to set `RunMode::Aborted`, a state
+                // Pi does not have. Every input path in this file gates on
+                // `mode == Editing`, and nothing set `Aborted` back, so the
+                // keys typed after an interrupt were dropped until the agent
+                // stream finished on its own and pushed `Done` — measured in
+                // tmux at roughly four seconds against a slow provider.
+                //
+                // Pi's interrupt is synchronous: `onEscape` aborts and calls
+                // `restoreQueuedMessagesToEditor({ abort: true })`, so the
+                // editor is usable the instant you press Esc. The `aborted`
+                // label stays, as `run_state.status`, so the user still sees
+                // that the turn was cut short.
+                state.run_state.mode = RunMode::Editing;
                 state.run_state.status = "aborted".to_string();
             } else {
                 state.input.clear();
@@ -2411,7 +2423,11 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                 // Cancel popup without changing input.
                 state.ui_state.completion = None;
             } else if state.run_state.mode == RunMode::Running {
-                state.run_state.mode = RunMode::Aborted;
+                // v0.10.1: same as the runtime path — an interrupt gives the
+                // editor back rather than parking in a mode nothing accepts
+                // input in.
+                state.run_state.mode = RunMode::Editing;
+                state.run_state.status = "aborted".to_string();
             } else {
                 state.input.clear();
             }

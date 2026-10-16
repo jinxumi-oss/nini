@@ -695,8 +695,6 @@ pub enum RunMode {
     Editing,
     /// Agent is executing a turn.
     Running,
-    /// User aborted the current turn (Esc / Ctrl+C).
-    Aborted,
     /// TUI is shutting down.
     Quitting,
 }

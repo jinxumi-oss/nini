@@ -1385,7 +1385,6 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
             (" Ctrl+C ", "quit"),
         ],
         RunMode::Running => vec![(" Esc ", "abort"), (" Ctrl+C ", "force-quit")],
-        RunMode::Aborted => vec![(" Enter ", "retry"), (" Esc ", "clear")],
         RunMode::Quitting => vec![(" Ctrl+C ", "force-quit")],
     };
 
@@ -1554,11 +1553,23 @@ mod footer_tests {
     }
 
     #[test]
-    fn footer_aborted_mode_shows_retry() {
+    fn no_mode_promises_a_retry_that_does_not_exist() {
+        // v0.10.1: the aborted state offered `Enter retry` in the footer.
+        // There was no `Aborted` branch anywhere in the submit path —
+        // `submit_user_input` returns unless the mode is `Editing` — so the
+        // hint described a key press that did nothing. An interrupt now
+        // returns to `Editing`, and the label lives in `run_state.status`.
         let mut state = AppState::new("m");
-        state.run_state.mode = RunMode::Aborted;
+        state.run_state.status = "aborted".to_string();
         let text = footer_text(&state);
-        assert!(text.contains("retry"));
+        assert!(
+            !text.contains("retry"),
+            "the footer must not advertise a retry that nothing implements: {text}"
+        );
+        assert!(
+            text.contains("send"),
+            "and editing is available again: {text}"
+        );
     }
 
     #[test]

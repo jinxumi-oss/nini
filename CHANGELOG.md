@@ -1,3 +1,71 @@
+## Unreleased — an interrupt used to cost you your next four seconds (2026-10-16)
+
+Reported as: "while nini is running, pressing Esc means I cannot type". Measured
+in tmux against a provider that takes eight seconds to answer:
+
+```text
+  t≈ 2s after Esc   status "aborted"   footer "Enter retry  Esc clear"
+  t≈ 6s after Esc   status "idle"      footer back to normal
+  typing at t≈2s: discarded
+  typing at t≈16s: works
+```
+
+### The cause: a state nothing returned from
+
+`KeyAction::Abort` set `RunMode::Aborted`. Every input path gates on
+`mode == Editing` — `handle_key`'s insert branch, `submit_user_input`, the
+editor's own handlers — and nothing in the codebase ever moved *out* of
+`Aborted` except the agent stream's `Done`, which arrives when the aborted
+run winds down on its own. So from the keystroke after Esc until that
+`Done`, every key was dropped with no message, no echo, no status change.
+
+### Pi has no such state
+
+```js
+this.defaultEditor.onEscape = () => {
+    if (this.session.isStreaming) {
+        this.restoreQueuedMessagesToEditor({ abort: true });
+    } else if (this.session.isBashRunning) { this.session.abortBash(); }
+    else if (this.isBashMode) { this.editor.setText(""); this.isBashMode = false; }
+    ...
+};
+```
+
+`interactive-mode.js:2219`. The interrupt is synchronous and the editor is
+usable the instant you press the key — no waiting for a stream to finish.
+
+`RunMode::Aborted` is deleted. An abort returns to `Editing` and keeps
+`run_state.status = "aborted"`, so the user still sees that the turn was cut
+short.
+
+### The footer promised a key that did nothing
+
+`RunMode::Aborted` rendered `Enter retry  Esc clear`. There is no `Aborted`
+branch anywhere in the submit path — `submit_user_input` returns unless the
+mode is `Editing` — so `Enter` did nothing. The hint is gone, and the footer
+offers `send`, which is true again.
+
+### Oracles
+
+`crates/nini-tui/tests/interrupt_editing_e2e.rs`. Stashing the source and
+keeping the tests: **1 passed, 2 failed** —
+
+```
+an interrupt must not park the TUI in a state no key handler accepts
+input in — every insert and submit is gated on Editing
+```
+
+They name `RunMode::Editing` and nothing else. `RunMode::Aborted` no longer
+exists, so a test referencing it would fail to *build* against the parent —
+and a test that cannot build is not an oracle, which this session has now
+got wrong twice for the better.
+
+### Still short of Pi
+
+While a turn is *running*, nini still refuses input; Pi accepts it and queues
+it (`restoreQueuedMessagesToEditor` is that queue). That gap is unchanged and
+is not addressed here.
+
 ## Unreleased — a thematic break was sixty columns of guess (2026-10-16)
 
 The turn-divider fix above did not cover this report. "Long horizontal lines
