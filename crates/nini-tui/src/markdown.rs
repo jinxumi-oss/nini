@@ -61,6 +61,7 @@ pub fn render_markdown(s: &str, theme: &Theme, width: Option<usize>) -> Vec<Line
 
     let parser = Parser::new_ext(s, options);
     let mut state = MdState::new(theme, width);
+    state.content_width = width;
     for event in parser {
         state.handle(event);
     }
@@ -89,6 +90,22 @@ struct MdState<'a> {
     quote_depth: usize,
     /// True if we're currently inside a code block (collecting lines verbatim).
     in_code: Option<String>,
+    /// Table collection, while `in_table` is true.
+    ///
+    /// v0.10.1: `ENABLE_TABLES` was on from the parser swap and the module
+    /// header claimed "Tables (basic)", but `Tag::Table` pushed the literal
+    /// string `[table]` and the cells fell through to the paragraph path, so
+    /// a three-column table rendered one cell per line with a marker in
+    /// front of it.
+    in_table: bool,
+    /// Column alignments from `Tag::Table`, consumed at `TagEnd::Table`.
+    table_alignment: Vec<pulldown_cmark::Alignment>,
+    /// Width the caller will render into, when known. Set from the
+    /// `render_markdown` argument so tables can size their columns.
+    content_width: Option<usize>,
+    table_rows: Vec<Vec<Vec<Span<'static>>>>,
+    table_row: Vec<Vec<Span<'static>>>,
+    table_cell: Vec<Span<'static>>,
     code_buf: Vec<String>,
     /// True when the current heading is H1 and the next text span should
     /// carry an extra UNDERLINED modifier (Pi's H1 styling).
@@ -132,6 +149,12 @@ impl<'a> MdState<'a> {
             list_stack: Vec::new(),
             quote_depth: 0,
             in_code: None,
+            in_table: false,
+            table_alignment: Vec::new(),
+            content_width: None,
+            table_rows: Vec::new(),
+            table_row: Vec::new(),
+            table_cell: Vec::new(),
             code_buf: Vec::new(),
             heading_underline: false,
             pending_link_url: None,
@@ -184,6 +207,13 @@ impl<'a> MdState<'a> {
     }
 
     fn flush_pending(&mut self) {
+        if self.in_table {
+            // v0.10.1: inside a table, inline text belongs to the cell being
+            // built. Without this it was flushed as a paragraph line, which
+            // is why cells rendered one per row.
+            self.table_cell.append(&mut self.pending);
+            return;
+        }
         if self.pending.is_empty() {
             // Even with no content, in a quote we may want to emit a │ line
             // to keep quote alignment when the quote contains a hard break.
@@ -270,18 +300,28 @@ impl<'a> MdState<'a> {
             Tag::FootnoteDefinition(_) => { /* skip */ }
             Tag::DefinitionList | Tag::DefinitionListTitle | Tag::DefinitionListDefinition => { /* skip — uncommonly used */
             }
-            Tag::Table(_) => {
+            Tag::Table(aligns) => {
+                // v0.10.1: collect instead of announcing. `flush_pending`
+                // routes into `table_cell` while `in_table`, so inline text
+                // keeps its styles instead of escaping to the paragraph
+                // path one cell at a time.
                 self.ensure_block_gap();
                 self.flush_pending();
-                self.out.push(Line::from(Span::styled(
-                    "[table]".to_string(),
-                    self.theme.fg_style("muted"),
-                )));
+                self.in_table = true;
+                self.table_alignment = aligns.clone();
+                self.table_rows.clear();
+                self.table_row.clear();
+                self.table_cell.clear();
             }
-            Tag::TableHead
-            | Tag::TableRow
-            | Tag::TableCell
-            | Tag::Emphasis
+            Tag::TableHead | Tag::TableRow => {
+                self.flush_pending();
+                self.table_cell.clear();
+            }
+            Tag::TableCell => {
+                self.flush_pending();
+                self.table_cell.clear();
+            }
+            Tag::Emphasis
             | Tag::Strong
             | Tag::Strikethrough
             | Tag::Superscript
@@ -344,8 +384,26 @@ impl<'a> MdState<'a> {
             TagEnd::DefinitionList
             | TagEnd::DefinitionListTitle
             | TagEnd::DefinitionListDefinition => {}
-            TagEnd::Table | TagEnd::TableHead | TagEnd::TableRow | TagEnd::TableCell => {
+            TagEnd::TableCell => {
                 self.flush_pending();
+                let cell = std::mem::take(&mut self.table_cell);
+                self.table_row.push(cell);
+            }
+            TagEnd::TableHead | TagEnd::TableRow => {
+                self.flush_pending();
+                let row = std::mem::take(&mut self.table_row);
+                if !row.is_empty() {
+                    self.table_rows.push(row);
+                }
+            }
+            TagEnd::Table => {
+                self.flush_pending();
+                let rows = std::mem::take(&mut self.table_rows);
+                let aligns = std::mem::take(&mut self.table_alignment);
+                let width = self.content_width.get_or_insert(80);
+                let width = *width;
+                self.in_table = false;
+                self.render_table(&rows, &aligns, width);
             }
             TagEnd::Emphasis
             | TagEnd::Strong
@@ -471,6 +529,267 @@ impl<'a> MdState<'a> {
                 ));
             }
         }
+    }
+
+    /// The cells, one row per line, with no frame — the narrow-terminal
+    /// fallback (`markdown.js:557` has the raw source to print instead).
+    fn render_table_without_frame(&mut self, rows: &[Vec<Vec<Span<'static>>>], available: usize) {
+        let sep = " │ ";
+        for row in rows {
+            let mut line = String::new();
+            for (i, cell) in row.iter().enumerate() {
+                if i > 0 {
+                    if crate::width::display_width(&line) + 3 > available {
+                        break;
+                    }
+                    line.push_str(sep);
+                }
+                let t: String = cell.iter().map(|s| s.content.as_ref()).collect();
+                line.push_str(&crate::width::truncate_cells(
+                    &t,
+                    available.saturating_sub(crate::width::display_width(&line) + 3 * i),
+                ));
+            }
+            let line = crate::width::truncate_cells(&line, available);
+            self.out.push(Line::from(Span::raw(line)));
+        }
+        self.last_was_block_end = true;
+    }
+
+    /// Draw a table: `┌─┬─┐` frame, columns sized between a natural and a
+    /// minimum width, cell text wrapped to its column.
+    ///
+    /// v0.10.1. Pi: `renderTable(token, availableWidth, …)` —
+    /// `@mariozechner/pi-tui` `dist/components/markdown.js:543`.
+    ///
+    /// The column arithmetic is Pi's, because it is the part that decides
+    /// whether the reader sees a table or a staircase:
+    ///
+    /// * `border_overhead = 3n + 1` for `│ a │ b │` and the three borders
+    /// * `natural[i]` — the widest cell in the column
+    /// * `min_word[i]` — the longest *word*, capped at 30, so a column has
+    ///   a floor that is not zero even when the table cannot fit
+    /// * when the floors overflow the available width, every column starts at
+    ///   1 and the remainder is shared by `(word - 1)` weight
+    /// * when the naturals fit, use them; otherwise hand out the slack in
+    ///   proportion to each column's growth headroom, then one cell at a
+    ///   time for the rounding remainder (`markdown.js:625-634`)
+    fn render_table(
+        &mut self,
+        rows: &[Vec<Vec<Span<'static>>>],
+        aligns: &[pulldown_cmark::Alignment],
+        available: usize,
+    ) {
+        if rows.is_empty() {
+            return;
+        }
+        let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        if num_cols == 0 {
+            return;
+        }
+        let border_overhead = 3 * num_cols + 1;
+        // Pi gives up on the frame when even one cell per column will not
+        // fit and falls back to the raw source (`markdown.js:557`). nini
+        // has no raw text to fall back to, so the degradation is a
+        // borderless table: the cells still line up, nothing overflows, and
+        // no half-frame is drawn.
+        if available <= border_overhead {
+            self.render_table_without_frame(rows, available);
+            return;
+        }
+        let available_for_cells = available - border_overhead;
+
+        let text_of = |cell: &Vec<Span<'static>>| -> String {
+            cell.iter().map(|s| s.content.as_ref()).collect::<String>()
+        };
+        let longest_word = |t: &str| -> usize {
+            // Pi's `getLongestWordWidth(text, 30)`: whitespace-delimited,
+            // capped, so one enormous token cannot set the floor.
+            t.split_whitespace()
+                .map(|w| crate::width::display_width(w))
+                .max()
+                .unwrap_or(1)
+                .min(30)
+                .max(1)
+        };
+
+        let mut natural = vec![1usize; num_cols];
+        let mut min_word = vec![1usize; num_cols];
+        for (r, row) in rows.iter().enumerate() {
+            for (i, cell) in row.iter().enumerate().take(num_cols) {
+                let t = text_of(cell);
+                let w = crate::width::display_width(&t);
+                natural[i] = natural[i].max(w);
+                // `markdown.js:567`: the header's natural width is set, not
+                // maxed, so a wide header cannot inflate a narrow column.
+                if r > 0 {
+                    min_word[i] = min_word[i].max(longest_word(&t));
+                } else {
+                    min_word[i] = min_word[i].max(longest_word(&t));
+                }
+            }
+        }
+
+        // Floors that still do not fit: every column gets 1, then share.
+        let mut floors = min_word.clone();
+        let mut floor_total: usize = floors.iter().sum();
+        if floor_total > available_for_cells {
+            floors = vec![1; num_cols];
+            let remaining = available_for_cells.saturating_sub(num_cols);
+            if remaining > 0 {
+                let weights: Vec<usize> = min_word.iter().map(|w| w.saturating_sub(1)).collect();
+                let total_weight: usize = weights.iter().sum();
+                let mut growth = vec![0usize; num_cols];
+                if total_weight > 0 {
+                    for (i, w) in weights.iter().enumerate() {
+                        growth[i] = (*w * remaining) / total_weight;
+                    }
+                }
+                for (i, g) in growth.iter().enumerate() {
+                    floors[i] += g;
+                }
+                let mut leftover = remaining.saturating_sub(growth.iter().sum::<usize>());
+                let mut i = 0;
+                while leftover > 0 && i < num_cols {
+                    floors[i] += 1;
+                    leftover -= 1;
+                    i += 1;
+                }
+            }
+            floor_total = floors.iter().sum();
+        }
+
+        // Naturals that fit: use them. Otherwise share the slack in
+        // proportion to growth headroom.
+        let natural_total: usize = natural.iter().sum::<usize>() + border_overhead;
+        let mut widths = natural.clone();
+        if natural_total > available {
+            let extra = available_for_cells.saturating_sub(floor_total);
+            let headroom: Vec<usize> = natural
+                .iter()
+                .zip(&floors)
+                .map(|(n, f)| n.saturating_sub(*f))
+                .collect();
+            let total_headroom: usize = headroom.iter().sum();
+            widths = floors.clone();
+            if total_headroom > 0 {
+                for (i, h) in headroom.iter().enumerate() {
+                    widths[i] += (*h * extra) / total_headroom;
+                }
+            }
+            let allocated: usize = widths.iter().sum();
+            let mut remaining = available_for_cells.saturating_sub(allocated);
+            let mut grew = true;
+            while remaining > 0 && grew {
+                grew = false;
+                for i in 0..num_cols {
+                    if remaining == 0 {
+                        break;
+                    }
+                    if widths[i] < natural[i] {
+                        widths[i] += 1;
+                        remaining -= 1;
+                        grew = true;
+                    }
+                }
+            }
+        } else {
+            for i in 0..num_cols {
+                widths[i] = widths[i].max(floors[i]);
+            }
+        }
+        // A column must be at least one cell wide for the frame to close.
+        for w in widths.iter_mut() {
+            *w = (*w).max(1);
+        }
+
+        let border_style = self.theme.fg_style("mdCodeBlockBorder");
+        // Pi styles the header with `theme.bold(padded)` and nothing else
+        // (`markdown.js:652`) — no colour slot. An invented key here would
+        // silently fall through `color()`'s default and look right in
+        // tests while differing from Pi in the terminal.
+        let head_style =
+            ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD);
+
+        // Pi: `┌─${topBorderCells.join("─┬─")}─┐` (`markdown.js:637`). The
+        // `─` next to each corner is load-bearing: it is what makes the
+        // border `Σw + 3n + 1` wide, the same as `│ a │ b │`. Leaving it
+        // out is a one-cell-per-row mismatch that only shows on tables
+        // whose cells are not a multiple of the width.
+        let rule = |left: &str, mid: &str, right: &str, w: &[usize]| {
+            let cells: Vec<String> = w.iter().map(|n| "─".repeat(*n)).collect();
+            format!("{left}─{}─{right}", cells.join(mid))
+        };
+
+        self.out.push(Line::from(Span::styled(
+            rule("┌", "─┬─", "┐", &widths),
+            border_style,
+        )));
+
+        for (r, row) in rows.iter().enumerate() {
+            // Wrap every cell of the row to its column width, then emit as
+            // many physical lines as the tallest cell needs.
+            let wrapped: Vec<Vec<String>> = row
+                .iter()
+                .enumerate()
+                .map(|(i, cell)| {
+                    let t = text_of(cell);
+                    match crate::width::wrap_text_to_width(&t, widths[i]) {
+                        Some(parts) => parts,
+                        None => vec![crate::width::truncate_cells(&t, widths[i])],
+                    }
+                })
+                .collect();
+            let height = wrapped.iter().map(|c| c.len()).max().unwrap_or(1);
+            for line_idx in 0..height {
+                let mut spans: Vec<Span<'static>> = vec![Span::styled("│ ", border_style)];
+                for (i, cell_lines) in wrapped.iter().enumerate() {
+                    if i > 0 {
+                        spans.push(Span::styled(" │ ", border_style));
+                    }
+                    let text = cell_lines.get(line_idx).cloned().unwrap_or_default();
+                    let pad = widths[i].saturating_sub(crate::width::display_width(&text));
+                    let content = format!("{text}{}", " ".repeat(pad));
+                    let style = if r == 0 {
+                        head_style
+                    } else {
+                        ratatui::style::Style::default()
+                    };
+                    let align = aligns.get(i).copied();
+                    let content = match align {
+                        Some(pulldown_cmark::Alignment::Right) => {
+                            let lead = " ".repeat(pad);
+                            format!("{lead}{text}")
+                        }
+                        Some(pulldown_cmark::Alignment::Center) => {
+                            let lead = pad / 2;
+                            format!("{}{text}{}", " ".repeat(lead), " ".repeat(pad - lead))
+                        }
+                        _ => content,
+                    };
+                    spans.push(Span::styled(content, style));
+                }
+                spans.push(Span::styled(" │", border_style));
+                self.out.push(Line::from(spans));
+            }
+            if r == 0 {
+                self.out.push(Line::from(Span::styled(
+                    rule("├", "─┼─", "┤", &widths),
+                    border_style,
+                )));
+            } else if r + 1 < rows.len() {
+                self.out.push(Line::from(Span::styled(
+                    rule("├", "─┼─", "┤", &widths),
+                    border_style,
+                )));
+            }
+        }
+
+        self.out.push(Line::from(Span::styled(
+            rule("└", "─┴─", "┘", &widths),
+            border_style,
+        )));
+        self.last_was_block_end = true;
     }
 
     /// How long a thematic break is drawn.

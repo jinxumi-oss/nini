@@ -546,3 +546,26 @@ pub fn wrap_line(
     }
     out
 }
+
+/// Fold plain text to `max_width` cells, returning `None` when it does not
+/// need folding.
+///
+/// Pi's table cells are plain strings by the time they are laid out —
+/// `wrapCellText(text, columnWidths[i])` (`@mariozechner/pi-tui`
+/// `dist/components/markdown.js:640`) — so they need the wrapping rules
+/// without the `Span` bookkeeping [`wrap_line`] does for a styled line.
+pub fn wrap_text_to_width(text: &str, max_width: usize) -> Option<Vec<String>> {
+    if max_width == 0 {
+        return None;
+    }
+    if display_width(text) <= max_width {
+        return None;
+    }
+    let line = ratatui::text::Line::from(ratatui::text::Span::raw(text.to_string()));
+    Some(
+        wrap_line(line, max_width)
+            .into_iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect(),
+    )
+}
