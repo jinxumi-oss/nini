@@ -1,4 +1,14 @@
-## Unreleased — one lock, eleven silent answers (2026-10-16)
+## v0.10.1 — one lock, eleven silent answers (2026-10-16)
+
+### Release bookkeeping, stated plainly
+
+The `v0.10.0` **tag points at `be783e9`**, which is where the GitHub Release
+was created. The CI diagnosis quoted in the v0.10 section below (the
+`RUST_BACKTRACE` step) landed afterwards, in `7009e55`, so that text is not
+in the tag — it is in this release. The v0.10.0 assets were built from
+`be783e9`, which is the state that text describes. The tag was not moved:
+it is published, it carries a binary, and rewriting it is a destructive act
+that belongs to the owner, not to the next commit.
 
 The v0.10 release left `main` red: the `7009e55` run failed on
 `ubuntu-latest` in `a3_seed::the_seed_carries_tool_calls_and_results`, with
