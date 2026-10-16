@@ -13,7 +13,7 @@
 
 use crate::markdown::render_markdown;
 use crate::theme::Theme;
-use crate::width::{display_width, floor_char_boundary, truncate_cells, truncate_line_cells};
+use crate::width::{display_width, floor_char_boundary, truncate_cells};
 use ratatui::text::{Line as RLine, Span};
 
 /// Maximum bytes to keep from a single bash-output preview.
@@ -51,17 +51,27 @@ pub fn render_assistant_message(
     // handed it the text alone — but `max_width` is right here, and it is
     // the same number Pi passes its own `Markdown` component.
     let lines = render_markdown(&linked, theme, max_width);
-    // v0.8.9 (P1-3): clamp to the real terminal width. The markdown
-    // renderer has no idea how wide the screen is — it emitted
-    // arbitrarily long lines and relied on "ratatui will clip anyway",
-    // but the transcript renders through a `List`, and `List` cuts at
-    // the screen edge with no marker. Clamping the finished lines
-    // covers every markdown construct (headings, code fences, tables,
-    // nested lists) without threading a width through markdown.rs.
+    // v0.10.1: fold to the real width instead of cutting at it.
+    //
+    // This used to be `truncate_line_cells`, and the v0.8.9 comment above it
+    // explains why truncation looked reasonable: the transcript renders
+    // through ratatui's `List`, which does not wrap — it cuts at the screen
+    // edge with no marker — so clamping was the only thing available.
+    //
+    // Clamping is only a fallback, not the intended behaviour, and it loses
+    // the tail of every reply wider than the terminal. Measured in tmux with
+    // a scripted provider, a CJK reply came out as its first screenful plus
+    // `…` at 40, 60 and 100 columns and survived whole only at 160. Every
+    // fixture in the suite is short, so nothing was ever red.
+    //
+    // Pi wraps: `wrapTextWithAnsi(line, width)`
+    // (`@mariozechner/pi-tui` `dist/utils.js:562`). `wrap_line` is that
+    // algorithm minus the ANSI tracking, which structured `Span`s make
+    // unnecessary.
     match max_width {
         Some(w) if w > 0 => lines
             .into_iter()
-            .map(|l| truncate_line_cells(&l, w))
+            .flat_map(|l| crate::width::wrap_line(l, w))
             .collect(),
         _ => lines,
     }
@@ -970,15 +980,29 @@ mod width_tests {
         );
     }
 
+    /// v0.10.1: this asserted `joined(&lines).contains('…')` — it pinned
+    /// **truncation as the desired behaviour**, which is why the tail of
+    /// every wide reply could be dropped without anything going red. It now
+    /// asserts what the user actually gets: the paragraph fits the width and
+    /// its end is still there.
     #[test]
-    fn assistant_message_clamps_long_paragraphs() {
+    fn assistant_message_folds_long_paragraphs() {
         let long = format!("START {} END", "c".repeat(300));
         let lines = render_assistant_message(&long, &theme(), Some(40));
         assert!(!lines.is_empty());
         for l in &lines {
             assert!(line_width(l) <= 40, "width {} > 40", line_width(l));
         }
-        assert!(joined(&lines).contains('…'), "no marker");
+        let all = joined(&lines);
+        assert!(
+            all.contains("START") && all.contains("END"),
+            "a 300-character paragraph lost its tail at width 40"
+        );
+        assert!(
+            lines.len() > 1,
+            "and it must have folded rather than been cut: {} line(s)",
+            lines.len()
+        );
     }
 
     #[test]

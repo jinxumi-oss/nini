@@ -333,17 +333,25 @@ fn short_tool_call_is_not_marked() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn long_assistant_paragraph_shows_ellipsis() {
+/// v0.10.1: this asserted the assistant paragraph carries a `…` — it pinned
+/// truncation as the behaviour. Assistant replies now fold
+/// (`width::wrap_line`), so the marker is gone and the *content* has to be
+/// there instead: a 300-character paragraph at 40 columns used to be one
+/// screenful plus an ellipsis, with the rest of the sentence discarded.
+fn long_assistant_paragraph_is_folded_not_cut() {
     let s = state_with(TranscriptLine::AssistantText(format!(
         "START {} END",
         "c".repeat(300)
     )));
-    for (w, h) in [NARROW, WIDE] {
-        let rows = frame_rows(&s, w, h);
+    for (w, _h) in [NARROW, WIDE] {
+        // Tall enough that the whole fold is on screen: the point is that
+        // every row fits AND the end of the paragraph survived.
+        let rows = frame_rows(&s, w, 200);
         assert_all_rows_fit(&rows, w, "assistant paragraph");
+        let text = transcript_text(&rows);
         assert!(
-            transcript_text(&rows).contains('…'),
-            "assistant paragraph at {w} cols has no marker"
+            text.contains("START") && text.contains("END"),
+            "assistant paragraph at {w} cols lost its tail"
         );
     }
 }
@@ -491,7 +499,12 @@ fn no_transcript_row_overflows_at_any_width() {
     // `…` belonging to some other row in the transcript would satisfy a
     // whole-block grep. At 20 columns the 400-character user message
     // cannot possibly fit, so its own row must be marked.
-    let rows = frame_rows(&s, 20, 30);
+    // v0.10.1: the frame used to be 30 rows. Now that assistant paragraphs
+    // fold instead of being cut, this transcript is far taller than the
+    // viewport and the user message scrolls out of it — the lookup below
+    // then fails on a test that is not measuring what it thinks it is.
+    // 400 rows puts the whole transcript on screen.
+    let rows = frame_rows(&s, 20, 400);
     let user_row = rows
         .iter()
         .find(|r| r.starts_with("> "))

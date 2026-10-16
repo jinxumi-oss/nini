@@ -412,3 +412,137 @@ mod tests {
         assert!(!joined.contains('…'));
     }
 }
+
+/// Fold one rendered line to `max_width` cells, keeping styles.
+///
+/// Pi: `wrapSingleLine(line, width)` — `@mariozechner/pi-tui`
+/// `dist/utils.js:580`, reached through `wrapTextWithAnsi` (`:562`).
+///
+/// **Why this exists.** The transcript renders through ratatui's `List`,
+/// which does not wrap: it cuts at the screen edge. So a reply wider than
+/// the terminal used to be handed to `truncate_cells` and the tail was
+/// dropped. Measured in tmux with a scripted provider, a CJK reply came out
+/// as its first screenful plus `…` at 40, 60 and 100 columns, and intact
+/// only at 160 — which is why short fixtures never saw it.
+///
+/// Pi's shape, kept as-is:
+///
+/// * fold on token boundaries — a run of non-whitespace and a run of
+///   whitespace are separate tokens, and the line breaks *between* tokens
+/// * a token that is wider than `max_width` is broken by grapheme
+/// * the tail of every line is trimmed, and no line starts with whitespace
+///   (`utils.js:619-628`)
+///
+/// Unlike Pi, no ANSI tracking is needed: nini's `Line` carries styles as
+/// structured `Span`s, so splitting a span preserves them by construction.
+pub fn wrap_line(
+    line: ratatui::text::Line<'static>,
+    max_width: usize,
+) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::style::Style;
+    use ratatui::text::Span;
+    use unicode_segmentation::UnicodeSegmentation;
+
+    if max_width == 0 {
+        return vec![line];
+    }
+    let total: usize = line
+        .spans
+        .iter()
+        .map(|s| display_width(s.content.as_ref()))
+        .sum();
+    if total <= max_width {
+        return vec![line];
+    }
+
+    // Grapheme per unit, so a wide glyph or an emoji with a skin tone never
+    // gets cut in half.
+    let mut units: Vec<(String, Style)> = Vec::with_capacity(total);
+    for span in &line.spans {
+        for g in UnicodeSegmentation::graphemes(span.content.as_ref(), true) {
+            units.push((g.to_string(), span.style));
+        }
+    }
+
+    let is_ws = |u: &(String, Style)| u.0.chars().all(char::is_whitespace);
+
+    let mut out: Vec<ratatui::text::Line<'static>> = Vec::new();
+    let mut cur: Vec<Span<'static>> = Vec::new();
+    let mut cur_w = 0usize;
+
+    // Push `cur` as a line, trimming the whitespace that a fold leaves at
+    // the end. Pi does the same (`line.trimEnd()`, `utils.js:644`).
+    let flush = |cur: &mut Vec<Span<'static>>, cur_w: &mut usize, out: &mut Vec<_>| {
+        while cur
+            .last()
+            .is_some_and(|s| s.content.chars().all(char::is_whitespace))
+        {
+            cur.pop();
+        }
+        out.push(ratatui::text::Line::from(std::mem::take(cur)));
+        *cur_w = 0;
+    };
+
+    let mut i = 0usize;
+    while i < units.len() {
+        // One token: a maximal run of whitespace, or of non-whitespace.
+        let ws = is_ws(&units[i]);
+        let mut j = i;
+        let mut tok_w = 0usize;
+        while j < units.len() && is_ws(&units[j]) == ws {
+            tok_w += display_width(&units[j].0);
+            j += 1;
+        }
+        let token = &units[i..j];
+        i = j;
+
+        if cur_w + tok_w <= max_width {
+            for (t, st) in token {
+                cur.push(Span::styled(t.clone(), *st));
+            }
+            cur_w += tok_w;
+            continue;
+        }
+
+        // A token that cannot fit on any line of its own — break it by
+        // grapheme, which is Pi's `breakLongWord` (`utils.js:657`).
+        if tok_w > max_width {
+            flush(&mut cur, &mut cur_w, &mut out);
+            for (t, st) in token {
+                let w = display_width(t);
+                if cur_w + w > max_width && cur_w > 0 {
+                    flush(&mut cur, &mut cur_w, &mut out);
+                }
+                cur.push(Span::styled(t.clone(), *st));
+                cur_w += w;
+            }
+            continue;
+        }
+
+        // It would fit on a fresh line: fold here.
+        flush(&mut cur, &mut cur_w, &mut out);
+        if ws {
+            // "Don't start new line with whitespace" (`utils.js:626`).
+            continue;
+        }
+        for (t, st) in token {
+            cur.push(Span::styled(t.clone(), *st));
+        }
+        cur_w += tok_w;
+    }
+
+    if !cur.is_empty() {
+        while cur
+            .last()
+            .is_some_and(|s| s.content.chars().all(char::is_whitespace))
+        {
+            cur.pop();
+        }
+        out.push(ratatui::text::Line::from(cur));
+    }
+
+    if out.is_empty() {
+        out.push(ratatui::text::Line::from(""));
+    }
+    out
+}

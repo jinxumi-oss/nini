@@ -417,3 +417,67 @@ ESC 验证：
 - **M3** 压缩异步化与 ESC handler 栈：计划中标注为高风险，建议单独一轮，
   先补 compaction 集成测试。
 - **M4** double-ESC / bash mode。
+
+---
+
+## 9. 邻接修复：长回复截断（2026-10-16）
+
+不属于本计划的输入模型，但同源（§34 的调查结论），一并做了。
+
+### 9.1 现象与量化
+
+同一条回复，只用 tmux：
+
+| 终端宽度 | 屏幕结果 |
+|---|---|
+| 60 | `HEADMARK-2 填充段落内容。…填充段…` ← 尾部丢失 |
+| 100 | `HEADMARK-2 填充段落内容。… TAI…` ← 尾部丢失 |
+| 160 | 完整 |
+
+90 行终端无效（不是视口）。**不是"后期"现象，是"回复越长越明显"**——
+所有 fixture 都很短，所以从未变红。
+
+### 9.2 根因
+
+`rich.rs` 对每行调用 `truncate_line_cells`；v0.8.9 的注释解释了这个选择
+（transcript 走 ratatui `List`，不换行、直接切边）。但**截断只是兜底，
+不是目标行为**，而它让每条超宽回复的尾部静默消失。
+
+`width.rs` 只有 `truncate_cells`，没有任何 wrap —— 而 Pi 有
+`wrapTextWithAnsi`。
+
+### 9.3 实现
+
+`width::wrap_line(line, max_width) -> Vec<Line>`，对齐
+`@mariozechner/pi-tui/dist/utils.js:580` 的 `wrapSingleLine`：
+
+- **token 边界折叠**：连续非空白 / 连续空白各自成 token，行在 token 间断
+- **token 超宽按 grapheme 切**（Pi 的 `breakLongWord`，`:657`）
+- 每行 `trimEnd`、新行不以空白开头（`:619-628`）
+- 不需要 ANSI tracker：nini 的 `Line` 用结构化 `Span`，切 Span 天然保样式
+
+按 grapheme 而非 char 切，是为了让宽字符和带修饰符的 emoji 不会被劈开。
+
+### 9.4 两条固化缺陷的测试被改写
+
+| 测试 | 原断言 | 现断言 |
+|---|---|---|
+| `assistant_message_clamps_long_paragraphs` | 必须含 `…` | 必须含段落**结尾**，且折叠成多行 |
+| `long_assistant_paragraph_shows_ellipsis` | 两种宽度都必须有标记 | 改名 `..._is_folded_not_cut`，断言结尾在 |
+
+第三条 `no_transcript_row_overflows_at_any_width` 仍然通过，但**需要更高的帧**：
+折叠后那条 transcript 远高于 30 行，它要找的 user 消息行滚出了视口。
+
+### 9.5 第四次"测量先错"
+
+第一次 tmux 读取看到行尾 `�`，像是字符被切一半。实际是 `cut -c` 按**字节**计数，
+一个汉字 3 字节。tmux 原始字节无 U+FFFD，TestBackend 探针显示每行宽度精确
+等于 `max_width` 且以完整汉字收尾。
+
+> 本会话已四次测量先于结论出错：§33 的 grep 盲区（转义写法）、§34 的
+> grep 判据与已崩溃的假服务器、§35 的固定行视口假设、本节的 `cut -c`。
+> 共同点：**都是"用观察下结论"而不是"用计数/不变量下结论"**。
+
+### 9.6 全量
+
+1377 → **1383**，clippy `-D warnings` 干净。
