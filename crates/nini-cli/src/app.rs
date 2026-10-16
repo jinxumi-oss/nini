@@ -381,6 +381,37 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
     }
 
     impl nini_core::agent_hooks::AgentLoopHooks for LiveConfigHooks {
+        /// v0.10.1 (M1): hand the agent whatever the user typed while a turn
+        /// was running.
+        ///
+        /// v0.10's R1 work built the consumer — `agent.rs` polls this at the
+        /// top of every iteration and injects what it returns before the next
+        /// model call (`agent-loop.js:96-103`) — and never built a producer.
+        /// `LiveConfigHooks` was the only hook implementation in the product
+        /// and implemented only `prepare_next_turn`, so the poll always came
+        /// back empty: a message submitted mid-run had nowhere to go.
+        ///
+        /// Pi: `await this.session.prompt(text, { streamingBehavior: "steer" })`
+        /// (`interactive-mode.js:2491`).
+        fn get_steering_messages(
+            &self,
+            _recent: &[nini_core::provider::Message],
+        ) -> Vec<nini_core::provider::Message> {
+            let shared = self.sink.state();
+            let queued = {
+                let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
+                std::mem::take(&mut g.run_state.pending_next_turn_messages)
+            };
+            queued
+                .into_iter()
+                .map(|text| nini_core::provider::Message {
+                    role: nini_core::provider::Role::User,
+                    content: vec![nini_core::provider::ContentBlock::Text { text }],
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                })
+                .collect()
+        }
+
         fn prepare_next_turn(
             &self,
             _messages: &[nini_core::provider::Message],

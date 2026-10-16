@@ -1420,10 +1420,14 @@ fn handle_key(
                 state.update_search_query(q);
                 return;
             }
-            if state.run_state.mode == RunMode::Editing {
-                state.input.insert_char(c);
-                state.refresh_completion();
-            }
+            // v0.10.1 (M1): no mode gate. The neighbours — Backspace,
+            // Delete, Move*, Kill*, Undo, ClearInput — never had one, so a
+            // running turn could delete text and move the caret but could
+            // not type a character. Pi's editor is a separate component and
+            // `isStreaming` never decides whether it accepts keystrokes
+            // (`interactive-mode.js:2491`).
+            state.input.insert_char(c);
+            state.refresh_completion();
         }
         KeyAction::OpenSearch => {
             // F019: open search when input is empty AND no popup is up;
@@ -1480,10 +1484,10 @@ fn handle_key(
             }
         }
         KeyAction::Newline => {
-            if state.run_state.mode == RunMode::Editing {
-                state.input.insert_char('\n');
-                state.refresh_completion();
-            }
+            // v0.10.1 (M1): same as Insert — a multi-line prompt is being
+            // composed, not submitted.
+            state.input.insert_char('\n');
+            state.refresh_completion();
         }
         KeyAction::Backspace => {
             // F019: search-mode backspace mutates the query, not the
@@ -1569,6 +1573,21 @@ fn handle_key(
             }
         }
         KeyAction::Submit => {
+            // v0.10.1 (M1): while a turn is running, Enter queues instead of
+            // spawning a second agent. Two agents sharing one
+            // `SharedState` and one session file is not what the user meant,
+            // and Pi steers the message into the running turn instead.
+            if state.run_state.mode == RunMode::Running {
+                if state.ui_state.completion.is_some() {
+                    state.apply_completion();
+                } else {
+                    let text = state.input.submit();
+                    if !text.trim().is_empty() {
+                        queue_while_running(&mut state, &text);
+                    }
+                }
+                return;
+            }
             // v0.6: smarter Enter behavior when the completion popup is
             // open. v0.5 always just inserted the highlighted completion
             // into the buffer, requiring a second Enter to actually
@@ -1635,8 +1654,20 @@ fn handle_key(
                 state.run_state.status = "ready".to_string();
             } else if state.run_state.mode == RunMode::Running {
                 // Signal the agent to abort, then hand the editor back.
+                //
+                // v0.10.1 (M1): the queue goes back to the editor FIRST —
+                // Pi: `restoreQueuedMessagesToEditor({ abort: true })`
+                // merges queued messages with what is being typed and
+                // returns, then aborts (`interactive-mode.js:3505`). Doing
+                // it in that order means an interrupt never destroys
+                // something the user wrote and had queued.
+                let restored = return_queue_to_editor(&mut state);
                 if let Some(sig) = state.run_state.abort_signal.as_ref() {
                     sig.notify_waiters();
+                }
+                if restored > 0 {
+                    state.run_state.status =
+                        format!("aborted — {restored} queued message(s) returned to the editor");
                 }
                 // v0.10.1 (fix): this used to set `RunMode::Aborted`, a state
                 // Pi does not have. Every input path in this file gates on
@@ -2223,10 +2254,9 @@ pub fn apply_action(state: &mut AppState, key: Key) {
     let action = resolve_with_user_overrides(key);
     match action {
         KeyAction::Insert(c) => {
-            if state.run_state.mode == RunMode::Editing {
-                state.input.insert_char(c);
-                state.refresh_completion();
-            }
+            // v0.10.1 (M1): same reasoning as the runtime path.
+            state.input.insert_char(c);
+            state.refresh_completion();
         }
         KeyAction::OpenCommandPalette => {
             // Test path: same as the runtime path (open_selector:palette).
@@ -2286,10 +2316,10 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             }
         }
         KeyAction::Newline => {
-            if state.run_state.mode == RunMode::Editing {
-                state.input.insert_char('\n');
-                state.refresh_completion();
-            }
+            // v0.10.1 (M1): same as Insert — a multi-line prompt is being
+            // composed, not submitted.
+            state.input.insert_char('\n');
+            state.refresh_completion();
         }
         KeyAction::Backspace => {
             // F019: search-mode backspace mutates the query, not the
@@ -2374,7 +2404,20 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         }
         KeyAction::ClearInput => state.input.clear(),
         KeyAction::Submit => {
-            if state.run_state.mode == RunMode::Editing {
+            // v0.10.1 (M1): a turn in flight no longer swallows the
+            // message. Pi steers it into the running turn
+            // (`interactive-mode.js:2491`); the queue is where nini keeps
+            // pending messages.
+            if state.run_state.mode == RunMode::Running {
+                if state.ui_state.completion.is_some() {
+                    state.apply_completion();
+                } else {
+                    let text = state.input.submit();
+                    if !text.trim().is_empty() {
+                        queue_while_running(state, &text);
+                    }
+                }
+            } else if state.run_state.mode == RunMode::Editing {
                 // If completion popup is showing, accept the selected item
                 // instead of submitting.
                 if state.ui_state.completion.is_some() {
@@ -2423,9 +2466,9 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                 // Cancel popup without changing input.
                 state.ui_state.completion = None;
             } else if state.run_state.mode == RunMode::Running {
-                // v0.10.1: same as the runtime path — an interrupt gives the
-                // editor back rather than parking in a mode nothing accepts
-                // input in.
+                // v0.10.1: same as the runtime path — the queue returns to
+                // the editor, then the turn is interrupted.
+                return_queue_to_editor(state);
                 state.run_state.mode = RunMode::Editing;
                 state.run_state.status = "aborted".to_string();
             } else {
@@ -2456,6 +2499,65 @@ pub fn apply_action(state: &mut AppState, key: Key) {
 #[allow(dead_code)]
 fn _typecheck_handle_is_used() {
     let _ = std::mem::size_of::<JoinHandle<()>>();
+}
+
+/// Queue a message submitted while a turn is in flight.
+///
+/// v0.10.1 (M1). Pi: `await this.session.prompt(text, { streamingBehavior:
+/// "steer" })` followed by `updatePendingMessagesDisplay()`
+/// (`interactive-mode.js:2491` and `:2500`) — the message goes to the
+/// running turn, and the user is told it is pending.
+///
+/// nini had one queue already, `pending_next_turn_messages`, written only by
+/// a compaction branch that can never run (§ `is_compacting` is never set).
+/// Rather than add a second field for Pi's steering/follow-up split, the
+/// existing queue is used: one queue is what the struct can express, and a
+/// field the fix introduces cannot be named by a test that has to compile
+/// against the parent commit.
+///
+/// The transcript line is the "pending" display. It is pushed as a user
+/// message so the agent sees it in context, exactly like the compaction
+/// queue does today.
+pub fn queue_while_running(state: &mut AppState, text: &str) {
+    let n = state.run_state.pending_next_turn_messages.len() + 1;
+    state
+        .run_state
+        .pending_next_turn_messages
+        .push(text.to_string());
+    // The transcript gets the message verbatim. An earlier version appended
+    // "(queued: N pending…)" to it, and `push_user` writes the same string
+    // to the session — so the model would have been handed the marker as
+    // part of the user's own words, once through the session and again
+    // through steering. The pending count belongs in the status line.
+    state.push_user(text);
+    state.push_divider();
+    state.run_state.status = format!("queued: {n} pending");
+    state.mark_scroll_activity();
+}
+
+/// Hand the queue back to the editor, then abort.
+///
+/// Pi: `restoreQueuedMessagesToEditor({ abort: true })`
+/// (`interactive-mode.js:3505`) — queues are drained, merged with whatever
+/// is in the editor, and put back so nothing the user typed is lost when a
+/// turn is interrupted.
+pub fn return_queue_to_editor(state: &mut AppState) -> usize {
+    let queued = std::mem::take(&mut state.run_state.pending_next_turn_messages);
+    if queued.is_empty() {
+        return 0;
+    }
+    let queued_text = queued.join("\n\n");
+    let combined = [queued_text, state.input.text.clone()]
+        .into_iter()
+        .filter(|t| !t.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    state.input.text = combined;
+    // Caret at the end, which is where a restored queue is useful: the user
+    // edits what comes back.
+    state.input.cursor = state.input.text.len();
+    state.refresh_completion();
+    queued.len()
 }
 
 /// Resolve a key against the built-in keymap plus any user overrides
