@@ -20,8 +20,8 @@
 #![allow(unused_mut)] // render/runtime use mut bindings for future hook points
 
 use crate::rich::{
-    render_assistant_message, render_bash_execution, render_divider, render_tool_call,
-    render_tool_result, render_user_message,
+    render_assistant_message, render_bash_execution, render_tool_call, render_tool_result,
+    render_user_message,
 };
 use crate::selector::{SelectorItem, SelectorPanel};
 use crate::state::{AppState, RunMode, TranscriptLine};
@@ -1147,7 +1147,7 @@ fn items_for_line(
             }
             out
         }
-        TranscriptLine::Divider => vec![ListItem::new(render_divider(theme))],
+        TranscriptLine::Divider => vec![ListItem::new(crate::rich::turn_separator())],
         TranscriptLine::StopNotice(msg) => vec![ListItem::new(RLine::from(Span::styled(
             format!("  {msg}"),
             theme.fg_style("error"),

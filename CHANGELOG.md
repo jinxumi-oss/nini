@@ -1,3 +1,74 @@
+## Unreleased — a turn boundary is a blank line, not a rule (2026-10-16)
+
+Reported as "the TUI still draws long horizontal lines". Reproduced in tmux
+across four terminal widths, and the cause was a single line of code that
+had been there since the first public release.
+
+### The rule was `min(60, terminal width)`
+
+`rich::render_divider` built `"─".repeat(60)` — sixty hard-coded
+box-drawing characters, drawn after every turn and after the output of
+nearly every slash command (`push_divider` has 20+ call sites). It knows
+nothing about width, so what reaches the screen is the terminal clipping
+it:
+
+| terminal width | on-screen length | measured in |
+|---|---|---|
+| 200 | 60 — stranded mid-screen | tmux |
+| 100 | 60 | tmux |
+| 50 | 50 | tmux |
+| 40 | 40 — a full-width rule | tmux |
+
+The 40-column case is the report. At narrow widths it stops being a divider
+and becomes a line across the screen.
+
+### Pi draws no such line
+
+Every message boundary in Pi is a `Spacer(1)`: `assistant-message.js:74`,
+`:121`, `:131`, `:139`, `:144`, `bash-execution.js:30`,
+`branch-summary-message.js:30`, `compaction-summary-message.js:31`. Not
+one draws a rule. The single rule Pi does draw is sized from the real
+width — `dynamic-border.js:18`, `"─".repeat(Math.max(1, width))` — which
+is the prompt's own border, and which nini still draws correctly.
+
+So this was never a rendering bug. It was an element nini invented, with a
+length chosen once and never revisited, and with `render_divider_is_sixty_dashes`
+asserting that 60 — a test that gave the defect a specification.
+
+### The fix
+
+`render_divider` is now `turn_separator`, and it returns one blank row.
+`TranscriptLine::Divider` stays, and so do all 20-odd `push_divider` call
+sites and the tests that count transcript lines: what a turn boundary *is*
+has not changed, only how it is drawn. The separator is a single space
+rather than an empty string — ratatui measures an empty `RLine` as zero
+rows tall, which would have deleted the gap the rule was standing in for,
+and the test that checks this fails if it regresses.
+
+HTML export keeps `<hr class="divider">`; its stylesheet already carries
+`margin:1em 0`, which is the HTML spelling of the same gap.
+
+### The oracles, and their falsification
+
+`crates/nini-tui/tests/turn_separator_e2e.rs`, stashing the source and
+keeping the tests: **0 passed, 2 failed**.
+
+```
+at width 40, turn boundaries added 80 rule(s) to the frame
+```
+
+Two rules of forty — the defect, counted.
+
+They compare a frame with turn boundaries against a baseline frame with an
+empty transcript, rather than counting from a fixed row, because the
+prompt's border is a legitimate `─` line and hard-coding a coordinate
+would encode a layout guess.
+
+One existing test, `transcript_width_e2e::clear_while_scrolled_up_resets_the_viewport`,
+used "the divider is still visible" as its evidence that the renderer
+works. That evidence died with the rule, so the probe is now a line with
+content. The test's purpose is unchanged; its witness was the defect.
+
 ## v0.10.1 — one lock, eleven silent answers (2026-10-16)
 
 ### Release bookkeeping, stated plainly

@@ -435,13 +435,38 @@ pub fn render_bash_execution(
     out
 }
 
-/// Render a divider line: 60 box-drawing chars styled `dim`.
+/// The gap between two turns.
 ///
-/// Matches `render_transcript`'s previous behavior exactly so existing
-/// snapshots don't drift.
-pub fn render_divider(theme: &Theme) -> RLine<'static> {
-    let div: String = "─".repeat(60);
-    RLine::from(Span::styled(div, theme.fg_style("dim")))
+/// v0.10.1: this was `"─".repeat(60)` — sixty hard-coded box-drawing
+/// characters, drawn after every turn and after the output of nearly
+/// every slash command. Measured in tmux at four terminal widths, it came
+/// out at `min(60, width)`: sixty characters hanging in the middle of a
+/// 200-column terminal, and a full-width line at 40. That full-width
+/// case is the "screen full of horizontal lines" report.
+///
+/// Three facts say it should not exist:
+///
+/// 1. **Pi draws no such line.** Every message boundary in Pi is a
+///    `Spacer(1)` — `assistant-message.js:74/121/131/139/144`,
+///    `bash-execution.js:30`, `branch-summary-message.js:30`,
+///    `compaction-summary-message.js:31`. Not one of them draws a rule.
+/// 2. **The one rule Pi does draw is sized.** `dynamic-border.js:18`:
+///    `"─".repeat(Math.max(1, width))`. A fixed 60 has no notion of
+///    width at all, which is why it needed the terminal to be clipped
+///    for it.
+/// 3. **A test pinned the number.** `render_divider_is_sixty_dashes`
+///    asserted 60, so the defect had a specification defending it.
+///
+/// The transcript keeps `TranscriptLine::Divider`, so the twenty-odd
+/// `push_divider` call sites and the tests that count transcript lines
+/// keep their meaning: what a turn boundary *is* has not changed, only
+/// how it is drawn.
+pub fn turn_separator() -> RLine<'static> {
+    // A space rather than an empty string: `ListItem::new` measures an
+    // empty `RLine` as zero lines tall, which would make the separator
+    // invisible — the exact failure the rule was there to avoid. A space
+    // is one row, and trims away when the frame is printed.
+    RLine::from(Span::raw(" "))
 }
 
 /// Status-indicator spinner: cycles through 10 braille frames.
@@ -701,10 +726,25 @@ mod tests {
     }
 
     #[test]
-    fn render_divider_is_sixty_dashes() {
-        let line = render_divider(&theme());
+    fn turn_separator_is_a_blank_line_not_a_rule() {
+        // v0.10.1: this asserted `chars().count() == 60`, i.e. it was a
+        // specification for the defect. It is kept, inverted, so the
+        // property cannot come back quietly.
+        let line = turn_separator();
         let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(joined.chars().count(), 60);
+        assert!(
+            !joined.contains('─'),
+            "Pi separates turns with a blank line, not a rule: {joined:?}"
+        );
+        assert!(
+            joined.trim().is_empty(),
+            "the separator must carry no visible glyph: {joined:?}"
+        );
+        assert_eq!(
+            joined.chars().count(),
+            1,
+            "exactly one space — zero-width would make the row vanish"
+        );
     }
 
     #[test]

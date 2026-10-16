@@ -823,15 +823,19 @@ fn clear_while_scrolled_up_resets_the_viewport() {
     ts.lines.clear();
     ts.reset_view();
     s.push_divider();
+    // v0.10.1: the divider used to be the witness that the renderer still
+    // draws, and it was a rule of 60 box characters. It is a blank line now
+    // - Pi separates turns with `Spacer(1)` and draws no rule at all - so it
+    // can no longer carry that evidence. A line with content can.
+    s.push_user("probe");
 
     let ts = &s.transcript_state;
     assert!(ts.autoscroll);
     assert_eq!(ts.scroll_offset, 0);
+    let visible = visible_transcript(&s, NARROW.0, NARROW.1);
     assert!(
-        !visible_transcript(&s, NARROW.0, NARROW.1)
-            .iter()
-            .all(|r| r.trim().is_empty()),
-        "a freshly cleared transcript must still render its divider"
+        visible.iter().any(|r| r.contains("probe")),
+        "a freshly cleared transcript must still render what was pushed to it"
     );
 }
 
