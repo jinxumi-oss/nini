@@ -1,0 +1,111 @@
+name: macOS segfault
+
+# Manual, because the defect is only reproducible on macOS: the
+# `test (macos-latest)` leg has died with SIGSEGV in
+# `nini-tui --test agent_wire_e2e` since at least v0.9.1, intermittently
+# (3 runs: 2 red, 1 green). Ubuntu passes every time, and no amount of
+# reasoning about a Linux-only run has produced a cause — six wrong
+# explanations in one session is the documented record of that.
+#
+# This workflow exists to stop guessing and read a native stack.
+#
+# RUST_BACKTRACE does not help here: a SIGSEGV produces no Rust backtrace.
+# lldb does.
+
+on:
+  workflow_dispatch:
+    inputs:
+      attempts:
+        description: Attempts (the crash is intermittent; ~2 in 3 runs hit it)
+        default: "4"
+      mode:
+        description: Test harness mode
+        default: parallel
+        type: choice
+        options:
+          - parallel
+          - serial
+
+jobs:
+  stack:
+    name: native stack
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: segfault
+
+      - name: Build the test binary
+        run: |
+          set -euo pipefail
+          cargo test -p nini-tui --test agent_wire_e2e --no-run 2>&1 | tail -3
+          BIN=$(ls -t target/debug/deps/agent_wire_e2e-* 2>/dev/null | grep -v '\.d$' | head -1)
+          if [ -z "$BIN" ]; then echo "test binary not found" >&2; exit 1; fi
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+          echo "binary: $BIN"
+
+      - name: Which test does it die on?
+        # Serial, with output live, so the last line printed before the
+        # crash names the test. The CI log stops at the previous "ok",
+        # which is why nobody could tell whether it died *in* a test or
+        # *between* two.
+        run: |
+          set +e
+          cargo test -p nini-tui --test agent_wire_e2e -- --test-threads=1 --nocapture 2>&1 \
+            | tee serial.log
+          echo "exit=$?"
+          set -e
+
+      - name: Native stack
+        run: |
+          set +e
+          ATTEMPTS=${{ inputs.attempts }}
+          if [ "${{ inputs.mode }}" = "serial" ]; then
+            FLAGS="--test-threads=1 --nocapture"
+          else
+            FLAGS="--test-threads=4"
+          fi
+          echo "running: $BIN $FLAGS"
+          for i in $(seq 1 "$ATTEMPTS"); do
+            echo "=========== attempt $i ==========="
+            xcrun lldb --batch \
+              -o "settings set target.load-cwd-lldbinit false" \
+              -o "run" \
+              -o "thread backtrace all" \
+              -o "register read rip rdi rsi rdx rbx rbp rsp r8 r9 r10 r11 r12 r13 r14 r15 rax rdx" \
+              -o "quit" \
+              -- "$BIN" $FLAGS > "stack-$i.log" 2>&1
+            if grep -qE "EXC_BAD_ACCESS|SIGSEGV|stop reason" "stack-$i.log"; then
+              echo ">>> crash reproduced on attempt $i"
+              break
+            fi
+            echo ">>> attempt $i: no crash"
+          done
+          set -e
+          echo "---- tail of the last attempt ----"
+          tail -60 stack-*.log 2>/dev/null || true
+
+      - name: Diagnostic reports
+        # macOS also drops an .ips crash report; keep it even when lldb
+        # did not catch the signal.
+        run: |
+          ls -t ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head -20 || true
+          mkdir -p reports
+          cp -f ~/Library/Logs/DiagnosticReports/*.ips reports/ 2>/dev/null || true
+          ls -la reports/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: segfault-logs
+          path: |
+            stack-*.log
+            serial.log
+            reports/
+          if-no-files-found: warn
