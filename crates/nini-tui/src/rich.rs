@@ -46,7 +46,11 @@ pub fn render_assistant_message(
     // Auto-link bare URLs into OSC 8 hyperlinks so terminals like
     // iTerm2 / Kitty / WezTerm render them as clickable links.
     let linked = crate::hyperlink::auto_link(&clean);
-    let lines = render_markdown(&linked, theme);
+    // v0.10.1: the width goes down with the text. The markdown renderer
+    // used to guess (60 columns for a thematic break) because this call
+    // handed it the text alone — but `max_width` is right here, and it is
+    // the same number Pi passes its own `Markdown` component.
+    let lines = render_markdown(&linked, theme, max_width);
     // v0.8.9 (P1-3): clamp to the real terminal width. The markdown
     // renderer has no idea how wide the screen is — it emitted
     // arbitrarily long lines and relied on "ratatui will clip anyway",

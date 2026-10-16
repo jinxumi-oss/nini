@@ -795,7 +795,7 @@ fn theme_dark_and_light_both_render() {
 fn markdown_in_assistant_text_renders() {
     use nini_tui::markdown::render_markdown;
     let theme = Theme::dark();
-    let lines = render_markdown("# Title\n\n- item 1\n- item 2\n", &theme);
+    let lines = render_markdown("# Title\n\n- item 1\n- item 2\n", &theme, Some(80));
     assert!(lines.len() >= 2, "Markdown should produce multiple lines");
     let first: String = lines[0]
         .spans

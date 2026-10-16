@@ -39,7 +39,16 @@ use crate::theme::Theme;
 ///
 /// Public API preserved from the hand-written parser — call sites in
 /// `rich.rs` and `image_paste.rs` need not change.
-pub fn render_markdown(s: &str, theme: &Theme) -> Vec<Line<'static>> {
+/// `width` is the content width the caller will render into, when it knows
+/// it. v0.10.1: the markdown renderer had no idea how wide the screen is, so
+/// a thematic break drew `\u{2500}`.repeat(60) and relied on a later
+/// truncation pass — see `on_rule`. Pi has the width, because its
+/// `Markdown` is a layout component; this is the same value arriving from
+/// the other direction.
+/// Pi's thematic-break length cap: `Math.min(width, 80)`.
+const MAX_HR_WIDTH: usize = 80;
+
+pub fn render_markdown(s: &str, theme: &Theme, width: Option<usize>) -> Vec<Line<'static>> {
     if s.trim().is_empty() {
         return vec![Line::from("")];
     }
@@ -51,7 +60,7 @@ pub fn render_markdown(s: &str, theme: &Theme) -> Vec<Line<'static>> {
     options.insert(Options::ENABLE_FOOTNOTES);
 
     let parser = Parser::new_ext(s, options);
-    let mut state = MdState::new(theme);
+    let mut state = MdState::new(theme, width);
     for event in parser {
         state.handle(event);
     }
@@ -64,6 +73,10 @@ pub fn render_markdown(s: &str, theme: &Theme) -> Vec<Line<'static>> {
 
 struct MdState<'a> {
     theme: &'a Theme,
+    /// Content width the caller will render into, if known. Used by the
+    /// handful of constructs whose length is not dictated by the source
+    /// text — today that is the thematic break alone.
+    width: Option<usize>,
     /// Output lines accumulated so far.
     out: Vec<Line<'static>>,
     /// Stack of inline style modifiers currently in effect (bold, italic, etc.).
@@ -109,9 +122,10 @@ struct ListCtx {
 }
 
 impl<'a> MdState<'a> {
-    fn new(theme: &'a Theme) -> Self {
+    fn new(theme: &'a Theme, width: Option<usize>) -> Self {
         Self {
             theme,
+            width,
             out: Vec::new(),
             style_stack: Vec::new(),
             pending: Vec::new(),
@@ -459,11 +473,32 @@ impl<'a> MdState<'a> {
         }
     }
 
+    /// How long a thematic break is drawn.
+    ///
+    /// Pi: `"\u{2500}".repeat(Math.min(width, 80))`
+    /// (`@mariozechner/pi-tui` `dist/components/markdown.js`, `case "hr"`).
+    /// The cap matters as much as the width — on a 200-column terminal Pi
+    /// still draws 80, so the rule never spans the screen.
+    ///
+    /// v0.10.1: this was a hard-coded 60 with the comment "we don't know it
+    /// here, so use a generous default. ratatui's wrap will clip anyway",
+    /// and the comment's own premise was wrong: the caller *did* know, it
+    /// just did not pass it down. The result on a 100-column terminal was a
+    /// rule of 60, and on a 40-column one a full-width rule — the "long
+    /// horizontal lines" in the middle of a long task, where models put
+    /// `---` between sections all the time.
+    ///
+    /// With no width (only reachable from tests, or a degenerate area
+    /// narrower than 4 cells) this draws the shortest rule that still
+    /// exists rather than guessing a length: 60 columns of rule is a
+    /// statement about the screen that nothing here can support.
+    fn rule_width(&self) -> usize {
+        self.width.map_or(1, |w| w.min(MAX_HR_WIDTH).max(1))
+    }
+
     fn on_rule(&mut self) {
         self.ensure_block_gap();
-        // Use the full terminal width \u2014 but we don't know it here, so use a
-        // generous default. ratatui's wrap will clip anyway.
-        let rule = "\u{2500}".repeat(60);
+        let rule = "\u{2500}".repeat(self.rule_width());
         self.out
             .push(Line::from(Span::styled(rule, self.theme.fg_style("mdHr"))));
         self.last_was_block_end = true;
@@ -619,7 +654,7 @@ mod tests {
 
     #[test]
     fn renders_h1_with_underline() {
-        let lines = render_markdown("# Title", &theme());
+        let lines = render_markdown("# Title", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -641,7 +676,7 @@ mod tests {
 
     #[test]
     fn renders_h2_bold_no_underline() {
-        let lines = render_markdown("## Subhead", &theme());
+        let lines = render_markdown("## Subhead", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -658,7 +693,7 @@ mod tests {
 
     #[test]
     fn renders_h3_with_hash_prefix() {
-        let lines = render_markdown("### Three", &theme());
+        let lines = render_markdown("### Three", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -673,7 +708,7 @@ mod tests {
         // v0.8.3 refactor, but `•` is what every other regression test
         // asserts on (and what the theme colour slot `mdListBullet`
         // expects). Restore `•` here too.
-        let lines = render_markdown("- one\n- two", &theme());
+        let lines = render_markdown("- one\n- two", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -684,7 +719,7 @@ mod tests {
 
     #[test]
     fn renders_ordered_list_with_number_dot() {
-        let lines = render_markdown("1. first\n2. second", &theme());
+        let lines = render_markdown("1. first\n2. second", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -695,7 +730,7 @@ mod tests {
 
     #[test]
     fn renders_task_list_with_bracket_marker() {
-        let lines = render_markdown("- [ ] todo\n- [x] done", &theme());
+        let lines = render_markdown("- [ ] todo\n- [x] done", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -706,7 +741,7 @@ mod tests {
 
     #[test]
     fn renders_blockquote_with_pipe_border() {
-        let lines = render_markdown("> quoted text", &theme());
+        let lines = render_markdown("> quoted text", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -718,7 +753,7 @@ mod tests {
 
     #[test]
     fn renders_fenced_code_block_with_border() {
-        let lines = render_markdown("```rust\nfn main() {}\n```\n", &theme());
+        let lines = render_markdown("```rust\nfn main() {}\n```\n", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -737,7 +772,7 @@ mod tests {
 
     #[test]
     fn renders_inline_code_with_md_code_color() {
-        let lines = render_markdown("use `foo()` to call", &theme());
+        let lines = render_markdown("use `foo()` to call", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -747,7 +782,7 @@ mod tests {
 
     #[test]
     fn renders_inline_link_with_url_suffix() {
-        let lines = render_markdown("see [docs](https://example.com) here", &theme());
+        let lines = render_markdown("see [docs](https://example.com) here", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -758,7 +793,7 @@ mod tests {
 
     #[test]
     fn renders_strikethrough() {
-        let lines = render_markdown("this is ~~deleted~~ text", &theme());
+        let lines = render_markdown("this is ~~deleted~~ text", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -777,7 +812,7 @@ mod tests {
 
     #[test]
     fn renders_horizontal_rule() {
-        let lines = render_markdown("---\n\ntext", &theme());
+        let lines = render_markdown("---\n\ntext", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -790,7 +825,7 @@ mod tests {
 
     #[test]
     fn renders_bold_and_italic_inline() {
-        let lines = render_markdown("**bold** and *italic*", &theme());
+        let lines = render_markdown("**bold** and *italic*", &theme(), Some(80));
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -809,7 +844,7 @@ mod tests {
 
     #[test]
     fn empty_input_yields_blank_line() {
-        let lines = render_markdown("", &theme());
+        let lines = render_markdown("", &theme(), Some(80));
         assert_eq!(lines.len(), 1);
     }
 
@@ -818,6 +853,7 @@ mod tests {
         let lines = render_markdown(
             "# h1\n## h2\n### h3\n#### h4\n##### h5\n###### h6\n",
             &theme(),
+            Some(80),
         );
         // h3+ have `### ` prefix etc.
         let joined: String = lines
@@ -832,7 +868,7 @@ mod tests {
 
     #[test]
     fn paragraph_after_heading_has_gap() {
-        let lines = render_markdown("# Title\n\nbody text", &theme());
+        let lines = render_markdown("# Title\n\nbody text", &theme(), Some(80));
         // Title on first line, blank line, body text on next.
         assert!(lines.len() >= 2);
         // Find body text line index.
@@ -854,7 +890,7 @@ mod tests {
     // ---------------------------------------------------------------
 
     fn render(text: &str) -> String {
-        render_markdown(text, &theme())
+        render_markdown(text, &theme(), Some(80))
             .iter()
             .map(|l| {
                 l.spans

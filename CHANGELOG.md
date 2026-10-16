@@ -1,3 +1,71 @@
+## Unreleased — a thematic break was sixty columns of guess (2026-10-16)
+
+The turn-divider fix above did not cover this report. "Long horizontal lines
+late in a long task" had **two** sources, and the second one only shows up
+when the model uses `---` — which it does constantly between sections of a
+long answer, and which no scripted fixture ever produced.
+
+`markdown.rs:466`:
+
+```rust
+// Use the full terminal width — but we don't know it here, so use a
+// generous default. ratatui's wrap will clip anyway.
+let rule = "\u{2500}".repeat(60);
+```
+
+The comment's premise was false. The caller *did* know: `rich.rs` holds
+`max_width` and passes it to every other constructor in the same match arm.
+`render_markdown(s, theme)` simply never received it.
+
+### Pi's rule
+
+`@mariozechner/pi-tui` `dist/components/markdown.js`, `case "hr"`:
+
+```js
+lines.push(this.theme.hr("─".repeat(Math.min(width, 80))));
+```
+
+Both halves matter. `width` because a rule that ignores it is not a rule,
+it is a constant; and the **cap at 80** because that is what stops a rule
+becoming a full-width band on a wide terminal.
+
+### Why it hid below 60 columns
+
+`rich.rs` truncates finished lines to `max_width`, so a 60-column rule
+became a 40-column rule on a 40-column terminal. The old code was correct
+below 60 and wrong above it — which is why the defect only appeared on the
+terminals people actually use, and why it survived a look at narrow ones.
+
+tmux, 100 columns, real binary, before → after:
+
+```
+line  4: ─= 60      line  4: ─= 80      ← min(100, 80)
+line 37: ─= 89      line 87: ─= 89      ← prompt border, unchanged
+line 39: ─= 98      line 89: ─= 98
+```
+
+### The fix
+
+`render_markdown` takes the width, `MdState` keeps it, and `on_rule` uses
+`min(width, 80)`. With no width — only reachable from tests or a degenerate
+area — the rule is the shortest one that still reads as a rule (1), rather
+than sixty columns of claim about a screen this code cannot see.
+
+### The oracles, and two mistakes in reaching them
+
+`crates/nini-tui/tests/markdown_hr_width.rs`. Stashing the source and
+keeping the tests: **1 passed, 3 failed** — `expected the minimal rule when
+no width is known, got 60`, and `each rule must follow min(width, 80), not
+a constant: [60, 60]`.
+
+They call `render_assistant_message`, not `render_markdown`, and the reason
+is worth writing down: the first version called `render_markdown` directly
+and **did not compile against the old code**, because that function is what
+gained the parameter. A test that cannot build proves nothing — the same
+trap the turn-separator tests fell into earlier in this same session.
+`render_assistant_message(text, theme, max_width)` had its third parameter
+on both sides of the fix.
+
 ## Unreleased — a turn boundary is a blank line, not a rule (2026-10-16)
 
 Reported as "the TUI still draws long horizontal lines". Reproduced in tmux
