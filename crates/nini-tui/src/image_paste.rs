@@ -159,6 +159,10 @@ mod tests {
 /// (text-only — the caller can fall through to a text-paste handler).
 /// Returns `Err` if a real I/O or arboard error occurs.
 pub fn paste_image_from_clipboard() -> io::Result<Option<String>> {
+    // v0.10.1: see `clipboard::clipboard_guard` — arboard's macOS backend is
+    // Objective-C and dies with EXC_BAD_ACCESS in `objc_msgSend` when two
+    // threads enter NSPasteboard at once.
+    let _guard = crate::clipboard::clipboard_guard();
     let mut cb = arboard::Clipboard::new()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clipboard open: {e}")))?;
     let img = match cb.get_image() {
