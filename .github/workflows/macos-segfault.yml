@@ -62,6 +62,25 @@ jobs:
           echo "exit=$?"
           set -e
 
+      - name: Probe the environment
+        # Guessing at a guard is how six wrong explanations happened. Before
+        # writing one, find out what this runner actually reports.
+        run: |
+          echo "id: $(id -u)"
+          echo "launchctl managername: $(launchctl managername 2>&1 || true)"
+          echo "SSH_CONNECTION: ${SSH_CONNECTION:-<unset>}"
+          echo "SSH_TTY: ${SSH_TTY:-<unset>}"
+          echo "TERM_PROGRAM: ${TERM_PROGRAM:-<unset>}"
+          echo "DISPLAY: ${DISPLAY:-<unset>}"
+          echo "--- who ---"
+          who 2>&1 || true
+          echo "--- can we reach WindowServer? ---"
+          launchctl print "gui/$(id -u)" >/dev/null 2>&1 \
+            && echo "gui domain: reachable" \
+            || echo "gui domain: NOT reachable"
+          echo "--- launchd session type ---"
+          launchctl managername 2>&1 | od -c | head -3
+
       - name: Native stack
         run: |
           set +e
