@@ -603,12 +603,12 @@ fn cmd_fork(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -
     };
 
     let points = {
-        let Ok(guard) = session.try_lock() else {
-            return CommandResult::output(vec![
-                "(fork: the session is busy — try again in a moment)".to_string(),
-            ]);
-        };
-        guard.fork_points()
+        // v0.10 (fix): was `try_lock` with a "(fork: the session is busy)"
+        // message. The lock is never busy for longer than one append now
+        // that the flush thread does its IO outside the critical section,
+        // so the message could only ever have been a lie told to a user
+        // mid-command.
+        crate::state::lock_session(&session).fork_points()
     };
 
     // `/fork at N` keeps the N-th message (Pi's `position: "at"`);
@@ -657,11 +657,7 @@ fn cmd_fork(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -
     };
 
     let forked = {
-        let Ok(guard) = session.try_lock() else {
-            return CommandResult::output(vec![
-                "(fork: the session is busy — try again in a moment)".to_string(),
-            ]);
-        };
+        let guard = crate::state::lock_session(&session);
         if inclusive {
             guard.fork_at_inclusive(point.position)
         } else {
@@ -1151,23 +1147,21 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
         // keeping a borrow of state.
         let session_arc = state.session_state.session.take();
         if let Some(arc) = session_arc {
-            if let Ok(guard) = arc.try_lock() {
-                for entry in &guard.entries {
-                    if let Some(msg) = entry_legacy_message(entry) {
-                        for block in &msg.content {
-                            if let nini_core::ContentBlock::Text { text } = block {
-                                match msg.role {
-                                    nini_core::Role::User => state.push_user(text.clone()),
-                                    nini_core::Role::Assistant => {
-                                        state.push_assistant(text.clone())
-                                    }
-                                    nini_core::Role::System | nini_core::Role::Tool => {}
-                                }
+            let guard = crate::state::lock_session(&arc);
+            for entry in &guard.entries {
+                if let Some(msg) = entry_legacy_message(entry) {
+                    for block in &msg.content {
+                        if let nini_core::ContentBlock::Text { text } = block {
+                            match msg.role {
+                                nini_core::Role::User => state.push_user(text.clone()),
+                                nini_core::Role::Assistant => state.push_assistant(text.clone()),
+                                nini_core::Role::System | nini_core::Role::Tool => {}
                             }
                         }
                     }
                 }
             }
+            drop(guard);
             // Restore the Arc.
             state.session_state.session = Some(arc);
         }

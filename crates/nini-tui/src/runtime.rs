@@ -675,11 +675,12 @@ async fn run_loop(
                         // Open tree selector against the active session's entries.
                         let session_arc = lock_state(&shared).session_state.session.clone();
                         let entries: Vec<nini_core::SessionEntry> = if let Some(arc) = session_arc {
-                            if let Ok(guard) = arc.try_lock() {
-                                guard.entries.clone()
-                            } else {
-                                Vec::new()
-                            }
+                            // v0.10 (fix): was `try_lock` with an empty
+                            // `else`, so a `/tree` opened while a turn was
+                            // being appended showed an empty tree — which
+                            // is indistinguishable from "this session has
+                            // no branches".
+                            crate::state::lock_session(&arc).entries.clone()
                         } else {
                             Vec::new()
                         };
@@ -1064,9 +1065,12 @@ fn apply_selector_result(
         let prev_status = lock_state(&shared).run_state.status.clone();
         lock_state(&shared).run_state.status = "branch summary: computing…".into();
         if let Some(arc) = session_arc {
-            if let Ok(guard) = arc.try_lock() {
-                let entries = guard.entries.clone();
-                drop(guard);
+            // v0.10 (fix): was `if let Ok(guard) = arc.try_lock()`, and the
+            // summary is the point of picking a branch — a skipped one left
+            // the status line reading "branch summary: computing…" forever,
+            // because the status was restored inside the same `if let`.
+            let entries = crate::state::lock_session(&arc).entries.clone();
+            {
                 let summary = tree_sel.summarize_at(0, &entries);
                 if let Some(s) = summary {
                     // (a) Preview in transcript.

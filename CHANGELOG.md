@@ -1,3 +1,100 @@
+## Unreleased — one lock, eleven silent answers (2026-10-16)
+
+The v0.10 release left `main` red: the `7009e55` run failed on
+`ubuntu-latest` in `a3_seed::the_seed_carries_tool_calls_and_results`, with
+the seed coming back as `[]`. The macOS leg passed that run, and had
+SIGSEGV'd the run before it — so the note in v0.10 ("macOS is not green,
+ubuntu passes") described a state that no longer exists and now describes
+the reverse.
+
+The failure was not a flaky test. It was a `try_lock`.
+
+Tests: **1357 → 1360**.
+
+### The category: contention encoded as data loss
+
+`Session` lived in an `Arc<tokio::sync::Mutex<_>>`, and all eleven access
+points took it with `try_lock`. Each one had invented its own answer to
+"another thread holds it", and not one of them told anyone:
+
+| Access point | What a busy lock meant |
+|---|---|
+| `session_context_messages` | an empty seed — the model is asked the next question with no history |
+| `session_append_message` | the agent turn is never recorded |
+| `session_push_message` | the user/assistant message is never recorded |
+| `session_compact` | compaction silently does not happen |
+| `transcript_from_context` | the transcript stops matching the session |
+| `session_flush` | this write is skipped, and nothing logs that |
+| `/tree`, branch summary | an empty tree; a status line stuck on "computing…" |
+| `/fork` ×2 | "(fork: the session is busy — try again in a moment)" |
+
+None of those is a state the product has. A lock held for microseconds by
+another reader is not an error condition, and every one of those answers was
+indistinguishable from the honest one: an empty session.
+
+The contention was self-inflicted. `session_flush` holds the lock across
+`write_to_file` — a full serialise of every entry plus an atomic rename —
+and every turn end flushes. Measured on the pre-fix code, a 200-turn loop
+read **198 empty seeds**: the flush thread owned the lock for the length of
+the write and every reader looked straight past it.
+
+### Why the lock was the wrong primitive
+
+`tokio::sync::Mutex` exists for a guard that lives across `.await`. The
+file's own comment claimed "`session` is held across `.await` points in the
+agent task, so it needs the async mutex" — and that claim is false. Every
+one of the eleven sites is a short synchronous section in an ordinary `fn`,
+and the workspace contains exactly one `.lock().await`:
+`nini-tools/mutation_queue`, a different crate and a different lock.
+
+A mutex you cannot `.await` across is an invitation to `try_lock`, and
+`try_lock` is where every silent failure above came from. The lock is now
+`std::sync::Mutex`, poisoning recovered the way `lock_state` already
+recovers it (`unwrap_or_else(|e| e.into_inner())`) — a panic while holding
+the session lock leaves the session intact, and refusing to read it again
+would turn a recoverable panic into total data loss.
+
+### Fix — the flush thread no longer holds the lock across the write
+
+Making readers wait is only correct if the wait is short. It is: the lock
+is now held for one `Session::clone` and released, and the serialise and the
+rename happen outside it. `Session` is `Clone`, so this costs one copy of
+what was about to be written anyway.
+
+What lands on disk is the session as of the flush call — what the previous
+code wrote, minus the window in which every reader was blind. The write
+error path moved from `eprintln!` to `tracing::error!`; a dropped session
+write is invisible (the transcript shows the turn, a restart does not),
+and `eprintln!` reached nobody unless a terminal happened to be attached to
+the thread that lost the race. v0.10 wired `tracing`; this is the first
+consumer on a path where losing it costs data.
+
+`/fork`'s two "the session is busy" branches are gone. They could only ever
+have been a lie told to a user mid-command.
+
+### The oracles, and how they were falsified
+
+Three tests in `crates/nini-tui/tests/session_lock.rs`, each written to fail
+on the old code:
+
+| Test | Fix | Property |
+|---|---|---|
+| `a_contended_read_yields_the_context_not_an_empty_seed` | the lock | a busy session is waited for, not reported as empty |
+| `a_contended_append_is_still_recorded` | the lock | a message written under contention is still recorded |
+| `flushing_does_not_make_the_seed_disappear` | the flush | 200 turn-ends, zero empty seeds |
+
+`git stash` of the source, tests kept: **0 passed, 3 failed**, and the
+assertion messages are the defects themselves. Two things were wrong on the
+way to that, and both are recorded in the test file:
+
+- The first version called `session.lock()`, which does not compile against
+  `tokio::sync::Mutex` — so on the old code it *failed to build* rather than
+  failing its assertions. A test that cannot run is not an oracle.
+- The second version handed the lock to a spawned thread and read
+  immediately. The holder had often not been scheduled yet, so a test of
+  contention never contended and **passed on the code it was written to
+  catch**. The holder now signals once the lock is actually held.
+
 ## v0.10 — Three chains that were built and never connected (2026-10-15)
 
 A long task used to break in one specific shape: it would run, cross
@@ -37,6 +134,10 @@ What changed here is the diagnosis: the job now sets `RUST_BACKTRACE=1`
 and names the job. Until it is reproduced, the honest statement is that
 nini's macOS build is not continuously verified, and that is a real gap in
 the release rather than a footnote to it.
+
+> **Corrected by the `Unreleased` section above.** The `7009e55` run had
+> macOS passing and `ubuntu` failing. The macOS SIGSEGV is still
+> un-reproduced; the ubuntu failure had a cause, and it was in nini.
 
 ### Fix — a long run never compacted (Pi `agent-session.ts:1098` Case 2)
 

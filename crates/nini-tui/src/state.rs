@@ -10,11 +10,22 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-// `session` is held across `.await` points in the agent task, so it
-// needs the async mutex. The render cache is only ever touched from the
-// synchronous render path, so `std::sync::Mutex` (as `StdMutex`) keeps
-// `render_frame` free of async.
-use tokio::sync::Mutex;
+// v0.10 (fix): this file imported `tokio::sync::Mutex` for `session`
+// because a comment claimed "`session` is held across `.await` points in
+// the agent task, so it needs the async mutex". That claim is false, and
+// it is the reason a normal race could become silent data loss: every one
+// of the eleven session access points is a short synchronous critical
+// section in an ordinary `fn` (`session_append_message`, `session_compact`,
+// `session_context_messages`, `/fork`, `/tree`, the flush thread), and the
+// workspace contains exactly one `.lock().await` — `nini-tools`
+// `mutation_queue`, a different crate and a different lock.
+//
+// `tokio::sync::Mutex` is for a guard that lives across `.await`. Used for
+// a guard that never does, it invites `try_lock`, and `try_lock` turns
+// ordinary contention into "no context", "no message", "no tree" — all
+// reported as success. `std::sync::Mutex` keeps every one of those paths
+// waiting, which is what the code always meant. The render cache below was
+// already `StdMutex` for the same reason.
 use unicode_segmentation::UnicodeSegmentation;
 
 /// One row of the conversation transcript. Either a user message, assistant
@@ -1119,6 +1130,37 @@ pub struct ModelState {
 // SessionState — persistence + working-directory metadata.
 // =================================================================
 
+/// Take the session lock, waiting for it.
+///
+/// v0.10 (fix): the eleven call sites this replaces all did
+/// `arc.try_lock()` and each one had invented its own answer to "the lock
+/// is busy":
+///
+/// | caller | what a busy lock meant |
+/// |---|---|
+/// | `session_context_messages` | an empty context — the model loses the conversation |
+/// | `session_append_message` | the turn is never recorded |
+/// | `session_compact` | compaction silently does not happen |
+/// | `transcript_from_context` | the transcript stops matching the session |
+/// | `/tree`, branch summary | an empty tree, or no summary |
+/// | `/fork` ×2 | "the session is busy — try again in a moment" |
+///
+/// None of those is a state the product has. Contention is caused by the
+/// background flush thread, which holds the lock for the length of one
+/// `write_to_file` — a full serialise plus an atomic rename. Every one of
+/// those callers is a short synchronous section, so the right answer is to
+/// wait; the flush thread no longer holds the lock across the IO either
+/// (see `session_flush`).
+///
+/// Poisoning is recovered the same way `lock_state` recovers it: a panic
+/// while holding the session lock leaves the session intact, and refusing to
+/// ever read it again would turn a recoverable panic into total data loss.
+pub fn lock_session(
+    session: &Arc<StdMutex<nini_session::Session>>,
+) -> std::sync::MutexGuard<'_, nini_session::Session> {
+    session.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Active session + cwd/git-branch metadata shown in the status bar.
 #[derive(Debug)]
 pub struct SessionState {
@@ -1126,7 +1168,12 @@ pub struct SessionState {
     /// Active session for persistence. When None, no session is active
     /// (e.g., --no-session mode). Arc+Mutex allows AgentSink (tokio task)
     /// to flush entries while the render loop holds a read handle.
-    pub session: Option<Arc<Mutex<nini_session::Session>>>,
+    ///
+    /// v0.10 (fix): `StdMutex`, not `tokio::sync::Mutex` — see the module
+    /// preamble. No session guard is ever held across an `.await`, so the
+    /// async mutex bought nothing and its `try_lock` bought eleven silent
+    /// failure modes.
+    pub session: Option<Arc<StdMutex<nini_session::Session>>>,
     /// Path to the session file on disk. Used for atomic write.
     pub session_path: Option<PathBuf>,
     /// Current working directory for the status bar (e.g., "~/nini").
@@ -1581,7 +1628,7 @@ impl AppState {
         // `session_load` has always read the id off the header; only this
         // path invented one. One source of truth.
         self.session_state.session_id = Some(session.header.id.clone());
-        self.session_state.session = Some(Arc::new(Mutex::new(session)));
+        self.session_state.session = Some(Arc::new(StdMutex::new(session)));
     }
 
     /// Append a user or assistant message to the session. Call this BEFORE
@@ -1600,11 +1647,9 @@ impl AppState {
             content: vec![nini_core::ContentBlock::Text { text: content }],
             timestamp: chrono::Utc::now().timestamp_millis(),
         };
-        if let Ok(mut guard) = arc.try_lock() {
-            let _id = guard.push_message(parent_id, msg);
-        }
+        let mut guard = lock_session(arc);
+        let _id = guard.push_message(parent_id, msg);
     }
-
     /// P0.1: buffer a streamed text delta for the pending assistant message.
     pub fn session_buffer_text(&mut self, text: &str) {
         let p = self
@@ -1797,21 +1842,24 @@ impl AppState {
         let Some(ref arc) = self.session_state.session else {
             return;
         };
-        if let Ok(mut guard) = arc.try_lock() {
-            let id = format!("msg_{}", uuid::Uuid::new_v4());
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-            // P0.2: chain at the leaf, like every other write. This path
-            // carries the whole agent turn, so leaving it detached is what
-            // made tool traffic invisible to the tree.
-            guard.append_chained(nini_core::SessionEntry::Message(
-                nini_core::entries::SessionMessageEntry {
-                    id,
-                    parent_id: None,
-                    timestamp,
-                    message,
-                },
-            ));
-        }
+        // v0.10 (fix): was `if let Ok(mut guard) = arc.try_lock()`, which
+        // dropped the whole agent turn on contention — no error, no log, and
+        // nothing in the file to show for it. The user asks where their tool
+        // output went; the answer was a `try_lock` that did not get it.
+        let mut guard = lock_session(arc);
+        let id = format!("msg_{}", uuid::Uuid::new_v4());
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        // P0.2: chain at the leaf, like every other write. This path
+        // carries the whole agent turn, so leaving it detached is what
+        // made tool traffic invisible to the tree.
+        guard.append_chained(nini_core::SessionEntry::Message(
+            nini_core::entries::SessionMessageEntry {
+                id,
+                parent_id: None,
+                timestamp,
+                message,
+            },
+        ));
     }
 
     /// Flush pending entries to disk (atomic: temp file + rename).
@@ -1824,12 +1872,25 @@ impl AppState {
             (Some(p), Some(s)) => (p.clone(), s.clone()),
             _ => return,
         };
-        // Spawn a blocking task so we don't block the render loop.
+        // v0.10 (fix): the lock used to be held across `write_to_file` — a
+        // full serialise of every entry plus a temp-file rename, which is
+        // the entire cost of a session write. Every reader in the product
+        // shares that lock: the seed built on each user turn, `/tree`, the
+        // transcript rebuild, `/fork`. Making them wait would have traded
+        // silent loss for a visible stall, so the IO had to leave the lock.
+        //
+        // `Session` is `Clone`, and the snapshot is taken inside the same
+        // short critical section appends take, so what lands on disk is the
+        // session as of the flush call — what the previous code wrote, minus
+        // the window in which every reader was blind.
         std::thread::spawn(move || {
-            if let Ok(guard) = session.try_lock() {
-                if let Err(e) = guard.write_to_file(&path) {
-                    eprintln!("[nini] session write error: {e}");
-                }
+            let snapshot = lock_session(&session).clone();
+            if let Err(e) = snapshot.write_to_file(&path) {
+                // A dropped session write is invisible: the transcript shows
+                // the turn and a restart does not. v0.10 wired `tracing` for
+                // exactly this; `eprintln!` reached nobody unless a terminal
+                // happened to be attached to the thread that lost the race.
+                tracing::error!(error = %e, path = %path.display(), "session write failed");
             }
         });
     }
@@ -1858,7 +1919,7 @@ impl AppState {
         // knows what was lost on the way in.
         self.session_state.skipped_lines_on_load = session.skipped_lines;
         self.session_state.session_id = Some(session.header.id.clone());
-        self.session_state.session = Some(Arc::new(Mutex::new(session)));
+        self.session_state.session = Some(Arc::new(StdMutex::new(session)));
         self.session_state.session_path = Some(path);
         self.transcript_from_context();
         Ok(())
@@ -2108,13 +2169,17 @@ impl AppState {
     /// This is what an Agent should be seeded with. Empty when there is no
     /// session — `--no-session`, or before one is initialised — and an
     /// empty seed is correct there: there is no history to replay.
+    ///
+    /// v0.10 (fix): the empty `Vec` here used to have two meanings, and the
+    /// model could not tell them apart: "this session has no history" and
+    /// "another thread held the lock". Contention is not an answer, so the
+    /// second case now waits (`lock_session`) and the seed keeps the
+    /// conversation.
     pub fn session_context_messages(&self) -> Vec<nini_core::provider::Message> {
         let Some(arc) = self.session_state.session.as_ref() else {
             return Vec::new();
         };
-        let Ok(guard) = arc.try_lock() else {
-            return Vec::new();
-        };
+        let guard = lock_session(arc);
         nini_session::build_context_entries(&guard)
             .iter()
             .filter_map(nini_core::conversion::session_entry_to_llm_message)
@@ -2190,7 +2255,7 @@ impl AppState {
     ) -> Option<nini_session::CompactionReport> {
         let arc = self.session_state.session.as_ref()?.clone();
         let report = {
-            let mut guard = arc.try_lock().ok()?;
+            let mut guard = lock_session(&arc);
             guard.compact(keep_recent_tokens)
         }?;
         self.transcript_from_context();
@@ -2208,9 +2273,7 @@ impl AppState {
         let Some(arc) = self.session_state.session.as_ref().cloned() else {
             return;
         };
-        let Ok(guard) = arc.try_lock() else {
-            return;
-        };
+        let guard = lock_session(&arc);
         let context = nini_session::build_context_entries(&guard);
         let lines = render_context_entries(&context);
         drop(guard);
