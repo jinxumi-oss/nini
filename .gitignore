@@ -33,3 +33,4 @@ references/pi-upstream.git/
 *.key
 secrets/
 .planner/
+captures/

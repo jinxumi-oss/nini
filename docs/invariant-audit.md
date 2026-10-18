@@ -91,7 +91,65 @@ R5（51 provider）待决——**这一侧一直在被自己的 fixture 自我�
 所以既不敢扩范围，也发现不了自己的错。**
 
 **这是链②的最高优先目标，且技术上可做**：pi 就在本机
-(`/home/jin/.local/bin/pi` → pi 0.84.2），跑一次即可录到真实 SSE 流。
+（`/home/jin/.local/bin/pi` → pi 0.84.2），跑一次即可录到真实 SSE 流。
+
+### 4.1 链② 第一批已交付：抓包器 + 真 fixture + 5 条 oracle（2026-10-18）
+
+**工具（可复用，非一次性）**
+
+| 文件 | 作用 |
+|---|---|
+| `scripts/capture-sse.py` | 在 Pi 与 provider 之间做流式透传，**逐 SSE 事件**落盘 |
+| `scripts/capture-pi-sse.sh` | 编排：起代理 → 临时 `PI_CODING_AGENT_DIR` → 跑真 Pi → 停代理 |
+
+零污染：不改 `~/.pi/agent`，只把临时 `models.json` 的 `baseUrl` 指向代理，
+`auth.json` 用符号链接。**任何 `Authorization` / `api-key` / `cookie` 头一律
+不落盘**（`safe_headers()`）。落盘粒度是单个 SSE `data:` 事件，因为
+tool_call 的 `arguments` 是跨事件增量拼接的，**事件边界就是那 4 条缺陷的证据**。
+
+**真 fixture**：`crates/nini-ai/tests/fixtures/pi-0.84.2-openai-inline-args-toolcall.sse`
+（未经编辑的原始字节）。**Oracle**：`crates/nini-ai/tests/pi_wire_oracle.rs`，5 条，走真实 `stream()`。
+
+### 真实 Pi 的 tool_call 形态（全部断言的依据）
+
+```text
+[0] delta 只有 role            —— content / tool_calls 字段不存在
+[1] index:0 id name:"bash" arguments:"{"          ← inline-args：name 与首段 args 同一事件
+[2] index:0        arguments 增量                  ← 无 id 无 name，必须继承 [1]
+[3] index:0        arguments:"}"                   ← 一个 JSON 被拆到 3 个事件
+[4] finish_reason:"tool_calls"，tool_calls 为 null
+[5] "choices":[] 的 usage-only 事件                ← choices[0] 直接索引会 panic
+```
+
+### 变异验证：oracle 真的会红
+
+注入 `c3944d13` 的原始 bug（`input_json: initial_args` → `String::new()`）：
+
+```
+5 条 oracle 中第 4 条 FAILED，症状 input_json: Null —— 其余 4 条仍绿
+还原后全量 73+8+18+8+5+9 全绿，git diff 干净
+```
+
+### 必须纠正的预期：既有测试**也**抓到了同一个变异
+
+`openai::tool_call_inline_args_tests::inline_args_on_start_chunk_emits_complete_stop`
+在同一变异下同样失败。**所以链② 的价值不是"多几条测试"——那 5 条里至少一条是冗余的。**
+
+真正的差异在别处，而且更严重：
+
+| | 既有测试 | 链② oracle |
+|---|---|---|
+| 首块 `arguments` | `"{\"command\":\"ls /tmp\"}"`（**完整 body**） | `"{"`（**真实抓包**） |
+| 注释自称 | "aiio-shape ... a single chunk carries ... the full arguments" | 无自称，字节来自真 Pi |
+| 覆盖路径 | single-shot inline | **streaming 增量** |
+| 形态来源 | **假设**，且被标注成事实 | **本机实测** |
+
+即：既有测试守卫的形态**不是本机这条链路的真实形态**。
+而 `9c9783e3`（"single-shot 与 streaming 两条路径共用一次 Start"）
+正是这个假设的历史产物——它把两种形态当成一种。
+
+**因此链② 的作用不是"多写测试"，而是让手搓形态无法再冒充真流。**
+这条差异可被任何人证伪：直接 `diff` 真 fixture 与 `openai.rs` 里的 JSON 字面量。
 
 ---
 
