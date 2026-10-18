@@ -302,6 +302,48 @@ fn command_output_renders_in_frame() {
     );
 }
 
+/// Found while verifying a rebuilt binary, 2026-10-18: `/hotkeys` listed
+/// `Home ?`.
+///
+/// `action_label` is a `match` over `KeyAction`, and `ScrollToTop` — added
+/// with the `Home`/`End` parity fix — was never added to it, so the key fell
+/// through to the `other => "?"` arm. The arm is the right idea ("a new
+/// action must not silently vanish from `/hotkeys`") implemented as the
+/// wrong outcome: the binding is *listed* and its meaning is *withheld*,
+/// which is a quieter lie than a stale footer hint.
+///
+/// The label was also stale in the other direction: `Up` / `Down` still
+/// read "recall previous prompt" after the ladder fix, where they move the
+/// caret first and only browse history from an empty prompt.
+///
+/// This asserts on the **rendered output** of the command, not on
+/// `action_label`, so it pins what the user sees.
+#[test]
+fn hotkeys_labels_every_binding_it_lists() {
+    let mut state = AppState::new("test-model");
+    let mut settings = SettingsManager::default();
+    let r = dispatch(&mut state, &mut settings, CommandId::Hotkeys, "");
+    let lines = match r.outcome {
+        CommandOutcome::Output(lines) => lines,
+        other => panic!("/hotkeys must produce Output, got {other:?}"),
+    };
+    let body = lines.join("\n");
+
+    assert!(
+        !body.contains(" ?"),
+        "/hotkeys lists a binding whose label is `?` — an action reached \
+         the `other => \"?\"` arm of `action_label` instead of being \
+         described:\n{body}"
+    );
+    // The ladder, in the user's words. `recall previous prompt` on its own
+    // is the pre-fix description: pressing Up in a multi-line prompt moves
+    // the caret and keeps the text.
+    assert!(
+        body.contains("move cursor up, else recall previous prompt"),
+        "the Up/Down labels still describe the pre-ladder behaviour:\n{body}"
+    );
+}
+
 // =====================================================================
 // Test 10: Frame snapshot — `/new` clears visible transcript
 // =====================================================================

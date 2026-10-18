@@ -124,7 +124,7 @@ hints. Type `/` to summon the slash-command autocomplete. Press
 | `Ctrl+V` | Paste image from clipboard |
 | `PageUp` / `PageDown` / `Shift+End` | Scroll transcript up / down / to the latest |
 | `Ctrl+←` / `Ctrl+→` | Jump word left / right |
-| `↑` / `↓` | Recall history (or navigate popup when one is open) |
+| `↑` / `↓` | Move the caret between lines; at the first/last line, recall prompt history |
 | `Tab` | Accept selected completion |
 
 ## Slash commands
