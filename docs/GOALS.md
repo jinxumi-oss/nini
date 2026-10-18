@@ -68,8 +68,8 @@ v0.9.2 一整版都在清这个。
 
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
-| 版本 | v0.10.1 | tag `f183c06`，CI 5 job 全绿 | 15 个提交未发布 |
-| 测试 | 1395 → **1428** 通过 / 1 ignored / 0 失败 | 本机全量 `cargo test --workspace`，连续 3 次全绿 | 原 2 个 flake 已修（`/debug` 竞争、`bash` 墙钟断言）；本轮 10-18 补齐 README 数字（原写 1418，实际 1428） |
+| 版本 | **v0.10.2** | tag 待推；CI 增加 release profile 测试与 panic 策略门禁 | 见下方“发布链” |
+| 测试 | 1395 → **1428** 通过 / 1 ignored / 0 失败 | 本机全量 `cargo test --workspace`（debug 与 release 两个 profile 各一次，均 0 失败） | 原 2 个 flake 已修 |
 | 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 仍是 stub（`dispatch.rs:1543`） |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
 | 行为 oracle | 45 条，录于 0.84.2 | `crates/nini-conformance` | agent loop / TUI 无 oracle（T1 分层所致，非缺陷） |
@@ -122,7 +122,7 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 | ~~P0-4~~ | **已做** 搜索命中可见 + 滚动跟随 | ✅ `search_match_visible.rs` 4 条绿 | 与 P0-3 配套，只修索引不修呈现等于半条 |
 | ~~P0-5~~ | **已做** `↑`/`↓` 加 Pi 的 ladder 语义 | ✅ `prompt_vertical_motion.rs` 7 条绿 | 补齐视觉行几何 + 渲染发布宽度 |
 | ~~P1-1~~ | **已做** `ScrollToTop` + `Home`/`End` 归 transcript | ✅ `transcript_scroll_to_top.rs` 6 条绿；`Ctrl+E` 补齐 | Pi 的 `Home` 被 viewport listener 优先消费 |
-| **P2-1** | 发布 v0.10.2 | Unreleased 覆盖全部未发布提交；README 测试数与二进制一致 | CHANGELOG 已补本次审计的 10 项；README 数字已对齐 **1428**；**只剩打 tag** |
+| ~~P2-1~~ | **已做** 发布 v0.10.2 | ✅ 版本已 bump、CHANGELOG 已封版、`--version` 带 profile、CI 增两道门禁；**待 push tag** | CHANGELOG 已补本次审计的 10 项；README 数字已对齐 **1428** |
 | **P2-2** | 回填 v0.9.2 缺口表 | 每条 ⬜ 要么 ✅+提交号，要么移入“明确不做” | 已被后续版本推翻的条目会误导下一轮调研 |
 | **P2-3** | 能力面最低维持 | R5 未决期间**只做不扩范围**的修复 | 不擅自替 owner 决定范围 |
 
@@ -138,15 +138,22 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 4. **键位与 Pi 的语义差异** —— Pi `Ctrl+-` undo / `Ctrl+D` 删右字符 / `Ctrl+F` 右移一字符 / `Ctrl+Shift+F` 搜索；nini 均不同
 5. `move_to_start` / `move_to_end` 仍是“整个 buffer”，Pi 是“当前行”（`Ctrl+A` 在多行下的差异；P0-5 刻意未改，避免二次惊吓）
 
-### 发布链的已知缺陷（10-18 审计新发现）
+### 发布链：二进制身份的四重歧义（10-18 关闭）
 
-三项已在本轮关闭，保留记录以便复查：
+同一个 `nini 0.10.1` 曾经同时指四种东西：落后 9 个提交的二进制、CI 里自称 `unknown (unknown)` 的产物、以及 `release` 与 `debug` 两个行为不同的程序（`panic = abort`、overflow checks 关、LTO 开）。四条均已关闭，且都是**可判定**的：
 
-| 原缺陷 | 关闭方式 |
-|---|---|
-| CI 不注入 `NINI_BUILD_COMMIT/TIME/DIRTY`，发版产物 `--version` 输出 `unknown (unknown)`（`ci.yml:77` 只跑 `cargo build --release --locked`） | 新增 `crates/nini-cli/build.rs`：从 git 自行取 commit / 时间 / dirty，环境变量可覆盖，`SOURCE_DATE_EPOCH` 支持可复现构建。CI 无需改动 |
-| 无发布构建脚本，身份靠人手敲 env | `scripts/build-release.sh`：build → `--version` 必须含 commit → `info` / `demo` / `-p` 三条 smoke；`--check` 额外打印 README 测试数供人工比对 |
-| 本机 `~/.local/bin/nini`（10-17 00:58 构建）落后工作树 8 项修复 | 已重建；`--version` 认到当前 commit |
+| 原歧义 | 关闭方式 | 判定方法 |
+|---|---|---|
+| 二进制落后工作树 | `crates/nini-cli/build.rs` 自取 commit / 时间 / dirty | `nini --version` |
+| CI 产物自称 `unknown` | 同上；`rerun-if-changed` 覆盖 `Cargo.toml`（改 `[profile]` 会重算） | CI `Version must name its source` 步骤 |
+| release 与 debug 难以分辨 | 身份行带 `[release]` / `[debug]` | CI grep `release` |
+| **用户 hook panic 直接杀进程** | 移除 `[profile.release] panic = "abort"` | `cargo run --release --example panic_probe -p nini-cli` |
+
+最后一条是本轮最严重的发现：`cargo` 对 **test target 强制 `panic = unwind`**，
+因此 `cargo test --release` **结构上无法**验证交付物的 panic 语义——
+hook 隔离的测试全绿，而交付二进制里 `catch_hook_panic` 是死代码（已实测：abort 下 exit 134）。
+`examples/` 是唯一“由真实 profile 构建且非 test harness”的 target，故探针放那里并进了 CI。
+代价：6 054 472 → 6 716 744 字节（+11%）。
 
 ### 明确不做（范围决策已定）
 

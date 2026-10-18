@@ -1,4 +1,81 @@
-## Unreleased — thinking blocks and blockquotes render as what they are (2026-10-18)
+## v0.10.2 — the binary could not tell you what it was (2026-10-18)
+
+1428 tests, all green. Two themes, both found by asking a question of the
+artifact rather than of the code: *which commit is this?* and *can this
+binary do what its tests say it can?*
+
+### A user's hook panic killed the whole session
+
+`catch_hook_panic` (`nini-core/src/agent_hooks.rs:312`) exists so that a
+**misbehaving user-supplied hook** degrades to a default and logs instead
+of taking the agent down; `nini-core/src/agent.rs:2022,2057` does the same
+around tool calls. Under `[profile.release] panic = "abort"` — which is how
+nini has been built since it shipped — none of that ran. The process died
+mid-turn, and the hook's own bug became the user's lost work. Pi's hooks
+are TypeScript and cannot abort the process, so this was a behaviour-layer
+divergence too.
+
+It stayed invisible because **cargo forces `panic = "unwind"` for test
+targets**, `cargo test --release` included. Every hook-isolation test in
+this repo passed, under both profiles, while the shipped binary had the
+guard compiled out. Verified both ways, with the real profile:
+
+```console
+$ cargo run --release --example panic_probe -p nini-cli
+recovered: the release profile unwinds          # exit 0
+
+# with panic = "abort" restored:
+$ cargo run --release --example panic_probe -p nini-cli
+thread 'main' panicked at panic_probe.rs:26:58
+                                              # exit 134, no "recovered"
+```
+
+`examples/` is the only Cargo target that is built by the real profile
+*and* is not a test harness, which is why the probe lives there and is now
+a CI step. Cost of unwinding: 6 054 472 → 6 716 744 bytes (+11%).
+
+### Four ways one number said four different things
+
+`nini 0.10.1` was on its own an unanswerable question: the commit could be
+nine behind the working tree, the release artifact could not name itself at
+all, and `target/release` and `target/debug` were different programs
+(`panic = "abort"`, overflow checks off, LTO on) claiming the same identity.
+All four are now decidable:
+
+```console
+$ nini --version
+nini 0.10.2 - 8c8a009 +dirty (2026-10-18 00:53:23 UTC) [release]
+```
+
+- `crates/nini-cli/build.rs` derives commit, timestamp, dirty and profile
+  from git. The function's doc comment already promised "embedded by
+  `build.rs`"; there was no `build.rs`, so CI's release artifact shipped
+  `unknown (unknown)` and nothing noticed.
+- `[profile]` is in the line because the two profiles genuinely are two
+  programs. CI's `cli-smoke` now fails if it is missing.
+- `rerun-if-changed` now covers `Cargo.toml`, after flipping `panic`
+  relinked the binary while `--version` still reported the previous
+  build's timestamp.
+- `scripts/build-release.sh` builds, refuses to proceed if `--version`
+  cannot name a commit, then smokes `info` / `demo` / `-p`.
+
+### Also in this release
+
+- **Six places where the TUI said one thing and did another** — the footer
+  advertising keys the keymap does not have, search indexing 60 characters
+  of each line, search hits that were never painted, `Up`/`Down` deleting
+  the prompt, no scroll-to-top, and a thinking block that was a string
+  rather than Markdown. Unreleased entries below keep the detail.
+- A blockquote body carrying Pi's `mdQuote` + italic.
+- One flake fixed rather than worked around: the bash timeout assertion was
+  losing to scheduler noise at 2.5 s; the regression it guards takes 6 s.
+
+### Upgrade note
+
+Nothing to do. `~/.pi/agent/` config, session JSONL, and the slash-command
+surface are unchanged.
+
+## v0.10.2 · detail — thinking blocks and blockquotes render as what they are (2026-10-18)
 
 Ten new tests; **1418 → 1428**. The last two items of the 10-17
 audit list that had been implemented but not written up. Both are the
@@ -56,7 +133,7 @@ Pi has `highlightCode` and uses it in the write tool's diff too. All
 nine `syntax*` slots in the palette are dead; `theme.rs` says "reserved
 for future synctact integration" and the README still does not say so.
 
-## Unreleased — Home jumps to the top, like Pi (2026-10-17)
+## v0.10.2 · detail — Home jumps to the top, like Pi (2026-10-17)
 
 Six new tests; **1412 → 1418**.
 
@@ -129,7 +206,7 @@ already right, the copy was just not the code under test. This is the
 `nini-conformance` argument — "every test round-tripped nini against
 itself" — applied to the test harness itself.
 
-## Unreleased — Up and Down could delete your prompt (2026-10-17)
+## v0.10.2 · detail — Up and Down could delete your prompt (2026-10-17)
 
 Seven new tests; **1405 → 1412**. The last P0 from the 10-17 audit.
 
@@ -223,7 +300,7 @@ was right:
 A test whose expected value is derived by hand from a fixture is a test
 that will be "corrected" to agree with whatever the code happens to do.
 
-## Unreleased — search found things and showed you none of them (2026-10-17)
+## v0.10.2 · detail — search found things and showed you none of them (2026-10-17)
 
 Second half of the Ctrl+F fix in the entry below. Four new tests;
 **1401 → 1405**.
@@ -295,7 +372,7 @@ unloaded, and a full run schedules ~87 test binaries. The bound is now
 4000 ms — still far below the 6000 ms the pre-v0.8.9 behaviour needed, so
 the regression it guards is still caught loudly.
 
-## Unreleased — four places where the TUI said one thing and did another (2026-10-17)
+## v0.10.2 · detail — four places where the TUI said one thing and did another (2026-10-17)
 
 Found by an enumeration audit of `nini-tui` against the installed Pi
 (0.84.2) source, not by user report. Six new tests; **1395 → 1401**.
@@ -411,7 +488,7 @@ that was red before the fix:
   `theme.rs` says "reserved for future synctect integration" and the README
   still does not say so.
 
-## Unreleased — an interrupt used to cost you your next four seconds (2026-10-16)
+## v0.10.2 · detail — an interrupt used to cost you your next four seconds (2026-10-16)
 
 Reported as: "while nini is running, pressing Esc means I cannot type". Measured
 in tmux against a provider that takes eight seconds to answer:
@@ -479,7 +556,7 @@ While a turn is *running*, nini still refuses input; Pi accepts it and queues
 it (`restoreQueuedMessagesToEditor` is that queue). That gap is unchanged and
 is not addressed here.
 
-## Unreleased — a thematic break was sixty columns of guess (2026-10-16)
+## v0.10.2 · detail — a thematic break was sixty columns of guess (2026-10-16)
 
 The turn-divider fix above did not cover this report. "Long horizontal lines
 late in a long task" had **two** sources, and the second one only shows up
@@ -547,7 +624,7 @@ trap the turn-separator tests fell into earlier in this same session.
 `render_assistant_message(text, theme, max_width)` had its third parameter
 on both sides of the fix.
 
-## Unreleased — a turn boundary is a blank line, not a rule (2026-10-16)
+## v0.10.2 · detail — a turn boundary is a blank line, not a rule (2026-10-16)
 
 Reported as "the TUI still draws long horizontal lines". Reproduced in tmux
 across four terminal widths, and the cause was a single line of code that

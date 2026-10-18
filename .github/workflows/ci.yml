@@ -75,6 +75,27 @@ jobs:
           RUST_BACKTRACE: 1
       - name: Release build
         run: cargo build --release --locked
+      # v0.10.2: the delivery profile, checked with the delivery profile.
+      #
+      # `cargo test --release` is **not** this. Cargo forces
+      # `panic = "unwind"` for test targets regardless of the profile, and
+      # it also leaves `opt-level = "z"` / `lto` off in favour of the
+      # test profile's own settings — so the suite that runs here has never
+      # executed the code path a user runs. `--release` at least gives LTO
+      # and `opt-level = "z"`, which is where overflow checks disappear
+      # and where an `unsafe`-adjacent arithmetic bug becomes silent.
+      - name: Test under release profile
+        run: cargo test --release --workspace
+      # The one check `cargo test` structurally cannot make: whether a
+      # **binary** built by the release profile can catch a panic at all.
+      # `catch_hook_panic` (`nini-core/src/agent_hooks.rs`) is what keeps
+      # a misbehaving user hook from killing the session, and under
+      # `panic = "abort"` it is dead code in the shipped binary — with a
+      # fully green test suite, because tests unwind no matter what the
+      # profile says. An `example` is the only Cargo target that is built
+      # by the real profile and is not a test harness.
+      - name: Panic strategy of the shipped binary
+        run: cargo run --release --example panic_probe -p nini-cli
 
   cli-smoke:
     name: CLI smoke (no TTY)
@@ -85,6 +106,16 @@ jobs:
       - run: cargo build --release --locked
       - name: Version
         run: ./target/release/nini --version
+        # v0.10.2: a release artifact that cannot say what it was built
+        # from is the failure `build.rs` exists to prevent, and this is
+        # the only place a shipped binary's identity gets checked by
+        # something other than a human. A vendored or mis-wired build
+        # would print `unknown (unknown)` here and pass every other step.
+      - name: Version must name its source
+        run: |
+          ./target/release/nini --version | tee /tmp/ver
+          grep -qE '[0-9a-f]{7,}' /tmp/ver || { echo "no commit in --version"; exit 1; }
+          grep -q 'release' /tmp/ver || { echo "not built with the release profile"; exit 1; }
       - name: Help
         run: ./target/release/nini --help
       # Exit 2 is intentional: no TTY + no args means "can't run TUI".

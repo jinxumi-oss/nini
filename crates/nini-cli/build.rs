@@ -96,8 +96,22 @@ fn main() {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(build_time);
 
+    // Which profile this is, from cargo's own `PROFILE` (set when the
+    // build script runs). It is part of the identity because release and
+    // debug are different programs: `panic = "abort"` makes every
+    // `catch_unwind` guard in the TUI inert, and `opt-level = "z"` turns
+    // off the overflow checks that the 1428 tests run under. A binary
+    // that does not say which one it is cannot be told apart from its
+    // twin by anything a user can see.
+    let profile = std::env::var("NINI_BUILD_PROFILE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("PROFILE").ok().filter(|s| !s.trim().is_empty()))
+        .unwrap_or_else(|| "unknown".to_string());
+
     println!("cargo:rustc-env=NINI_BUILD_COMMIT={commit}");
     println!("cargo:rustc-env=NINI_BUILD_TIME={when}");
+    println!("cargo:rustc-env=NINI_BUILD_PROFILE={profile}");
     println!(
         "cargo:rustc-env=NINI_BUILD_DIRTY={}",
         if dirty { "true" } else { "false" }
@@ -107,7 +121,16 @@ fn main() {
     println!("cargo:rerun-if-env-changed=NINI_BUILD_COMMIT");
     println!("cargo:rerun-if-env-changed=NINI_BUILD_TIME");
     println!("cargo:rerun-if-env-changed=NINI_BUILD_DIRTY");
+    println!("cargo:rerun-if-env-changed=NINI_BUILD_PROFILE");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    // `.git` alone is not enough. Editing the `[profile.release]` table —
+    // `panic` most of all — changes the binary without touching a source
+    // file, and the identity would then keep reporting the *previous*
+    // build's timestamp. Observed exactly that: flipping `panic` to
+    // `unwind` relinked the binary while `--version` still read the abort
+    // build's time.
+    println!("cargo:rerun-if-changed=../../Cargo.toml");
+    println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
 }

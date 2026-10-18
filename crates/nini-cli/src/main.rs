@@ -21,18 +21,32 @@ pub(crate) mod prompt_setup;
 pub(crate) mod provider_factory;
 pub(crate) mod tool_registry;
 
-/// v0.10: the build's identity, embedded by `build.rs`.
+/// What the build was made of: profile, source, dirt, and when.
 ///
-/// `nini 0.9.1` on its own cannot answer "am I running what I just built",
-/// and `~/.local/bin/nini` is a symlink into `target/`, so the question is
-/// worth asking. `+dirty` appears when the tree was modified at build time,
-/// because a commit id otherwise reads as "exactly this".
+/// Four facts, because each one has a way of being wrong that only shows
+/// up later:
+///
+/// - **profile** — `release` and `debug` are not the same program. The
+///   release profile sets `panic = "abort"`, so the three `catch_unwind`
+///   guards in `nini-tui` (clipboard, render-cache lock, signal handler)
+///   are inert in the binary we ship and active in the one the 1428 tests
+///   run. Without the profile in this line, both binaries claim the same
+///   commit and the difference is invisible.
+/// - **commit** — which source, because `~/.local/bin/nini` is a symlink
+///   into `target/` and used to sit eight fixes behind the tree.
+/// - **`+dirty`** — a commit id otherwise reads as "exactly this".
+/// - **time** — `target/release/nini` outlives its own build by days, and
+///   this is the only line that says so.
+///
+/// All three git-derived values come from `build.rs`; an explicit
+/// environment variable still wins, for vendored builds.
 fn build_identity() -> String {
     let commit = option_env!("NINI_BUILD_COMMIT").unwrap_or("unknown");
     let when = option_env!("NINI_BUILD_TIME").unwrap_or("unknown");
+    let profile = option_env!("NINI_BUILD_PROFILE").unwrap_or("unknown");
     let dirty = option_env!("NINI_BUILD_DIRTY").unwrap_or("false");
     let suffix = if dirty == "true" { " +dirty" } else { "" };
-    format!("{commit}{suffix} ({when})")
+    format!("{commit}{suffix} ({when}) [{profile}]")
 }
 
 /// What `nini --version` prints.
@@ -46,7 +60,9 @@ fn build_identity() -> String {
 fn version_line() -> &'static str {
     Box::leak(
         // No leading "nini": clap prints the program name itself, and the
-        // first version of this line read `nini nini 0.9.1`.
+        // first version of this line read `nini nini 0.9.1`. The profile
+        // rides in `build_identity`, once, at the end — so the two
+        // binaries differ in exactly one place rather than two.
         format!("{} - {}", env!("CARGO_PKG_VERSION"), build_identity()).into_boxed_str(),
     )
 }

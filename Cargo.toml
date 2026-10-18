@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.1"
+version = "0.10.2"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -95,7 +95,25 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+# `panic = "abort"` was here until v0.10.2, and it was wrong.
+#
+# A panic in a **user-supplied hook** is supposed to degrade, not to kill
+# the session: `catch_hook_panic` (`nini-core/src/agent_hooks.rs:312`)
+# returns `R::default()` and logs, and `nini-core/src/agent.rs:2022,2057`
+# does the same for tool calls. Under `abort` none of that runs — the
+# process dies mid-turn and the hook's own bug becomes the user's lost
+# work. Pi's hooks are TypeScript and cannot abort the process either,
+# so this was a behaviour-layer divergence as well as a bug.
+#
+# It was invisible because **cargo forces `unwind` for test harnesses**,
+# even under `--release`. So `cargo test --release` exercised the guard and
+# the shipped binary did not have it — the tests and the deliverable
+# disagreed, and nothing in the pipeline could have noticed. Verified
+# directly: a `catch_unwind(|| panic!())` in a `panic = "abort"` release
+# binary aborts before the `println!` after it.
+#
+# Cost of switching: unwind tables in the binary. Measured below.
+# panic = "abort"
 
 [profile.dev]
 opt-level = 0
