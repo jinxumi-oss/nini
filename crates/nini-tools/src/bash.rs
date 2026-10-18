@@ -658,12 +658,22 @@ mod tests {
         let details: BashDetails = serde_json::from_value(out.details.unwrap()).unwrap();
         assert_eq!(details.signal.as_deref(), Some("timeout"));
 
-        // 1 s timeout + 500 ms grace + slack. The old behaviour needed
-        // 1 s + 5000 ms, so this bound fails loudly on a regression.
+        // 1 s timeout + 500 ms grace = 1.5 s of real work. The bound
+        // carries slack on top, and the slack has to be generous: this is
+        // a **wall-clock** assertion, and a full-workspace run schedules
+        // ~87 test binaries on the machine, where a 1.8 s measured run has
+        // been observed to land past 2.5 s on scheduling noise alone.
+        //
+        // The slack is 2.5 s rather than something tighter because the
+        // regression this guards is the one that made the process sit
+        // out the *full* 5 s grace period: 1 s + 5 s = 6 s. A 4 s bound
+        // still fails that loudly, while leaving room for a loaded
+        // runner. Measured in isolation the run is ~1.8 s.
         assert!(
-            elapsed < Duration::from_millis(2500),
+            elapsed < Duration::from_millis(4000),
             "timeout took {elapsed:?} — SIGTERM is probably not reaching the \
-             process group again (budget 1s timeout + {}ms grace)",
+             process group again (budget 1s timeout + {}ms grace; the \
+             pre-v0.8.9 behaviour was 1s + 5000ms and still fails this)",
             KILL_GRACE_MS
         );
     }
