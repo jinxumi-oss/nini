@@ -107,6 +107,8 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 |---|---|---|---|
 | R4 | nini 是否自建凭据存储（`~/.nini/agent/`），是否可选复用 Pi | 待决。`6abadd9` 已整体回滚过一次，回滚理由是产品判断而非技术障碍 | auth 层全部工作 |
 | R5 | 是否把 provider 补齐到 Pi 的 51 个 | 待决 | `nini-ai` 5 天零改动的解法取决于此 |
+| **R9** | 语法高亮是否值得 +2–5 MB 体积（synctact vs 自研） | 待决 | 阻塞 `parity-with-pi.md` B7 |
+| **R10** | `/clone` 改为"切到新分支"会改变用户现有行为 | 待决 | 阻塞 B1 |
 | R6 | 扩展运行时 | **已被证伪**（Pi 加载 TS，`nini-ext` 是 `dlopen` cdylib，无共同执行模型）。`nini-ext` 556 行零调用点，保留并在 crate 头写明原因 | 无（结论已定，不要重开） |
 | — | 行为层对照物升级到 Pi 0.85.1 | 依赖外部条件：一台跑着 0.85.1 的机器 | `SPEC.lock.upgradeProcedure` |
 
@@ -208,8 +210,9 @@ hook 隔离的测试全绿，而交付二进制里 `catch_hook_panic` 是死代�
 
 | 文档 | 状态 | 说明 |
 |---|---|---|
-| `plans/v0.10-pi-parity-refactor.md` | **active** | R1–R8 路线 + 里程碑实施记录（§12 起） |
-| `plans/input_interrupt_parity.md` | **active** | M0/M1 已完成，M2/M3/M4 待做（§8.8） |
+| **`plans/parity-with-pi.md`** | **active** | **功能面 parity 的唯一执行细则**（2026-10-18）：差距总表 A/B/C + W0–W5 阶段 + 验证口径 |
+| `plans/v0.10-pi-parity-refactor.md` | **只读** | R1–R8 历史路线 + 里程碑实施记录（§12 起）；§31b 构建身份已落地 |
+| `plans/input_interrupt_parity.md` | 归入 W1 | M0/M1/**M2 实质**已完成；未做的是 M2b 双队列 / M3 / M4（§8.8 已勘误） |
 | `plans/r2a-compaction-persistence.md` | active/blocked | A1 已发布，A2 被其 §0 的 P0 阻塞 |
 | `plans/v0.6*` `v0.7*` `v0.8*` `v0.9.2*` | **frozen** | 已发布版本的实施记录，不再追加 |
 | `tui-pi-parity-plan.md` `tui-typography-review.md` | **frozen** | 2026-09-27 后无活动；属 R8 层的调研记录 |

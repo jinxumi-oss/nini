@@ -2,7 +2,8 @@
 
 > 日期：2026-10-16（M0/M1 实施于同日）
 > 触发：用户报告「nini 运行时按 esc 不能插入对话」
-> 状态：**M0 + M1 已完成**（§8）；M2 / M3 / M4 未做（§8.8）
+> 状态：**M0 + M1 已完成**（§8）；M2 实质已完成（`return_queue_to_editor`，见 §8.8 勘误）；M2b 双队列 / M3 / M4 未做
+> 权威：本文件是 [`parity-with-pi.md`](parity-with-pi.md) **W1 阶段**的展开，不再单独排期
 > 目标边界：见 [`docs/GOALS.md`](../GOALS.md)
 > 相关：§33 turn divider、§34 markdown hr、§35 中止死区、§22 v0.10 里程碑
 
@@ -412,7 +413,13 @@ ESC 验证：
 
 ### 8.8 未做（按计划留到后续）
 
-- **M2** 的双队列拆分（`steering` / `followUp`）：当前合一类，ESC 时一并还回。
+> **勘误（2026-10-18）**：本节原文把 **M2（ESC 取回队列）**列为未做，这是错的——
+> `runtime.rs` 的 `return_queue_to_editor` 已实现 Pi 的
+> `restoreQueuedMessagesToEditor({abort:true})` 语义（见 A1 的实测）。
+> 未做的是 **M2b（双队列拆分）**。详细差距表见
+> [`parity-with-pi.md`](parity-with-pi.md) §2。
+
+- **M2b** 的双队列拆分（`steering` / `followUp`）：当前合一类，ESC 时一并还回。
   Pi 区分二者是因为 followUp 在压缩后才发、steering 立即注入 —— 异步压缩
   （M3）落地后这个区分才有意义。
 - **M3** 压缩异步化与 ESC handler 栈：计划中标注为高风险，建议单独一轮，
