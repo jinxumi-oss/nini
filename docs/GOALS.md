@@ -68,11 +68,11 @@ v0.9.2 一整版都在清这个。
 
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
-| 版本 | **v0.10.2** | tag 待推；CI 增加 release profile 测试与 panic 策略门禁 | 见下方“发布链” |
+| 版本 | **v0.10.2** | tag `v0.10.2` 已推送；CI 增加 release profile 测试与 panic 策略门禁 | 见下方“发布链” |
 | 测试 | 1395 → **1428** 通过 / 1 ignored / 0 失败 | 本机全量 `cargo test --workspace`（debug 与 release 两个 profile 各一次，均 0 失败） | 原 2 个 flake 已修 |
 | 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 仍是 stub（`dispatch.rs:1543`） |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
-| 行为 oracle | 45 条，录于 0.84.2 | `crates/nini-conformance` | agent loop / TUI 无 oracle（T1 分层所致，非缺陷） |
+| 行为 oracle | **66 条**（v0.10 记的 45 已旧），其中 agent loop 12 条直接引 Pi `agent-loop.js` 行号 | `crates/nini-conformance` | **无可执行的 Pi 侧对照物**：全是“注释引行号 + 断言 nini”，行号会随 Pi 升级漂移且无人核对 |
 | Provider | 5 原生 + `models.json` 其余 | `provider_factory.rs` | 51 个 Pi provider 中 5 个 —— **R5 待 owner 决策**，实现者不自行扩范围 |
 | 能力面投入 | — | 自 10-05 起：`nini-tui` +11861 行、`nini-ai` +1295 行；但 `nini-ai` **最后一次提交停在 10-12** | 单侧化，见 §3 |
 
@@ -210,7 +210,7 @@ hook 隔离的测试全绿，而交付二进制里 `catch_hook_panic` 是死代�
 
 | 文档 | 状态 | 说明 |
 |---|---|---|
-| **`plans/parity-with-pi.md`** | **active** | **功能面 parity 的唯一执行细则**（2026-10-18）：差距总表 A/B/C + W0–W5 阶段 + 验证口径 |
+| **`plans/parity-with-pi.md`** | **active** | **功能面 parity 的唯一执行细则**（2026-10-18，v2 经自我审查修正）：差距总表 A/B/C + W0–W5 + §9 已知不确定性。**注意**：其 §9 记录了 v1 三条核心论断被实测推翻，且 GOALS 内的“45 条 oracle”同样已旧（实测 66） |
 | `plans/v0.10-pi-parity-refactor.md` | **只读** | R1–R8 历史路线 + 里程碑实施记录（§12 起）；§31b 构建身份已落地 |
 | `plans/input_interrupt_parity.md` | 归入 W1 | M0/M1/**M2 实质**已完成；未做的是 M2b 双队列 / M3 / M4（§8.8 已勘误） |
 | `plans/r2a-compaction-persistence.md` | active/blocked | A1 已发布，A2 被其 §0 的 P0 阻塞 |
