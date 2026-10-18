@@ -224,10 +224,24 @@ impl<'a> MdState<'a> {
         // the left-border character (`│ `) per nesting level.
         if self.quote_depth > 0 {
             let prefix = "\u{2502} ".repeat(self.quote_depth);
-            // Insert the prefix as the first span (styled with mdQuoteBorder).
+            // v0.10.2: the body gets Pi's `theme.quote(theme.italic(text))`
+            // (`markdown.ts:557`).
+            //
+            // Applied here, at flush time, rather than in `base_style`,
+            // because Pi wraps the **finished** line
+            // (`quoteStyle(line)` where `line` is already rendered). The
+            // outer layer is what makes the quote colour survive inline
+            // formatting: patching `base_style` instead would leave
+            // `**bold**` inside a quote in the bold colour, where Pi
+            // paints the quote colour with bold on top.
+            let body = self.theme.fg_style("mdQuote").add_modifier(Modifier::ITALIC);
             let mut new_spans: Vec<Span<'static>> = Vec::with_capacity(self.pending.len() + 1);
             new_spans.push(Span::styled(prefix, self.theme.fg_style("mdQuoteBorder")));
-            new_spans.append(&mut std::mem::take(&mut self.pending));
+            new_spans.extend(std::mem::take(&mut self.pending).into_iter().map(|sp| {
+                let mut sp = sp;
+                sp.style = sp.style.patch(body);
+                sp
+            }));
             self.out.push(Line::from(new_spans));
         } else {
             let line = Line::from(std::mem::take(&mut self.pending));
