@@ -50,6 +50,25 @@ impl FallbackProvider {
     }
 }
 
+/// One-line, user-facing description of *how* a provider failed.
+///
+/// Lives outside `stream()` because every failure path needs it: the
+/// retryable one (recorded, chain continues) and the terminal one
+/// (recorded, error yielded) — see `3bf4815d`, whose diagnostics were
+/// unreachable until the retryable branch recorded too.
+fn kind_of(err: &ProviderError) -> String {
+    match err {
+        ProviderError::Api { status, .. } => format!("HTTP {status}"),
+        ProviderError::Http(_) => "network/transport".to_string(),
+        ProviderError::Io(_) => "I/O".to_string(),
+        ProviderError::Sse(_) => "SSE parse".to_string(),
+        ProviderError::Auth(_) => "auth".to_string(),
+        ProviderError::InvalidRequest(_) => "invalid-request".to_string(),
+        ProviderError::Json(_) => "json-parse".to_string(),
+        ProviderError::NotImplemented(_) => "not-implemented".to_string(),
+    }
+}
+
 /// v0.7.5 — classify a ProviderError as retryable. 5xx and 429 from
 /// the upstream are always retryable. Network/transport errors
 /// (`Http`, `Io`) are too. JSON/SSE parse errors and auth errors
@@ -146,35 +165,51 @@ impl Provider for FallbackProvider {
                     }
                 }
 
-                if provider_failed_retryably {
-                    // Try the next provider.
-                    continue;
-                }
-
-                // Provider completed without emitting MessageStop
-                // and didn't fail retryably. Emit the last error
-                // if any, otherwise success.
+                // Provider finished without ever emitting MessageStop.
+                // Decide what to record, and whether the chain may go on.
+                //
+                // v0.8.5 audit fix: the retryable branch used to `continue`
+                // **before** `failures.push(...)`, so by the time control
+                // reached the "all exhausted" error, `failures` was
+                // provably always empty and the per-provider diagnostics
+                // the same commit added were unreachable dead code. The
+                // user got the bare `all 2 fallback providers exhausted`
+                // message that commit set out to replace.
+                //
+                // Nothing has been produced on this provider, so walking on
+                // to the next key loses nothing — the same condition
+                // `is_retryable` already treats as "this key is no good",
+                // and the module's stated rule is "fallback only triggers
+                // before any events have been produced". It is also the
+                // only way the "empty stream" diagnosis can reach the user:
+                // previously a zero-event provider ended the whole stream
+                // silently, with no event and no error at all.
                 if let Some(e) = last_err {
-                    let kind = match &e {
-                        ProviderError::Api { status, .. } => format!("HTTP {status}"),
-                        ProviderError::Http(_) => "network/transport".to_string(),
-                        ProviderError::Io(_) => "I/O".to_string(),
-                        ProviderError::Sse(_) => "SSE parse".to_string(),
-                        ProviderError::Auth(_) => "auth".to_string(),
-                        ProviderError::InvalidRequest(_) => "invalid-request".to_string(),
-                        ProviderError::Json(_) => "json-parse".to_string(),
-                        ProviderError::NotImplemented(_) => "not-implemented".to_string(),
-                    };
-                    failures.push(format!("{}: {}", provider.name(), kind));
+                    failures.push(format!("{}: {}", provider.name(), kind_of(&e)));
+                    if provider_failed_retryably {
+                        // Try the next provider.
+                        continue;
+                    }
                     yield Err(e);
-                } else {
+                } else if !had_event {
                     // Empty stream — the provider returned 200 but
                     // yielded zero events. This happens with a
                     // misconfigured gateway that buffers the whole
                     // response into one chunk instead of streaming,
-                    // or with a model that emits nothing. Surface
-                    // it explicitly so the user has a clue.
+                    // or with a model that emits nothing. Record it and
+                    // keep walking the chain.
                     failures.push(format!("{}: empty stream (0 events)", provider.name()));
+                    continue;
+                } else {
+                    // Partial response: events were produced but the
+                    // stream ended without MessageStop. Falling back now
+                    // would splice two responses together, so the stream
+                    // ends here — but the label must be true, and
+                    // "empty stream (0 events)" is a lie about it.
+                    failures.push(format!(
+                        "{}: stream ended without MessageStop",
+                        provider.name()
+                    ));
                 }
                 return;
             }
