@@ -420,7 +420,9 @@ async fn main() -> Result<()> {
     if approve {
         refuse(
             "--approve",
-            "trust project files for this run. Trust is enforced per session              via `/trust`; there is no command-line equivalent yet".into(),
+            "trust project files for this run. Trust is enforced per session \
+             via `/trust`; there is no command-line equivalent yet"
+                .into(),
         );
     }
     if offline {
