@@ -155,6 +155,21 @@ hook 隔离的测试全绿，而交付二进制里 `catch_hook_panic` 是死代�
 `examples/` 是唯一“由真实 profile 构建且非 test harness”的 target，故探针放那里并进了 CI。
 代价：6 054 472 → 6 716 744 字节（+11%）。
 
+### 身份字段的精度（不要把它当构建日志读）
+
+| 字段 | 真实语义 | 已知偏差 |
+|---|---|---|
+| commit / dirty | build.rs 运行时刻的 git 状态 | 源码改动但未提交时**不触发**重跑，字段保持上次值（`+dirty` 仍正确） |
+| 时间 | build.rs 运行时刻，即**编译起点** | LTO 链接在其后数十秒完成；实测相差约 36 s |
+| `[release]` / `[debug]` | cargo 的 `PROFILE` | 准（同一 profile 内无差异） |
+
+因此“时间与 commit 不一致”不等于出错，但**“时间很新 + 带 `+dirty`”意味着工作树在编译后又被改过**。
+
+真正的同步判据是三条同时成立：① `cargo build --release` 立即 `Finished in 0.2s`（无重编）；
+② 无任何源文件 mtime 晚于二进制；③ **在真终端里验证行为**——
+`tmux` 跑二进制看屏幕，是唯一不依赖自报的方法。`/hotkeys` 显示 `Home ?` 就是这么发现的
+（`action_label` 漏了新 action，落到 `other => "?"` 臂），已修于 `dc75bca` 并加 oracle。
+
 ### 明确不做（范围决策已定）
 
 扩展运行时、OAuth/设备流、命令行 session 参数、LLM 分支摘要、prompt 模板与 AGENTS.md 上下文文件。
