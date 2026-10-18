@@ -1,5 +1,8 @@
 # Nini TUI 文字排版调研报告
 
+> **状态：调研报告，已归档。** 2026-09-27 之后无活动；不是待办。
+> 排版类缺陷的实际修复记录在 [`plans/v0.10-pi-parity-refactor.md`](plans/v0.10-pi-parity-refactor.md) §33/§34/§9；目标边界见 [`GOALS.md`](GOALS.md)。
+
 > 调研目标:对照 [Pi agent](https://github.com/earendil-works/pi) 项目,评估 nini TUI 的文字排版质量,识别可借鉴的设计模式与可改进的具体缺陷。
 >
 > 调研产物:6 张不同尺寸 / 状态下的渲染快照,位于 `/tmp/nini-snapshots/`。

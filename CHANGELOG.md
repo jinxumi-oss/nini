@@ -1,3 +1,416 @@
+## Unreleased — thinking blocks and blockquotes render as what they are (2026-10-18)
+
+Ten new tests; **1418 → 1428**. The last two items of the 10-17
+audit list that had been implemented but not written up. Both are the
+same shape of defect: **the palette and the header table promised a
+rendering that the code did not perform.**
+
+### A thinking block was a string
+
+Pi renders each run of thinking blocks through a full `Markdown`
+(`assistant-message.ts:147`), with
+`fg("thinkingText") + italic` as the default style. nini split the
+accumulated text on `\n` and handed the strings to the transcript, so
+inside a reasoning block the model saw:
+
+```text
+  💭 - weigh the options
+  💭 - **this part matters**
+```
+
+— raw list markers and raw emphasis delimiters, which models emit in
+reasoning constantly. `thinkingText` was defined in the palette and
+read by **nothing**; the block was drawn with `dim`.
+
+`rich::render_thinking_block` now builds the Markdown first and applies
+the style at the **outer** layer, so inline formatting sits on top of
+`thinkingText` the way it does in Pi. The `  💭 ` gutter and the
+continuation indent are nini's own and stay — Pi's label belongs to the
+collapsed state only. The old `wrap_thinking_block` (v0.8.4, hard wrap
+at 180 cells) is gone with it: wrapping is the renderer's job now, and
+hard-wrapping text before it reaches the Markdown layer is what made
+lists and fences unrenderable in the first place.
+
+Pinned by `thinking_markdown.rs` (4 oracles).
+
+### A blockquote body carried no style
+
+`markdown.rs`'s own header table claimed the quote body uses `mdQuote`
++ italic. The implementation painted only the `│ ` border with
+`mdQuoteBorder` and left the text with whatever inline formatting it
+had — so `**bold**` inside a quote rendered bold, where Pi renders it
+in the quote colour with bold on top.
+
+The fix is applied at flush time rather than in `base_style`, because
+Pi wraps the **finished** line (`quoteStyle(line)`,
+`markdown.ts:557`). Patching the parser's base style instead is what
+would leave the nested case wrong — which is precisely the case the
+claim is about.
+
+Pinned by `blockquote_style.rs` (6 oracles).
+
+### What is still open from the same audit
+
+One item survives, and it is the largest: **no syntax highlighting.**
+Pi has `highlightCode` and uses it in the write tool's diff too. All
+nine `syntax*` slots in the palette are dead; `theme.rs` says "reserved
+for future synctact integration" and the README still does not say so.
+
+## Unreleased — Home jumps to the top, like Pi (2026-10-17)
+
+Six new tests; **1412 → 1418**.
+
+### The wiring, and why it is not a style choice
+
+Pi binds `home` to `tui.altScreen.top` — "Scroll viewport to top"
+(`pi-tui/src/keybindings.ts:208`) — and `end` to
+`tui.altScreen.bottom`. That the editor *also* lists `"home"` for
+`cursorLineStart` (`:186`) looks like a conflict, and it is one, resolved
+by dispatch order rather than by intent:
+
+```ts
+// tui.ts:336
+private inputListeners = new Set<TUIInputListener>();
+// tui.ts:836
+for (const listener of this.inputListeners) { … if (result?.consume) return; }
+```
+
+A `Set` iterates in insertion order, and `tui-alt-screen.ts:224` registers
+the viewport's `handleViewportInput` at construction, before any child
+component. `scrollToTop()` returns `{ consume: true }` (`:634`). So in
+the full-screen layout **`home` reaches the transcript first, and the
+editor's `cursorLineStart` is unreachable.**
+
+nini had this exactly backwards, and had no top-jump at all:
+`grep -rn ScrollToTop` over the workspace returned nothing. A user who had
+scrolled back through hundreds of lines had one way forward: `PageUp`,
+once per screenful — where `PageUp` counts `TranscriptLine`s and a single
+one can render across fifty rows.
+
+`Home` → `ScrollToTop`, `End` → `ScrollToBottom`.
+
+### What the editor got instead
+
+`MoveLineStart` / `MoveLineEnd` keep their real bindings: `Ctrl+A`, and
+newly `Ctrl+E` — Pi's second key for each
+(`["end", "ctrl+end", "ctrl+e"]`, `keybindings.ts:186`). Without this the
+change would have traded one broken key for a missing one, which is what
+P0-5's first draft did by redefining `move_to_start`.
+
+### Two dispatch points, one of which dropped half the actions
+
+`apply_action` is `pub` and its scrolling match was **entirely empty**:
+
+```rust
+KeyAction::ScrollUp | KeyAction::ScrollDown | KeyAction::ScrollToBottom => {}
+// "this branch exists so the second key-dispatch site is exhaustive"
+```
+
+It has no production caller — only tests — but that is exactly how P0-5's
+`Up`/`Down` stayed broken for three releases while tests passed, and how
+the keymap ended up in three divergent copies the same day. The scrolling
+is now one `scroll_transcript` / `scroll_to_top` / `scroll_to_bottom`
+triple, called from both dispatch points.
+
+### And a fourth copy, in the test suite
+
+`tests/tui_e2e.rs` had `drive()` — commented "the same logic
+`runtime::handle_key` uses, but inlined here". It had drifted three ways
+while every test stayed green:
+
+- `MoveUp` / `MoveDown` still called `recall_history(±1)` — the P0-5
+  defect, so this file *could not* have caught it;
+- `ScrollUp` / `ScrollDown` / `ScrollToBottom` were `{}`;
+- `ScrollToTop` did not exist, so adding it did not compile.
+
+`drive()` now delegates to `runtime::apply_action`. All 736 `nini-tui`
+tests pass unchanged, which is the useful part: the expectations were
+already right, the copy was just not the code under test. This is the
+`nini-conformance` argument — "every test round-tripped nini against
+itself" — applied to the test harness itself.
+
+## Unreleased — Up and Down could delete your prompt (2026-10-17)
+
+Seven new tests; **1405 → 1412**. The last P0 from the 10-17 audit.
+
+`Up` and `Down` were **only** a history browser. Both call sites did
+`state.input.recall_history(±1)` unconditionally, so a single keypress
+replaced the entire prompt buffer with an earlier message.
+
+### Why that was destructive and not merely wrong
+
+nini's renderer draws the input as several rows — `render_prompt` splits
+on `\n` and paints a `❯` gutter per line — while `InputBuffer` had no row
+concept at all: one byte offset, `move_to_start` / `move_to_end` meaning
+"whole buffer", no way to ask which row the caret is on. The user *saw*
+three rows, pressed Up expecting the caret to rise, and the draft was
+gone. Rendering and editing disagreed about what a row is.
+
+### Pi's ladder, implemented
+
+`editor.ts:833`:
+
+```text
+  Up   : first row && (empty || browsing history || column 0)
+            -> navigateHistory(-1)
+         first row                        -> moveToLineStart()
+         otherwise                        -> moveCursor(-1, 0)
+
+  Down : browsing history && last row    -> navigateHistory(1)
+         last row                         -> moveToLineEnd()
+         otherwise                        -> moveCursor(1, 0)
+```
+
+The asymmetry is the point: **history is the fallback, not the action.**
+
+Rows are *visual* rows — soft-wrapped, not just `\n`-separated — because
+that is what Pi's `buildVisualLineMap` uses and what nini's own
+`prompt_cursor_geometry` already computes for cursor placement
+(`row = explicit_rows + column_in_line / width`). A caret that only
+understood `\n` would disagree with the pixel it is drawn on for any
+prompt wider than the box — the §22.4 family: the feature exists, the
+arithmetic does not match the thing it describes.
+
+All the geometry is in **display columns**, not bytes, or a CJK glyph
+would put the caret mid-character and make Up jump sideways.
+
+### The width dependency, which Pi has too
+
+Vertical motion needs the prompt width, and the renderer is the only
+place it exists. So `render_prompt` publishes it, mirroring Pi's
+`this.lastWidth` — a second `AtomicUsize` next to the existing
+`page_lines`, because `render_frame` takes `&AppState` and interior
+mutability is the only route. It is published **unconditionally**: the key
+handler must not depend on whether a cursor happened to be drawn.
+
+`width == 0` (no frame yet) reads as "rows are `\n`-separated", so every
+single-line prompt behaves exactly as it did before.
+
+### One function, not two call sites
+
+`handle_key` and `apply_action` each carried their own copy of this
+match, and I fixed only the first — the tests went on failing because
+`apply_action` was still calling `recall_history`. That is exactly how the
+keymap ended up in three divergent copies (footer, `/hotkeys`, README)
+earlier the same day, so the ladder is now a single
+`move_prompt_vertically` both call.
+
+`move_to_line_start` / `move_to_line_end` were added rather than
+redefining `move_to_start` / `move_to_end`: the latter still mean "whole
+buffer" and still back `Ctrl+A`, and silently changing `Ctrl+A` for every
+existing user is not a fix, it is a second surprise.
+
+### The oracle, and two wrong expected values
+
+The first draft called `InputBuffer::move_visual_up` and set
+`ui_state.prompt_inner_width` — neither exists yet, so it could not build
+against the unfixed code. **A compile error is not an oracle**, and this
+is the fourth time this project has lost a day to it. Everything now goes
+through `runtime::apply_action` (same signature on both sides) and
+establishes the width the way the product does, by rendering a frame.
+
+Then two hand-written expected values were wrong and the implementation
+was right:
+
+- "a round trip restores the column" — no. Pi clamps to the target row's
+  width and keeps nothing across rows; moving up into `line one` (8 cols)
+  from column 10 leaves the caret at 8, and it comes back down as 8.
+- The corrected draft then hand-computed the resulting byte offset and
+  got *that* wrong too. It now asserts `(row, column)` from
+  `visual_position` — the same "又一条我写错的期望值" the plan already logs
+  twice (§19.6, §20.7).
+
+A test whose expected value is derived by hand from a fixture is a test
+that will be "corrected" to agree with whatever the code happens to do.
+
+## Unreleased — search found things and showed you none of them (2026-10-17)
+
+Second half of the Ctrl+F fix in the entry below. Four new tests;
+**1401 → 1405**.
+
+Search was fully wired on the control side: `update_search_query` filled
+`SearchState::matches` with line indices, the bar drew the `2/2` counter,
+`n`/`N` moved `current`. Neither half of the *display* existed.
+
+**The hits were not painted.** A TestBackend snapshot of a search with two
+hits contains exactly one style across every transcript row:
+`bg=Reset fg=Reset m=NONE`. Pi builds two closures at
+`interactive-mode.ts:349` — `underline + bg(searchMatchBg) +
+fg(searchMatchText)` for a hit, `bold + inverse` on top for the current one
+— and hands both to the scroll view. nini's `searchMatchBg` and
+`searchMatchText` were palette entries with no reader: the same dead-slot
+shape as `mdCodeBlockBorder` (§32) and `thinkingText` (below).
+
+**The viewport did not follow.** `search_next` moved `current` and wrote
+nothing else, while `autoscroll` kept the transcript pinned to the tail.
+Measured: a hit at line 60 of 121 in a 20-row frame, viewport showing
+48–59, and pressing `n` left the screen byte-identical.
+
+So the feature told you it had found two things and then displayed zero of
+them.
+
+### The fix
+
+`SearchHighlight::{None, Hit, Current}` is threaded into
+`items_for_line` and applied per `Span`. Two constraints shaped that:
+ratatui resolves `span > line > item`, and every renderer in that function
+sets a per-span foreground, so a `ListItem::style` would colour the
+background and be ignored for the text; and `ListItem::content` is
+`pub(crate)` in ratatui 0.29, so a post-pass over finished items is not
+expressible — the paint has to happen while the `Line` is still ours.
+That is why `items_for_line` now builds `Vec<Line>` and wraps at the end.
+
+`reveal_search_match` sets `scroll_offset = total - 1 - idx` and clears
+`autoscroll` (which otherwise takes the tail-aligned branch and ignores
+`scroll_offset` entirely). It deliberately always scrolls rather than only
+when off-screen: the renderer does not report visibility back into state,
+and re-deriving it would duplicate the item-count cache the renderer owns.
+`end_search` now calls `reset_view()`, because leaving `autoscroll` off
+would strand the user scrolled into the past after they closed the search.
+
+### Two more false greens, same family
+
+The first draft of these tests passed for the wrong reason, twice over:
+
+- `push_assistant` **appends to the current turn's line**
+  (`push_assistant_raw` merges into the previous `AssistantText` until the
+  turn breaks), so a 121-line fixture built from it was a **one-line**
+  transcript. The "hit is 60 lines up" test was green on a fixture that
+  contained one line.
+- The viewport scanner matched `NEEDLE` in the **search bar's own query
+  echo**, so "the hit must be on screen" was satisfied by the query text
+  the user had just typed.
+
+That is the same shape as the three `/hotkeys` tests: an assertion
+satisfied by something else on screen. Four tests, three fixtures, one
+lesson — a test that cannot distinguish the thing under test from its
+neighbour is not covering it.
+
+### And an unrelated flaky found while verifying
+
+`bash::tests::timeout_does_not_sit_out_the_full_grace_period` failed one
+full-workspace run out of four, then passed five times in isolation. It
+asserts wall-clock `elapsed < 2500 ms` for work that takes ~1800 ms
+unloaded, and a full run schedules ~87 test binaries. The bound is now
+4000 ms — still far below the 6000 ms the pre-v0.8.9 behaviour needed, so
+the regression it guards is still caught loudly.
+
+## Unreleased — four places where the TUI said one thing and did another (2026-10-17)
+
+Found by an enumeration audit of `nini-tui` against the installed Pi
+(0.84.2) source, not by user report. Six new tests; **1395 → 1401**.
+All six were written to fail on the unfixed code first.
+
+### The shape of it
+
+The same defect lived in **three independent copies of the keybinding
+table** — the footer's four branches, `/hotkeys`, and the README — and
+all three disagreed with `default_keymap()` and with each other. Two of
+the three advertised keys that **do not exist at all**:
+
+| advertised | footer said | `default_keymap()` |
+|---|---|---|
+| `Ctrl+Z` | `undo` | **no such binding** (undo is `Ctrl+/`) |
+| `Alt+Backspace` | `kill-word` | **no such binding** (`Ctrl+W` is) |
+| `Ctrl+C` | `quit` | bound to `Abort` — which, with no popup open, **clears the input buffer** |
+
+The third is worse than a dead key. The footer promised an exit and
+delivered the destruction of half-typed input: the footer, the README,
+and the implementation were three different claims about one key, and
+the user's most likely reading of them was the one that lost data.
+
+This is §35's family — a hint and an implementation that never met — one
+version later, and it had grown a second and third copy meanwhile.
+
+### The three tests that were hiding it
+
+Fixing the footer turned three green tests red, and all three were false
+positives rather than regressions:
+
+```rust
+let _ = dispatch(&mut state, &mut settings, CommandId::Hotkeys, "");
+// ... then assert the frame contains "Ctrl+C"
+```
+
+`CommandOutcome::Output` reaches the transcript only because the runtime
+pushes it; with the result discarded, nothing was ever added. The
+assertion was satisfied by the **key hint bar**, not by the command. The
+footer stopped lying about `Ctrl+C`, the three tests went red, and what
+was underneath was a suite that had never checked a single command's
+output reaching the screen. Two defects were covering for each other.
+
+### Ctrl+F could not search a real answer
+
+`line_summary_text_impl` is the *only* input `update_search_query` matches
+against, and it truncated every assistant / thinking / tool-result line to
+60 characters — under a doc comment calling it "suitable for transcript
+search". Measured on an 88-character message:
+
+```text
+索引含 NEEDLE_AT_70 ? false
+原文含 NEEDLE_AT_70 ? true
+```
+
+Model answers are routinely longer than 60 characters, so this was not an
+edge case: `Ctrl+F` could not reach the text a user could see on screen.
+The truncation is gone; the cost is one `to_lowercase()` + `contains()`
+per keystroke over the line's own text.
+
+### And a flake I had already located
+
+`nini_core::logging` is a process-global `AtomicBool`, and `/debug` is one
+of the 28 entries in `REGISTRY`. `dispatch_is_total_over_all_commands`
+exists to call every command, so it wrote that global while
+`debug_command_moves_the_real_logging_switch` read it as its baseline —
+cargo runs those threads in parallel, and the test failed about one run
+in ten. Fixed on both sides: `DEBUG_LOCK` in the test binary, and
+`cmd_debug` now derives its new state from the global switch rather than
+from the per-`AppState` field that could disagree with it. The second
+change also fixes a real bug — after `--verbose` the CLI sets the global
+while the field stays at its default, so the first `/debug` would have
+switched logging *off*.
+
+### Oracles
+
+`tests/footer_binding_truth.rs` (2) and `tests/search_index_coverage.rs`
+(4), plus `footer_quitting_mode_names_the_two_keys_that_actually_work`,
+which replaces a test that had pinned the string `force-quit` — an action
+that exists nowhere in the codebase.
+
+The first draft of the footer oracle reported eleven unbound keys instead
+of two, because I had guessed the modifier bit values instead of reading
+them (`CTRL` is `0b010`, not `1`). A green test that cannot go red proves
+nothing; neither does a red one for the wrong reason.
+
+### `/hotkeys` is now derived, not written
+
+It reads `default_keymap()` and labels every binding, so it cannot claim a
+key the TUI does not have. First draft had two bugs the tests caught
+immediately: characters rendered lowercase (`Ctrl+c`), and modifiers
+compared with `==` instead of `contains`, which would have printed
+`Ctrl+Shift+P` as a bare `Shift+P`.
+
+### Still open from the same audit
+
+Recorded here because this list is the audit's own record. Five of the
+six items it named have since been fixed and each now has an oracle
+that was red before the fix:
+
+| Item | Fixed in |
+|---|---|
+| Search hits are invisible (`searchMatchBg`/`searchMatchText` defined, read by nothing; `search_next` did not move the viewport) | `feat(tui): six places where the TUI said one thing and did another` — `search_match_visible.rs` |
+| Up/Down overwrite what you are typing (`InputBuffer` had no line concept, so `recall_history(-1)` ate the buffer) | same commit — `prompt_vertical_motion.rs` (visual-row geometry added) |
+| There is no scroll-to-top (`grep -rn ScrollToTop` was empty; Pi binds `Home`) | same commit — `transcript_scroll_to_top.rs` |
+| Blockquote bodies carry no style | `feat(tui): a blockquote body carries Pi's quote style` |
+| Thinking text is not markdown | `feat(tui): six places where the TUI said one thing and did another` — `rich::render_thinking_block` |
+
+**One item is still open, and it is the largest:**
+
+- **No syntax highlighting.** Pi has `highlightCode` and uses it in the
+  write tool's diff too. All nine `syntax*` slots in the palette are dead;
+  `theme.rs` says "reserved for future synctect integration" and the README
+  still does not say so.
+
 ## Unreleased — an interrupt used to cost you your next four seconds (2026-10-16)
 
 Reported as: "while nini is running, pressing Esc means I cannot type". Measured

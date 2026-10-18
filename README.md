@@ -4,21 +4,21 @@
 
 [![Status](https://img.shields.io/badge/status-v0.10.1-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1360%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1428%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
 the AI coding agent by Mario Zechner. It reads the same `~/.pi/agent/`
 configuration, produces the same session JSONL v4, and exposes the same
-28 slash commands. Drop it in alongside Pi and your existing skills,
-settings, and models.json keep working.
+23 slash commands plus 5 of its own. Drop it in alongside Pi and your
+existing skills, settings, and models.json keep working.
 
 ## Why nini?
 
 - **Single 5.4 MB binary** instead of a Node.js toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **1360 unit + integration tests**, including property-based SSE fuzz and
+- **1428 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -31,7 +31,7 @@ settings, and models.json keep working.
 | **Default model** | `MiniMax-M3.1-Flash-Preview` — override with `--model` or `/model` |
 | **Tools** | `bash` (process-tree kill, timeout, SIGTERM→SIGKILL), `read`, `write` (atomic), `edit` (exact-match), `grep` (regex + .gitignore), `find` (glob + .gitignore) |
 | **TUI** | ratatui + crossterm, readline-style editing, kill ring, history recall, slash-command autocomplete dropdown, command palette (Ctrl+Shift+K), transcript search (Ctrl+F), external editor (Ctrl+G) |
-| **Slash commands** | All 28 Pi-compatible commands (`/help`, `/model`, `/export`, `/new`, `/quit`, …) |
+| **Slash commands** | All 23 Pi builtin commands (`/model`, `/export`, `/new`, `/quit`, …), plus 5 nini-only ones (`/help`, `/status`, `/prompt`, `/debug`, `/editor`) |
 | **Session** | JSONL v4 codec + legacy-v3 reader; reads `~/.pi/agent/skills/`, `settings.json`, `models.json` |
 | **Compaction** | LLM-backed summary with deterministic fallback; auto-triggers on context overflow |
 | **Hooks (v0.7)** | Pi-compatible 5-method `AgentLoopHooks` trait: steering / followup / transform_context / convert_to_llm / should_stop_after_turn. Tool before/after lifecycle hooks. BashOperations + ReadOperations for mockable backends. |
@@ -112,17 +112,28 @@ hints. Type `/` to summon the slash-command autocomplete. Press
 | `Ctrl+Shift+K` | Open command palette |
 | `F1` | Toggle short / extended footer |
 | `Ctrl+A` / `Ctrl+E` | Beginning / end of line |
+| `Home` / `End` | Jump transcript to oldest / newest (Pi parity) |
 | `Ctrl+K` | Kill to end of line |
 | `Ctrl+U` | Clear input |
 | `Ctrl+W` | Kill word backward |
+| `Alt+D` / `Alt+Y` | Kill word forward / yank-pop |
+| `Ctrl+Y` / `Ctrl+/` | Yank / **undo** |
+| `Ctrl+T` | Cycle thinking level |
+| `Ctrl+P` / `Ctrl+Shift+P` | Cycle model next / previous |
+| `Ctrl+O` | Toggle collapsed tool output |
+| `Ctrl+V` | Paste image from clipboard |
+| `PageUp` / `PageDown` / `Shift+End` | Scroll transcript up / down / to the latest |
 | `Ctrl+←` / `Ctrl+→` | Jump word left / right |
 | `↑` / `↓` | Recall history (or navigate popup when one is open) |
 | `Tab` | Accept selected completion |
 
 ## Slash commands
 
-All 28 Pi-compatible commands are recognized. The ones marked **stub**
-output a "not yet implemented" message instead of taking real action.
+All 23 commands in Pi's `builtin.json` (v0.85.1) are recognized, plus five
+nini-only additions — `/help`, `/status`, `/prompt`, `/debug`, `/editor` —
+which are **extensions, not parity**, and are excluded from the parity claim.
+The commands marked **stub** output a "not yet implemented" message instead
+of taking real action.
 A flag or command that nini does not implement is **refused with a reason
 naming it** — never accepted and dropped.
 
@@ -140,7 +151,7 @@ naming it** — never accepted and dropped.
 | `/name` | `<name>` | partial (in-memory only, not persisted) |
 | `/session` | — | partial (in-memory state, no session file) |
 | `/changelog` | — | real |
-| `/hotkeys` | — | full (keybinding list) |
+| `/hotkeys` | — | full (**derived from the keymap at runtime**) |
 | `/fork` | `[n]` / `at n` | real (writes a branch session file) |
 | `/clone` | — | real (copies the session file) |
 | `/trust` | — | partial (in-memory only) |
@@ -172,9 +183,12 @@ same session JSONL.
 ## Known limitations (as of v0.10)
 
 Verified against this binary, not carried over from an older README.
+The project's goal and its current status live in
+[`docs/GOALS.md`](docs/GOALS.md) — it is the authority on what nini is
+trying to be; this section is the user-facing summary of it.
 
 - `/share` is the one command that returns "not yet implemented". The rest
-  of the 28 dispatch; `/tree`, `/fork` and `/settings` are real
+  of the 23 Pi commands dispatch; `/tree`, `/fork` and `/settings` are real
 - Compaction uses a deterministic local summary, not an LLM-based one
 - `--continue-session` / `--session-id` / `--fork` on the command line are
   refused with a pointer to the TUI command; sessions themselves are
@@ -189,6 +203,10 @@ Verified against this binary, not carried over from an older README.
   execution model. See `docs/plans/v0.10-pi-parity-refactor.md` §26
 - Prompt templates and AGENTS.md / CLAUDE.md context files are refused with
   a reason rather than silently ignored
+- **No syntax highlighting.** Pi colours fenced code blocks (`highlightCode`)
+  and does the same inside the write tool's diff; nini renders code blocks
+  with the base style only. The nine `syntax*` theme slots exist and are read
+  by nothing — they are reserved, not implemented
 
 ## Architecture
 
