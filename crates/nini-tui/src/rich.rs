@@ -475,6 +475,68 @@ pub fn render_bash_execution(
 /// `push_divider` call sites and the tests that count transcript lines
 /// keep their meaning: what a turn boundary *is* has not changed, only
 /// how it is drawn.
+/// A thinking block, rendered the way Pi renders it.
+///
+/// v0.10.2. `assistant-message.ts:147` builds a full `Markdown` for each
+/// run of thinking blocks, with `{ color: theme.fg("thinkingText", …),
+/// italic: true }` as the default style. nini split the raw text on `\n`
+/// and handed the strings to the transcript, so inside a reasoning block
+/// the model saw:
+///
+/// ```text
+///   💭 - weigh the options
+///   💭 - **this part matters**
+/// ```
+///
+/// — raw list markers and raw emphasis delimiters, which models emit in
+/// reasoning constantly. `thinkingText` was in the palette and read
+/// nowhere; the block used `dim` instead.
+///
+/// The `  💭 ` gutter and the continuation indent are nini's own, and
+/// they stay: Pi's label is only for the collapsed state. The style is
+/// applied here, at the outer layer, so inline markdown formatting sits
+/// on top of `thinkingText` the way it does in Pi.
+pub fn render_thinking_block(
+    text: &str,
+    theme: &Theme,
+    max_width: Option<usize>,
+) -> Vec<RLine<'static>> {
+    const FIRST_PREFIX: &str = "  \u{1F4AD} ";
+    const CONT_PREFIX: &str = "   ";
+    const FIRST_W: usize = 5; // 2 spaces + the glyph + 1 space
+    const CONT_W: usize = 3;
+
+    let body = theme
+        .fg_style("thinkingText")
+        .add_modifier(ratatui::style::Modifier::ITALIC);
+
+    let source = crate::ansi::strip_ansi(text);
+    let lines = crate::markdown::render_markdown(&source, theme, max_width);
+
+    let mut out: Vec<RLine<'static>> = Vec::with_capacity(lines.len());
+    for (i, line) in lines.into_iter().enumerate() {
+        let (prefix, _) = if i == 0 {
+            (FIRST_PREFIX, FIRST_W)
+        } else {
+            (CONT_PREFIX, CONT_W)
+        };
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
+        // The gutter is not part of the quoted text, so it stays plain;
+        // everything the model wrote carries the thinking style.
+        spans.push(Span::raw(prefix));
+        spans.extend(line.spans.into_iter().map(|sp| {
+            let mut sp = sp;
+            sp.style = sp.style.patch(body);
+            sp
+        }));
+        out.push(RLine::from(spans));
+    }
+    if out.is_empty() {
+        out.push(RLine::from(Span::raw(FIRST_PREFIX)));
+    }
+    out
+}
+
 pub fn turn_separator() -> RLine<'static> {
     // A space rather than an empty string: `ListItem::new` measures an
     // empty `RLine` as zero lines tall, which would make the separator

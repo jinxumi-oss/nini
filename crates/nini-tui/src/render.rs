@@ -621,76 +621,6 @@ fn render_search_bar(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     f.render_widget(para, area);
 }
 
-/// v0.8.4 (bugfix, ux-001): the previous version stuffed the
-/// accumulated thinking text into a single RLine, so long blocks
-/// were clipped to the viewport tail (e.g. `💭 ectory.` for a
-/// 400-char reasoning). Hard-wrap each logical line at INNER_MAX
-/// cells (using display_width so emoji / CJK count correctly) and
-/// prefix every continuation with the same indent so the 💭 gutter
-/// stays aligned.
-fn wrap_thinking_block(text: &str) -> Vec<String> {
-    use unicode_width::UnicodeWidthChar;
-    const FIRST_PREFIX: &str = "  \u{1F4AD} ";
-    const CONT_PREFIX: &str = "   ";
-    const FIRST_W: usize = 5; // 2 + 2 + 1
-    const CONT_W: usize = 3;
-    const INNER_MAX: usize = 180;
-
-    let mut out: Vec<String> = Vec::new();
-    for logical in text.split('\n') {
-        if logical.is_empty() {
-            out.push(format!("{FIRST_PREFIX}"));
-            continue;
-        }
-        let mut first = true;
-        let mut rest = logical;
-        loop {
-            if rest.is_empty() {
-                break;
-            }
-            let (prefix, pw) = if first {
-                (FIRST_PREFIX, FIRST_W)
-            } else {
-                (CONT_PREFIX, CONT_W)
-            };
-            first = false;
-            let total_w: usize = pw
-                + rest
-                    .chars()
-                    .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
-                    .sum::<usize>();
-            if total_w <= INNER_MAX {
-                out.push(format!("{prefix}{rest}"));
-                break;
-            }
-            // Hard-wrap at the largest char index whose prefix+index
-            // still fits in INNER_MAX. Simple char-count is fine here
-            // — word-boundary wrapping isn't worth the complexity for
-            // a dim/italic ephemeral block, and the trade-off is
-            // occasionally splitting a long word vs. an unreadable
-            // tail clip.
-            let max_tail = INNER_MAX - pw;
-            let mut used = 0usize;
-            let mut cut = rest.len();
-            for (i, c) in rest.char_indices() {
-                let w = UnicodeWidthChar::width(c).unwrap_or(0);
-                if used + w > max_tail {
-                    cut = i;
-                    break;
-                }
-                used += w;
-            }
-            let (head, tail) = rest.split_at(cut);
-            out.push(format!("{prefix}{head}"));
-            rest = tail;
-        }
-    }
-    if out.is_empty() {
-        out.push(format!("{FIRST_PREFIX}"));
-    }
-    out
-}
-
 /// How many `TranscriptLine`s it takes to cover `items` rendered rows,
 /// counting from the bottom up — the same direction the renderer skips in.
 ///
@@ -838,7 +768,9 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 match cache.get(idx, width) {
                     Some((cached_fp, count)) if cached_fp == fingerprint => count,
                     _ => {
-                        let count = items_for_line(line, theme, width as usize).len();
+                        let count =
+                            items_for_line(line, theme, width as usize, SearchHighlight::None)
+                                .len();
                         cache.put(idx, width, fingerprint, count);
                         count
                     }
@@ -846,7 +778,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
             }
             // A poisoned lock must not take the TUI down; worst case is
             // the pre-cache behaviour (recompute every frame).
-            Err(_) => items_for_line(line, theme, width as usize).len(),
+            Err(_) => items_for_line(line, theme, width as usize, SearchHighlight::None).len(),
         };
         items_per_line.push(count);
     }
@@ -882,14 +814,40 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         };
     }
 
+    // v0.10.2: which transcript line, if any, is the active search hit.
+    //
+    // `SearchState::matches` holds **TranscriptLine** indices, which is
+    // exactly the `i` in the loops below, so no translation is needed.
+    // `SearchHighlight::None` is passed for the item-count cache: the
+    // paint does not change how many rows a line occupies, and caching
+    // counts is what keeps a long transcript off the per-frame budget.
+    let search = state.ui_state.search.as_ref();
+    let highlight_for = |idx: usize| -> SearchHighlight {
+        let Some(s) = search else {
+            return SearchHighlight::None;
+        };
+        if s.current < s.matches.len() && s.matches[s.current] == idx {
+            SearchHighlight::Current
+        } else if s.matches.contains(&idx) {
+            SearchHighlight::Hit
+        } else {
+            SearchHighlight::None
+        }
+    };
+
     // Choose the visible slice.
     let mut visible_items: Vec<ListItem> = Vec::with_capacity(visible_height.min(total_items));
     let mut hidden_above_items: usize = 0;
 
     if total_items <= visible_height {
         // Everything fits — render everything.
-        for line in lines.iter() {
-            visible_items.extend(items_for_line(line, theme, area.width as usize));
+        for (i, line) in lines.iter().enumerate() {
+            visible_items.extend(items_for_line(
+                line,
+                theme,
+                area.width as usize,
+                highlight_for(i),
+            ));
         }
     } else if autoscroll {
         // Tail-aligned: keep the latest `visible_height` items.
@@ -898,7 +856,8 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         for i in (0..total_lines).rev() {
             let count = items_per_line[i];
             if count <= budget {
-                let line_items = items_for_line(&lines[i], theme, area.width as usize);
+                let line_items =
+                    items_for_line(&lines[i], theme, area.width as usize, highlight_for(i));
                 visible_items = line_items
                     .into_iter()
                     .chain(visible_items.into_iter())
@@ -909,7 +868,8 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 }
             } else {
                 // Single line bigger than entire visible area — tail-truncate.
-                let mut line_items = items_for_line(&lines[i], theme, area.width as usize);
+                let mut line_items =
+                    items_for_line(&lines[i], theme, area.width as usize, highlight_for(i));
                 let start = line_items.len() - budget;
                 visible_items = line_items
                     .split_off(start)
@@ -948,7 +908,8 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 continue;
             }
             let take = take_from_line.min(budget);
-            let mut line_items = items_for_line(&lines[i], theme, area.width as usize);
+            let mut line_items =
+                items_for_line(&lines[i], theme, area.width as usize, highlight_for(i));
             let start = line_items.len() - take;
             visible_items = line_items
                 .split_off(start)
@@ -1013,7 +974,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     if visible_items.is_empty() && total_lines > 0 {
         let mut tail: Vec<ListItem> = Vec::with_capacity(visible_height);
         for line in lines.iter().rev() {
-            let mut items = items_for_line(line, theme, area.width as usize);
+            let mut items = items_for_line(line, theme, area.width as usize, highlight_for(0));
             items.reverse();
             if items.len() >= visible_height {
                 items.drain(..items.len() - visible_height);
@@ -1075,10 +1036,79 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
 /// the work twice. (We DO render twice — once for counting, once for
 /// the actual list — but the cost is bounded: 1..N items per line where
 /// N is typically <10. For a 200-line transcript this is cheap.)
+/// How a transcript line relates to the active search.
+///
+/// v0.10.2. Pi paints a hit with `underline + bg(searchMatchBg) +
+/// fg(searchMatchText)` and the *current* hit with `bold + inverse` on top
+/// (`interactive-mode.ts:349` creates `searchMatchStyle` and
+/// `searchCurrentMatchStyle` and hands both to the alt-screen scroll
+/// view). Before this, nini computed the match list, drew the count, and
+/// painted nothing — `searchMatchBg` / `searchMatchText` were palette
+/// entries with no reader, the same dead-slot shape as `mdCodeBlockBorder`
+/// (§32) and `thinkingText`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SearchHighlight {
+    /// Not a search hit.
+    #[default]
+    None,
+    /// A hit, but not the one `n` / `N` is on.
+    Hit,
+    /// The hit the search bar's `current` points at.
+    Current,
+}
+
+/// The style Pi uses for a search hit.
+///
+/// `interactive-mode.ts:349` builds two closures:
+/// ```js
+/// searchMatchStyle:       (t) => theme.underline(theme.bg("searchMatchBg", theme.fg("searchMatchText", t)))
+/// searchCurrentMatchStyle: (t) => theme.bold(theme.inverse(styleSearchMatch(t)))
+/// ```
+/// so a hit is underlined on the match colours and the current one adds
+/// bold + reverse on top. Before this, nini computed the match list,
+/// drew the `2/2` counter, and painted nothing — `searchMatchBg` and
+/// `searchMatchText` were palette entries with no reader, the same
+/// dead-slot shape as `mdCodeBlockBorder` (§32) and `thinkingText`.
+fn search_highlight_style(level: SearchHighlight, theme: &Theme) -> Style {
+    let mut style = theme
+        .bg_style("searchMatchBg")
+        .fg(theme.color("searchMatchText"));
+    style = style.add_modifier(Modifier::UNDERLINED);
+    if level == SearchHighlight::Current {
+        style = style.add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    }
+    style
+}
+
+/// Paint one rendered transcript row with the search-match style.
+///
+/// Applied per `Span` rather than through `ListItem::style` for two
+/// reasons: ratatui resolves `span > line > item`, and every renderer
+/// here sets a per-span foreground, so an item-level style would colour
+/// the background and be ignored for the text. And `ListItem::content`
+/// is `pub(crate)` in ratatui 0.29, so a post-pass over the finished
+/// items is not expressible from here — the paint has to happen while
+/// the `Line` is still ours.
+fn highlight_row(
+    mut line: RLine<'static>,
+    level: SearchHighlight,
+    theme: &Theme,
+) -> RLine<'static> {
+    if level == SearchHighlight::None {
+        return line;
+    }
+    let style = search_highlight_style(level, theme);
+    for span in line.spans.iter_mut() {
+        span.style = span.style.patch(style);
+    }
+    line
+}
+
 fn items_for_line(
     line: &TranscriptLine,
     theme: &Theme,
     area_width: usize,
+    highlight: SearchHighlight,
 ) -> Vec<ListItem<'static>> {
     // v0.8.9 (P1-3): one width for every branch. Only the ToolResult
     // arm used to receive it, which is why a 210-character user message
@@ -1091,39 +1121,30 @@ fn items_for_line(
     } else {
         None
     };
-    match line {
-        TranscriptLine::User(text) => render_user_message(text, theme, max_w)
-            .into_iter()
-            .map(ListItem::new)
-            .collect(),
-        TranscriptLine::AssistantText(text) => render_assistant_message(text, theme, max_w)
-            .into_iter()
-            .map(ListItem::new)
-            .collect(),
+    let items: Vec<RLine<'static>> = match line {
+        TranscriptLine::User(text) => render_user_message(text, theme, max_w),
+        TranscriptLine::AssistantText(text) => render_assistant_message(text, theme, max_w),
         // v0.8: dim/italic reasoning block (Pi-style). Wrap by display
         // width so long thinking blocks render across multiple rows.
-        TranscriptLine::ThinkingText(text) => wrap_thinking_block(text)
-            .into_iter()
-            .map(|line| {
-                ListItem::new(RLine::from(Span::styled(
-                    line,
-                    theme.fg_style("dim").add_modifier(Modifier::ITALIC),
-                )))
-            })
-            .collect(),
+        // v0.10.2: thinking is Markdown in Pi (`assistant-message.ts:147`),
+        // painted `thinkingText` + italic. It used to be `wrap_thinking_block`
+        // — raw strings, `dim` — so list markers and emphasis delimiters
+        // were printed verbatim. See `rich::render_thinking_block`.
+        TranscriptLine::ThinkingText(text) => {
+            crate::rich::render_thinking_block(text, theme, max_w)
+        }
         TranscriptLine::ToolCall {
             id: _,
             name,
             args,
             collapsed,
         } => {
-            let lines = render_tool_call(name, args, theme, max_w);
-            let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
+            let mut out: Vec<RLine<'static>> = render_tool_call(name, args, theme, max_w);
             if *collapsed {
                 if !out.is_empty() {
                     out.truncate(1);
                 }
-                out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
+                out.push(crate::rich::render_collapsed_hint(theme));
             }
             out
         }
@@ -1137,21 +1158,21 @@ fn items_for_line(
         } => {
             // `max_w` is computed once at the top of this function
             // (v0.8.9 P1-3) and shared by every arm.
-            let lines = render_tool_result(name, *ok, content, *duration_ms, theme, max_w);
-            let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
+            let mut out: Vec<RLine<'static>> =
+                render_tool_result(name, *ok, content, *duration_ms, theme, max_w);
             if *collapsed {
                 if !out.is_empty() {
                     out.truncate(1);
                 }
-                out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
+                out.push(crate::rich::render_collapsed_hint(theme));
             }
             out
         }
-        TranscriptLine::Divider => vec![ListItem::new(crate::rich::turn_separator())],
-        TranscriptLine::StopNotice(msg) => vec![ListItem::new(RLine::from(Span::styled(
+        TranscriptLine::Divider => vec![crate::rich::turn_separator()],
+        TranscriptLine::StopNotice(msg) => vec![RLine::from(Span::styled(
             format!("  {msg}"),
             theme.fg_style("error"),
-        )))],
+        ))],
         TranscriptLine::BashExecution {
             cmd,
             output,
@@ -1162,7 +1183,7 @@ fn items_for_line(
             collapsed,
             ..
         } => {
-            let lines = render_bash_execution(
+            let mut out: Vec<RLine<'static>> = render_bash_execution(
                 cmd,
                 output,
                 stderr,
@@ -1172,16 +1193,19 @@ fn items_for_line(
                 theme,
                 max_w,
             );
-            let mut out: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
             if *collapsed {
                 if !out.is_empty() {
                     out.truncate(1);
                 }
-                out.push(ListItem::new(crate::rich::render_collapsed_hint(theme)));
+                out.push(crate::rich::render_collapsed_hint(theme));
             }
             out
         }
-    }
+    };
+    items
+        .into_iter()
+        .map(|l| ListItem::new(highlight_row(l, highlight, theme)))
+        .collect()
 }
 
 /// v0.8.4 (ux-001): cold-start welcome card. Renders into the empty
@@ -1247,6 +1271,22 @@ fn render_welcome_card(f: &mut Frame, theme: &Theme, area: Rect) {
 }
 
 fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    // v0.10.2: publish the prompt's inner width for vertical caret
+    // motion. It is the only place the number exists, exactly as in Pi,
+    // where `buildVisualLineMap(this.lastWidth)` reads a width recorded
+    // during render. Unconditional — the key handler must not depend on
+    // whether a cursor happens to be drawn this frame.
+    //
+    // 4 is the floor `render_prompt` already uses below
+    // (`area.width >= 2 + padding_x + 2`), so the published value cannot
+    // disagree with the geometry the frame itself uses.
+    state.prompt_inner_width.store(
+        area.width
+            .saturating_sub(5) // 1 border + 1 padding + 2 prompt + 1 border
+            .max(4) as usize,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
     let prompt_symbol = if state.run_state.mode == RunMode::Running {
         "⏵"
     } else {
@@ -1346,21 +1386,35 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
     // the 5th hint would overflow and ratatui's `Paragraph` truncates
     // the tail silently — without an ellipsis the user wouldn't even
     // know hints were dropped.
+    //
+    // v0.10.2: every hint here is checked against `default_keymap()` by
+    // `tests/footer_binding_truth.rs`. Three of these strings were
+    // fiction:
+    //
+    //   `Ctrl+Z`          — not bound at all (undo is `Ctrl+/`)
+    //   `Alt+Backspace`   — not bound at all (`Ctrl+W` is kill-word)
+    //   `Ctrl+C quit`     — bound, but to `Abort`, and `Abort` with no
+    //                       popup open **clears the input buffer**
+    //                       (runtime.rs: the `Abort` arm's final else).
+    //
+    // The first two were keys that did nothing at all. The third was
+    // worse: the footer promised an exit and delivered a destructive
+    // clear of half-typed input. The same class of defect §35 found in
+    // `RunMode::Aborted` — a hint and an implementation that never met.
     let narrow = area.width < 70;
     let hints: Vec<(&str, &str)> = match state.run_state.mode {
         RunMode::Editing if state.ui_state.help_extended && !narrow => vec![
             (" F1 ", "short"),
             (" Enter ", "send"),
             (" Shift+Enter ", "newline"),
-            (" Alt+Backspace ", "kill-word"),
+            (" Ctrl+W ", "kill-word"),
             (" Alt+D ", "kill"),
-            (" Ctrl+Z ", "undo"),
+            (" Ctrl+/ ", "undo"),
             (" Ctrl+Y ", "yank"),
             (" Ctrl+L ", "model"),
             (" Ctrl+T ", "thinking"),
             (" Ctrl+P ", "model+"),
             (" Ctrl+O ", "collapse"),
-            (" Ctrl+C ", "quit"),
             (" Ctrl+D ", "exit"),
         ],
         RunMode::Editing if state.ui_state.help_extended => vec![
@@ -1369,23 +1423,31 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
             (" Enter ", "send"),
             (" Shift+Enter ", "newline"),
             (" Ctrl+L ", "model"),
-            (" Ctrl+C ", "quit"),
+            (" Ctrl+D ", "exit"),
         ],
         RunMode::Editing if narrow => vec![
             // narrow compact: keep only the essentials
             (" Enter ", "send"),
             (" Shift+Enter ", "newline"),
-            (" Ctrl+C ", "quit"),
+            (" Ctrl+D ", "exit"),
         ],
         RunMode::Editing => vec![
             (" F1 ", "help"),
             (" Enter ", "send"),
             (" Shift+Enter ", "newline"),
             (" Ctrl+L ", "model"),
-            (" Ctrl+C ", "quit"),
+            (" Ctrl+D ", "exit"),
         ],
-        RunMode::Running => vec![(" Esc ", "abort"), (" Ctrl+C ", "force-quit")],
-        RunMode::Quitting => vec![(" Ctrl+C ", "force-quit")],
+        // `Ctrl+C` and `Esc` are both bound to `Abort`, so both say
+        // "abort". It used to say "force-quit", which names an action
+        // the key does not perform.
+        RunMode::Running => vec![(" Esc ", "abort"), (" Ctrl+C ", "abort")],
+        // Quitting = the double-tap window is open. `Ctrl+D` inside it
+        // exits; `Esc` clears `pending_quit` and returns to Editing
+        // (runtime.rs, the `Abort` arm's `pending_quit` branch). The old
+        // `Ctrl+C force-quit` named a third action that exists nowhere:
+        // `Ctrl+C` is `Abort`, which in this mode does neither.
+        RunMode::Quitting => vec![(" Esc ", "cancel"), (" Ctrl+D ", "quit")],
     };
 
     // Use trim_to_width so when hints overflow we append a dim "…"
@@ -1572,12 +1634,33 @@ mod footer_tests {
         );
     }
 
+    /// v0.10.2: this used to assert the footer says `force-quit`.
+    /// That string was the defect. `Ctrl+C` is bound to `Abort`, and
+    /// `Abort` has no `Quitting` branch — in that mode it falls through
+    /// to `state.input.clear()`. There is no "force-quit" action in the
+    /// codebase at all, so the test was pinning a footer that lied.
+    ///
+    /// What is true in this mode, and worth pinning: the two keys that
+    /// *do* something — `Esc` cancels the pending exit, `Ctrl+D`
+    /// confirms it.
     #[test]
-    fn footer_quitting_mode_shows_force_quit() {
+    fn footer_quitting_mode_names_the_two_keys_that_actually_work() {
         let mut state = AppState::new("m");
         state.run_state.mode = RunMode::Quitting;
         let text = footer_text(&state);
-        assert!(text.contains("force-quit"));
+        assert!(
+            text.contains("Ctrl+D") && text.contains("quit"),
+            "Ctrl+D is the key that exits inside the double-tap window: {text}"
+        );
+        assert!(
+            text.contains("Esc") && text.contains("cancel"),
+            "Esc clears pending_quit and returns to Editing: {text}"
+        );
+        assert!(
+            !text.contains("force-quit"),
+            "no such action exists; Ctrl+C is Abort and clears the input \
+             buffer in this mode: {text}"
+        );
     }
 }
 

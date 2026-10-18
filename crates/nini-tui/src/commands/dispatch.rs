@@ -1430,10 +1430,19 @@ fn cmd_debug(state: &mut AppState, _settings: &mut SettingsManager, _args: &str)
     // diagnostic action the product documented produced no diagnostic
     // output.
     //
-    // It now moves the real switch (`nini_core::logging`), which the CLI's
-    // subscriber filters on, and reports where the output goes so the
-    // command is actionable rather than merely confirmatory.
-    let new_state = !state.ui_state.debug_logging;
+    // v0.10.2: the source of truth is the global switch, not the field.
+    // It used to be `!state.ui_state.debug_logging`, which means the two
+    // copies could disagree: the CLI sets the global via `--verbose`
+    // (`nini-cli/src/app.rs`) while the field stays at its `AppState::new`
+    // default, so the first `/debug` after a `--verbose` run would have
+    // switched the flag *off*. Two sources of truth is the same defect as
+    // two copies of a hint table — and here it also made a test flaky,
+    // because a second `AppState` in the same process could write the
+    // global out from under the first one's expectation.
+    //
+    // The field is still updated: the renderer and `/status` read it, and
+    // keeping it in step with the switch it mirrors is the point.
+    let new_state = !nini_core::logging::is_debug();
     state.ui_state.debug_logging = new_state;
     nini_core::logging::set_debug(new_state);
 
@@ -1494,45 +1503,139 @@ fn cmd_hotkeys(
     _settings: &mut SettingsManager,
     _args: &str,
 ) -> CommandResult {
-    // v0.8.4 (ux-001, regression-fix): the v0.8 refactor left this as a
-    // stub that just told the user "press F1", but the e2e tests
-    // (`slash_command_through_full_state_machine`,
-    // `slash_hotkeys_via_submit_user_input`) and the
-    // `interactive_e2e.rs` slash-command regression suite both
-    // /hotkeys output a keybinding table. Restoring the v0.7.3
-    // output keeps /hotkeys useful as a textual fallback for users
-    // who can't or don't want to use F1.
+    // v0.8.4 restored this from a stub so it works as a textual fallback
+    // for F1. It then shipped a hand-written table that had drifted from
+    // `default_keymap()`: it advertised `Ctrl+Z` (never bound — undo is
+    // `Ctrl+/`), `Alt+Backspace` (never bound), `Ctrl+E` (never bound),
+    // and `Alt+D kill to end` when the binding is kill-word-forward.
     //
-    // The keys here mirror the compact set the TUI shows in the
-    // footer (`render_key_hints`), plus the extended `help_extended`
-    // set that F1 toggles. Read them off `state.ui_state.help_extended`
-    // so the same toggle affects both surfaces.
-    let lines = vec![
-        "Key bindings (nini TUI)".to_string(),
-        String::new(),
-        "  F1            toggle extended keymap".to_string(),
-        "  Enter         send input".to_string(),
-        "  Shift+Enter   newline".to_string(),
-        "  Alt+Backspace kill word".to_string(),
-        "  Alt+D         kill to end".to_string(),
-        "  Ctrl+A        beginning of line".to_string(),
-        "  Ctrl+E        end of line".to_string(),
-        "  Ctrl+K        kill to end of line".to_string(),
-        "  Ctrl+U        clear input".to_string(),
-        "  Ctrl+W        kill word backward".to_string(),
-        "  Ctrl+Z        undo".to_string(),
-        "  Ctrl+Y        yank".to_string(),
-        "  Ctrl+L        switch model".to_string(),
-        "  Ctrl+T        thinking level".to_string(),
-        "  Ctrl+P        cycle model +".to_string(),
-        "  Ctrl+O        toggle collapsed tool output".to_string(),
-        "  Ctrl+G        external editor ($VISUAL / $EDITOR)".to_string(),
-        "  Ctrl+C        abort / quit".to_string(),
-        "  Ctrl+D        quit TUI".to_string(),
-        "  Arrow keys    cursor / history".to_string(),
-        "  PgUp / PgDn   scroll transcript".to_string(),
-    ];
+    // The same defect appeared in three independent copies — the four
+    // footer branches, this table, and the README — and all three
+    // disagreed with each other. Three copies of one fact is three
+    // places to rot, so this one is now *derived*: it reads the keymap,
+    // so it cannot claim a key the TUI does not have.
+    //
+    // v0.10.2. `tests/hotkeys_match_keymap.rs` pins the invariant.
     let _ = state;
+
+    /// Render a normalized key the way a user would name it.
+    ///
+    /// Three details this got wrong in the first draft, all found by
+    /// `slash_command_e2e` asserting on `Ctrl+C`:
+    ///
+    /// 1. Characters render **uppercase** (`Ctrl+c` is not how anyone
+    ///    writes a key, and `tests/hotkeys_match_keymap.rs` compares
+    ///    against the same convention).
+    /// 2. Modifiers are tested with `contains`, not `==`. `Ctrl+Shift+P`
+    ///    has `CTRL | SHIFT` as one value, so `== CTRL` is false and the
+    ///    chord would have been printed as a bare `Shift+P`.
+    /// 3. Order is Shift, Ctrl, Alt — the order people say them in.
+    fn key_label(key: &crate::keys::Key) -> String {
+        use crate::keys::{KeyCode, KeyModifiers};
+        let mut s = String::new();
+        if key.modifiers.contains(KeyModifiers::SHIFT) {
+            s.push_str("Shift+");
+        }
+        if key.modifiers.contains(KeyModifiers::CTRL) {
+            s.push_str("Ctrl+");
+        }
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            s.push_str("Alt+");
+        }
+        let base = match key.code {
+            KeyCode::Char(c) => c.to_uppercase().collect::<String>(),
+            KeyCode::Esc => "Esc".to_string(),
+            KeyCode::Enter => "Enter".to_string(),
+            KeyCode::Backspace => "Backspace".to_string(),
+            KeyCode::Tab => "Tab".to_string(),
+            KeyCode::Delete => "Delete".to_string(),
+            KeyCode::Left => "Left".to_string(),
+            KeyCode::Right => "Right".to_string(),
+            KeyCode::Up => "Up".to_string(),
+            KeyCode::Down => "Down".to_string(),
+            KeyCode::Home => "Home".to_string(),
+            KeyCode::End => "End".to_string(),
+            KeyCode::PageUp => "PageUp".to_string(),
+            KeyCode::PageDown => "PageDown".to_string(),
+            KeyCode::F(n) => format!("F{n}"),
+            other => format!("{other:?}"),
+        };
+        s.push_str(&base);
+        s
+    }
+
+    /// What the action does, in the user's vocabulary.
+    fn action_label(a: crate::keys::KeyAction) -> &'static str {
+        use crate::keys::KeyAction::*;
+        match a {
+            Submit => "send input",
+            Newline => "insert newline",
+            Abort => "abort the run / dismiss overlay",
+            Quit => "quit (press twice)",
+            MoveLeft => "cursor left",
+            MoveRight => "cursor right",
+            MoveUp => "recall previous prompt",
+            MoveDown => "recall next prompt",
+            MoveLineStart => "beginning of line",
+            MoveLineEnd => "end of line",
+            MoveWordLeft => "word left",
+            MoveWordRight => "word right",
+            Backspace => "delete character backward",
+            Delete => "delete character forward",
+            KillToLineStart => "delete to line start",
+            KillToLineEnd => "delete to line end",
+            KillWordBackward => "kill word backward",
+            KillWordForward => "kill word forward",
+            Yank => "yank",
+            YankPop => "yank-pop",
+            Undo => "undo",
+            SwitchModel => "switch model",
+            CycleModelNext => "cycle model +",
+            CycleModelPrev => "cycle model -",
+            CycleThinkingNext => "thinking level +",
+            CycleThinkingPrev => "thinking level -",
+            ShowHelp => "toggle extended keymap",
+            ClearInput => "clear input",
+            PasteImage => "paste image from clipboard",
+            AcceptCompletionOrInsertTab => "accept completion / insert tab",
+            ScrollUp => "scroll transcript up",
+            ScrollDown => "scroll transcript down",
+            ScrollToBottom => "scroll transcript to the latest message",
+            ToggleCollapse => "toggle collapsed tool output",
+            OpenSearch => "search the transcript",
+            OpenCommandPalette => "open the command palette",
+            OpenExternalEditor => "edit input in $EDITOR",
+            Noop => "(no binding)",
+            other => {
+                // A new action must not silently vanish from /hotkeys.
+                let _ = other;
+                "?"
+            }
+        }
+    }
+
+    let keymap = crate::keys::default_keymap();
+    let width = keymap
+        .iter()
+        .map(|b| key_label(&b.key).len())
+        .max()
+        .unwrap_or(0)
+        .max(10);
+
+    // No footer block: a first draft added "Esc dismiss overlay / abort",
+    // "F1 toggle", "Enter / Tab accept" below the table. Every one of
+    // those keys is already in the table, and duplicating a fact is how
+    // the two copies drifted apart in the first place. It also pushed the
+    // output to 45 lines, four more than a 50-row frame can show.
+    let mut lines = vec![
+        "Key bindings (nini TUI)".to_string(),
+        format!("{} bindings — derived from the keymap", keymap.len()),
+        String::new(),
+    ];
+    for b in &keymap {
+        let label = key_label(&b.key);
+        lines.push(format!("  {label:<width$}  {}", action_label(b.action)));
+    }
     CommandResult::output(lines)
 }
 

@@ -1530,18 +1530,19 @@ fn handle_key(
         KeyAction::MoveLineEnd => state.input.move_to_end(),
         KeyAction::MoveWordLeft => state.input.move_word_left(),
         KeyAction::MoveWordRight => state.input.move_word_right(),
+        // v0.10.2: Pi's three-step ladder — see `move_prompt_vertically`.
         KeyAction::MoveUp => {
             if state.ui_state.completion.is_some() {
                 state.ui_state.completion.as_mut().unwrap().select_up();
             } else {
-                state.input.recall_history(-1);
+                move_prompt_vertically(&mut state, -1);
             }
         }
         KeyAction::MoveDown => {
             if state.ui_state.completion.is_some() {
                 state.ui_state.completion.as_mut().unwrap().select_down();
             } else {
-                state.input.recall_history(1);
+                move_prompt_vertically(&mut state, 1);
             }
         }
         KeyAction::KillToLineStart => state.input.kill_to_line_start(),
@@ -1748,22 +1749,8 @@ fn handle_key(
                 state.run_state.status = "open_selector:help".to_string();
             }
         }
-        KeyAction::ScrollUp => {
-            // v0.10: one page, not one line. `page_lines` is computed by
-            // the renderer, which is the only scope holding both the
-            // per-line row counts and the viewport height. It used to be a
-            // hardcoded `1` with the reasoning that "PageUp users can simply
-            // press it 10 times" — which does not hold, because
-            // `scroll_offset` counts TranscriptLines and one line renders
-            // as anywhere from one row to fifty (a folded tool result).
-            let max_offset = state.transcript_state.lines.len().saturating_sub(1);
-            let step = state.page_lines();
-            Arc::make_mut(&mut state.transcript_state).scroll_offset =
-                (state.transcript_state.scroll_offset + step).min(max_offset);
-            Arc::make_mut(&mut state.transcript_state).autoscroll = false;
-            // v0.10: keeps the scrollbar lit for TRANSIENT_HIDE_MS.
-            state.mark_scroll_activity();
-        }
+        // v0.10.2: shared with `apply_action` — see `scroll_transcript`.
+        KeyAction::ScrollUp => scroll_transcript(&mut state, 1),
         KeyAction::ToggleCollapse => {
             // Toggle collapsed on the most-recent collapsible transcript
             // line.
@@ -1790,26 +1777,9 @@ fn handle_key(
                 }
             }
         }
-        KeyAction::ScrollDown => {
-            let step = state.page_lines();
-            if state.transcript_state.scroll_offset <= step {
-                Arc::make_mut(&mut state.transcript_state).scroll_offset = 0;
-                Arc::make_mut(&mut state.transcript_state).autoscroll = true;
-            } else {
-                Arc::make_mut(&mut state.transcript_state).scroll_offset -= step;
-            }
-            state.mark_scroll_activity();
-        }
-        KeyAction::ScrollToBottom => {
-            // v0.8.4 (ux-001): snap the transcript back to the live
-            // tail (Shift+End). This is the "I'm done skimming, get me
-            // back to the current message" action. Re-enabling
-            // autoscroll also makes any subsequent streaming tokens
-            // stick to the bottom.
-            Arc::make_mut(&mut state.transcript_state).scroll_offset = 0;
-            Arc::make_mut(&mut state.transcript_state).autoscroll = true;
-            state.mark_scroll_activity();
-        }
+        KeyAction::ScrollDown => scroll_transcript(&mut state, -1),
+        KeyAction::ScrollToBottom => scroll_to_bottom(&mut state),
+        KeyAction::ScrollToTop => scroll_to_top(&mut state),
         KeyAction::Noop => {}
     }
 }
@@ -2250,6 +2220,117 @@ fn submit_user_input_inner(
 
 /// Apply a `KeyAction` to a state without spawning anything. Used by tests
 /// and the no-agent mode.
+/// The prompt's inner width, as published by `render_prompt`.
+/// Pi's `Up` / `Down` ladder (`editor.ts:833-857`).
+///
+/// v0.10.2. Both keys used to call `recall_history(±1)` unconditionally,
+/// so they were *only* a history browser — while `render_prompt` draws
+/// the prompt as several rows. The user saw a three-row draft, pressed
+/// Up expecting the caret to rise, and the entire prompt was replaced by
+/// an earlier message. Measured: one keypress, the whole draft gone.
+///
+/// ```text
+///   Up   : first row && (empty || browsing history || column 0)
+///             -> navigateHistory(-1)
+///          first row                        -> moveToLineStart()
+///          otherwise                        -> moveCursor(-1, 0)
+///
+///   Down : browsing history && last row    -> navigateHistory(1)
+///          last row                         -> moveToLineEnd()
+///          otherwise                        -> moveCursor(1, 0)
+/// ```
+///
+/// One function, not one per call site: `handle_key` and `apply_action`
+/// each carried their own copy of this match, which is precisely how the
+/// keymap ended up in three divergent copies (footer, `/hotkeys`,
+/// README) — see the CHANGELOG entry for 2026-10-17.
+fn move_prompt_vertically(state: &mut AppState, delta: i32) {
+    // `prompt_inner_width` is published by `render_prompt`. 0 means no
+    // frame has been drawn yet, and `visual_rows_of` reads that as "rows
+    // are `\n`-separated" — every single-line prompt then behaves exactly
+    // as it did before.
+    let w = prompt_width(state);
+    let (row, col) = state.input.visual_position(w);
+    let rows = state.input.visual_row_count(w).max(1);
+    let browsing = state.input.history_cursor.is_some();
+
+    if delta < 0 {
+        if row == 0 && (state.input.text.is_empty() || browsing || col == 0) {
+            state.input.recall_history(-1);
+        } else if row == 0 {
+            state.input.move_to_line_start();
+        } else {
+            state.input.move_visual_row(-1, w);
+        }
+    } else if browsing && row + 1 >= rows {
+        state.input.recall_history(1);
+    } else if row + 1 >= rows {
+        state.input.move_to_line_end();
+    } else {
+        state.input.move_visual_row(1, w);
+    }
+}
+
+// ---- v0.10.2: transcript scrolling ------------------------------------
+//
+// One implementation, two dispatch sites. `handle_key` and `apply_action`
+// each carried their own copy of the scrolling match, and `apply_action`'s
+// copy was **entirely empty**:
+//
+//     KeyAction::ScrollUp | ScrollDown | ScrollToBottom => {}
+//
+// with the comment "this branch exists so the second key-dispatch site is
+// exhaustive". It has no production caller today — only tests — but that
+// is exactly how P0-5's `Up`/`Down` went unfixed for three releases while
+// the tests kept passing, and how the keymap ended up in three divergent
+// copies on the same day. A dispatch point that silently drops half the
+// actions is a trap, not a convenience.
+
+/// One page up or down. `page_lines` is published by the renderer, the
+/// only scope holding both the per-line row counts and the viewport
+/// height; guessing `1` was the pre-v0.10 bug, because `scroll_offset`
+/// counts TranscriptLines and one of those can render across fifty rows.
+fn scroll_transcript(state: &mut AppState, delta: i32) {
+    let max_offset = state.transcript_state.lines.len().saturating_sub(1) as i32;
+    let step = state.page_lines() as i32;
+    let current = state.transcript_state.scroll_offset as i32;
+    let next = (current + delta * step).clamp(0, max_offset) as usize;
+    let ts = Arc::make_mut(&mut state.transcript_state);
+    ts.scroll_offset = next;
+    ts.autoscroll = next == 0;
+    state.mark_scroll_activity();
+}
+
+/// `home` — `tui.altScreen.top` (`keybindings.ts:208`).
+///
+/// `scroll_offset` counts TranscriptLines skipped **from the bottom**, so
+/// the oldest line on screen is `total - 1`. `autoscroll` must come off:
+/// the renderer's tail-aligned branch ignores `scroll_offset` entirely.
+fn scroll_to_top(state: &mut AppState) {
+    let total = state.transcript_state.lines.len();
+    let ts = Arc::make_mut(&mut state.transcript_state);
+    ts.autoscroll = false;
+    ts.scroll_offset = total.saturating_sub(1);
+    state.mark_scroll_activity();
+}
+
+/// `end` — `tui.altScreen.bottom` (`keybindings.ts:209`).
+///
+/// Re-enabling autoscroll is the point: it is what makes subsequent
+/// streaming tokens stick to the bottom again.
+fn scroll_to_bottom(state: &mut AppState) {
+    let ts = Arc::make_mut(&mut state.transcript_state);
+    ts.scroll_offset = 0;
+    ts.autoscroll = true;
+    state.mark_scroll_activity();
+}
+
+fn prompt_width(state: &AppState) -> usize {
+    state
+        .prompt_inner_width
+        .load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn apply_action(state: &mut AppState, key: Key) {
     let action = resolve_with_user_overrides(key);
     match action {
@@ -2373,14 +2454,14 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             if state.ui_state.completion.is_some() {
                 state.ui_state.completion.as_mut().unwrap().select_up();
             } else {
-                state.input.recall_history(-1);
+                move_prompt_vertically(state, -1);
             }
         }
         KeyAction::MoveDown => {
             if state.ui_state.completion.is_some() {
                 state.ui_state.completion.as_mut().unwrap().select_down();
             } else {
-                state.input.recall_history(1);
+                move_prompt_vertically(state, 1);
             }
         }
         KeyAction::KillToLineStart => state.input.kill_to_line_start(),
@@ -2476,11 +2557,14 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             }
         }
         KeyAction::Quit => state.run_state.mode = RunMode::Quitting,
-        KeyAction::SwitchModel
-        | KeyAction::ShowHelp
-        | KeyAction::ScrollUp
-        | KeyAction::ScrollDown
-        | KeyAction::ScrollToBottom => {}
+        KeyAction::SwitchModel | KeyAction::ShowHelp => {}
+        // v0.10.2: these used to be no-ops here. See the comment on
+        // `scroll_transcript` — a second dispatch point that silently
+        // drops half the actions is a trap.
+        KeyAction::ScrollUp => scroll_transcript(state, 1),
+        KeyAction::ScrollDown => scroll_transcript(state, -1),
+        KeyAction::ScrollToBottom => scroll_to_bottom(state),
+        KeyAction::ScrollToTop => scroll_to_top(state),
         KeyAction::CycleModelNext => cycle_model(state, 1),
         KeyAction::CycleModelPrev => cycle_model(state, -1),
         KeyAction::CycleThinkingNext => cycle_thinking(state, 1),

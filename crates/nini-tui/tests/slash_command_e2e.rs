@@ -9,6 +9,21 @@ use nini_tui::commands::{complete, dispatch, parse, CommandId, CommandOutcome, R
 // avoid cross-test interference when cargo runs tests in parallel.
 static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// v0.10.2: `nini_core::logging` is a **process-global** `AtomicBool`, and
+/// `/debug` is one of the 28 entries in `REGISTRY`. So
+/// `dispatch_is_total_over_all_commands` — whose entire job is to call
+/// every command — writes that global, while
+/// `debug_command_moves_the_real_logging_switch` reads it as its
+/// baseline. Cargo runs test threads in parallel, so the two raced and
+/// the switch test failed roughly one run in ten.
+///
+/// This is the same shape as the `ENV_LOCK` fix in `settings.rs` (one
+/// lock per **file**, not per module) and the same shape as the failure
+/// it fixed: process-wide mutable state, serialized at the wrong
+/// granularity. `HOME_LOCK` protects the environment; this one protects
+/// the debug switch.
+static DEBUG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use nini_tui::render::render_frame;
 use nini_tui::settings::SettingsManager;
 use nini_tui::state::{AppState, RunMode, TranscriptLine};
@@ -241,15 +256,50 @@ fn completion_empty_returns_all() {
 // =====================================================================
 // Test 9: Frame snapshot — `/help` transcript entry renders correctly
 // =====================================================================
+//
+// v0.10.2: this test was a false positive and is being repaired rather
+// than adjusted.
+//
+// It called `dispatch(..., Hotkeys, "")` and then **threw the result
+// away** (`let _ = dispatch(...)`). Command output only reaches the
+// transcript because the runtime pushes it — `runtime.rs`, the
+// `CommandOutcome::Output` arm does `for line in lines { push_assistant }
+// push_divider`. With the result discarded, nothing was ever added, and
+// the assertion `frame.contains("Ctrl+C")` was satisfied by the **key
+// hint bar**, not by the command.
+//
+// That is exactly the failure mode §35.4 names: an assertion satisfied by
+// a hint instead of by the feature. It stayed green through three
+// releases because the footer and the command both happened to contain
+// the string "Ctrl+C" — and it went red the moment the footer stopped
+// lying about that key (see `footer_binding_truth.rs`). The two defects
+// were hiding each other.
 #[test]
 fn command_output_renders_in_frame() {
     let mut state = AppState::new("test-model");
     let mut settings = SettingsManager::default();
-    let _ = dispatch(&mut state, &mut settings, CommandId::Hotkeys, "");
-    let frame = frame_text(&state, 100, 30);
-    // The hotkeys text should appear in the transcript area
-    assert!(frame.contains("Ctrl+C"), "Ctrl+C help missing");
-    assert!(frame.contains("Enter"), "Enter help missing");
+    let r = dispatch(&mut state, &mut settings, CommandId::Hotkeys, "");
+
+    // What the runtime does with an Output outcome.
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            for line in lines {
+                state.push_assistant(line);
+            }
+            state.push_divider();
+        }
+        _ => panic!("/hotkeys must produce Output"),
+    }
+
+    let frame = frame_text(&state, 100, 50);
+    assert!(
+        frame.contains("Key bindings"),
+        "the /hotkeys header must reach the screen: {frame}"
+    );
+    assert!(
+        frame.contains("Ctrl+C") && frame.contains("Enter"),
+        "the listed keys must reach the screen, not just the hint bar"
+    );
 }
 
 // =====================================================================
@@ -449,18 +499,38 @@ fn multiple_commands_in_sequence() {
 // =====================================================================
 // Test 17: Frame — command output renders as transcript line
 // =====================================================================
+//
+// v0.10.2: same false positive as `command_output_renders_in_frame` —
+// `let _ = dispatch(...)` discarded the outcome, so the only thing on
+// screen was the user's own `/help` line plus the hint bar. The two
+// assertions below now cover what the test claims to cover.
 #[test]
 fn command_output_visible_in_frame() {
     let mut state = AppState::new("test");
     let mut settings = SettingsManager::default();
     state.push_user("/help".to_string()); // simulate user typing the slash
     state.push_divider();
-    let _ = dispatch(&mut state, &mut settings, CommandId::Hotkeys, "");
+    let r = dispatch(&mut state, &mut settings, CommandId::Hotkeys, "");
 
-    let frame = frame_text(&state, 100, 30);
-    // Both the user "/help" and the hotkeys output should be visible
-    assert!(frame.contains("/help"));
-    assert!(frame.contains("Ctrl+C"));
+    match r.outcome {
+        CommandOutcome::Output(lines) => {
+            for line in lines {
+                state.push_assistant(line);
+            }
+            state.push_divider();
+        }
+        _ => panic!("/hotkeys must produce Output"),
+    }
+
+    let frame = frame_text(&state, 100, 50);
+    assert!(
+        frame.contains("/help"),
+        "the typed command should be visible"
+    );
+    assert!(
+        frame.contains("Key bindings"),
+        "the command's own output must be visible: {frame}"
+    );
 }
 
 // =====================================================================
@@ -491,6 +561,7 @@ fn parse_whitespace_handling() {
 // =====================================================================
 #[test]
 fn dispatch_is_total_over_all_commands() {
+    let _guard = DEBUG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut state = AppState::new("test");
     let mut settings = SettingsManager::default();
     for def in REGISTRY {
@@ -1352,6 +1423,7 @@ fn prompt_command_no_args_shows_usage() {
 /// printed text passed against the version that did nothing.
 #[test]
 fn debug_command_moves_the_real_logging_switch() {
+    let _guard = DEBUG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut state = AppState::new("test-model");
     let mut settings = SettingsManager::default();
     let before = nini_core::logging::is_debug();

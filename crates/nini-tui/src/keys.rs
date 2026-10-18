@@ -179,6 +179,15 @@ pub enum KeyAction {
     /// Jump to the bottom of the transcript and re-enable autoscroll.
     /// Default binding: Shift+End (Pi-compatible).
     ScrollToBottom,
+    /// Jump the transcript to its oldest line.
+    ///
+    /// v0.10.2. Pi: `tui.altScreen.top` = `home`
+    /// (`pi-tui/src/keybindings.ts:208`). This action did not exist in
+    /// any form — `grep -rn ScrollToTop` over the workspace returned
+    /// nothing — so a long session had exactly one way back to the top:
+    /// `PageUp`, once per screenful, where `PageUp` counts
+    /// *TranscriptLines* and one of those can render across fifty rows.
+    ScrollToTop,
     /// Toggle collapsed/expanded state on the focused transcript line.
     /// Default binding: Ctrl+O. Operates on the line at the current
     /// scroll offset (so the line currently visible at the top of the
@@ -286,22 +295,31 @@ pub fn default_keymap() -> Vec<KeyBinding> {
             key: Key::new(KeyCode::Down, KeyModifiers::NONE),
             action: MoveDown,
         },
+        // v0.10.2: `Home` and `End` belong to the transcript, not the
+        // editor. This is Pi's wiring, and it is not a stylistic choice —
+        // it falls out of `tui.ts:336`, where input listeners live in a
+        // **`Set`** and therefore run in insertion order.
+        // `tui-alt-screen.ts:224` registers the viewport's
+        // `handleViewportInput` at construction; the editor's listeners
+        // come later; and `scrollToTop()` returns `{ consume: true }`
+        // (`tui-alt-screen.ts:634`). So in Pi's full-screen layout
+        // `home` reaches the viewport first and the editor's own
+        // `cursorLineStart` — which also lists `"home"` first
+        // (`keybindings.ts:186`) — is unreachable.
+        //
+        // nini had it the other way round and had no top-jump at all.
+        // `MoveLineStart` / `MoveLineEnd` keep their real bindings:
+        // `Ctrl+A` (line 325) and, new here, `Ctrl+E` — Pi's second key
+        // for each (`["end", "ctrl+end", "ctrl+e"]`, `:186`). Losing
+        // `Home` for the editor would otherwise trade one broken key for
+        // a missing one.
         KeyBinding {
             key: Key::new(KeyCode::Home, KeyModifiers::NONE),
-            action: MoveLineStart,
+            action: ScrollToTop,
         },
         KeyBinding {
             key: Key::new(KeyCode::End, KeyModifiers::NONE),
-            // v0.8.4 (ux-001): `End` jumps the transcript scroll back
-            // to the bottom so the user can return to the latest
-            // message after PageUp-skimming. When the editor is
-            // empty we still want `End` to move the caret to end-of-
-            // line, but in this codebase MoveLineEnd already owns
-            // `End` for the editor. Adding a second binding would
-            // shadow it; instead we tie scroll-to-bottom to the
-            // Shift+End modifier so the bare End stays the editor
-            // motion and Shift+End snaps back to the live message.
-            action: MoveLineEnd,
+            action: ScrollToBottom,
         },
         KeyBinding {
             key: Key::new(KeyCode::Left, ctrl),
@@ -323,6 +341,14 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         KeyBinding {
             key: Key::new(KeyCode::Char('a'), ctrl),
             action: MoveLineStart,
+        },
+        // v0.10.2: Pi's second key for `cursorLineEnd`
+        // (`keybindings.ts:186`). Added because `End` moved to the
+        // transcript; without this the editor would have lost
+        // end-of-line entirely.
+        KeyBinding {
+            key: Key::new(KeyCode::Char('e'), ctrl),
+            action: MoveLineEnd,
         },
         // Ctrl+K → kill from cursor to end of line. Matches readline /
         // bash / Pi. The command palette (F015) lives on Ctrl+Shift+K

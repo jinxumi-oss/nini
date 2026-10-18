@@ -49,77 +49,27 @@ fn render_to_text(state: &AppState, width: u16, height: u16) -> String {
     frame_text(&terminal)
 }
 
-/// Drive a `Key` into the state machine (the same logic `runtime::handle_key`
-/// uses, but inlined here so tests don't need a real terminal).
+/// Drive a `Key` into the state machine.
+///
+/// v0.10.2: this used to be an **inlined copy** of `runtime::handle_key`'s
+/// match — the file said so — and it had already drifted three ways while
+/// the tests stayed green:
+///
+/// - `MoveUp` / `MoveDown` still called `recall_history(±1)`, the defect
+///   fixed in P0-5 that this file therefore could never have caught;
+/// - `ScrollUp` / `ScrollDown` / `ScrollToBottom` were `{}`, exactly the
+///   empty dispatch `apply_action` had (and no longer has);
+/// - `ScrollToTop` did not exist at all, so adding it did not compile.
+///
+/// A copy of the dispatch table is a fourth thing to keep in sync, and it
+/// is the one place a test cannot notice the product changed. This now
+/// delegates to `runtime::apply_action`, so the tests exercise the code
+/// they are meant to cover — the same argument
+/// `crates/nini-conformance/src/lib.rs` makes about fixtures ("every
+/// test round-tripped nini against itself" is how `stop_reason` casing
+/// survived 950 green tests).
 fn drive(state: &mut AppState, key: Key) {
-    use nini_tui::keys::{default_keymap, resolve};
-    let action = resolve(&default_keymap(), key);
-    match action {
-        KeyAction::Insert(c) => {
-            if state.run_state.mode == RunMode::Editing {
-                state.input.insert_char(c);
-            }
-        }
-        KeyAction::Newline => {
-            if state.run_state.mode == RunMode::Editing {
-                state.input.insert_char('\n');
-            }
-        }
-        KeyAction::Backspace => state.input.backspace(),
-        KeyAction::Delete => state.input.delete(),
-        KeyAction::MoveLeft => state.input.move_left(),
-        KeyAction::MoveRight => state.input.move_right(),
-        KeyAction::MoveLineStart => state.input.move_to_start(),
-        KeyAction::MoveLineEnd => state.input.move_to_end(),
-        KeyAction::MoveWordLeft => state.input.move_word_left(),
-        KeyAction::MoveWordRight => state.input.move_word_right(),
-        KeyAction::MoveUp => state.input.recall_history(-1),
-        KeyAction::MoveDown => state.input.recall_history(1),
-        KeyAction::KillToLineStart => state.input.kill_to_line_start(),
-        KeyAction::KillToLineEnd => state.input.kill_to_line_end(),
-        KeyAction::KillWordBackward => state.input.kill_word_backward(),
-        KeyAction::ClearInput => state.input.clear(),
-        KeyAction::Submit => {
-            if state.run_state.mode == RunMode::Editing {
-                let text = state.input.submit();
-                if !text.trim().is_empty() {
-                    state.push_user(text);
-                    state.push_divider();
-                }
-            }
-        }
-        KeyAction::Abort => {
-            if state.run_state.mode == RunMode::Running {
-                // v0.10.1: mirrors the runtime — an interrupt hands the
-                // editor back instead of parking in an input-less mode.
-                state.run_state.mode = RunMode::Editing;
-                state.run_state.status = "aborted".to_string();
-            } else {
-                state.input.clear();
-            }
-        }
-        KeyAction::Quit => state.run_state.mode = RunMode::Quitting,
-        KeyAction::SwitchModel
-        | KeyAction::CycleModelNext
-        | KeyAction::CycleModelPrev
-        | KeyAction::CycleThinkingNext
-        | KeyAction::CycleThinkingPrev
-        | KeyAction::ShowHelp
-        | KeyAction::ScrollUp
-        | KeyAction::ScrollDown
-        | KeyAction::ScrollToBottom
-        | KeyAction::KillWordForward
-        | KeyAction::Yank
-        | KeyAction::YankPop
-        | KeyAction::Undo
-        | KeyAction::PasteImage
-        | KeyAction::ToggleCollapse
-        | KeyAction::OpenSearch
-        | KeyAction::OpenCommandPalette
-        | KeyAction::OpenExternalEditor => {}
-        KeyAction::AcceptCompletionOrInsertTab => {}
-        KeyAction::Noop => {}
-    }
+    nini_tui::runtime::apply_action(state, key);
 }
 
 // ====================================================================
@@ -495,9 +445,17 @@ async fn full_e2e_user_typed_command_then_agent_responds() {
     assert!(frame.contains("▸ bash"), "tool call line missing");
     assert!(frame.contains("✓"), "tool result line missing");
     assert!(frame.contains("hello"), "assistant text missing");
-    // Key hints still visible
+    // Key hints still visible.
+    //
+    // v0.10.2: this used to assert `frame.contains("Ctrl+C")`, which was
+    // satisfied by the hint bar — the same false positive as the two
+    // `/hotkeys` tests in `slash_command_e2e`. The footer no longer
+    // advertises `Ctrl+C` (it claimed "quit"; the key is `Abort`, which
+    // clears the input buffer), so the assertion now names a hint that is
+    // genuinely there. Whether every advertised key is *bound* is not
+    // this test's job — `footer_binding_truth.rs` owns that invariant.
     assert!(frame.contains("F1"));
-    assert!(frame.contains("Ctrl+C"));
+    assert!(frame.contains("Ctrl+D"));
 
     // Token accounting is wired (even if zero from fixture)
     let _ = total_tokens;

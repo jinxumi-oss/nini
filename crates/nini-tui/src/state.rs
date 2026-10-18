@@ -378,6 +378,130 @@ impl InputBuffer {
         self.cursor = next_char_boundary(&self.text, self.cursor);
     }
 
+    // ---- v0.10.2: visual-row geometry -------------------------------
+    //
+    // Pi defines `cursorUp`/`cursorDown` over **visual** rows
+    // (`editor.ts:833`), which are soft-wrapped rows: `buildVisualLineMap`
+    // splits on `\n` *and* on the wrap width. The same is true of the
+    // cursor placement in nini's own `prompt_cursor_geometry`
+    // (`render.rs`: `row = explicit_rows + column_in_line / width`), so
+    // a caret that only understood `\n` would disagree with the pixel it
+    // is drawn on for any prompt wider than the box. That is the same
+    // "implements it but computes it wrong" family as §22.4's
+    // `stop_reason` casing: the feature exists, the arithmetic does not
+    // match the thing it is supposed to describe.
+    //
+    // `width == 0` means "no frame rendered yet": rows are then `\n`
+    // separated only, which is the correct fallback for a single-row
+    // prompt and never worse than refusing to move.
+
+    /// The `(byte_offset, display_width)` of every visual row.
+    ///
+    /// A row longer than `width` contributes `ceil(w / width)` rows; the
+    /// last one holds the remainder. A zero-width row still contributes
+    /// one row, because that is what renders.
+    fn visual_rows(&self, width: usize) -> Vec<(usize, usize)> {
+        visual_rows_of(&self.text, width)
+    }
+
+    /// Caret position as `(visual_row, display_column)`.
+    pub fn visual_position(&self, width: usize) -> (usize, usize) {
+        let cursor =
+            crate::width::floor_char_boundary(&self.text, self.cursor.min(self.text.len()));
+        let rows = self.visual_rows(width);
+        for (i, &(start, w)) in rows.iter().enumerate() {
+            let end = start + byte_len_for_width(&self.text, start, w);
+            if cursor <= end {
+                let before = &self.text[start..cursor];
+                return (i, crate::width::display_width(before));
+            }
+        }
+        let last = rows.len().saturating_sub(1);
+        let start = rows[last].0;
+        (last, crate::width::display_width(&self.text[start..cursor]))
+    }
+
+    /// How many visual rows the prompt occupies.
+    pub fn visual_row_count(&self, width: usize) -> usize {
+        self.visual_rows(width).len()
+    }
+
+    /// Byte offset for `(visual_row, display_column)`, clamping the
+    /// column to the row's end — the behaviour of Pi's `moveCursor`,
+    /// which places the caret at the target row and then "clamps to the
+    /// line length" (`editor.ts`, `moveCursor`).
+    pub fn cursor_at_visual(&self, visual_row: usize, column: usize, width: usize) -> usize {
+        let rows = self.visual_rows(width);
+        let row = visual_row.min(rows.len().saturating_sub(1));
+        let (start, row_width) = rows[row];
+        if column >= row_width {
+            return start + byte_len_for_width(&self.text, start, row_width);
+        }
+        let mut used = 0usize;
+        let mut offset = start;
+        for ch in self.text[start..].chars() {
+            if used >= column {
+                break;
+            }
+            let w = crate::width::display_width(&ch.to_string());
+            if used + w > column {
+                // A wide glyph straddles the target column; Pi lands on
+                // the glyph boundary, so stop before consuming it.
+                break;
+            }
+            used += w;
+            offset += ch.len_utf8();
+        }
+        offset
+    }
+
+    /// One row up / one row down, keeping the display column.
+    /// Returns `true` when the caret moved.
+    pub fn move_visual_row(&mut self, delta: i32, width: usize) -> bool {
+        let (row, col) = self.visual_position(width);
+        let rows = self.visual_rows(width);
+        let target = match delta {
+            d if d < 0 => match row.checked_sub(1) {
+                Some(r) => r,
+                None => return false,
+            },
+            _ => {
+                if row + 1 >= rows.len() {
+                    return false;
+                }
+                row + 1
+            }
+        };
+        let next = self.cursor_at_visual(target, col, width);
+        if next == self.cursor {
+            return false;
+        }
+        self.cursor = next;
+        true
+    }
+
+    /// Caret to the start of the current **logical** line.
+    ///
+    /// v0.10.2: added for Pi's `cursorUp` ladder. Distinct from
+    /// `move_to_start`, which is "the whole buffer" and is what
+    /// `MoveLineStart` still maps to — changing that would silently
+    /// redefine `Ctrl+A` for every existing user.
+    pub fn move_to_line_start(&mut self) {
+        let cursor = self.cursor.min(self.text.len());
+        let line_start = self.text[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        self.cursor = line_start;
+    }
+
+    /// Caret to the end of the current **logical** line.
+    pub fn move_to_line_end(&mut self) {
+        let cursor = self.cursor.min(self.text.len());
+        let line_end = self.text[cursor..]
+            .find('\n')
+            .map(|i| cursor + i)
+            .unwrap_or(self.text.len());
+        self.cursor = line_end;
+    }
+
     pub fn move_to_start(&mut self) {
         self.cursor = 0;
     }
@@ -648,6 +772,88 @@ impl InputBuffer {
     }
 }
 
+// ---- v0.10.2: visual-row helpers --------------------------------------
+//
+// Shared by `InputBuffer::visual_position` / `cursor_at_visual` and by the
+// `move_visual_row` callers in `runtime.rs`. All of them work in **display
+// columns**, not bytes: a CJK glyph is two columns wide, so byte
+// arithmetic would place the caret mid-glyph and make `Up` visibly jump
+// sideways.
+
+/// `(byte_offset, display_width)` for every visual row of `text`.
+///
+/// Rows break on `\n` and on the wrap `width`. `width == 0` means "unknown
+/// width" (no frame has been rendered yet) and treats every logical line
+/// as one row.
+fn visual_rows_of(text: &str, width: usize) -> Vec<(usize, usize)> {
+    let mut rows: Vec<(usize, usize)> = Vec::new();
+    let mut line_start = 0usize;
+    let mut i = 0usize;
+    loop {
+        if i == text.len() || text[i..].starts_with('\n') {
+            push_line_rows(text, line_start, i, width, &mut rows);
+            if i == text.len() {
+                break;
+            }
+            line_start = i + 1;
+            i += 1;
+        } else {
+            i += char_at(text, i).len_utf8();
+        }
+    }
+    if rows.is_empty() {
+        rows.push((0, 0));
+    }
+    rows
+}
+
+fn push_line_rows(
+    text: &str,
+    start: usize,
+    end: usize,
+    width: usize,
+    out: &mut Vec<(usize, usize)>,
+) {
+    if width == 0 {
+        out.push((start, crate::width::display_width(&text[start..end])));
+        return;
+    }
+    let mut row_start = start;
+    let mut row_w = 0usize;
+    let mut i = start;
+    while i < end {
+        let ch = char_at(text, i);
+        let cw = crate::width::display_width(&ch.to_string());
+        // A glyph wider than the whole row still occupies it; the `row_w
+        // > 0` guard is what stops that from looping forever.
+        if row_w + cw > width && row_w > 0 {
+            out.push((row_start, row_w));
+            row_start = i;
+            row_w = 0;
+        }
+        row_w += cw;
+        i += ch.len_utf8();
+    }
+    out.push((row_start, row_w));
+}
+
+/// The byte offset at which `w` display columns have been consumed
+/// starting from `start`, clamped to the end of the text.
+fn byte_len_for_width(text: &str, start: usize, w: usize) -> usize {
+    let mut used = 0usize;
+    let mut i = start;
+    while i < text.len() && used < w {
+        let ch = char_at(text, i);
+        used += crate::width::display_width(&ch.to_string());
+        i += ch.len_utf8();
+    }
+    i - start
+}
+
+fn char_at(text: &str, i: usize) -> char {
+    text[i..].chars().next().unwrap_or('\u{fffd}')
+}
+
 /// Find the previous char boundary (start of the char ending at `pos`).
 /// For example, in "hé" (3 bytes), pos=2 (between é and the rest) returns 1.
 fn prev_char_boundary(s: &str, pos: usize) -> usize {
@@ -878,6 +1084,18 @@ pub struct AppState {
     /// The value is recomputed every frame, so a stale read costs one
     /// keypress and self-corrects on the next frame.
     pub page_lines: Arc<AtomicUsize>,
+    /// v0.10.2: the inner width of the prompt box, in cells.
+    ///
+    /// Published by the render path for the same reason as `page_lines`:
+    /// it is the only place the width exists. Vertical caret motion is
+    /// defined over *visual* rows — soft-wrapped, not just `\n`-separated
+    /// — so the key handler needs it. Pi has the identical dependency and
+    /// the identical answer: `buildVisualLineMap(this.lastWidth)` with
+    /// `lastWidth` recorded during render (`editor.ts:416`).
+    ///
+    /// 0 means "no frame has been rendered yet", which the movement code
+    /// reads as "do not soft-wrap", i.e. treat every `\n` as one row.
+    pub prompt_inner_width: Arc<AtomicUsize>,
     /// v0.10: per-line rendered row counts, as measured by the renderer.
     ///
     /// The render path is the only place that knows how tall each
@@ -1487,6 +1705,7 @@ impl Clone for AppState {
             // from-scratch case.
             item_cache: Arc::clone(&self.item_cache),
             page_lines: Arc::clone(&self.page_lines),
+            prompt_inner_width: Arc::clone(&self.prompt_inner_width),
             line_heights: Arc::clone(&self.line_heights),
             transcript_viewport: Arc::clone(&self.transcript_viewport),
             scroll_activity: Arc::clone(&self.scroll_activity),
@@ -1505,6 +1724,7 @@ impl Default for AppState {
             transcript_state: Arc::new(TranscriptState::default()),
             item_cache: Arc::new(StdMutex::new(TranscriptItemCache::default())),
             page_lines: Arc::new(AtomicUsize::new(1)),
+            prompt_inner_width: Arc::new(AtomicUsize::new(0)),
             line_heights: Arc::new(StdMutex::new(Vec::new())),
             transcript_viewport: Arc::new(StdMutex::new(crate::scrollbar::Viewport::default())),
             scroll_activity: Arc::new(AtomicU64::new(0)),
@@ -2452,6 +2672,46 @@ impl AppState {
         } else if s.current >= s.matches.len() {
             s.current = s.matches.len() - 1;
         }
+        // v0.10.2: the index changed, so the viewport has to follow. See
+        // `reveal_search_match`.
+        self.reveal_search_match();
+    }
+
+    /// Bring the current search match into the viewport.
+    ///
+    /// v0.10.2. This is the missing half of search: `search_next` moved
+    /// `SearchState::current` and nothing wrote `scroll_offset`, while
+    /// `autoscroll` kept the transcript pinned to the tail. The user
+    /// typed a query, read `2/2`, pressed `n`, and the screen did not
+    /// change by a single cell.
+    ///
+    /// `scroll_offset` counts **TranscriptLines skipped from the bottom**,
+    /// which is what the renderer translates into an item-space skip. So
+    /// putting line `i` at the top of the viewport means skipping every
+    /// line below it: `total - 1 - i`.
+    ///
+    /// Deliberately *not* "scroll only if the match is already off
+    /// screen": the renderer does not report what is visible back into
+    /// state, and re-deriving it here would duplicate the item-count
+    /// cache that only the renderer owns. Landing on the match every
+    /// time is also the more predictable contract — after `n`, the user
+    /// knows the new match is at the top of the screen.
+    fn reveal_search_match(&mut self) {
+        let Some(s) = self.ui_state.search.as_ref() else {
+            return;
+        };
+        let Some(&idx) = s.matches.get(s.current) else {
+            return;
+        };
+        let total = self.transcript_state.lines.len();
+        if idx >= total {
+            return;
+        }
+        // Leaving autoscroll on would ignore scroll_offset entirely
+        // (render_transcript takes the tail-aligned branch), so the flag
+        // has to come off for a search to be able to look backwards.
+        Arc::make_mut(&mut self.transcript_state).autoscroll = false;
+        Arc::make_mut(&mut self.transcript_state).scroll_offset = total.saturating_sub(1 + idx);
     }
 
     /// Advance to the next match (wraps at the end).
@@ -2461,6 +2721,7 @@ impl AppState {
                 s.current = (s.current + 1) % s.matches.len();
             }
         }
+        self.reveal_search_match();
     }
 
     /// Advance to the previous match (wraps at the start).
@@ -2474,11 +2735,20 @@ impl AppState {
                 };
             }
         }
+        self.reveal_search_match();
     }
 
     /// Close the search overlay and clear highlights.
+    ///
+    /// v0.10.2: the comment said "clear highlights" and the body did not
+    /// — there was nothing to clear, because nothing painted one. Now
+    /// there is, and the transcript also has to come back to the tail:
+    /// `reveal_search_match` turned `autoscroll` off to look backwards,
+    /// and leaving it off would strand the user scrolled into the past
+    /// after they closed the search.
     pub fn end_search(&mut self) {
         self.ui_state.search = None;
+        Arc::make_mut(&mut self.transcript_state).reset_view();
     }
 }
 
@@ -2491,32 +2761,37 @@ fn chars_to_tokens(s: &str) -> u32 {
 /// intentionally include prefixes like `[user]` so users searching
 /// for "tool-call" can find the right lines without guessing the
 /// underlying text.
+///
+/// **v0.10.2: nothing is truncated here any more.** This function is
+/// the *only* input `update_search_query` matches against, and it used
+/// to end every assistant / thinking / tool-result line at 60
+/// characters and every tool-call argument at 40. The comment above it
+/// called the result "suitable for transcript search" — and a search
+/// index that silently drops 90% of a typical model answer is not a
+/// search.
+///
+/// The cost of removing the cap is one `to_lowercase()` + `contains()`
+/// over the line's own text per keystroke. A 200-turn transcript is on
+/// the order of 10^5 characters; that is microseconds, and it replaced
+/// a feature that did not work.
+///
+/// `truncate` is kept below because it still has one caller.
 pub(crate) fn line_summary_text_impl(line: &crate::state::TranscriptLine) -> String {
     use crate::state::TranscriptLine;
+    let flat = |s: &str| s.replace('\n', " ");
     match line {
-        TranscriptLine::User(s) => format!("[user] {}", s.replace('\n', " ")),
-        TranscriptLine::AssistantText(s) => format!("[assistant] {}", truncate(s, 60)),
+        TranscriptLine::User(s) => format!("[user] {}", flat(s)),
+        TranscriptLine::AssistantText(s) => format!("[assistant] {}", flat(s)),
         TranscriptLine::ToolCall { name, args, .. } => {
-            format!("[tool-call] {name}({})", truncate(args, 40))
+            format!("[tool-call] {name}({})", flat(args))
         }
-        TranscriptLine::ToolResult { content, .. } => {
-            format!("[tool-result] {}", truncate(content, 60))
-        }
+        TranscriptLine::ToolResult { content, .. } => format!("[tool-result] {}", flat(content)),
         TranscriptLine::BashExecution { cmd, output, .. } => {
-            format!("[bash] {cmd} -> {}", truncate(output, 40))
+            format!("[bash] {cmd} -> {}", flat(output))
         }
         TranscriptLine::Divider => "[divider]".to_string(),
-        TranscriptLine::ThinkingText(s) => format!("[thinking] {}", truncate(s, 60)),
+        TranscriptLine::ThinkingText(s) => format!("[thinking] {}", flat(s)),
         TranscriptLine::StopNotice(s) => format!("[stop] {s}"),
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max).collect();
-        format!("{cut}…")
     }
 }
 
