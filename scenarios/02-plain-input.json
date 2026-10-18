@@ -1,0 +1,9 @@
+{
+  "name": "02-plain-input",
+  "why": "输入回显与 footer：parity 的基本面，且完全不依赖模型输出。",
+  "mock_script": "fixtures/tui/01-plain-text.json",
+  "steps": [
+    {"id": "00-plain",  "send": "abc",  "expect": "", "literal": "1"},
+    {"id": "01-long",   "send": " the quick brown fox jumps over the lazy dog again and again", "expect": "", "literal": "1"}
+  ]
+}

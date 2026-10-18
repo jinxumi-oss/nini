@@ -1,0 +1,52 @@
+/home/jin/nini  ⎇ main  •  [no session]
+ nini   idle  •  ctx   0% [░░░░░░░░]                                    (openai-compat) mock-tui-model  [dark]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+┌ commands (up/down select, Tab/Enter accept, Esc cancel) ───────────────────────────────────────────────────┐
+│/hotkeys  Show keyboard shortcuts                                                                           │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1  help  Enter  send  Shift+Enter  newline  Ctrl+L  model  Ctrl+D  exit

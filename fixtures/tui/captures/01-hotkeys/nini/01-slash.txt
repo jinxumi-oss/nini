@@ -1,0 +1,52 @@
+/home/jin/nini  ⎇ main  •  [no session]
+ nini   idle  •  ctx   0% [░░░░░░░░]                                    (openai-compat) mock-tui-model  [dark]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+┌ commands (1/28 ≤, ↑↓ navigate) ────────────────────────────────────────────────────────────────────────────┐
+│/settings  Open settings menu                                                                               │
+│/model <provider/model>  Select model (opens selector UI)                                                   │
+│/tree  Navigate session tree (switch branches)                                                              │
+│/thinking <level>  Set thinking level                                                                       │
+│/scoped-models  Show models in the current scope                                                            │
+│/status  Show current session status                                                                        │
+│/help  Show help for all commands                                                                           │
+│/hotkeys  Show keyboard shortcuts                                                                           │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1  help  Enter  send  Shift+Enter  newline  Ctrl+L  model  Ctrl+D  exit

@@ -1,0 +1,5 @@
+{
+  "turns": [
+    {"type": "text", "text": "Hello from the mock provider."}
+  ]
+}

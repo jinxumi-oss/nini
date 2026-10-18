@@ -33,4 +33,4 @@ references/pi-upstream.git/
 *.key
 secrets/
 .planner/
-captures/
+/captures/          # 本机抓包的临时产物（根目录）；fixtures/tui/captures/ 是入库的 golden

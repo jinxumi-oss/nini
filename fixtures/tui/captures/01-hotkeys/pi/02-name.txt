@@ -1,0 +1,14 @@
+
+ pi v0.84.2
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/hotkeys
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+→ hotkeys     Show all keyboard shortcuts
+/home/jin/nini (main)
+0.0%/200k (auto)                                                                     (mock-tui) mock-tui-model

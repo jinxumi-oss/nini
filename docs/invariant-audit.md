@@ -153,6 +153,79 @@ tool_call 的 `arguments` 是跨事件增量拼接的，**事件边界就是那 
 
 ---
 
+## 5. 链② 第二批：TUI 录屏对照（2026-10-18）
+
+### 5.1 为什么 TUI 终于可录了：脚本化上游
+
+TUI 的对照 oracle 原本不可行，因为模型输出不确定。本轮解掉的办法是**把上游换掉**：
+
+| 事实 | 依据 |
+|---|---|
+| Pi 只认协议不认上游 | `models.json` 里一个 provider 就是 `{api, baseUrl, apiKey, models}` |
+| 本机实测 `api` 取值 | `openai-completions` / `anthropic-messages` |
+| **实测 Pi 接受自定义上游** | 用 `scripts/mock-provider.py` 起本地假 provider，Pi 输出与脚本逐字一致 |
+
+于是 `scripts/mock-provider.py` 同一份脚本同时喂给 Pi 和 nini，两边画面差异
+就是对照差异 —— **确定性、零 token、可离线复算**。
+
+mock 的形态刻意与真流一致：`tool_call` 的 `arguments` 按 ~12 字节切块、
+首块只带 `{`、usage 是 `choices:[]` 的独立事件。mock 若发完整 body，
+它就验证不了任何东西。
+
+### 5.2 隔离与保真：四个坑（每个都是实测出来的）
+
+| 坑 | 现象 | 处理 |
+|---|---|---|
+| 用户 skills 泄入启动画面 | 录出 29 个 skill 名，**取决于这台机器装了什么**——那是快照不是 oracle | 换 `HOME` 到临时目录，整个 `~/` 隔离 |
+| 信任库为空 | 弹 `Trust project folder?` 选框，footer 永不出现 | 预置 `trust.json` |
+| tmux server 复用 | 复用遗留 server（继承旧环境）时行为不同 | 独立 socket `-L nini-cap` |
+| **输入注入失真** | `send-keys -l` 一次性 → `/hotkeys/hotkeys`；逐字符 → `0/ho` | `load-buffer` + `paste-buffer -p` |
+
+另：`sleep` 快照不是 oracle，本工具用**连续两次快照一致**判定稳定。
+
+**一个反直觉的实测结论**：命令模式（`/` 开头）下 bracketed paste 会把首字符
+替换成 `0`，而**普通输入完全干净**（`abc`、长句均正确）。Pi 与 nini **在这一点
+上表现一致**，所以它不是 nini 的缺陷——**这正是同条件对照的价值**：不追求解释
+每个像素，只比同条件下的差异。规避方式：命令分两步注入（`/` → `hotkeys`）。
+
+### 5.3 已录到的真实差异（人工确认，来自录屏而非推测）
+
+golden 在 `fixtures/tui/captures/`（110×52，隔离 HOME，mock 上游）。
+
+**差异 1：渲染形态**
+
+```
+Pi   │ Ctrl+O        │ Toggle tool output expansion     │   ← 框线表格
+nini Key bindings (nini TUI)39 bindings — derived from the keymap  Enter send input
+     Shift+Enter insert newline  Esc abort the run ...          ← 挤成一整段
+```
+
+**差异 2：键位语义**（Pi 面板有、nini 面板无）
+
+| 键 | Pi 的语义 | nini |
+|---|---|---|
+| `Ctrl+-` | Undo | 用 `Ctrl+/`，键位不同 |
+| `Ctrl+Z` | Suspend to background | 无 |
+| `Shift+Tab` | Cycle thinking level | 用 `Ctrl+T` / `Shift+Ctrl+T` |
+| `Esc` | Cancel autocomplete **/ abort streaming** | 仅 abort the run，缺 autocomplete cancel |
+| `Ctrl+X` | Copy last assistant message | 无 |
+| `Alt+Enter` | Queue follow-up message | 无 |
+| `Alt+Up` | Restore queued messages | 无 |
+| `/` `!` `!!` | Slash commands / Run bash | 面板里无 |
+
+这为 `GOALS.md` “剩余项 5：键位与 Pi 的语义差异” 补上了**实证清单**（此前只是声明）。
+
+### 5.4 未达标的部分（必须声明）
+
+`scripts/tui-oracle.py` **提取器噪声过大，当前不可作为断言**：它会把表头边框
+`├───┼───┤` 配成键位，描述换行后错位配对，110 列下 Pi 侧只提到 11 个键（真实约 25 个）。
+
+**因此：录屏链路可靠，提取链路未达标。** 下一轮两条修法：把 COLS 提到 Pi
+表格不换行的宽度并收紧列边界；或绕开屏幕 OCR——用 `/export` 的结构化导出
+（Pi 与 nini 都有）。在提取器可信之前，它只能当人工辅助，**不进 gate**。
+
+---
+
 ## 5. NONE 18 条的分类（待办清单已生成）
 
 | 类别 | 条数 | 处理 |

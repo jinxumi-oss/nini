@@ -1,0 +1,24 @@
+{
+  "name": "01-hotkeys",
+  "why": "dc75bca 的真缺陷：/hotkeys 显示 `Home ?`——action_label 漏了新 action 落到 other => \"?\" 臂。这一屏完全不依赖模型输出，因此是精确对照。",
+  "mock_script": "fixtures/tui/01-plain-text.json",
+  "steps": [
+    {
+      "id": "01-slash",
+      "send": "/",
+      "expect": "",
+      "literal": "1"
+    },
+    {
+      "id": "02-name",
+      "send": "hotkeys",
+      "expect": "",
+      "literal": "1"
+    },
+    {
+      "id": "03-enter",
+      "send": "Enter",
+      "expect": "Ctrl"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+/home/jin/nini  ⎇ main  •  [no session]
+ nini   idle  •  ctx   0% [░░░░░░░░]                                    (openai-compat) mock-tui-model  [dark]
+Key bindings (nini TUI)39 bindings — derived from the keymap  Enter         send input  Shift+Enter   insert
+newline  Esc           abort the run / dismiss overlay  Ctrl+C        abort the run / dismiss overlay  Ctrl+D
+quit (press twice)  Ctrl+L        switch model  Ctrl+P        cycle model +  Shift+Ctrl+P  cycle model -
+Ctrl+T        thinking level +  Shift+Ctrl+T  thinking level -  F1            toggle extended keymap  Ctrl+O
+toggle collapsed tool output  Left          cursor left  Right         cursor right  Up            move cursor
+up, else recall previous prompt  Down          move cursor down, else recall next prompt  Home          scroll
+transcript to the oldest message  End           scroll transcript to the latest message  Ctrl+Left     word
+left  Ctrl+Right    word right  Backspace     delete character backward  Delete        delete character
+forward  Ctrl+A        beginning of line  Ctrl+E        end of line  Ctrl+K        delete to line end  Ctrl+W
+kill word backward  Alt+D         kill word forward  Ctrl+Y        yank  Alt+Y         yank-pop  Ctrl+/
+undo  Ctrl+F        search the transcript  Shift+Ctrl+K  open the command palette  Ctrl+G        edit input in
+$EDITOR  PageUp        scroll transcript up  PageDown      scroll transcript down  Shift+End     scroll
+transcript to the latest message  Ctrl+U        clear input  Tab           accept completion / insert tab
+Ctrl+V        paste image from clipboard
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+┌ ─ input ─ ─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ❯                                                                                                          │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1  help  Enter  send  Shift+Enter  newline  Ctrl+L  model  Ctrl+D  exit
