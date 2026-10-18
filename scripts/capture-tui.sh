@@ -121,6 +121,13 @@ mkdir -p "$OUT"
 # 为什么要连 HOME 一起换：只换 PI_CODING_AGENT_DIR 时，启动画面仍然
 # 加载到了用户那 29 个 skills，于是录出来的画面取决于“这台机器装了
 # 什么”——那不是 oracle，是快照。oracle 的环境必须空。
+# 换 HOME 会让 Python 找不到用户 site-packages（aiohttp 就在那里）。
+# 必须在换 HOME **之前**把真实路径记下来。
+REAL_PY_SITE="$(python3 -c 'import site; print(":".join(site.getsitepackages()+[site.getusersitepackages()]))')"
+export PYTHONPATH="$REAL_PY_SITE${PYTHONPATH:+:$PYTHONPATH}"
+python3 -c 'import aiohttp' 2>/dev/null || {
+  echo "!! python3 缺 aiohttp。先装它：pip install aiohttp" >&2; exit 1; }
+
 TMP="$(mktemp -d /tmp/nini-tui.XXXXXX)"
 export HOME="$TMP/home"
 mkdir -p "$HOME/.pi/agent/skills" "$HOME/.pi/agent/prompts" "$HOME/.pi/agent/extensions"
@@ -144,12 +151,23 @@ trap cleanup EXIT
 SCRIPT="$(python3 -c "
 import json,sys
 print(json.load(open('$SCENARIO'))['mock_script'])")"
-python3 "$REPO/scripts/mock-provider.py" --script "$SCRIPT" --listen "$LISTEN" \
+# 端口预检。上一轮的 mock 若还活着（我踩过：`nohup` 起的那次跨命令存活），
+# 后面的 poll 会看到端口已开，于是**静默用别人的 mock**——录出来的画面用的是
+# 另一份脚本，而日志不会提示任何异常。宁可失败也不要录到错的剧本。
+MOCK_PORT="${LISTEN##*:}"
+if ss -ltn 2>/dev/null | grep -q ":$MOCK_PORT "; then
+  echo "!! 端口 $MOCK_PORT 已被占用——可能是上一轮的 mock 残留。" >&2
+  echo "   先杀掉占用者，或用 LISTEN=127.0.0.1:9881 换一个端口。" >&2
+  exit 1
+fi
+ABS_SCRIPT="$REPO/$SCRIPT"
+[[ -f "$ABS_SCRIPT" ]] || { echo "找不到 mock 脚本 $ABS_SCRIPT"; exit 1; }
+python3 "$REPO/scripts/mock-provider.py" --script "$ABS_SCRIPT" --listen "$LISTEN" \
   > "$OUT.mock.log" 2>&1 &
 MOCK_PID=$!
-for _ in $(seq 1 40); do ss -ltn 2>/dev/null | grep -q ":${LISTEN##*:}" && break; sleep 0.2; done
-ss -ltn 2>/dev/null | grep -q ":${LISTEN##*:}" || { echo "mock 未启动"; cat "$OUT.mock.log"; exit 1; }
-echo "mock 已就绪 $LISTEN  脚本=$SCRIPT"
+for _ in $(seq 1 40); do ss -ltn 2>/dev/null | grep -q ":$MOCK_PORT " && break; sleep 0.2; done
+ss -ltn 2>/dev/null | grep -q ":$MOCK_PORT " || { echo "mock 未启动"; cat "$OUT.mock.log"; exit 1; }
+echo "mock 已就绪 $LISTEN  脚本=$ABS_SCRIPT"
 
 # --- 组装命令行 ------------------------------------------------------------
 if [[ "$BIN" == "pi" ]]; then
@@ -172,7 +190,7 @@ fi
 # -f /dev/null：不读用户 ~/.tmux.conf（否则里面任何一条设置都会让
 #              录屏在别的机器上重放出不同画面）。extended-keys 必须开，
 #              否则 Pi 自己会警告 "Modified Enter keys may not work"。
-"${TMUX[@]}" -f /dev/null new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" \
+"${TMUX[@]}" -f /dev/null new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" -c "$HOME" \
   "${LAUNCH_ENV[*]} ${CMD[*]}"
 "${TMUX[@]}" set-option -t "$SESSION" -g extended-keys on 2>/dev/null || true
 echo "会话已起 ${COLS}x${ROWS}  bin=$BIN"
@@ -217,5 +235,14 @@ while IFS=$'\t' read -r id send expect literal; do
   if [[ -n "$send" ]]; then snap_stable "$SESSION" "$OUT/$id.txt"; else snap "$SESSION" "$OUT/$id.txt"; fi
   echo "  录制 $id"
 done < "$OUT.steps"
+
+# 收集 /export 的产物。两侧都忽略 /export 的路径参数（nini 见
+# dispatch.rs `cmd_export(_args)`，Pi 侧导出到 cwd），所以只能从目录捞。
+mkdir -p "$OUT/exports"
+for f in "$HOME"/*.html "$HOME"/.nini/agent/exports/*.html "$HOME"/.pi/agent/exports/*.html; do
+  [[ -e "$f" ]] || continue
+  cp "$f" "$OUT/exports/" 2>/dev/null || true
+done
+rm -f "$OUT.steps" "$OUT.mock.log"
 
 echo "完成 → $OUT"

@@ -1,0 +1,47 @@
+{
+  "name": "03-export",
+  "why": "/export 是 Pi 从 session 数据渲染、nini 从 TUI 渲染单元渲染的唯一重叠面——导出物因此能同时暴露两条渲染管线的差异。thinking + tool_call + 多轮，是导出最容易丢东西的三种内容。",
+  "mock_script": "fixtures/tui/02-conversation.json",
+  "steps": [
+    {
+      "id": "01-ask",
+      "send": "run the probe",
+      "expect": "",
+      "literal": "1"
+    },
+    {
+      "id": "02-enter1",
+      "send": "Enter",
+      "expect": "nini-export-probe"
+    },
+    {
+      "id": "03-ask2",
+      "send": "and again",
+      "expect": "",
+      "literal": "1"
+    },
+    {
+      "id": "04-enter2",
+      "send": "Enter",
+      "expect": "Second reply"
+    },
+    {
+      "id": "05-slash",
+      "send": "/",
+      "expect": "",
+      "literal": "1"
+    },
+    {
+      "id": "06-name",
+      "send": "export",
+      "expect": "export",
+      "literal": "1"
+    },
+    {
+      "id": "07-run",
+      "send": "Enter",
+      "expect": "",
+      "literal": "0"
+    }
+  ]
+}

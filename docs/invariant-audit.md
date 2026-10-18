@@ -226,6 +226,59 @@ nini Key bindings (nini TUI)39 bindings — derived from the keymap  Enter send 
 
 ---
 
+## 6. 链② 第三批：改走 `/export` 结构化导出（2026-10-18）
+
+### 6.1 为什么像素 OCR 是错的路
+
+`scripts/tui-oracle.py` 从屏幕里抠键位，噪声太大（表头边框被当成键位、
+描述换行后错位配对）。正确的对照源是**导出物里的结构化数据**——Pi 与 nini
+都有 `/export`，而 Pi 的导出不是画面：
+
+```
+<script> eyJoZWFkZXIiOnsidHlwZSI6InNlc3Npb24i…</script>   ← base64(JSON)
+```
+
+解出来是 `{header, entries[8], leafId, systemPrompt, tools}`，
+块类型 `message / model_change / thinking_level_change / text / thinking / toolCall`。
+
+**即：Pi 的 `/export` 是自包含单文件 HTML（marked + highlight.js 客户端渲染，
+结构完整内嵌）；nini 的是 `render_transcript_html(&[TranscriptLine])`
+（`crates/nini-tui/src/commands/html_export.rs`）——已经从 UI 渲染单元里
+把结构渲染没了。**
+
+### 6.2 oracle 形态：内容保全（可判定、有退出码）
+
+`scripts/export-oracle.py`：mock 剧本已知，所以“应该出现什么”是确定的；
+逐条检查内容是否还在导出物里，**任一条丢失即退出码非 0**。
+
+| 内容 | Pi 0.84.2 | nini |
+|---|---|---|
+| 用户消息 | 在 | 在 |
+| **thinking** | 在 | **丢** |
+| tool 参数 | 在 | 在 |
+| tool 结果 | 在 | 在 |
+| assistant 文本 | 在 | 在 |
+| 用户消息（第二轮） | 在 | 在 |
+
+**Pi 6/6，nini 5/6。** 附带：**结构化 entries 8 vs 0**；代码块/语法着色
+Pi 有、nini 无。
+
+### 6.3 附带查实：两处静默丢弃参数（T4）
+
+| 位置 | 现象 |
+|---|---|
+| `crates/nini-cli/src/main.rs:307` | `export: _` —— `--export <path>` 被声明于 `--help`，代码直接丢弃 |
+| `crates/nini-tui/src/commands/dispatch.rs:291` | `cmd_export(_args)` —— TUI 里的 `/export <path>` 同样丢弃路径 |
+
+实跑：`nini --export /tmp/x.html -p hello` → **退出码 0，`/tmp/x.html` 不存在**，
+文件落到了 `~/.nini/agent/exports/`。
+
+这也是 §6.1 那个架构差异的直接后果：导出既然只能从 UI 状态来，
+headless 与指定路径导出在**结构上**就做不到。修它等于把导出改成从 session
+数据渲染（这也是 Pi 的做法）——属状态机改动，**留给人工决策**，本轮只记录。
+
+---
+
 ## 5. NONE 18 条的分类（待办清单已生成）
 
 | 类别 | 条数 | 处理 |

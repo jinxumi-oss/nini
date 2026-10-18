@@ -1,0 +1,8 @@
+{
+  "turns": [
+    {"type": "thinking", "text": "Let me think about the export path."},
+    {"type": "tool_call", "name": "bash", "arguments": {"command": "echo nini-export-probe"}},
+    {"type": "text", "text": "The command printed nini-export-probe."},
+    {"type": "text", "text": "Second reply for a two-turn transcript."}
+  ]
+}
