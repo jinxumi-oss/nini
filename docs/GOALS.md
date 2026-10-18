@@ -123,6 +123,7 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 | ~~P0-5~~ | **已做** `↑`/`↓` 加 Pi 的 ladder 语义 | ✅ `prompt_vertical_motion.rs` 7 条绿 | 补齐视觉行几何 + 渲染发布宽度 |
 | ~~P1-1~~ | **已做** `ScrollToTop` + `Home`/`End` 归 transcript | ✅ `transcript_scroll_to_top.rs` 6 条绿；`Ctrl+E` 补齐 | Pi 的 `Home` 被 viewport listener 优先消费 |
 | ~~P2-1~~ | **已做** 发布 v0.10.2 | ✅ 版本已 bump、CHANGELOG 已封版、`--version` 带 profile、CI 增两道门禁；**待 push tag** | CHANGELOG 已补本次审计的 10 项；README 数字已对齐 **1428** |
+| **P0-6** | **新** 修 ESC 并发 spawn（见 §P0-6，实测 `spawns=2`） | probe 转绿且不忽略 | **P0，但会改 TUI 状态机**；需 owner 确认后再动 |
 | **P2-2** | 回填 v0.9.2 缺口表 | 每条 ⬜ 要么 ✅+提交号，要么移入“明确不做” | 已被后续版本推翻的条目会误导下一轮调研 |
 | **P2-3** | 能力面最低维持 | R5 未决期间**只做不扩范围**的修复 | 不擅自替 owner 决定范围 |
 
@@ -130,13 +131,39 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 
 按严重度降序：
 
+### P0-6（新，2026-10-18）：ESC 后可并发 spawn 第二个 agent —— **已实测**
+
+**本会话最严重的发现。** 复现：
+`cargo test -p nini-tui --test esc_concurrency_probe -- --ignored --nocapture` → `spawns=2 live=2`。
+
+触发路径就是正常用法：**运行中在编辑器里打字（不提交）→ Esc → Enter**。
+
+根因是**一个字段承担两个职责**：`RunMode` 同时表示“编辑器可否接受输入”与
+“是否有 agent 在跑”，而后者是唯一的 spawn 守卫。
+
+- v0.10.1 为修“ESC 后四秒不能输入”（真实缺陷，已修），在按下 Esc 的**瞬间**把 `mode` 置为 `Editing`
+- 于是同一行同时做了两件事：让编辑器可用了（对的），**并拆掉了并发守卫**（错的）
+- abort 是 `Notify`，agent task 在自己下一次 `select!` 才观察到；在此之前
+  `submit_user_input` 的 `mode != Editing` 守卫已失效
+
+Pi 结构上到不了这一步：`AgentSession.isIdle = !_isAgentRunActive`
+（`agent-session.js:592`）是 **agent 的属性**，与编辑器解耦；Esc 只调 `agent.abort()`
+而不动它；流式期间的提交走 `streamingBehavior: "steer"` 进入当前 turn，永不 spawn 第二个。
+
+后果：两个 agent turn 并发写同一个 `session JSONL`、共享一份 `TokenStats`、
+事件交错进同一个 transcript。
+
+**退出判据**：把“编辑器可用”与“agent 存活”拆成两个事实（前者跟 abort 走，
+后者跟 `_isAgentRunActive` 的等价物走），且 probe 转为**不忽略**且绿。
+
 **本轮 P0 已全部关闭**（2026-10-17）。剩余，按严重度降序：
 
 1. **无语法高亮** —— Pi 有 `highlightCode`；nini 9 个 `syntax*` 槽全死。**已在 README known limitations 申报**（10-18）
-2. ~~blockquote 正文无样式~~ —— **已修**（`757345a`，`blockquote_style.rs` 6 条）
-3. ~~thinking 块不是 markdown~~ —— **已修**（`199e274` 的 `rich::render_thinking_block`，`thinking_markdown.rs` 4 条）
-4. **键位与 Pi 的语义差异** —— Pi `Ctrl+-` undo / `Ctrl+D` 删右字符 / `Ctrl+F` 右移一字符 / `Ctrl+Shift+F` 搜索；nini 均不同
-5. `move_to_start` / `move_to_end` 仍是“整个 buffer”，Pi 是“当前行”（`Ctrl+A` 在多行下的差异；P0-5 刻意未改，避免二次惊吓）
+2. **ESC 上下文 handler 栈缺失**（Pi `EscapeTarget`：Idle / Agent / Compaction / Retry / BranchSummary，计划里的 M3）—— 当前 `Abort` 是一条 if-else 链；且 `is_compacting` **无任何赋值点**（全仓库只初始化为 `false`），因此 `runtime.rs:2138` 的“压缩期间提交进队列”分支是**不可达死代码**
+3. ~~blockquote 正文无样式~~ —— **已修**（`757345a`，`blockquote_style.rs` 6 条）
+4. ~~thinking 块不是 markdown~~ —— **已修**（`199e274` 的 `rich::render_thinking_block`，`thinking_markdown.rs` 4 条）
+5. **键位与 Pi 的语义差异** —— Pi `Ctrl+-` undo / `Ctrl+D` 删右字符 / `Ctrl+F` 右移一字符 / `Ctrl+Shift+F` 搜索；nini 均不同
+6. `move_to_start` / `move_to_end` 仍是“整个 buffer”，Pi 是“当前行”（`Ctrl+A` 在多行下的差异；P0-5 刻意未改，避免二次惊吓）
 
 ### 发布链：二进制身份的四重歧义（10-18 关闭）
 
