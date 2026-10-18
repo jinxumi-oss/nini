@@ -20,7 +20,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `git <args>` in `dir`, or `None` if git is missing or the command fails.
 fn git(dir: &std::path::Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).current_dir(dir).output().ok()?;
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -87,9 +91,7 @@ fn main() {
     let dirty = std::env::var("NINI_BUILD_DIRTY")
         .ok()
         .map(|v| matches!(v.trim(), "true" | "1" | "yes"))
-        .unwrap_or_else(|| {
-            git(&root, &["status", "--porcelain"]).is_some_and(|s| !s.is_empty())
-        });
+        .unwrap_or_else(|| git(&root, &["status", "--porcelain"]).is_some_and(|s| !s.is_empty()));
 
     let when = std::env::var("NINI_BUILD_TIME")
         .ok()
@@ -106,7 +108,11 @@ fn main() {
     let profile = std::env::var("NINI_BUILD_PROFILE")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| std::env::var("PROFILE").ok().filter(|s| !s.trim().is_empty()))
+        .or_else(|| {
+            std::env::var("PROFILE")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
         .unwrap_or_else(|| "unknown".to_string());
 
     println!("cargo:rustc-env=NINI_BUILD_COMMIT={commit}");

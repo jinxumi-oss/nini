@@ -149,7 +149,9 @@ fn the_thinking_body_is_italic_and_coloured_from_the_thinking_slot() {
 
     let mut saw_thinking_colour = false;
     for x in first_col..last_col.min(buf.area.width) {
-        let Some(c) = buf.cell((x, row)) else { continue };
+        let Some(c) = buf.cell((x, row)) else {
+            continue;
+        };
         assert!(
             c.modifier.contains(Modifier::ITALIC),
             "Pi renders thinking blocks italic; cell {x} is {:?}",

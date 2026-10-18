@@ -151,7 +151,7 @@ struct Args {
 
     /// TUI mode: regular or fullscreen.
     #[arg(long, value_parser = ["regular", "fullscreen"])]
-    tui_mode: Option<String>,
+    pub tui_mode: Option<String>,
 
     /// List available models (optionally filter by search term).
     #[arg(long, num_args = 0..=1, default_missing_value = "")]
@@ -185,7 +185,9 @@ struct Args {
     #[arg(long)]
     verbose: bool,
 
-    /// Export the session to HTML at this path and exit.
+    /// Not supported. nini renders the export from the TUI's transcript,
+    /// which takes no path; `/export` always writes to the exports
+    /// directory (see `--help` output of `/export`).
     #[arg(long)]
     export: Option<String>,
 
@@ -291,7 +293,7 @@ async fn main() -> Result<()> {
         fork,
         session_dir,
         api_key,
-        tui_mode: _,
+        tui_mode,
         list_models,
         tools,
         exclude_tools,
@@ -304,7 +306,7 @@ async fn main() -> Result<()> {
         verbose,
         skill,
         offline,
-        export: _,
+        export,
         no_skills,
         prompt_template,
         no_prompt_templates,
@@ -372,6 +374,43 @@ async fn main() -> Result<()> {
         refuse(
             "--session-dir",
             "choose where sessions are stored; set NINI_AGENT_DIR instead".into(),
+        );
+    }
+    // `--export <path>` used to be destructured as `_` here: accepted,
+    // advertised in `--help` as *"Export the session to HTML at this path
+    // and exit"*, and dropped on the floor. Measured, not suspected:
+    // `nini --export /tmp/x.html -p hello` exited 0, `/tmp/x.html` did not
+    // exist, and the HTML landed in `~/.nini/agent/exports/` instead.
+    //
+    // The reason is structural, and worth stating rather than paraphrasing:
+    // `cmd_export` renders `state.transcript_state.lines` and writes to
+    // `paths::exports_dir()`. It never reads the path it was handed, so
+    // there is nothing to forward the argument to. Exporting from rendered
+    // UI state cannot honour a destination — or run headless at all.
+    if export.is_some() {
+        refuse(
+            "--export",
+            "export the transcript to a path you choose; `/export` inside the TUI \
+             writes to the exports directory (set NINI_AGENT_DIR to move it)"
+                .into(),
+        );
+    }
+    // `--tui-mode` is a real Pi flag — `pi --help` lists
+    // `--tui-mode <mode>  TUI mode: regular (default) or fullscreen` — and
+    // nini advertised it without implementing it. Found by the coverage test
+    // below, which asks a different question from the other tests here:
+    // *is every advertised flag either used or refused?* rather than *did
+    // anyone remember to list this one?*
+    //
+    // Note this is NOT `settings.fullscreenScrollbar`, which nini does
+    // implement (`nini-tui/src/scrollbar.rs`); that is the scrollbar's mode
+    // inside the regular layout, not a second layout.
+    if tui_mode.is_some() {
+        refuse(
+            "--tui-mode",
+            "choose Pi's fullscreen TUI layout; nini ships only the regular one \
+             (the fullscreen scrollbar is a separate setting, and it is supported)"
+                .into(),
         );
     }
 

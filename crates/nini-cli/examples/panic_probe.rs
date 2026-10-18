@@ -23,8 +23,7 @@
 //! isolation in `agent_hooks.rs` is dead code in the shipped binary.
 
 fn main() {
-    let recovered = std::panic::catch_unwind(|| -> i32 { panic!("hook under test") })
-        .unwrap_or(7);
+    let recovered = std::panic::catch_unwind(|| -> i32 { panic!("hook under test") }).unwrap_or(7);
     if recovered == 7 {
         println!("recovered: the release profile unwinds");
     } else {

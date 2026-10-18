@@ -97,7 +97,11 @@ async fn submitting_soon_after_an_esc_starts_a_second_agent() {
         tx.clone(),
     );
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert_eq!(spawns.load(Ordering::SeqCst), 1, "one turn should be running");
+    assert_eq!(
+        spawns.load(Ordering::SeqCst),
+        1,
+        "one turn should be running"
+    );
     assert_eq!(live.load(Ordering::SeqCst), 1, "that turn should be live");
 
     // ── step 2: Esc ─────────────────────────────────────────────────────
@@ -106,7 +110,10 @@ async fn submitting_soon_after_an_esc_starts_a_second_agent() {
         g.run_state.mode = nini_tui::state::RunMode::Running;
         nini_tui::runtime::apply_action(
             &mut g,
-            nini_tui::keys::Key::new(nini_tui::keys::KeyCode::Esc, nini_tui::keys::KeyModifiers::NONE),
+            nini_tui::keys::Key::new(
+                nini_tui::keys::KeyCode::Esc,
+                nini_tui::keys::KeyModifiers::NONE,
+            ),
         );
         assert_eq!(
             g.run_state.mode,

@@ -1,3 +1,110 @@
+## Unreleased — the audit that asked what a fix costs when it leaves no assertion (2026-10-19)
+
+1436 tests, all green. The theme: **every parity claim in this file had a
+fixture of its own making.** Two of them turned out to be wrong about the
+real Pi, and the way they were wrong is now measurable.
+
+### What a fix without an assertion costs
+
+`scripts/invariants.py` walks all 90 `fix:` commits — each one a real
+failure whose subject is already a decidable invariant — and asks whether
+any test asserts on the fix. Of 90: 64 shipped their own test, 8 were
+corroborated elsewhere, **18 have no assertion at all**. Regression
+protection is 80%.
+
+That number is not the problem. The problem is that a test written inside
+the same commit as the fix is **same-source**: it blocks regression, and
+it cannot block the misunderstanding that produced the fix. `stop_reason`'s
+casing and the 3 footer falsity copies both lived under green tests for
+exactly that reason.
+
+### The first oracle that could not have been written from the bug
+
+`nini-ai`'s streaming `tool_call` had 4 unprotected defects of precisely
+this shape — *args dropped on first chunk*, *inline-args emits no Stop*,
+*single-shot and streaming share one Start*. `openai_wire_e2e.rs:18` says
+its fixtures are **"hand-built"**, and a hand-built sample cannot catch a
+wrong understanding: the sample and the parser share the one error.
+
+So chain 2 was built. `scripts/capture-sse.py` proxies Pi to its provider
+and writes each SSE event as it arrives — event granularity, because
+`arguments` arrives in increments and the boundaries *are* the evidence.
+What Pi actually sends, unedited:
+
+```text
+[0] delta is role only — content/tool_calls are absent, not null
+[1] index:0 id name:"bash" arguments:"{"     <- a lone open brace
+[2] index:0, no id, no name, arguments increment
+[3] index:0, arguments:"}"
+[4] finish_reason:"tool_calls", tool_calls null
+[5] "choices":[] usage-only
+```
+
+Re-injecting the original bug turns exactly one of the 5 new assertions
+red, with `input_json: Null`. An expectation corrected by that experiment:
+nini's own `inline_args_on_start_chunk_emits_complete_stop` fails under
+the same mutation, so these 5 are not "more tests". The real difference is
+the **shape** being asserted — the existing sample puts a complete body in
+the first chunk and its comment calls that "aiio-shape"; this provider
+sends a lone `{` and streams the rest.
+
+### TUI: record the screen, not my belief about it
+
+`/hotkeys` printing `Home ?` was caught by looking at a screen. No test
+caught it. Screen recording was impossible because model output varies —
+so the upstream was replaced. Pi identifies providers by protocol, not by
+who answers, which was verified rather than assumed: it drives
+`scripts/mock-provider.py` and replies with the script verbatim. Same
+script now feeds Pi and nini, so the difference between their screens is
+the parity difference — deterministic, free, offline.
+
+Four isolation traps, each measured: user skills leaked into the boot
+screen (29 names — a snapshot, not an oracle), an empty trust store blocks
+on a prompt, a reused tmux server inherits its old environment, and
+`send-keys -l` corrupts input (`/hotkeys/hotkeys` one-shot, `0/ho`
+char-by-char; `load-buffer` + `paste-buffer` is correct).
+
+The screen then showed: Pi draws `/hotkeys` as a boxed table, nini emits
+one flowing blob; and Pi binds `Ctrl+-` Undo, `Ctrl+Z`, `Shift+Tab`,
+`Ctrl+X`, `Alt+Enter`, `Alt+Up`, and `/` `!` `!!`, none of which nini binds.
+
+### Exports compared as data, because pixels were the wrong axis
+
+Pi's `/export` is a self-contained HTML whose `entries` sit in a `<script>`
+as base64(JSON) — `{header, entries[8], leafId, systemPrompt, tools}`.
+nini's is `render_transcript_html(&[TranscriptLine])`: it renders the
+structure away before writing. 279,049 bytes vs 815 is the symptom.
+
+Compared on content preservation, with a real exit code: Pi keeps all six
+things that happened, nini drops `thinking` (8 structured entries vs 0).
+
+### Two flags accepted, documented, and dropped
+
+`--export <path>` (`main.rs` had `export: _`) and `--tui-mode`
+(`tui_mode: _`) were both advertised in `--help` and discarded.
+Measured: `nini --export /tmp/x.html -p hello` exited 0, `/tmp/x.html` did
+not exist, and the HTML landed in `~/.nini/agent/exports/`. `--tui-mode` is
+a real Pi flag; nini ships only the regular layout. Both are now refused
+with a reason.
+
+The interesting part is why no test noticed. `cli_flag_contract.rs` is
+**enumerative** — it lists the flags it cares about — so a flag added later
+and dropped on the floor was never caught unless someone remembered to add
+it to a list. It is now **coverage-based**: read the source, find every
+field destructured as `_`, require that each advertised one is named in a
+refusal. That test found `--tui-mode` the moment it existed.
+
+### A gate, with a baseline that cannot silently regress
+
+`scripts/gate.sh` — fmt, clippy, two build profiles, tests, and two
+baseline locks: bare invariants (18) and unwired signatures (51) may not
+increase. Full-green tests are not the same as correct, so the gate locks
+the trend instead of trusting the count. It was self-tested by lowering the
+baselines: both checks went red, exit code 1.
+
+Details and the open items (`tui-oracle.py`'s extractor is not yet
+trustworthy and is kept out of the gate) are in `docs/invariant-audit.md`.
+
 ## v0.10.2 — the binary could not tell you what it was (2026-10-18)
 
 1428 tests, all green. Two themes, both found by asking a question of the

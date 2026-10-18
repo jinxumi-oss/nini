@@ -202,10 +202,7 @@ async fn stop_arrives_after_the_last_delta_and_shares_the_starts_id() {
         .iter()
         .position(|e| matches!(e, StreamEvent::ToolCallStop { .. }))
         .expect("a tool call must stop");
-    assert!(
-        start_idx < stop_idx,
-        "Stop 不能先于 Start：{events:?}"
-    );
+    assert!(start_idx < stop_idx, "Stop 不能先于 Start：{events:?}");
 
     let deltas: Vec<&StreamEvent> = events
         .iter()

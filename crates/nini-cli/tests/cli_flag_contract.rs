@@ -221,3 +221,100 @@ fn use_theme_is_not_refused() {
         "--use-theme is still refused:\n{stderr}"
     );
 }
+
+/// Coverage, not enumeration.
+///
+/// The other tests here list the flags they care about. That style has a
+/// failure mode this file was built to end: **a flag added later and dropped
+/// on the floor is not caught**, because nobody remembered to add it to a
+/// list. `--export <path>` is the proof — it sat in `main.rs` as `export: _`,
+/// advertised in `--help` as *"Export the session to HTML at this path and
+/// exit"*, and every test in this file stayed green. Measured, not suspected:
+/// `nini --export /tmp/x.html -p hello` exited 0, `/tmp/x.html` did not exist,
+/// and the HTML landed in `~/.nini/agent/exports/`.
+///
+/// So: read the binary's own source, find every field destructured as `_`,
+/// and require that each one which `--help` advertises is **named** in a
+/// refusal. A new silent drop fails here without anyone editing a list.
+#[test]
+fn no_advertised_flag_is_dropped_silently() {
+    let main_rs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let src = std::fs::read_to_string(&main_rs)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", main_rs.display()));
+
+    // Fields destructured as `_`: the shape "accepted, then dropped".
+    let mut dropped: Vec<String> = Vec::new();
+    for line in src.lines() {
+        let t = line.trim();
+        if let Some(field) = t.strip_suffix(": _,") {
+            let name = field.trim();
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+            {
+                dropped.push(name.to_string());
+            }
+        }
+    }
+    // Validate the scan's *premise*, not its result. An earlier version
+    // asserted that at least one `_` field exists, on the theory that an
+    // empty result means the scan broke — which is backwards: after
+    // `--export` and `--tui-mode` were bound, zero dropped fields is the
+    // correct outcome, and the assertion turned the fix into a failure.
+    assert!(
+        src.contains("} = args;"),
+        "the destructure this test scans for is gone from main.rs, so a clean \
+         result here would mean nothing was checked"
+    );
+
+    let advertised = advertised_flags();
+    let mut silent = Vec::new();
+    for field in dropped {
+        let flag = format!("--{}", field.replace('_', "-"));
+        if !advertised.contains(&flag) {
+            continue; // internal field, never advertised
+        }
+        let named_in_a_refusal = src.contains(&format!("\"{flag}\""));
+        if !named_in_a_refusal {
+            silent.push(flag);
+        }
+    }
+
+    assert!(
+        silent.is_empty(),
+        "advertised in `--help`, destructured as `_`, and never named in a \
+         refusal — so nini accepts it, documents it, and does nothing:\n  {}\n\
+         Fix: bind the field and either use it or refuse it with a real reason.",
+        silent.join("\n  ")
+    );
+}
+
+/// The specific hole `no_advertised_flag_is_dropped_silently` was written for.
+#[test]
+fn export_with_a_path_is_refused_rather_than_swallowed() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .args([
+            "--export",
+            "/tmp/nini-should-not-appear.html",
+            "--provider",
+            "fixture",
+            "--offline",
+            "--no-context-files",
+            "-p",
+            "hi",
+        ])
+        .output()
+        .expect("nini runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        stderr.contains("--export"),
+        "`--export <path>` must be named when it is refused; a silent exit 0 \
+         teaches the user to distrust every other message nini prints.\nstderr:\n{stderr}"
+    );
+    assert!(
+        !std::path::Path::new("/tmp/nini-should-not-appear.html").exists(),
+        "the path was named in the refusal, yet a file appeared there anyway"
+    );
+}

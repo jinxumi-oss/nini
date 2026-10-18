@@ -288,7 +288,7 @@ fn cmd_scoped_models(
     }
 }
 
-fn cmd_export(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
+fn cmd_export(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
     // A minimal HTML snapshot of the transcript, into the agent directory.
     let html = render_transcript_html(&state.transcript_state.lines);
     let dir = nini_core::paths::exports_dir();
@@ -322,7 +322,23 @@ fn cmd_export(state: &mut AppState, _settings: &mut SettingsManager, _args: &str
     };
     state.push_assistant(format!("(exported session to {path})"));
     state.push_divider();
-    CommandResult::output(vec![format!("export → {path}")])
+    let mut out = vec![format!("export → {path}")];
+    // `/export <path>` silently dropped its path argument. That is the same
+    // defect as `--export <path>` in the CLI, and the fix is the same: say so.
+    // A user who typed a path and got no file will look in the wrong place,
+    // then in their shell history, then conclude nini lost the export.
+    if !args.trim().is_empty() {
+        let dest = nini_core::paths::exports_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| "(no session directory)".to_string());
+        out.push(format!(
+            "note: the path argument `{}` is not honoured — /export renders the \
+             transcript and always writes to {dest} (the CLI's --export is refused \
+             for the same reason)",
+            args.trim()
+        ));
+    }
+    CommandResult::output(out)
 }
 
 fn cmd_import(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {

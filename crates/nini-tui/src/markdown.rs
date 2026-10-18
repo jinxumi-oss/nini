@@ -234,7 +234,10 @@ impl<'a> MdState<'a> {
             // formatting: patching `base_style` instead would leave
             // `**bold**` inside a quote in the bold colour, where Pi
             // paints the quote colour with bold on top.
-            let body = self.theme.fg_style("mdQuote").add_modifier(Modifier::ITALIC);
+            let body = self
+                .theme
+                .fg_style("mdQuote")
+                .add_modifier(Modifier::ITALIC);
             let mut new_spans: Vec<Span<'static>> = Vec::with_capacity(self.pending.len() + 1);
             new_spans.push(Span::styled(prefix, self.theme.fg_style("mdQuoteBorder")));
             new_spans.extend(std::mem::take(&mut self.pending).into_iter().map(|sp| {
