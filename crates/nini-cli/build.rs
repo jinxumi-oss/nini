@@ -1,109 +1,113 @@
-//! Embed the build's identity in the binary.
+//! Embed the build's identity, so `nini --version` can answer
+//! "am I running what I just built?".
 //!
-//! v0.10. This exists because of a specific, repeatable failure:
+//! Why this exists: nini ships as a single binary that people install by
+//! symlinking `target/release/nini` into `~/.local/bin`, and `nini 0.10.1`
+//! on its own cannot distinguish a binary built from the tagged release
+//! from one built three commits later, from one built from a dirty tree.
+//! The README's claims are verified *against a specific binary*, so the
+//! binary has to be able to name itself.
 //!
-//!     ~/.local/bin/nini -> target/release/nini
-//!
-//! `install.sh` downloads a prebuilt archive and never compiles anything, so
-//! "nini is installed" and "nini matches this checkout" are unrelated facts.
-//! On 2026-10-12 the user ran the TUI after a session's worth of fixes and
-//! saw none of them, because the release binary was a week old. `--version`
-//! printed `nini 0.9.1` in both cases, so there was nothing to compare.
-//!
-//! Now it prints the commit and the build time, which makes staleness visible
-//! without anybody having to remember to run a build.
-//!
-//! # The rebuild cost, stated plainly
-//!
-//! `rerun-if-changed` points at `.git/HEAD` so that committing changes the
-//! embedded commit and re-links the binary. That is the point, but it means
-//! a commit is no longer free: the next `cargo build` after one rebuilds the
-//! binary crate. Roughly 36 seconds at the current size, which is a fair
-//! price for a binary that can say what it is.
+//! This was previously done by exporting `NINI_BUILD_COMMIT`,
+//! `NINI_BUILD_TIME` and `NINI_BUILD_DIRTY` by hand — which is why CI's
+//! release artifact reported `unknown (unknown)`: `ci.yml` never set them,
+//! and there was no other source of the truth. Here every value has a
+//! fallback, and an explicit environment variable always wins so that a
+//! reproducible or vendored build can still say what it is.
 
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// `$NINI_BUILD_COMMIT` overrides detection, for a release built from an
-/// exported tree with no `.git` (a tarball, a vendored copy, CI).
-fn env_override(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
-}
-
-fn git(args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).output().ok()?;
+/// `git <args>` in `dir`, or `None` if git is missing or the command fails.
+fn git(dir: &std::path::Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git").args(args).current_dir(dir).output().ok()?;
     if !out.status.success() {
         return None;
     }
-    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    let s = String::from_utf8(out.stdout).ok()?;
+    let s = s.trim();
     if s.is_empty() {
         None
     } else {
-        Some(s)
+        Some(s.to_string())
     }
 }
 
-/// "3caa078" — short enough to read, long enough to be unambiguous.
-fn commit() -> String {
-    env_override("NINI_BUILD_COMMIT")
-        .or_else(|| git(&["rev-parse", "--short", "HEAD"]))
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// "2026-10-14 09:54:11 +08:00" — when the binary was linked, not when the
-/// source was last edited. Those differ: a tree can sit unbuilt for days, and
-/// that difference is exactly what went wrong.
-fn build_time() -> String {
-    if let Some(v) = env_override("NINI_BUILD_TIME") {
-        return v;
-    }
-    // `date` rather than a crate: the build script already shells out for
-    // git, and adding a dependency to a build script to format a timestamp
-    // is not a trade worth making.
-    let output = Command::new("date").arg("+%Y-%m-%d %H:%M:%S %z").output();
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8(o.stdout)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "unknown".to_string()),
-        _ => "unknown".to_string(),
-    }
-}
-
-/// True when the working tree had uncommitted changes at build time.
+/// Seconds since the epoch, formatted the way `--version` prints it.
 ///
-/// Worth recording because "commit 3caa078" can otherwise be read as "exactly
-/// 3caa078" when the tree actually had more.
-fn dirty() -> bool {
-    if env_override("NINI_BUILD_COMMIT").is_some() {
-        return false;
-    }
-    matches!(
-        git(&["status", "--porcelain"]),
-        Some(s) if !s.is_empty()
-    )
+/// Honours `SOURCE_DATE_EPOCH` (the reproducible-builds convention) so a
+/// vendored build gets a stable string instead of "whenever we compiled".
+fn build_time() -> String {
+    let secs = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
+    // Civil time from days, so the build needs no timezone database:
+    // Howard Hinnant's `civil_from_days`.
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02} {hour:02}:{min:02}:{sec:02} UTC")
 }
 
 fn main() {
-    println!("cargo:rustc-env=NINI_BUILD_COMMIT={}", commit());
-    println!("cargo:rustc-env=NINI_BUILD_TIME={}", build_time());
-    println!("cargo:rustc-env=NINI_BUILD_DIRTY={}", dirty());
+    let manifest = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is always set by cargo"),
+    );
+    let root = manifest
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| manifest.clone());
 
-    // Re-run when the checked-out commit changes. See the module docs for the
-    // cost this deliberately accepts.
-    if let Ok(git_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let git_dir = std::path::Path::new(&git_dir).join("../..");
-        println!(
-            "cargo:rerun-if-changed={}",
-            git_dir.join(".git/HEAD").display()
-        );
-        // A commit writes a new object file; HEAD's mtime moves with it on
-        // every checkout, so HEAD alone is enough in practice, but packed
-        // refs can change without HEAD's timestamp. Cheap to include.
-        println!(
-            "cargo:rerun-if-changed={}",
-            git_dir.join(".git/refs").display()
-        );
-    }
-    println!("cargo:rerun-if-changed=build.rs");
+    // The workspace root is the git work tree. If nini is vendored without
+    // `.git`, everything below falls back to "unknown" rather than failing
+    // the build: an unidentifiable binary is better than no binary.
+    let commit = std::env::var("NINI_BUILD_COMMIT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| git(&root, &["rev-parse", "--short", "HEAD"]))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let dirty = std::env::var("NINI_BUILD_DIRTY")
+        .ok()
+        .map(|v| matches!(v.trim(), "true" | "1" | "yes"))
+        .unwrap_or_else(|| {
+            git(&root, &["status", "--porcelain"]).is_some_and(|s| !s.is_empty())
+        });
+
+    let when = std::env::var("NINI_BUILD_TIME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(build_time);
+
+    println!("cargo:rustc-env=NINI_BUILD_COMMIT={commit}");
+    println!("cargo:rustc-env=NINI_BUILD_TIME={when}");
+    println!(
+        "cargo:rustc-env=NINI_BUILD_DIRTY={}",
+        if dirty { "true" } else { "false" }
+    );
+    // Rebuild when the tree's state changes, but not on every unrelated
+    // file edit elsewhere in the workspace.
+    println!("cargo:rerun-if-env-changed=NINI_BUILD_COMMIT");
+    println!("cargo:rerun-if-env-changed=NINI_BUILD_TIME");
+    println!("cargo:rerun-if-env-changed=NINI_BUILD_DIRTY");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/index");
 }

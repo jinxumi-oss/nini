@@ -138,13 +138,15 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 4. **键位与 Pi 的语义差异** —— Pi `Ctrl+-` undo / `Ctrl+D` 删右字符 / `Ctrl+F` 右移一字符 / `Ctrl+Shift+F` 搜索；nini 均不同
 5. `move_to_start` / `move_to_end` 仍是“整个 buffer”，Pi 是“当前行”（`Ctrl+A` 在多行下的差异；P0-5 刻意未改，避免二次惊吓）
 
-### 发布链的已知缺陷（10-18 审计新发现，不在原清单）
+### 发布链的已知缺陷（10-18 审计新发现）
 
-| 缺陷 | 证据 | 后果 |
-|---|---|---|
-| CI 不注入 `NINI_BUILD_COMMIT/TIME/DIRTY` | `.github/workflows/ci.yml:77` 只跑 `cargo build --release --locked` | 发版产物的 `nini --version` 会输出 `unknown (unknown)`，而 build identity 的全部意义就是标识构建来源 |
-| 无发布构建脚本 | `scripts/` 只有 `model-catalog.py`、`sweep-unwired.py` | 身份靠人手敲 env，漏 `dirty` 的可能性高于不漏 |
-| 本机 release 二进制会落后工作树 | `~/.local/bin/nini` → `target/release/nini`（10-17 00:58 构建），工作树改动在 10-17 白天 | 用户 PATH 上的 `nini` **不含** P0-2..P1-1 与 thinking/blockquote 共 8 项修复；已用 `--version` 的 commit + 构建时间核对 |
+三项已在本轮关闭，保留记录以便复查：
+
+| 原缺陷 | 关闭方式 |
+|---|---|
+| CI 不注入 `NINI_BUILD_COMMIT/TIME/DIRTY`，发版产物 `--version` 输出 `unknown (unknown)`（`ci.yml:77` 只跑 `cargo build --release --locked`） | 新增 `crates/nini-cli/build.rs`：从 git 自行取 commit / 时间 / dirty，环境变量可覆盖，`SOURCE_DATE_EPOCH` 支持可复现构建。CI 无需改动 |
+| 无发布构建脚本，身份靠人手敲 env | `scripts/build-release.sh`：build → `--version` 必须含 commit → `info` / `demo` / `-p` 三条 smoke；`--check` 额外打印 README 测试数供人工比对 |
+| 本机 `~/.local/bin/nini`（10-17 00:58 构建）落后工作树 8 项修复 | 已重建；`--version` 认到当前 commit |
 
 ### 明确不做（范围决策已定）
 
