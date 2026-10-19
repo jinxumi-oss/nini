@@ -1,4 +1,4 @@
-## Unreleased — the audit that asked what a fix costs when it leaves no assertion (2026-10-19)
+## v0.10.3 — the audit that asked what a fix costs when it leaves no assertion (2026-10-19)
 
 1488 tests, all green. The theme: **every parity claim in this file had a
 fixture of its own making.** Two of them turned out to be wrong about the
