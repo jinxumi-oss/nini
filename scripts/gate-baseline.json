@@ -1,5 +1,5 @@
 {
-  "invariants_none": 2,
+  "invariants_none": 1,
   "invariants_total": 90,
   "regression_rate": 82.2,
   "written": "2026-10-19",
@@ -7,5 +7,5 @@
   "sweep_unwired_sites": 51,
   "tests_passing": 1462,
   "sweep_note": "三个 section 的 sites 之和（9 + 42 + …）。锁基线而非锁 0：这些是审计清单。",
-  "none_note": "2026-10-19 下调 16→8→7→6→5→4：每降一格对应一条通过变异验证的显式标注断言（6eb77154 / 3df653cc / 9d954ef0 / be783e9a）。 2026-10-19 再下调：git log --grep 匹配整个 message，纯 docs 提交被误算为 fix 不变量，已按 subject 过滤。 8744ceb5 下调：拆成 4 条子不变量（StopReason 路由 / app.rs 生产者接线 / 冷启动欢迎卡 / 窄屏 hints），首条提交 1c2e2a6d 起。实际值由 gate.sh 实测。"
+  "none_note": "2026-10-19 下调 16→8→7→6→5→4：每降一格对应一条通过变异验证的显式标注断言（6eb77154 / 3df653cc / 9d954ef0 / be783e9a）。 2026-10-19 再下调：git log --grep 匹配整个 message，纯 docs 提交被误算为 fix 不变量，已按 subject 过滤。 第 4 批：8744ceb5（拆 4 条子不变量，68c811d/eb0280d/f67133e/3850321）下调，632a3617（环境锁每文件一把）下调。剩余 1 条为人工区 78593581。"
 }
