@@ -1,5 +1,5 @@
 {
-  "invariants_none": 6,
+  "invariants_none": 5,
   "invariants_total": 93,
   "regression_rate": 80.6,
   "written": "2026-10-19",
@@ -7,5 +7,5 @@
   "sweep_unwired_sites": 51,
   "tests_passing": 1462,
   "sweep_note": "三个 section 的 sites 之和（9 + 42 + …）。锁基线而非锁 0：这些是审计清单。",
-  "none_note": "2026-10-19 下调 16→8→7→6：每降一格对应一条通过变异验证的显式标注断言（6eb77154 cli_info 技能数、3df653cc 导出文件名区分写入者）。"
+  "none_note": "2026-10-19 下调 16→8→7→6→5：每降一格对应一条通过变异验证的显式标注断言（6eb77154 / 3df653cc / 9d954ef0）。"
 }
