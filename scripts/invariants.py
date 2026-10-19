@@ -354,6 +354,16 @@ def main() -> int:
     test_df = doc_freq(corpus)
     known = src_identifiers()
 
+    # `git log --grep='^fix'` matches the **whole message**, not the subject,
+    # and `^` anchors per line inside it. So `997e8bbd` —
+    # `docs(ux): extend UX report with v0.7.4 regression verification` —
+    # matched because its *body* has a second line reading
+    # "fixes (model display, think-tag stripping, event redraws)".
+    # A pure documentation commit is not a defect invariant.
+    #
+    # `%s` is the subject, so filtering on it in Python is both simpler and
+    # correct. (Third bug in this script, after the short/full-hash mismatch
+    # and the comment-prose identifier collision.)
     shas = [
         line.split("\t", 1)
         for line in git(
@@ -361,6 +371,7 @@ def main() -> int:
         ).splitlines()
         if line.strip()
     ]
+    shas = [(sha, subj) for sha, subj in shas if subj.lstrip().startswith("fix")]
 
     # 第一遍：收集每条修复改动引入的词元，用于算全局专一度
     history = {sha.strip(): commit_tokens(sha.strip()) for sha, _ in shas}
