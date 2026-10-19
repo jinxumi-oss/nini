@@ -155,6 +155,20 @@ else
   skip "README 测试数（解析失败）"
 fi
 
+# CHANGELOG 同样是对外声明，同样必须精确相等。它和 README 的区别只在于
+# 数字出现在多处（顶部段落一句，其余是历史段落里的旧数与 badge），所以只取
+# **第一个 ## 段落**里的那一个——历史段落写的是当时的事实，不许被改写。
+CHANGELOG_TESTS="$(awk '/^## /{n++} n<2' CHANGELOG.md | grep -oE '[0-9]+ tests' | head -1 | grep -oE '[0-9]+' || echo "")"
+if [[ -n "$CHANGELOG_TESTS" && -n "$ACTUAL" ]]; then
+  if [[ "$CHANGELOG_TESTS" == "$ACTUAL" ]]; then
+    ok "CHANGELOG 测试数 = 实测 $ACTUAL"
+  else
+    bad "CHANGELOG 测试数与实测不符" "CHANGELOG 顶部段落写 $CHANGELOG_TESTS，实测 $ACTUAL（低报也是失真）"
+  fi
+else
+  skip "CHANGELOG 测试数（解析失败）"
+fi
+
 # --- 7. 录屏对照（慢，需 tmux + 真 Pi）------------------------------------
 head2 "链② 对照"
 if [[ $FULL -eq 1 ]]; then
