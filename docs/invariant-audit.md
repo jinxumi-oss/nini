@@ -302,3 +302,62 @@ headless 与指定路径导出在**结构上**就做不到。修它等于把导�
 证据门槛（两条件同时满足才算证据）：该词元出现在 ≤2 条 fix 提交的改动里
 （全局专一度），且出现在 ≤3 个测试文件里。只用后一个门槛时，
 `null` / `digit` / `relaxed` 会造成假阳性。
+
+---
+
+## 7. 战役收口：把 18 条裸奔不变量变成 1 条
+
+四批执行（每批一个独立会话，契约驱动）+ 每批独立审计。
+
+| 批次 | 条数 | 内容 |
+|---|---|---|
+| 1 | 3 | `3bf4815d` fallback 诊断 · `b4d74570` refusal 文本 · `8c8a009d` 二进制身份 |
+| 2 | 4 | `3a31fe9e` 多字节 UTF-8 · `545fd548` find/bash 描述 · `d4070d0b` 搜索栏布局 · `ffb3d965` 滚动提示 |
+| 3 | 4 | `6eb77154` skills 计数 · `3df653cc` 导出文件名 · `9d954ef0` 临时图片名 · `be783e9a` footer 写死 home |
+| 4 | 5 | `8744ceb5` 拆成 4 条（StopReason / welcome card / narrow hints / 无 stop reason 的声明）· `632a3617` 环境锁粒度 |
+
+**结果**：NONE `18 → 1`，ANNOTATED `0 → 15`，测试 `1428 → 1488`。
+剩下的唯一一条是 `78593581`（clipboard 序列化）——并发/状态机，属人工区。
+
+### 每条都过了变异验证
+
+执行者声称的"已验证"一律不采信，逐条自己注入-观察-还原：
+
+| 注入的 bug | 变红的断言 | 其余 |
+|---|---|---|
+| commit 恒为 `unknown` | `the_binary_names_the_commit_it_was_built_from` | 3 绿 |
+| refusal 理由塞回多余空格 | `no_refusal_reason_carries_a_run_of_spaces` | 2 绿 |
+| retryable 分支不再记录诊断 | `an_exhausted_chain_names_every_key_it_tried_and_why` | 3 绿 |
+| 按字节切片取代字符边界 | 3 条全红（语义即"任何多字节都不得 panic"） | 0 |
+| find 描述退回与 bash 混淆 | 2 条红 | 1 绿（无关性质） |
+| 搜索栏不预留布局行 | 3 条全红 | 0 |
+| 跳到底部却不恢复 autoscroll | `shift_end_snaps_back_to_the_live_tail` | 5 绿 |
+| tilde 写死 `/home/jin` | 2 条红 | 0 |
+| skills 计数改用与进程无关的常数 | 3 条全红 | 0 |
+| 窄终端阈值 70 → 50 | `no_narrow_width_between_50_and_69_truncates_the_hint_set` | 2 绿 |
+| settings.rs 第 4 处去掉加锁 | `every_env_mutating_test_in_the_file_takes_the_lock` | 2 绿 |
+
+两次"测试全绿"经查都是**我的变异打偏**，不是测试无效：一处注入了
+`app.rs` 的辅助函数而 `nini info` 走的是 `info.rs`；一处改了
+`tests/theme_wiring.rs` 而该断言的对象是 `src/settings.rs`。
+
+### 审计查出的问题，最大的两个都在审计工具自己身上
+
+1. **基线是错的（16 应为 12）**：`invariants.py` 靠词法重叠判断覆盖，但
+   `GOALS` T3 第 2 条要求 oracle 走**签名不变的公共 API**——这类测试
+   **不引用内部符号**，于是恰恰是项目强制要求的正确 oracle 被判成裸奔。
+   覆盖改为**显式声明**（`//! invariant: <sha>`），基线 16 → 12。
+2. **纯文档提交被算成缺陷**：`git log --grep='^fix'` 匹配**整个 message**，
+   `997e8bbd`（`docs(ux): ...`）因正文第二行以 `fixes` 开头而被计入。
+   改为按 subject 过滤，total 93 → **90**。这也解释了此前"91 vs 90"的
+   数字对不上——那个 91 本就含误匹配。
+
+第三个同类 bug 更早修过：不剥离注释就取标识符时，注释里的 `ensures`/`badge`
+会让脚本输出 100% 保护率。
+
+### 流程瑕疵（如实记录）
+
+`68c811d`（`test(tui): a stop reason pushed into the sink…`）里混入了
+`scripts/invariants.py` 的改动。成因是我在两批之间改完审计脚本**没有提交**，
+执行者的 `git add -A` 把它卷了进去。内容正确，但**提交信息与内容不符**，
+可追溯性受损。契约已补规则：只 add 自己改过的文件。
