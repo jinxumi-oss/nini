@@ -1,10 +1,11 @@
 {
-  "invariants_none": 16,
+  "invariants_none": 12,
   "invariants_total": 93,
-  "regression_rate": 82.8,
+  "regression_rate": 80.6,
   "written": "2026-10-19",
   "note": "裸奔不变量数与未接线签名数都不得增加。修了 bug 却没加断言会让门禁红——这是 6331a49 的教训。42 个 site 是审计清单不是错误清单，所以锁基线而非锁 0。",
   "sweep_unwired_sites": 51,
   "tests_passing": 1447,
-  "sweep_note": "三个 section 的 sites 之和（9 + 42 + …）。锁基线而非锁 0：这些是审计清单。"
+  "sweep_note": "三个 section 的 sites 之和（9 + 42 + …）。锁基线而非锁 0：这些是审计清单。",
+  "none_note": "2026-10-19 下调 16→12：词法审计认不出走公共 API 的高层 oracle，已加  显式标注机制。"
 }

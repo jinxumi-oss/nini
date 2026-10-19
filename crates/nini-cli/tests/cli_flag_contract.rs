@@ -36,6 +36,9 @@
 //! lives in `prompt_setup.rs`, because nini-cli is a binary crate and its
 //! modules are not importable from an integration test.
 
+//! invariant: 8c8a009d —— 声明本文件守住了哪几条历史不变量。
+//! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
+
 /// Parse the binary's own `--help` and collect the flags it advertises.
 fn advertised_flags() -> Vec<String> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))

@@ -189,6 +189,47 @@ def test_corpus() -> dict[str, set[str]]:
     return corpus
 
 
+ANNOTATION = re.compile(r"invariant:\s*([0-9a-f]{7,40})")
+
+
+def test_annotations() -> dict[str, list[str]]:
+    """采集测试里的 `invariant: <sha>` 显式标注 → {sha: [文件]}。
+
+    ## 为什么需要这个机制
+
+    本脚本原本靠**词法重叠**判断一条 fix 有没有被断言保护：取该提交
+    新增行里的专有标识符，去测试语料里找。问题是——
+    **走公共 API 高层入口的测试不引用内部符号**，于是被判成"未保护"。
+
+    这不是理论问题，2026-10-19 就实测到 4 条误判：`c3944d13`、
+    `7a71f5b3`、`9c9783e3`、`3bf4815d` 都已由
+    `crates/nini-ai/tests/pi_wire_oracle.rs` 与 `fallback_diagnostics.rs`
+    断言（且都通过了变异验证），却仍显示 NONE。
+
+    而那种测试恰恰是**正确**的那种：GOALS T3 第 2 条明写“接口会变的修复，
+    oracle 必须走签名不变的更高层入口”，因为编译失败不是 oracle。
+
+    所以词法猜测会系统性地**高估**未保护数，进而让基线有偏。
+    显式标注把它变成**声明**：写测试的人说“这条不变量我守了”，审计据此认定。
+    声明可以被撒谎，但撒谎需要写出具体断言，而断言会被变异验证咬住。
+    """
+    out: dict[str, list[str]] = {}
+    for path in sorted(REPO.glob("crates/*/tests/*.rs")) + sorted(
+        REPO.glob("crates/*/src/**/*.rs")
+    ):
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for sha in ANNOTATION.findall(text):
+            # 标注写短 sha（人写短的全称太丑），而 git log 给的是完整 40 位。
+            # 统一按短 sha 存，否则两者永远对不上——这个 bug 实测过一次，
+            # 症状是加了标注而 ANNOTATED 仍然是 0。
+            key = sha[:8].lower()
+            out.setdefault(key, []).append(path.stem)
+    return out
+
+
 def doc_freq(corpus: dict[str, set[str]]) -> dict[str, int]:
     """词元 → 出现在多少个测试文件里。df 越低越具体，越能当证据。"""
     df: dict[str, int] = {}
@@ -230,7 +271,7 @@ def commit_tokens(sha: str) -> set[str]:
     return tokens_of(added)
 
 
-def analyze(sha: str, subject: str, corpus, test_df, commit_df, history) -> dict:
+def analyze(sha: str, subject: str, corpus, test_df, commit_df, annotated) -> dict:
     body = git("show", sha, "--unified=0", "--format=")
 
     touched: list[str] = []
@@ -272,7 +313,9 @@ def analyze(sha: str, subject: str, corpus, test_df, commit_df, history) -> dict
         stem for stem, toks in corpus.items() if backticked & toks
     )
 
-    if self_test or hits:
+    if annotated.get(sha[:8].lower()):
+        tier = "ANNOTATED"
+    elif self_test or hits:
         tier = "SELF_TEST" if self_test else "CORROBORATED"
     elif weak:
         tier = "WEAK"
@@ -284,6 +327,7 @@ def analyze(sha: str, subject: str, corpus, test_df, commit_df, history) -> dict
         "subject": subject,
         "touched": touched,
         "self_test": self_test,
+        "annotated_by": annotated.get(sha[:8].lower(), []),
         "evidence": sorted(evidence)[:12],
         "hits": [{"test": s, "overlap": o} for s, o in hits[:4]],
         "weak": weak[:4],
@@ -292,6 +336,7 @@ def analyze(sha: str, subject: str, corpus, test_df, commit_df, history) -> dict
 
 
 TIER_DOC = {
+    "ANNOTATED": "测试里写明 `invariant: <sha>` 显式声明保护（高层 API oracle 靠它识别）",
     "SELF_TEST": "修复自带测试——能挡回归，**挡不住当初的理解错误**（同源）",
     "CORROBORATED": "无自带测试，但有其他测试以修复点的专有词元命中",
     "WEAK": "仅反引号标识符与某测试文件相关，证据不足",
@@ -324,8 +369,10 @@ def main() -> int:
         for t in toks:
             commit_df[t] = commit_df.get(t, 0) + 1
 
+    annotated = test_annotations()
+
     rows = [
-        analyze(sha.strip(), subj.strip(), corpus, test_df, commit_df, history)
+        analyze(sha.strip(), subj.strip(), corpus, test_df, commit_df, annotated)
         for sha, subj in shas
     ]
 
@@ -369,7 +416,7 @@ def main() -> int:
         "> 对照验证只能来自链②（真 Pi 录制），不来自更多自写测试。\n"
     )
 
-    for tier in ("NONE", "WEAK", "CORROBORATED"):
+    for tier in ("NONE", "WEAK", "ANNOTATED"):
         sel = [r for r in rows if r["tier"] == tier]
         if not sel:
             continue

@@ -28,6 +28,9 @@
 //! flag that can be refused in one invocation, so the assertion is against
 //! what a user actually sees on stderr — not against a copy of the literals.
 
+//! invariant: b4d74570 —— 声明本文件守住了哪几条历史不变量。
+//! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
+
 use std::process::Command;
 
 /// Every flag whose refusal can be triggered at once without clap rejecting

@@ -34,6 +34,11 @@
 //! cargo test -p nini-ai --test pi_wire_oracle
 //! ```
 
+//! invariant: c3944d13 —— 声明本文件守住了哪几条历史不变量。
+//! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
+//! invariant: 7a71f5b3
+//! invariant: 9c9783e3
+
 #![allow(clippy::needless_return)]
 
 use futures_core::Stream;

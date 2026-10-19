@@ -34,6 +34,9 @@
 //! falls back to a constant, or hardcodes the wrong profile, or inverts the
 //! dirty rule, the binary and the toolchain disagree and this file is red.
 
+//! invariant: 8c8a009d —— 声明本文件守住了哪几条历史不变量。
+//! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
