@@ -456,19 +456,39 @@ fn cmd_import(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
 pub enum CopyOutcome {
     /// The text really is on the system clipboard.
     Clipboard { bytes: usize },
-    /// No clipboard was reachable; the text went to stdout instead.
-    Stdout { bytes: usize, reason: String },
+    /// No clipboard was reachable, so the text went into the transcript
+    /// instead — the only place a reader can see it that the TUI owns.
+    Transcript { bytes: usize, reason: String },
 }
 
 /// Map a clipboard attempt onto what we can honestly claim.
 fn classify_copy(msg: &str, res: Result<(), String>) -> CopyOutcome {
     match res {
         Ok(()) => CopyOutcome::Clipboard { bytes: msg.len() },
-        Err(reason) => CopyOutcome::Stdout {
+        Err(reason) => CopyOutcome::Transcript {
             bytes: msg.len(),
             reason,
         },
     }
+}
+
+/// How much of a fallback message the transcript gets.
+///
+/// A notice is a row, not a document: the reader can see the beginning
+/// of the answer and is told where the rest is.
+const NOTICE_MAX_CHARS: usize = 400;
+
+/// The message as a notice may show it: the head, cut at a character
+/// boundary, with a pointer to the rest.
+fn truncate_for_notice(msg: &str) -> String {
+    if msg.chars().count() <= NOTICE_MAX_CHARS {
+        return msg.to_string();
+    }
+    let cut: String = msg.chars().take(NOTICE_MAX_CHARS).collect();
+    format!(
+        "{cut}\n… ({} more characters — the full text is in /export)",
+        msg.chars().count() - NOTICE_MAX_CHARS
+    )
 }
 
 fn cmd_copy(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
@@ -490,7 +510,7 @@ fn cmd_copy(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) 
             CopyOutcome::Clipboard { bytes } => {
                 CommandResult::output(vec![format!("(copied {bytes} bytes to clipboard)")])
             }
-            CopyOutcome::Stdout { bytes, reason } => {
+            CopyOutcome::Transcript { bytes, reason } => {
                 // Fallback: put the text where the reader can see it.
                 // It used to be `println!`, which writes to stdout —
                 // the alternate screen the TUI is painting — so the
@@ -499,9 +519,16 @@ fn cmd_copy(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) 
                 //
                 // The reason is surfaced verbatim so a Wayland-permissions
                 // failure is distinguishable from a headless run.
-                state.push_notice(msg);
+                //
+                // The text is **truncated**: a 200 KB answer would be
+                // 200 KB of transcript — every line rendered, indexed
+                // for search, and written into the HTML export, for a
+                // fallback whose whole purpose is to show the user
+                // something they can copy from somewhere better.
+                state.push_notice(truncate_for_notice(&msg));
                 CommandResult::output(vec![format!(
-                    "(copied {bytes} bytes to the transcript — no clipboard: {reason})"
+                    "(copied {bytes} bytes to the transcript — no clipboard: {reason}; \
+                     the full text is in /export)"
                 )])
             }
         },
@@ -1689,7 +1716,7 @@ mod honesty_tests {
     fn copy_failure_is_never_reported_as_copied_to_clipboard() {
         let out = classify_copy("hello", Err("clipboard unavailable: no DISPLAY".into()));
         match out {
-            CopyOutcome::Stdout { bytes, ref reason } => {
+            CopyOutcome::Transcript { bytes, ref reason } => {
                 assert_eq!(bytes, 5);
                 assert!(reason.contains("clipboard"));
             }
@@ -1708,7 +1735,7 @@ mod honesty_tests {
         for reason in ["clipboard unavailable", "clipboard write failed", ""] {
             let out = classify_copy("data", Err(reason.into()));
             assert!(
-                matches!(out, CopyOutcome::Stdout { .. }),
+                matches!(out, CopyOutcome::Transcript { .. }),
                 "Err({reason:?}) was laundered into a clipboard success"
             );
         }

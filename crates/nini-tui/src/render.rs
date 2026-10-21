@@ -805,7 +805,13 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     //   content below the fold), the content ends one row earlier.
     let indicator_row_allowed = full_height >= 3;
     let needs_top_indicator = autoscroll && indicator_row_allowed && total_items > full_height;
-    let needs_bottom_indicator = !autoscroll && indicator_row_allowed && scroll_offset > 0;
+    // The bottom hint says "there is more below". That is only true if
+    // there *is* more below: a stale `scroll_offset` (the content
+    // shrank — a cleared transcript, a finished turn) used to leave the
+    // hint on screen while every line was already visible, and the hint
+    // took a row the content could have used.
+    let needs_bottom_indicator =
+        !autoscroll && indicator_row_allowed && scroll_offset > 0 && total_items > full_height;
     let visible_height = full_height - usize::from(needs_top_indicator || needs_bottom_indicator);
     let content_area = if needs_top_indicator {
         Rect::new(area.x, area.y + 1, area.width, area.height - 1)

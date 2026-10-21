@@ -200,12 +200,26 @@ impl ProjectTrustStore {
         // For v0.7 we don't differentiate per-tool. The Ask level
         // collapses to Allow (with a log warn emitted by the caller).
         let binary = cwd_decision.to_binary();
-        if matches!(cwd_decision.level, TrustLevel::Ask) {
-            if let Some(warning) = ask_level_warning(&call.cwd) {
-                eprintln!("{warning}");
-            }
+        if let Some(warning) = self.ask_level_warning_for(call) {
+            eprintln!("{warning}");
         }
         binary
+    }
+
+    /// The warning this call produces — if any.
+    ///
+    /// `None` for a project that is trusted or distrusted: there is
+    /// nothing to say about those, and saying something would be a
+    /// lie. `None` for a cwd whose warning was already stated (see
+    /// [`ask_level_warning`]).
+    ///
+    /// It is a separate function so that "stays quiet" is a thing a
+    /// test can assert, instead of a thing the reader has to believe.
+    fn ask_level_warning_for(&self, call: &ToolCall) -> Option<String> {
+        if !matches!(self.get_for_cwd(&call.cwd).level, TrustLevel::Ask) {
+            return None;
+        }
+        ask_level_warning(&call.cwd)
     }
 }
 
@@ -296,14 +310,49 @@ mod tests {
     fn a_trusted_or_distrusted_cwd_never_asks() {
         // The warning is only about the Ask level. A trusted project
         // must stay silent, or the transcript fills with a warning that
-        // says nothing true.
-        let store = trusted_store();
-        let decision = store.check(&ToolCall {
-            tool: "bash",
-            args: Value::Null,
-            cwd: "/home/me/proj".to_string(),
-        });
-        assert!(matches!(decision, BinaryDecision::Allow));
+        // says nothing true — and a distrusted one must stay silent
+        // too: it is not being asked anything, it is being refused.
+        let trusted = trusted_store();
+        assert!(
+            trusted
+                .ask_level_warning_for(&ToolCall {
+                    tool: "bash",
+                    args: Value::Null,
+                    cwd: "/home/me/proj".to_string(),
+                })
+                .is_none(),
+            "a trusted project has nothing to warn about"
+        );
+        let distrusted = distrusted_store();
+        assert!(
+            distrusted
+                .ask_level_warning_for(&ToolCall {
+                    tool: "bash",
+                    args: Value::Null,
+                    cwd: "/tmp/danger".to_string(),
+                })
+                .is_none(),
+            "a distrusted project is refused, not warned about"
+        );
+        // And the Ask level does warn — otherwise "stays quiet" would
+        // be true for the wrong reason.
+        //
+        // A cwd of its own: the warning is stated once per cwd for the
+        // whole process, and the other tests in this binary have
+        // already spent the one for "/home/me/ask".
+        let asked_cwd = "/tmp/nini-trust-asks-warning-probe";
+        let mut asked = ProjectTrustStore::default();
+        asked.set(asked_cwd, TrustDecision::Ask);
+        assert!(
+            asked
+                .ask_level_warning_for(&ToolCall {
+                    tool: "bash",
+                    args: Value::Null,
+                    cwd: asked_cwd.to_string(),
+                })
+                .is_some(),
+            "the Ask level must state the warning"
+        );
     }
 
     #[test]
