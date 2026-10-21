@@ -732,7 +732,10 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // "the user sees the top" instead of "the user sees nothing".
     let lines = &state.transcript_state.lines;
     let total_lines = lines.len();
-    let visible_height = area.height as usize;
+    // v0.10.3: the number of rows the transcript *area* has. The rows
+    // the content may use is one less whenever an overflow indicator is
+    // shown — see `content_area` below.
+    let full_height = area.height as usize;
     let autoscroll = state.transcript_state.autoscroll || total_lines == 0;
     // Clamp rather than mutate: `render_transcript` receives a shared
     // `&AppState`, and the renderer has no business writing. The real
@@ -784,6 +787,34 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     }
     let total_items: usize = items_per_line.iter().sum();
 
+    // v0.10.3: the overflow indicators used to be painted **on top of**
+    // the transcript's first and last row, so `↑ N more above` ate the
+    // beginning of the first visible line (and `↓ N more` ate the end
+    // of the last one). The indicators now get a row of their own and
+    // the content gets one row less.
+    //
+    // Which row is reserved depends on the mode, and the decision has
+    // to be made *before* the visible slice is chosen — otherwise
+    // "how much is hidden" and "how much room is left" would depend on
+    // each other. So the test for "is there an indicator" is made
+    // against the full height, and only then is the height reduced.
+    //
+    // - autoscroll: the indicator sits on the first row (there is
+    //   content above the fold), the content starts on the second row.
+    // - user-scrolled: the indicator sits on the last row (there is
+    //   content below the fold), the content ends one row earlier.
+    let indicator_row_allowed = full_height >= 3;
+    let needs_top_indicator = autoscroll && indicator_row_allowed && total_items > full_height;
+    let needs_bottom_indicator = !autoscroll && indicator_row_allowed && scroll_offset > 0;
+    let visible_height = full_height - usize::from(needs_top_indicator || needs_bottom_indicator);
+    let content_area = if needs_top_indicator {
+        Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+    } else if needs_bottom_indicator {
+        Rect::new(area.x, area.y, area.width, area.height - 1)
+    } else {
+        area
+    };
+
     // v0.10 (scrollbar): how far the viewport sits from the live tail, in
     // rendered rows. 0 at the tail; also 0 in autoscroll mode, which is
     // correct — following the output means being at the bottom.
@@ -805,10 +836,13 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     }
     if let Ok(mut vp) = state.transcript_viewport.lock() {
         *vp = crate::scrollbar::Viewport {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: area.height,
+            x: content_area.x,
+            y: content_area.y,
+            width: content_area.width,
+            // v0.10.3: the scrollbar describes the **content** area. The
+            // indicator row is not part of it: the reader scrolls the
+            // transcript, not the hint.
+            height: content_area.height,
             content_height: total_items,
             viewport_height: visible_height,
         };
@@ -944,10 +978,10 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     let since_scroll = crate::scrollbar::now_millis().saturating_sub(state.scroll_activity_ms());
     if crate::scrollbar::should_draw(mode, total_items, visible_height, since_scroll) {
         if let Some(g) = crate::scrollbar::geometry(
-            area.x,
-            area.y,
-            area.width,
-            area.height,
+            content_area.x,
+            content_area.y,
+            content_area.width,
+            content_area.height,
             total_items,
             visible_height,
             items_skipped_from_bottom,
@@ -994,12 +1028,20 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     let list = List::new(visible_items)
         .block(Block::default().borders(Borders::NONE))
         .style(Style::default());
-    f.render_widget(list, area);
+    // v0.10.3: the list goes into the **content** area, which is one row
+    // shorter than the transcript area whenever an overflow indicator is
+    // shown. Painting it into the whole area is what let the indicator
+    // overwrite a row of text.
+    f.render_widget(list, content_area);
 
     // v0.8.7 (ux-002): scroll indicator in autoscroll mode when
     // content overflows above. Tells them they can scroll up to see
     // more. Bottom-right placement matches the user-scroll indicator.
-    if autoscroll && hidden_above_items > 0 && area.height >= 3 {
+    //
+    // v0.10.3: it is painted in the row the content does **not** use
+    // (`needs_top_indicator` reserved the transcript area's first row),
+    // not on top of the first row of text.
+    if needs_top_indicator {
         let label = format!(" \u{2191} {hidden_above_items} more above ");
         let style = theme.fg_style("dim");
         // v0.10: `chars().count()`, not display width. U+2191 is
@@ -1017,7 +1059,10 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // v0.8.4 (ux-001): user-scroll `↓ N more` indicator at the
     // bottom-right corner of the transcript area. Suppressed during
     // autoscroll so it doesn't flicker on every token delta.
-    if !autoscroll && scroll_offset > 0 && area.height >= 3 {
+    //
+    // v0.10.3: like its counterpart, it gets a row of its own — the
+    // transcript area's last row, which the content no longer uses.
+    if needs_bottom_indicator {
         let hidden = scroll_offset;
         let label = format!(" \u{2193} {hidden} more ");
         let style = theme.fg_style("accent").add_modifier(Modifier::BOLD);

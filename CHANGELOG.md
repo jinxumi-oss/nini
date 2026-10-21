@@ -1,3 +1,37 @@
+## Unreleased — the scroll indicator was painted over the transcript (2026-10-22)
+
+1500 tests, all green. The `↑ N more above` hint was drawn on the same
+row as the first line of the transcript, and the `↓ N more` hint on the
+row of the last one.
+
+### The hint ate the text
+
+`render.rs` painted the transcript list into the whole transcript area
+and then drew the overflow indicators on top of it — the first row for
+`↑ N more above`, the last row for `↓ N more`. The indicator is 17 cells
+wide, so the beginning of the first visible line was gone:
+
+```text
+ ↑ 30 more above r: turn `AppState` into ratatui `Frame` drawing calls.
+```
+
+(the line was `//! Render layer: turn `AppState` into …`). The same
+overwrite chopped the input box's border into fragments — the
+"underlines" the report showed.
+
+The indicators now get a row of their own, and the transcript gets one
+row less. Which row is reserved depends on the mode: the autoscroll
+hint sits on the first row (there is content above the fold), the
+user-scroll hint on the last (there is content below it). The decision
+is made against the *full* height first, so "how much is hidden" and
+"how much room is left" never depend on each other.
+
+Everything that counts rows moved with it: the visible height, the
+hidden-above count, the items skipped from the bottom, the page size
+PageUp scrolls by, and the scrollbar's viewport — the bar describes
+the content area, because the reader scrolls the transcript, not the
+hint.
+
 ## Unreleased — the library wrote to the terminal the TUI was painting (2026-10-22)
 
 1498 tests, all green. The TUI's screen and the library's stderr were
