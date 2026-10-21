@@ -93,6 +93,15 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
                     "<p class=\"stop-notice\" style=\"color:#c33\">⚠ {msg}</p>\n"
                 ));
             }
+            // v0.10.3: a system notice the TUI produced. Exported like
+            // a stop notice, but in its own class so a reader of the
+            // export can tell "the TUI said this" from "the model said
+            // this".
+            TranscriptLine::Notice(msg) => {
+                out.push_str(&format!(
+                    "<p class=\"notice\" style=\"color:#888\">⚠ {msg}</p>\n"
+                ));
+            }
         }
     }
     out.push_str("</body></html>\n");

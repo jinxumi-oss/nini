@@ -1,3 +1,61 @@
+## Unreleased — the library wrote to the terminal the TUI was painting (2026-10-22)
+
+1498 tests, all green. The TUI's screen and the library's stderr were
+the same screen, and the library writes on every tool call.
+
+### Two texts, one row
+
+The report was "一遇到工具调用任务就乱码" — a tool call makes the screen
+garble. The cause is one line, printed on **every** tool call:
+
+```text
+[nini] trust: cwd '/home/jin/nini2' is at Ask level; defaulting to Allow (v0.8 will add interactive prompt)
+```
+
+`nini_core::project_trust::check` prints it, and the default trust
+level is `Ask` (there is no `trust.json`), so every ordinary user saw
+it on every call. It went to fd 2 — the alternate screen the TUI is
+painting — and the repaint interleaved with it:
+
+```text
+ nini   ⠼[nini] trust: cwd '/home/jin/nini2' is at Ask level; d5f3ulting 6o Allow (v0.8 will add interactive prompt)
+```
+
+The `5` and the `3` are the TUI's own `ctx 3%` and `out 662` digits.
+The escape-sequence capture shows the polluted characters carrying
+`[38;2;102;102;102m` — the status bar's own dim style. It was never a
+terminal encoding problem: two writers, one row.
+
+### The choke point
+
+The TUI is the only thing that owns the terminal, so it is the only
+place where this can be fixed. While the TUI runs, fd 2 is now a
+**pipe**: `crates/nini-tui/src/terminal_guard.rs` dups the real stderr
+aside, points fd 2 at the pipe, and reads it on a background thread.
+Every line becomes a `TranscriptLine::Notice` in the transcript — dim,
+prefixed with `⚠`, and unmistakably not model output. The TUI's own
+writes (`/copy` without a clipboard, a settings write that failed) took
+the same road.
+
+Three properties the guard has to keep, each with an assertion:
+
+* **Nothing is lost.** A line the reader could not deliver goes back to
+  the real stderr when the guard is dropped.
+* **Nothing deadlocks.** If the reader thread ever stops, fd 2 is
+  handed back immediately — otherwise the pipe fills up and the next
+  `eprintln!` wedges the whole process.
+* **stdout is untouched.** The renderer writes to stdout; changing
+  stdout's meaning would break the frame, not fix it.
+
+### The recurrence has a name now
+
+`crates/nini-tui/tests/no_terminal_writes.rs` reads the sources of
+`nini-tui` and `nini-core` and fails on any `print!`/`eprintln!` that
+is not on a short whitelist with a stated reason. The whitelist pins a
+**count** per file, not a line number, so a new write in a whitelisted
+file breaks the test too: an exemption has to be re-decided, not
+silently widened.
+
 ## Unreleased — the installer named a repository that had been renamed (2026-10-21)
 
 1491 tests, all green. v0.10.3 is published (tag + release + binary asset);

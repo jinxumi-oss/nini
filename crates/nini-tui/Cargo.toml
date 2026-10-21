@@ -30,6 +30,11 @@ unicode-width = "0.2"
 unicode-segmentation = "1.12"
 chrono = { workspace = true }
 walkdir = "2.5.0"
+# v0.10.3: the terminal guard redirects fd 2 to a pipe so the library's
+# stderr cannot land on the screen the TUI is painting. `dup`/`pipe`/
+# `dup2` are the three calls it needs; libc is already in the lockfile
+# as a transitive dependency, so this adds no new download.
+libc = "0.2"
 
 [dev-dependencies]
 async-trait = { workspace = true }

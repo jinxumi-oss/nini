@@ -491,13 +491,17 @@ fn cmd_copy(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) 
                 CommandResult::output(vec![format!("(copied {bytes} bytes to clipboard)")])
             }
             CopyOutcome::Stdout { bytes, reason } => {
-                // Fallback: print to stdout so headless users can still
-                // grab the text. The reason is surfaced verbatim so a
-                // Wayland-permissions failure is distinguishable from a
-                // headless run.
-                println!("{msg}");
+                // Fallback: put the text where the reader can see it.
+                // It used to be `println!`, which writes to stdout —
+                // the alternate screen the TUI is painting — so the
+                // message landed on top of the frame and read as
+                // garbage. A transcript notice says what it is.
+                //
+                // The reason is surfaced verbatim so a Wayland-permissions
+                // failure is distinguishable from a headless run.
+                state.push_notice(msg);
                 CommandResult::output(vec![format!(
-                    "(copied {bytes} bytes to stdout — no clipboard: {reason})"
+                    "(copied {bytes} bytes to the transcript — no clipboard: {reason})"
                 )])
             }
         },

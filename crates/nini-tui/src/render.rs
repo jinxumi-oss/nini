@@ -1173,6 +1173,31 @@ fn items_for_line(
             format!("  {msg}"),
             theme.fg_style("error"),
         ))],
+        // v0.10.3: a line the library wrote to stderr while the TUI was
+        // painting, caught by the terminal guard. It is dim and prefixed
+        // so it cannot be mistaken for model output — the whole point of
+        // the guard is that the reader can tell the two apart.
+        //
+        // A notice can carry more than one line (a `/copy` fallback
+        // prints the whole message), so it is split: the first row
+        // carries the marker, the rest are indented under it.
+        TranscriptLine::Notice(text) => {
+            let mut rows = Vec::new();
+            for (i, line) in text.lines().enumerate() {
+                let prefix = if i == 0 { "  \u{26a0} " } else { "    " };
+                rows.push(RLine::from(Span::styled(
+                    format!("{prefix}{line}"),
+                    theme.fg_style("dim"),
+                )));
+            }
+            if rows.is_empty() {
+                rows.push(RLine::from(Span::styled(
+                    "  \u{26a0} ",
+                    theme.fg_style("dim"),
+                )));
+            }
+            rows
+        }
         TranscriptLine::BashExecution {
             cmd,
             output,

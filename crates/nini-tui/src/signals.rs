@@ -162,6 +162,11 @@ pub fn install_handlers() -> Result<(), std::io::Error> {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             emergency_cleanup();
+            // v0.10.3: the terminal guard turns stderr into a pipe
+            // while the TUI runs. Hand the real stderr back before the
+            // crash report is printed, or the report goes into the pipe
+            // and the user sees no reason at all.
+            crate::terminal_guard::release_stderr();
             previous(info);
         }));
     }

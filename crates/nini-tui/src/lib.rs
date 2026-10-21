@@ -41,6 +41,7 @@ pub mod selectors;
 pub mod settings;
 pub mod signals;
 pub mod state;
+pub mod terminal_guard;
 pub mod theme;
 pub mod theme_watcher;
 pub mod width;

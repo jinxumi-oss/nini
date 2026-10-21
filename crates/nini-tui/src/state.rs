@@ -184,6 +184,13 @@ pub enum TranscriptLine {
     /// ("Response was truncated before completion." / "Operation
     /// aborted" / "Error: …").
     StopNotice(String),
+    /// A system notice the TUI itself produced — not model output.
+    ///
+    /// The terminal guard ([`crate::terminal_guard`]) turns every line the
+    /// library writes to stderr into one of these, so a diagnostic that
+    /// used to land on top of the painted screen becomes a row in the
+    /// transcript, where it can be read and scrolled like everything else.
+    Notice(String),
     /// A bash execution rendered as a self-contained component.
     /// Used by `!cmd` passthrough and (future) bash tool calls.
     BashExecution {
@@ -242,6 +249,9 @@ impl TranscriptLine {
             ),
             TranscriptLine::Divider => (5u8, 0),
             TranscriptLine::StopNotice(s) => (6u8, s.len()),
+            // Tag 8: `BashExecution` took 7. A tag collision would make
+            // two different lines look identical to the row-count cache.
+            TranscriptLine::Notice(s) => (8u8, s.len()),
             TranscriptLine::BashExecution {
                 cmd,
                 output,
@@ -2298,6 +2308,19 @@ impl AppState {
             .push(TranscriptLine::StopNotice(msg.into()));
     }
 
+    /// v0.10.3: a system notice the TUI produced itself (a line the
+    /// library wrote to stderr while the TUI owned the terminal, a
+    /// `/copy` fallback, a settings write that failed).
+    ///
+    /// It is a `Notice` and not a `StopNotice` because it says nothing
+    /// about how a turn ended — it is the TUI talking, and it must not
+    /// be mistaken for a model message in the export or the search index.
+    pub fn push_notice(&mut self, msg: impl Into<String>) {
+        Arc::make_mut(&mut self.transcript_state)
+            .lines
+            .push(TranscriptLine::Notice(msg.into()));
+    }
+
     pub fn push_divider(&mut self) {
         Arc::make_mut(&mut self.transcript_state)
             .lines
@@ -2369,6 +2392,10 @@ impl AppState {
                     total += chars_to_tokens(cmd) + chars_to_tokens(output);
                 }
                 TranscriptLine::StopNotice(s) => total += chars_to_tokens(s),
+                // A notice is a system message, not model context: it
+                // never goes back to the provider, so it does not count
+                // toward the context window.
+                TranscriptLine::Notice(_) => {}
                 TranscriptLine::Divider => {}
             }
         }
@@ -2792,6 +2819,7 @@ pub(crate) fn line_summary_text_impl(line: &crate::state::TranscriptLine) -> Str
         TranscriptLine::Divider => "[divider]".to_string(),
         TranscriptLine::ThinkingText(s) => format!("[thinking] {}", flat(s)),
         TranscriptLine::StopNotice(s) => format!("[stop] {s}"),
+        TranscriptLine::Notice(s) => format!("[notice] {s}"),
     }
 }
 

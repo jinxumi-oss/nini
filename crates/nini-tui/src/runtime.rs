@@ -60,6 +60,17 @@ pub fn lock_state(shared: &SharedState) -> std::sync::MutexGuard<'_, AppState> {
     shared.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Push a system notice into the transcript.
+///
+/// v0.10.3: the TUI used to write these to stderr, which is the
+/// alternate screen while the TUI runs — the message landed on top of
+/// the painted frame and read as garbage. A notice is a row in the
+/// transcript instead: readable, scrollable, and unmistakably not model
+/// output.
+fn push_notice(shared: &SharedState, msg: impl Into<String>) {
+    lock_state(shared).push_notice(msg);
+}
+
 /// A trimmed-down agent event for cross-task delivery. Avoids leaking
 /// `nini_core::AgentEvent` (and its `AgentError`/`Provider` dependencies)
 /// across the spawn boundary.
@@ -484,6 +495,29 @@ where
 
     enable_raw_mode()?;
     crate::signals::mark_raw_mode(true);
+    // v0.10.3: from here on, the library's stderr is a pipe, not the
+    // terminal. The TUI owns the screen; anything else that writes to
+    // it lands on top of the painted frame (the trust warning printed
+    // on every tool call did exactly that, and the user saw two texts
+    // fighting over one row). The guard turns those lines into
+    // transcript notices.
+    //
+    // Installed after raw mode and before the alternate screen, and
+    // dropped after the event loop returns — so a line that arrives
+    // while the TUI is shutting down goes to the real terminal, not to
+    // a screen that is about to be erased.
+    let guard = crate::terminal_guard::TerminalGuard::install(shared.clone());
+    let guard = match guard {
+        Ok(g) => Some(g),
+        Err(e) => {
+            // A TUI without the guard is still a TUI — just a noisier
+            // one. Say so where the reader will see it: a notice in the
+            // transcript, not a line on the screen the TUI is about to
+            // paint over.
+            push_notice(&shared, format!("terminal guard not installed: {e}"));
+            None
+        }
+    };
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
     // v0.10: mouse capture, for wheel scrolling and dragging the transcript
@@ -509,6 +543,11 @@ where
     disable_raw_mode()?;
     crate::signals::mark_raw_mode(false);
     crate::signals::mark_alt_screen(false);
+    // The guard is dropped here, not before: the alternate screen is
+    // already gone, so the lines that were still in the pipe land in
+    // the user's scrollback instead of on a screen that no longer
+    // exists.
+    drop(guard);
     result
 }
 
@@ -799,7 +838,7 @@ async fn run_loop(
                     }
                     Some(Ok(Event::Resize(_, _))) => { /* ratatui handles */ }
                     Some(Ok(_)) => {}
-                    Some(Err(e)) => eprintln!("event error: {e}"),
+                    Some(Err(e)) => push_notice(&shared, format!("event error: {e}")),
                     None => break,
                 }
             }
@@ -988,16 +1027,30 @@ fn drop_and_signal(_text: String, done: Arc<Notify>) {
 ///
 /// Without a settings path there is nowhere to write, and this does not
 /// invent one - it reports, and the caller says so.
-fn persist_thinking_level(path: Option<&std::path::Path>, level: &str) {
+/// Persist a thinking level for the next run.
+///
+/// Loads the existing file first: `flush` writes the whole `Settings`, so
+/// starting from a default manager would erase the user's theme and model
+/// to record one word about thinking.
+///
+/// Without a settings path there is nowhere to write, and this does not
+/// invent one - it reports, and the caller says so.
+///
+/// v0.10.3: the report used to be an `eprintln!`, which lands on the
+/// alternate screen the TUI is painting. It is returned instead, and the
+/// caller puts it in the transcript as a notice.
+fn persist_thinking_level(path: Option<&std::path::Path>, level: &str) -> Option<String> {
     let Some(path) = path else {
-        eprintln!("[nini] thinking level set to {level} for this session only (no settings file)");
-        return;
+        return Some(format!(
+            "thinking level set to {level} for this session only (no settings file)"
+        ));
     };
     let mut settings = crate::settings::SettingsManager::load_from_disk(path.to_path_buf());
     settings.set_default_thinking_level(level);
     if let Err(e) = settings.flush() {
-        eprintln!("[nini] thinking level not saved: {e}");
+        return Some(format!("thinking level not saved: {e}"));
     }
+    None
 }
 
 fn apply_selector_result(
@@ -1032,7 +1085,9 @@ fn apply_selector_result(
             // and nothing was written back, so choosing a level from the
             // selector had no effect at all.
             let path = lock_state(shared).model_state.settings_path.clone();
-            persist_thinking_level(path.as_deref(), level);
+            if let Some(msg) = persist_thinking_level(path.as_deref(), level) {
+                push_notice(shared, msg);
+            }
             lock_state(shared).model_state.thinking_level = Some(level.clone());
         }
         return None;
@@ -1049,7 +1104,10 @@ fn apply_selector_result(
                     // This was `let _ =` on a `save` that wrote nothing at
                     // all, so a trust decision that could not be recorded
                     // looked exactly like one that had been.
-                    eprintln!("[nini] trust: could not write {}: {e}", path.display());
+                    push_notice(
+                        shared,
+                        format!("trust: could not write {}: {e}", path.display()),
+                    );
                 }
             }
         }
@@ -1062,8 +1120,12 @@ fn apply_selector_result(
         if let Some(path_str) = session_sel.result.clone() {
             // Load the session file into AppState.
             let path = std::path::PathBuf::from(&path_str);
-            if let Err(e) = lock_state(&shared).session_load(path) {
-                eprintln!("[nini] session load failed: {e}");
+            // The lock is taken and released before the notice is
+            // pushed: `Mutex` is not reentrant, and the notice needs
+            // the very lock `session_load` was holding.
+            let loaded = lock_state(&shared).session_load(path);
+            if let Err(e) = loaded {
+                push_notice(shared, format!("session load failed: {e}"));
             }
         }
         return None;
@@ -1378,7 +1440,10 @@ fn cycle_thinking(state: &mut crate::state::AppState, direction: i32) {
     // (`pi-coding-agent/src/core/settings-manager.ts:753`); its per-model
     // levels come from the `--models` CLI scope (`core/model-resolver.ts:
     // 295`, `provider/*:high`), a runtime concept nini does not have.
-    persist_thinking_level(state.model_state.settings_path.as_deref(), new_level);
+    if let Some(msg) = persist_thinking_level(state.model_state.settings_path.as_deref(), new_level)
+    {
+        state.push_notice(msg);
+    }
     // Also update live state so the selector stays in sync.
     state.model_state.thinking_level = Some(new_level.to_string());
     state.run_state.status = format!("thinking: {new_level}");

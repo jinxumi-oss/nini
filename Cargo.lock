@@ -1521,6 +1521,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "futures-util",
+ "libc",
  "nini-ai",
  "nini-core",
  "nini-session",
