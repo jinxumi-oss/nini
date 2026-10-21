@@ -11,24 +11,70 @@
 //! The runtime now has a choke point (`terminal_guard`): while the TUI
 //! runs, fd 2 is a pipe, and the lines in it become transcript notices.
 //! That fixes the *symptom* everywhere. This test fixes the *recurrence*
-//! where it can be fixed: a new `eprintln!` in the TUI's own source, or
-//! in the library it drives, is a write to a screen nobody owns, and it
-//! has to be a deliberate decision (an entry in the whitelist below with
-//! a reason), not an accident.
+//! where it can be fixed: a new terminal write in the TUI's own source,
+//! or in the library it drives, has to be a deliberate decision (an entry
+//! in a whitelist below with a reason), not an accident.
 //!
-//! The whitelist is deliberately narrow, and every entry says why it is
-//! safe. A file that is not on the list must have **no** terminal write
-//! at all.
+//! # stdout and stderr are not the same thing
+//!
+//! The guard captures **stderr**. stdout is the terminal the renderer
+//! paints on, and it cannot be captured — so a stdout write during a
+//! TUI session is the original defect, unfixed, and it is *not* visible
+//! to a test that only greps for `eprintln!`.
+//!
+//! That gap was measured: turning one `eprintln!` into a `println!` in
+//! a whitelisted file left this test green, and the bug it was written
+//! to prevent was back. So the two streams are judged separately:
+//!
+//! * **stdout** — a violation everywhere except the one-shot commands
+//!   (`nini info`, `nini demo`, `--list-models`), which never run the
+//!   TUI. No count is pinned for them beyond the file being named:
+//!   their output *is* the product.
+//! * **stderr** — allowed in the files listed below, with a pinned count
+//!   each, because the guard turns them into transcript notices while
+//!   the TUI runs (and outside the TUI, stderr is the only channel a
+//!   library has).
+//!
+//! A whitelist entry that has gone stale — the file no longer writes, or
+//! no longer exists — is a silent exemption, and is reported as one.
 
 use std::path::{Path, PathBuf};
 
-/// Files that may still write to the terminal: `(path, expected count,
-/// why it is safe)`.
+/// Files that may write to **stdout**, with the count and the reason.
 ///
-/// The count is part of the entry on purpose: a line number would move
-/// with every edit, but a *new* write in a whitelisted file has to
-/// break this test, so the count is what is pinned.
-const WHITELIST: &[(&str, usize, &str)] = &[
+/// stdout is the screen the TUI paints. The guard cannot capture it
+/// (the renderer owns fd 1), so a stdout write while the TUI runs is
+/// the original defect. These are the one-shot commands: they print
+/// their result and exit, and they never open a TUI.
+const STDOUT_WHITELIST: &[(&str, usize, &str)] = &[
+    (
+        "crates/nini-cli/src/demo.rs",
+        1,
+        "`nini demo` is a one-shot command: it runs a scripted task, prints the \
+         result and exits. It never opens a TUI, so there is no painted frame \
+         to corrupt",
+    ),
+    (
+        "crates/nini-cli/src/main.rs",
+        1,
+        "`--list-models` and the usage text: printed before anything else runs, \
+         and the TUI is not started on those paths",
+    ),
+    (
+        "crates/nini-cli/src/info.rs",
+        10,
+        "`nini info` is a one-shot command: its output *is* the product, and it \
+         never opens a TUI",
+    ),
+];
+
+/// Files that may write to **stderr**, with the count and the reason.
+///
+/// While the TUI runs these are captured by the guard and become
+/// transcript notices. The count is pinned: a *new* write in a
+/// whitelisted file has to break this test, so an exemption has to be
+/// re-decided rather than silently widened.
+const STDERR_WHITELIST: &[(&str, usize, &str)] = &[
     (
         "crates/nini-tui/src/theme.rs",
         3,
@@ -68,24 +114,94 @@ const WHITELIST: &[(&str, usize, &str)] = &[
         "library diagnostics — see the note on `nini-core/src/agent.rs`",
     ),
     (
-        "crates/nini-core/src/compaction.rs",
-        1,
-        "library diagnostics — see the note on `nini-core/src/agent.rs`",
-    ),
-    (
         "crates/nini-core/src/project_trust.rs",
         1,
         "the trust warning that produced the garbled screen. The guard \
          catches it while the TUI runs — see the note on \
          `nini-core/src/agent.rs`",
     ),
+    (
+        "crates/nini-cli/src/app.rs",
+        16,
+        "the TUI host: startup diagnostics, the no-TTY usage text (printed \
+         before the TUI starts), and the agent stream error — which the \
+         guard turns into a transcript notice while the TUI runs",
+    ),
+    (
+        "crates/nini-cli/src/main.rs",
+        2,
+        "the refused-flag messages: printed before the TUI starts, and \
+         they are the reason the user is told",
+    ),
+    (
+        "crates/nini-cli/src/demo.rs",
+        15,
+        "`nini demo` narrates its script to stderr: a one-shot command \
+         that never opens a TUI",
+    ),
+    (
+        "crates/nini-cli/src/provider_factory.rs",
+        1,
+        "an unknown provider is reported and the process exits(2) before \
+         the TUI starts",
+    ),
+    (
+        "crates/nini-tools/src/operations.rs",
+        1,
+        "the default bash backend's `kill_pg` is a documented no-op that \
+         warns when it is called. It has no production caller (the \
+         timeout is the real mechanism), and the guard would catch it \
+         anyway",
+    ),
+    (
+        "crates/nini-tools/src/bash.rs",
+        1,
+        "tool diagnostics; the guard catches them while the TUI runs",
+    ),
+    (
+        "crates/nini-session/src/lib.rs",
+        3,
+        "session-file diagnostics; the guard catches them while the TUI \
+         runs",
+    ),
 ];
 
-/// The crates whose sources are checked.
-const CRATES: &[&str] = &["crates/nini-tui/src", "crates/nini-core/src"];
+/// The macros that write to **stdout**.
+const STDOUT_MACROS: &[&str] = &["print!", "println!"];
 
-/// The macros that write to the terminal.
-const PRINT_MACROS: &[&str] = &["print!", "println!", "eprint!", "eprintln!"];
+/// The macros that write to **stderr**.
+const STDERR_MACROS: &[&str] = &["eprint!", "eprintln!"];
+
+/// Function-call spellings of the same thing.
+///
+/// `writeln!(std::io::stdout(), …)` is a stdout write with a different
+/// spelling, and a test that only greps for the macros misses it.
+///
+/// Only the *write* spellings count: a handle taken on its own
+/// (`let mut out = std::io::stdout();`) is not a write, and handles are
+/// taken in perfectly legitimate places — the panic hook restores the
+/// terminal through one.
+///
+/// Known limitation: a write through a handle variable
+/// (`let mut out = io::stdout(); writeln!(out, …)`) is not detected.
+/// The macro list catches the common spelling, and the terminal guard
+/// catches stderr anyway.
+const STDOUT_CALLS: &[&str] = &[
+    "writeln!(std::io::stdout(",
+    "writeln!(io::stdout(",
+    "write!(std::io::stdout(",
+    "write!(io::stdout(",
+    "print!(std::io::stdout(",
+    "print!(io::stdout(",
+];
+const STDERR_CALLS: &[&str] = &[
+    "writeln!(std::io::stderr(",
+    "writeln!(io::stderr(",
+    "write!(std::io::stderr(",
+    "write!(io::stderr(",
+    "eprint!(std::io::stderr(",
+    "eprint!(io::stderr(",
+];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -129,55 +245,42 @@ fn code_only(src: &str) -> String {
                 j += 1;
             }
             if j < n && chars[j] == '"' {
-                j += 1;
-                while j < n {
-                    if chars[j] == '"' {
-                        let mut k = j + 1;
-                        let mut seen = 0usize;
-                        while k < n && chars[k] == '#' && seen < hashes {
-                            seen += 1;
-                            k += 1;
-                        }
-                        if seen == hashes {
-                            j = k;
-                            break;
-                        }
+                let terminator = format!("\"{}", "#".repeat(hashes));
+                let rest: String = chars[j..].iter().collect();
+                if let Some(end) = rest.find(&terminator) {
+                    let consumed = end + terminator.len();
+                    for _ in 0..consumed {
+                        out.push(' ');
                     }
-                    j += 1;
+                    i = j + consumed;
+                    continue;
                 }
-                i = j;
-                out.push('"');
-                continue;
             }
         }
         if c == '"' {
+            // Ordinary string: copy it out, blanked.
+            out.push(' ');
             i += 1;
             while i < n {
                 if chars[i] == '\\' {
+                    out.push(' ');
+                    out.push(' ');
                     i += 2;
                     continue;
                 }
                 if chars[i] == '"' {
+                    out.push(' ');
                     i += 1;
                     break;
                 }
+                if chars[i] == '\n' {
+                    out.push('\n');
+                } else {
+                    out.push(' ');
+                }
                 i += 1;
             }
-            out.push('"');
             continue;
-        }
-        // Char literal: `'x'` or `'\n'`. A lifetime (`'a`) is not one.
-        if c == '\'' {
-            if i + 2 < n && chars[i + 2] == '\'' && chars[i + 1] != '\\' {
-                i += 3;
-                out.push('\'');
-                continue;
-            }
-            if i + 3 < n && chars[i + 1] == '\\' && chars[i + 3] == '\'' {
-                i += 4;
-                out.push('\'');
-                continue;
-            }
         }
         out.push(c);
         i += 1;
@@ -185,19 +288,17 @@ fn code_only(src: &str) -> String {
     out
 }
 
-/// Blank out the `#[cfg(test)]` modules.
-///
-/// A test's `eprintln!` is diagnostics for the test runner, not a
-/// write to a screen the TUI owns.
+/// Blank out `#[cfg(test)]` modules: a test's `eprintln!` is
+/// diagnostics for the test runner, not a write to the user's screen.
 fn strip_cfg_test(src: &str) -> String {
     let mut out = src.to_string();
     let mut from = 0usize;
-    while let Some(pos) = out[from..].find("#[cfg(test)]") {
-        let start = from + pos;
-        let Some(rel) = out[start..].find('{') else {
-            break;
+    while let Some(rel) = out[from..].find("#[cfg(test)]") {
+        let start = from + rel;
+        let brace = match out[start..].find('{') {
+            Some(b) => start + b,
+            None => break,
         };
-        let brace = start + rel;
         let mut depth = 0usize;
         let mut end = out.len();
         for (i, ch) in out[brace..].char_indices() {
@@ -219,21 +320,25 @@ fn strip_cfg_test(src: &str) -> String {
             .map(|c| if c == '\n' { '\n' } else { ' ' })
             .collect();
         out.replace_range(start..end, &blanked);
-        from = end;
+        // The replacement is one byte per character, so the string may
+        // have *shrunk*: `end` was an index into the old string and is
+        // past the end of the new one. Continue from where the
+        // replacement ends, in the new coordinates.
+        from = start + blanked.len();
     }
     out
 }
 
-/// The line numbers of the terminal writes in one source file.
-fn print_sites(src: &str) -> Vec<usize> {
+/// The line numbers of the given spellings in one source file.
+fn sites_of(src: &str, macros: &[&str], calls: &[&str]) -> Vec<usize> {
     let code = strip_cfg_test(&code_only(src));
     let mut sites = Vec::new();
-    for macro_name in PRINT_MACROS {
+    for needle in macros.iter().chain(calls.iter()) {
         let mut from = 0usize;
-        while let Some(pos) = code[from..].find(macro_name) {
+        while let Some(pos) = code[from..].find(needle) {
             let at = from + pos;
-            from = at + macro_name.len();
-            // Not a macro call if it is part of a longer identifier.
+            from = at + needle.len();
+            // Not a call if it is part of a longer identifier.
             let before = code[..at].chars().next_back();
             if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
                 continue;
@@ -267,13 +372,70 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The crates whose sources are checked: every crate in the workspace.
+fn crate_dirs() -> Vec<String> {
+    let root = repo_root();
+    let mut dirs: Vec<String> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root.join("crates")) else {
+        return dirs;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.join("src").is_dir() {
+            dirs.push(format!(
+                "crates/{}/src",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+        }
+    }
+    dirs.sort();
+    dirs
+}
+
+/// Check one stream of one file against its whitelist.
+fn check_stream(
+    rel: &str,
+    kind: &str,
+    sites: &[usize],
+    whitelist: &[(&str, usize, &str)],
+    problems: &mut Vec<String>,
+) {
+    let entry = whitelist.iter().find(|(w, _, _)| *w == rel);
+    match entry {
+        Some((_, expected, reason)) => {
+            if sites.len() != *expected {
+                problems.push(format!(
+                    "{rel}: {} {kind} write(s) (lines {}), the whitelist says \
+                     {expected}. A new write here needs a decision, not a bigger number — {reason}",
+                    sites.len(),
+                    sites
+                        .iter()
+                        .map(|l| l.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+        None => problems.push(format!(
+            "{rel}: writes to {kind} on line(s) {}. {kind} is a screen the TUI is painting: \
+             use the notice channel (`AppState::push_notice`), or add a whitelist entry with a \
+             reason.",
+            sites
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 #[test]
 fn no_source_file_writes_to_the_terminal_outside_the_whitelist() {
     let root = repo_root();
     let mut problems: Vec<String> = Vec::new();
 
-    for crate_dir in CRATES {
-        let dir = root.join(crate_dir);
+    for crate_dir in crate_dirs() {
+        let dir = root.join(&crate_dir);
         assert!(dir.is_dir(), "missing source directory: {}", dir.display());
         for path in rust_files(&dir) {
             let rel = path
@@ -282,34 +444,28 @@ fn no_source_file_writes_to_the_terminal_outside_the_whitelist() {
                 .to_string_lossy()
                 .replace('\\', "/");
             let src = std::fs::read_to_string(&path).expect("read source");
-            let sites = print_sites(&src);
-            if sites.is_empty() {
+            let stdout_sites = sites_of(&src, STDOUT_MACROS, STDOUT_CALLS);
+            let stderr_sites = sites_of(&src, STDERR_MACROS, STDERR_CALLS);
+            if stdout_sites.is_empty() && stderr_sites.is_empty() {
                 continue;
             }
-            match WHITELIST.iter().find(|(w, _, _)| *w == rel) {
-                Some((_, expected, reason)) => {
-                    if sites.len() != *expected {
-                        problems.push(format!(
-                            "{rel}: {} terminal write(s) (lines {}), the whitelist says {expected}. \
-                             A new write here needs a decision, not a bigger number — {reason}",
-                            sites.len(),
-                            sites
-                                .iter()
-                                .map(|l| l.to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                    }
-                }
-                None => problems.push(format!(
-                    "{rel}: writes to the terminal on line(s) {}. Use the notice channel \
-                     (`AppState::push_notice`) or add a whitelist entry with a reason.",
-                    sites
-                        .iter()
-                        .map(|l| l.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
+            if !stdout_sites.is_empty() {
+                check_stream(
+                    &rel,
+                    "stdout",
+                    &stdout_sites,
+                    STDOUT_WHITELIST,
+                    &mut problems,
+                );
+            }
+            if !stderr_sites.is_empty() {
+                check_stream(
+                    &rel,
+                    "stderr",
+                    &stderr_sites,
+                    STDERR_WHITELIST,
+                    &mut problems,
+                );
             }
         }
     }
@@ -326,10 +482,82 @@ fn every_whitelisted_file_still_exists() {
     // A whitelist entry for a file that no longer exists is a stale
     // exemption: it would silently stop being checked.
     let root = repo_root();
-    for (rel, _, _) in WHITELIST {
+    for (rel, _, _) in STDOUT_WHITELIST.iter().chain(STDERR_WHITELIST.iter()) {
         assert!(
             root.join(rel).is_file(),
             "the whitelist names {rel}, which does not exist"
         );
     }
+}
+
+#[test]
+fn no_whitelist_entry_has_gone_stale() {
+    // A whitelisted file that no longer writes at all is an exemption
+    // for a problem that no longer exists — it hides the *next* write
+    // in that file behind a number nobody checks.
+    let root = repo_root();
+    let mut problems: Vec<String> = Vec::new();
+    for (rel, expected, reason) in STDOUT_WHITELIST {
+        let src = std::fs::read_to_string(root.join(rel)).expect("read source");
+        let sites = sites_of(&src, STDOUT_MACROS, STDOUT_CALLS);
+        if sites.len() != *expected {
+            problems.push(format!(
+                "{rel}: the whitelist says {expected} stdout write(s), the file has {}. \
+                 A stale exemption is a silent one — {reason}",
+                sites.len()
+            ));
+        }
+    }
+    for (rel, expected, reason) in STDERR_WHITELIST {
+        let src = std::fs::read_to_string(root.join(rel)).expect("read source");
+        let sites = sites_of(&src, STDERR_MACROS, STDERR_CALLS);
+        if sites.len() != *expected {
+            problems.push(format!(
+                "{rel}: the whitelist says {expected} stderr write(s), the file has {}. \
+                 A stale exemption is a silent one — {reason}",
+                sites.len()
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "stale whitelist entries:\n{}",
+        problems.join("\n")
+    );
+}
+
+#[test]
+fn the_crates_that_can_write_to_the_terminal_are_all_checked() {
+    // A crate that is not scanned is a crate whose writes nobody
+    // looks at. This test fails when a crate is added and not put
+    // under the scan, so the coverage cannot quietly shrink.
+    let root = repo_root();
+    let mut crates: Vec<String> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root.join("crates")) else {
+        panic!("no crates directory");
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.join("src").is_dir() {
+            crates.push(
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+    }
+    crates.sort();
+    let scanned = crate_dirs()
+        .iter()
+        .map(|d| {
+            d.trim_start_matches("crates/")
+                .trim_end_matches("/src")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        scanned, crates,
+        "every crate in the workspace must be scanned for terminal writes"
+    );
 }
