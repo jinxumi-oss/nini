@@ -2,7 +2,7 @@
 # nini installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/jinxumi/nini/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jinxumi-oss/nini/main/install.sh | bash
 #
 # Environment variables:
 #   NINI_INSTALL_DIR   where to put the binary (default: ~/.local/bin)
@@ -11,7 +11,9 @@
 
 set -euo pipefail
 
-REPO="jinxumi/nini"
+# The repository was renamed to jinxumi-oss/nini; the old slug 404s on
+# every release download, so the installer could not install anything.
+REPO="jinxumi-oss/nini"
 INSTALL_DIR="${NINI_INSTALL_DIR:-$HOME/.local/bin}"
 BINARY_NAME="nini"
 LEGACY_LINK="nini"  # for users who already have a `nini` on PATH
