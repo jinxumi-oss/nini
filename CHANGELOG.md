@@ -196,6 +196,23 @@ could not say it itself), and the structural test now catches
 also rewritten: it compared a list with itself, so it could never fail,
 and it now compares the scan with a list written out by hand.
 
+### 6. The notice queue is the guard's own
+
+The reader thread used to take the render loop's state lock to push a
+notice — with `try_lock`, so it could never block. That was right about
+the blocking and wrong about everything else: `try_lock` turns every
+collision into a **lost** notice. The line went to the residual, and the
+residual is written to the real stderr when the guard goes away, so the
+user saw the diagnostic in their scrollback at exit, or not at all,
+instead of in the transcript. It happened on the very first tool call of
+a session, because that is when the render loop is busiest.
+
+The reader now hands the lines to a queue the guard owns, and the render
+loop drains that queue on every tick. The reader never touches the
+state lock: a writer that fills the pipe cannot block, and a line is
+never lost because the render loop happened to hold the lock at that
+instant.
+
 ### 6. The trust warning repeated once per tool call
 
 Routing stderr into the transcript made a second defect visible: the
