@@ -2,7 +2,7 @@
 
 > A Pi-compatible coding agent, rewritten in Rust.
 
-[![Status](https://img.shields.io/badge/status-v0.10.2-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.10.3-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-1488%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
@@ -18,7 +18,7 @@ existing skills, settings, and models.json keep working.
 - **Single 5.4 MB binary** instead of a Node.js toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **1436 unit + integration tests**, including property-based SSE fuzz and
+- **1488 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -180,7 +180,7 @@ nini reads and writes the same file formats as Pi v0.85.1:
 You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.
 
-## Known limitations (as of v0.10.2)
+## Known limitations (as of v0.10.3)
 
 Verified against this binary, not carried over from an older README.
 The project's goal and its current status live in
