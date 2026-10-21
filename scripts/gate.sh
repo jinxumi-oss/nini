@@ -181,6 +181,20 @@ else
   bad "README 测试数无法解析" "解析不出数字等于没有声明，而没有声明同样是对外声明失真"
 fi
 
+# README 里不止一处声明测试数：徽章一个，正文一个。徽章被检查了，正文那句
+# 曾经写着 1436（徽章 1488）而门禁照样绿——漏检的那一处恰恰是用户先读到的地方。
+# 两处必须同时等于实测。
+README_BODY_TESTS="$(grep -oE '[0-9]+ unit \+ integration tests' README.md | head -1 | grep -oE '[0-9]+' || echo "")"
+if [[ -n "$README_BODY_TESTS" && -n "$ACTUAL" ]]; then
+  if [[ "$README_BODY_TESTS" == "$ACTUAL" ]]; then
+    ok "README 正文测试数 = 实测 $ACTUAL"
+  else
+    bad "README 正文测试数与实测不符" "README 正文写 $README_BODY_TESTS，实测 $ACTUAL（正文与徽章互相矛盾也是失真）"
+  fi
+else
+  bad "README 正文测试数无法解析" "正文那句 'N unit + integration tests' 解析不出来，等于没有声明"
+fi
+
 # CHANGELOG 同样是对外声明，同样必须精确相等。它和 README 的区别只在于
 # 数字出现在多处（顶部段落一句，其余是历史段落里的旧数与 badge），所以只取
 # **第一个 ## 段落**里的那一个——历史段落写的是当时的事实，不许被改写。
