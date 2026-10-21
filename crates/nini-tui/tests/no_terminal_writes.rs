@@ -1,4 +1,5 @@
 //! Nothing may write to the terminal while the TUI owns it.
+//! invariant: ca97731b
 //!
 //! The TUI paints the whole screen, and the library writes to stderr:
 //! `nini_core::project_trust::check` prints a trust warning on **every

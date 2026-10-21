@@ -1,4 +1,5 @@
 //! The overflow indicators must not be painted over the transcript.
+//! invariant: a9b490df
 //!
 //! What was broken: `↑ N more above` was drawn on the transcript area's
 //! **first** row and `↓ N more` on its **last** row — the same rows the

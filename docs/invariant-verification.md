@@ -65,6 +65,23 @@
 
 ---
 
+## 执行者自复验（2026-10-22 · 两条新不变量的注入-观察-还原）
+
+执行者自述，按上表同一纪律做的注入：改一处源码 → 跑该条断言所在的测试文件
+→ 记录变红的断言 → `git checkout` 还原。**这不是独立复验**——独立复验那一节
+留给审计者；这里只证明这两条声明不是空写的（写一行注释骗不过门禁，编造的
+记录会在审计里露馅，所以连"我注入了什么"都写下来）。
+
+| sha | 声明于 | 注入的 bug | 变红的断言 |
+|---|---|---|---|
+| `ca97731b` | `terminal_guard` | `terminal_guard` 不再把 fd 2 指向管道（去掉 `dup2`） | `a_library_write_to_stderr_becomes_a_transcript_notice` + `the_real_stderr_works_again_after_the_guard_is_dropped` 变红（症状：transcript 里一条通知都没有） |
+| `ca97731b` | `no_terminal_writes` | 在 `nini-tui/src/runtime.rs` 里加回一处 `eprintln!` | `no_source_file_writes_to_the_terminal_outside_the_whitelist` 变红（报出文件与行号） |
+| `a9b490df` | `scroll_indicator_no_overlap` | 渲染层退回修复前的写法：列表画满整个 transcript 区，两个指示器画在正文的第一行/最后一行上 | `the_overflow_indicator_does_not_eat_the_first_row_of_the_transcript` + `the_user_scroll_indicator_does_not_eat_the_last_row_of_the_transcript` 变红（其余断言仍绿） |
+
+三条注入全部命中，无一条"注入了但测试仍全绿"。
+
+---
+
 ## 已知的验证局限（如实记录）
 
 1. **两次"测试全绿"是变异打偏，不是测试无效**：一处注入了 `app.rs` 的辅助函数
