@@ -1,3 +1,38 @@
+## Unreleased — the installer named a repository that had been renamed (2026-10-21)
+
+1491 tests, all green. v0.10.3 is published (tag + release + binary asset);
+this is what came out of shipping it.
+
+### The one-liner that could not install anything
+
+`install.sh` said `REPO="jinxumi/nini"`. The repository is
+`jinxumi-oss/nini`, so **every** download 404'd — including the ones for
+releases whose binaries were published and sitting there waiting:
+
+```text
+$ curl -sIL https://github.com/jinxumi/nini/releases/download/v0.10.1/nini-x86_64-unknown-linux-gnu.tar.xz
+HTTP/2 404
+```
+
+The header's own one-liner carried the same wrong slug, so the documented
+command fetched a 404 and piped it into bash. The fix is one string; the
+part that mattered is the **assertion** that did not exist: `install.sh`
+is shell, the suite is Rust, and no test ever read the file. The 404 was
+invisible from inside the repository — the tag existed, the release
+existed, the asset existed, and the installer was the only broken link.
+`crates/nini-cli/tests/installer_source.rs` now checks the script
+against the world rather than against itself: the slug the releases are
+published under, the one-liner in the header, and the asset naming
+convention the published releases carry.
+
+### The gate caught its own author
+
+That fix is a `fix:` commit, so `scripts/invariants.py` counted it as a
+new invariant — and with no assertion, the bare-invariant count went
+**1 → 2** and `scripts/gate.sh` went red. Which is the gate working:
+a fix without an assertion is a fix that can recur. The assertion above
+brings the count back to 1.
+
 ## v0.10.3 — the audit that asked what a fix costs when it leaves no assertion (2026-10-19)
 
 1488 tests, all green. The theme: **every parity claim in this file had a
