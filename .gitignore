@@ -19,6 +19,9 @@ Thumbs.db
 *.tmp
 .cache/
 
+# Local agent scaffolding (pi sub-agents) — not part of the project
+.pi/
+
 # Generated
 *.gen.*
 
