@@ -7,6 +7,10 @@
 //! v0.8 because it requires cross-task async user confirmation
 //! (see `docs/plans/v0.7-hook-parity.md` §M2).
 
+//! invariant: a0d18027 —— 声明本文件守住了哪几条历史不变量。
+//! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
+//! 真正的证据是 docs/invariant-verification.md 里的注入-观察记录。
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;

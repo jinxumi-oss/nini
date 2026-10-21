@@ -76,9 +76,10 @@
 |---|---|---|---|
 | `ca97731b` | `terminal_guard` | `terminal_guard` 不再把 fd 2 指向管道（去掉 `dup2`） | `a_library_write_to_stderr_becomes_a_transcript_notice` + `the_real_stderr_works_again_after_the_guard_is_dropped` 变红（症状：transcript 里一条通知都没有） |
 | `ca97731b` | `no_terminal_writes` | 在 `nini-tui/src/runtime.rs` 里加回一处 `eprintln!` | `no_source_file_writes_to_the_terminal_outside_the_whitelist` 变红（报出文件与行号） |
+| `a0d18027` | `project_trust`（src 内单元测试） | 去掉 `ask_level_warning` 的 per-cwd 去重（每次调用都返回 `Some`） | `the_ask_warning_is_stated_once_per_cwd` 变红（症状："the second call for the same cwd must not repeat the warning"） |
 | `a9b490df` | `scroll_indicator_no_overlap` | 渲染层退回修复前的写法：列表画满整个 transcript 区，两个指示器画在正文的第一行/最后一行上 | `the_overflow_indicator_does_not_eat_the_first_row_of_the_transcript` + `the_user_scroll_indicator_does_not_eat_the_last_row_of_the_transcript` 变红（其余断言仍绿） |
 
-三条注入全部命中，无一条"注入了但测试仍全绿"。
+四条注入全部命中，无一条"注入了但测试仍全绿"。
 
 ---
 
