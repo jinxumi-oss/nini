@@ -197,13 +197,43 @@ impl ProjectTrustStore {
         // collapses to Allow (with a log warn emitted by the caller).
         let binary = cwd_decision.to_binary();
         if matches!(cwd_decision.level, TrustLevel::Ask) {
-            eprintln!(
-                "[nini] trust: cwd '{}' is at Ask level; defaulting to Allow (v0.8 will add interactive prompt)",
-                call.cwd
-            );
+            if let Some(warning) = ask_level_warning(&call.cwd) {
+                eprintln!("{warning}");
+            }
         }
         binary
     }
+}
+
+/// The warning the `Ask` level produces — **once per cwd**.
+///
+/// Why once: `check()` runs before *every* tool call, and the `Ask`
+/// level is the default when there is no `trust.json`. So the warning
+/// was a fact about the *tool call* and repeated as often as the agent
+/// ran tools — twenty tool calls, twenty identical lines.
+///
+/// Since v0.10.3 those lines are not scribbled on the screen any more
+/// (the TUI turns stderr into transcript notices), so the repetition
+/// became visible as twenty identical rows in the transcript. The
+/// warning is a fact about the **project's** trust posture, not about
+/// each call, so it is stated once per cwd.
+fn ask_level_warning(cwd: &str) -> Option<String> {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let mut set = warned
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !set.insert(cwd.to_string()) {
+            return None;
+        }
+    }
+    Some(format!(
+        "[nini] trust: cwd '{cwd}' is at Ask level; defaulting to Allow (v0.8 will add interactive prompt)"
+    ))
 }
 
 #[cfg(test)]
@@ -226,6 +256,50 @@ mod tests {
         let mut s = ProjectTrustStore::default();
         s.set("/home/me/ask", TrustDecision::Ask);
         s
+    }
+
+    #[test]
+    fn the_ask_warning_is_stated_once_per_cwd() {
+        // The warning is a fact about the project's trust posture, not
+        // about each tool call. `check()` runs before every call, and
+        // `Ask` is the default when there is no trust.json — so a
+        // twenty-tool-call task produced twenty identical lines (and,
+        // since v0.10.3, twenty identical rows in the transcript).
+        let cwd = "/tmp/nini-trust-warn-once-probe";
+        let first = ask_level_warning(cwd);
+        assert!(
+            first.is_some(),
+            "the first call for a cwd must state the warning"
+        );
+        let warning = first.expect("checked above");
+        assert!(
+            warning.contains(cwd),
+            "the warning must name the cwd it is about: {warning}"
+        );
+        assert!(
+            ask_level_warning(cwd).is_none(),
+            "the second call for the same cwd must not repeat the warning"
+        );
+        // A different cwd is a different project: its own warning.
+        let other = "/tmp/nini-trust-warn-once-probe-2";
+        assert!(
+            ask_level_warning(other).is_some(),
+            "a different cwd must get its own warning"
+        );
+    }
+
+    #[test]
+    fn a_trusted_or_distrusted_cwd_never_asks() {
+        // The warning is only about the Ask level. A trusted project
+        // must stay silent, or the transcript fills with a warning that
+        // says nothing true.
+        let store = trusted_store();
+        let decision = store.check(&ToolCall {
+            tool: "bash",
+            args: Value::Null,
+            cwd: "/home/me/proj".to_string(),
+        });
+        assert!(matches!(decision, BinaryDecision::Allow));
     }
 
     #[test]
