@@ -1,6 +1,6 @@
 ## Unreleased — the TUI, the library and the terminal were all writing to the same screen (2026-10-22)
 
-1502 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
+1514 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
 Three defects, all of them two writers fighting over one row.
 
 ### 1. The library wrote to the terminal the TUI was painting
@@ -92,7 +92,75 @@ PageUp scrolls by, and the scrollbar's viewport — the bar describes
 the content area, because the reader scrolls the transcript, not the
 hint.
 
-### 3. The trust warning repeated once per tool call
+### 3. The review found three new problems — one of them worse than the bug
+
+An independent review (`nini-reviewer`) of the two fixes above found
+that the root cause was right and the *edges* were not. Three of its
+findings were serious enough to be fixed before shipping.
+
+**The exit could hang.** The guard turned fd 2 into a pipe and its
+`Drop` joined the reader thread — which only returns when every write
+end of that pipe is closed. The external editor is spawned with
+inherited stdio, and `$EDITOR=code` (without `--wait`), `emacsclient` or
+`gvim -f` all leave a daemon holding the descriptor. So Ctrl+D never
+returned the shell, on a terminal that had already left the alternate
+screen. That is worse than the garbled screen it replaced.
+
+The stop is now a signal, not an EOF, and the wait is bounded: a
+self-pipe tells the reader to stop, a completion channel with a timeout
+means a wedged reader is detached rather than waited on, and the editor
+is not a pipe citizen at all — the guard is suspended while it runs, so
+the editor's own diagnostics reach the user's terminal.
+
+**The slot was claimed with a check-then-act.** Two threads could both
+be halfway through installing the guard, and the second one would save
+*the pipe* as "the original stderr". A failed thread-spawn left the
+global slot pointing at a descriptor that was about to be closed: every
+later install was refused, and the panic hook's `dup2` pointed fd 2 at
+whatever that number meant by then. The slot is claimed with one
+compare-and-swap now, and a failed install leaves nothing behind.
+
+**The reader blocked on the render loop's lock.** It took the state
+lock to push a notice, while the render loop held the same lock for
+whole key handling. A writer filling the pipe could block the process.
+`try_lock` now, and a line that cannot be delivered goes to the real
+stderr at exit instead of waiting.
+
+### 4. stdout was invisible to the test that guards the screen
+
+The guard captures stderr. stdout is the screen the renderer paints on
+and cannot be captured — so a stdout write during a TUI session is the
+original defect, unfixed. And the test written to prevent a recurrence
+could not see it: it grepped four macro names, treated `print!` and
+`eprintln!` as the same thing, and scanned two crates. Measured: turning
+one `eprintln!` into a `println!` in a whitelisted file left the test
+green, and the bug was back.
+
+stdout and stderr are judged separately now. stdout is a violation
+everywhere except the one-shot commands (`nini info`, `nini demo`,
+`--list-models`), which never open a TUI. stderr stays allowed in the
+files that are listed, with the count pinned. Every crate is scanned,
+`writeln!(io::stdout(), …)` is caught as well, a whitelist entry whose
+file no longer writes is reported as a stale exemption, and a new crate
+that nobody scans fails the test.
+
+### 5. The copy fallback put a whole answer into the transcript
+
+`/copy` without a clipboard used to print to stdout — the alternate
+screen, which is how a copy became garbage. It became a transcript
+notice instead, and then it became too right: the whole assistant
+message went in. A 200 KB answer is 200 KB of rendered rows, all of it
+indexed for search, all of it in the HTML export, for a fallback whose
+job is to show the reader something they can copy from somewhere better.
+The notice carries the head of the message and a pointer to the rest.
+
+Two smaller corrections in the same pass: the `↓ N more` hint stayed on
+screen when a stale scroll offset said there was more below while every
+line was already visible (and it took a row the content could have used),
+and the trust test that claimed a trusted project "never asks" only
+asserted the decision, not the silence.
+
+### 6. The trust warning repeated once per tool call
 
 Routing stderr into the transcript made a second defect visible: the
 warning was a fact about the *tool call*, and `check()` runs before every

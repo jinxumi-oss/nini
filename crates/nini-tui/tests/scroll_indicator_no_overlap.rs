@@ -1,5 +1,6 @@
 //! The overflow indicators must not be painted over the transcript.
 //! invariant: a9b490df
+//! invariant: fe56543d
 //!
 //! What was broken: `↑ N more above` was drawn on the transcript area's
 //! **first** row and `↓ N more` on its **last** row — the same rows the
@@ -138,5 +139,39 @@ fn the_user_scroll_indicator_does_not_eat_the_last_row_of_the_transcript() {
         rows.iter().any(|r| r.contains("more")),
         "the `↓ N more` indicator disappeared:\n{}",
         rows.join("\n")
+    );
+}
+
+/// A stale scroll offset must not conjure a hint about content that is
+/// not there.
+///
+/// `scroll_offset` counts lines skipped from the bottom, and it can
+/// outlive the content it referred to: the transcript is cleared, a
+/// turn ends, a tool result replaces a longer block. The hint used to
+/// believe the offset and paint "↓ N more" while **every** line was
+/// already on screen — and it took a row the content could have used.
+#[test]
+fn a_stale_scroll_offset_does_not_invent_a_hint() {
+    let mut state = transcript(5); // everything fits
+    {
+        let ts = Arc::make_mut(&mut state.transcript_state);
+        ts.autoscroll = false;
+        ts.scroll_offset = 1; // stale: there is nothing below
+    }
+    let rows = frame_rows(&state, 80, 24);
+
+    assert!(
+        !rows.iter().any(|r| r.contains("more")),
+        "a hint about content that is not there is on screen:\n{}",
+        rows.join("\n")
+    );
+    // And the content still gets the whole viewport: no row was
+    // reserved for a hint that is not there.
+    let turns = visible_turns(&rows);
+    assert_eq!(
+        turns.len(),
+        5,
+        "every turn must be on screen, and the viewport must not have \
+         lost a row to a hint that does not exist:\n{turns:?}"
     );
 }

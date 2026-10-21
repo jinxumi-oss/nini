@@ -77,9 +77,12 @@
 | `ca97731b` | `terminal_guard` | `terminal_guard` 不再把 fd 2 指向管道（去掉 `dup2`） | `a_library_write_to_stderr_becomes_a_transcript_notice` + `the_real_stderr_works_again_after_the_guard_is_dropped` 变红（症状：transcript 里一条通知都没有） |
 | `ca97731b` | `no_terminal_writes` | 在 `nini-tui/src/runtime.rs` 里加回一处 `eprintln!` | `no_source_file_writes_to_the_terminal_outside_the_whitelist` 变红（报出文件与行号） |
 | `a0d18027` | `project_trust`（src 内单元测试） | 去掉 `ask_level_warning` 的 per-cwd 去重（每次调用都返回 `Some`） | `the_ask_warning_is_stated_once_per_cwd` 变红（症状："the second call for the same cwd must not repeat the warning"） |
+| `72dafe4a` | `terminal_guard` | 退回修复前的退出方式：**不发停止信号** + **无限期 join** 读者线程 | `dropping_the_guard_does_not_wait_for_a_child_that_inherited_the_pipe` 变红（实测卡满 30 秒才失败）——只去掉其中任一机制都不会红，两者合起来才是那个 bug |
+| `fe56543d` | `scroll_indicator_no_overlap` | 去掉 `total_items > full_height` 闸（陈旧 `scroll_offset` 又开始凭空造提示） | `a_stale_scroll_offset_does_not_invent_a_hint` 变红 |
+| `fe56543d` | `dispatch`（src 内单元测试） | `truncate_for_notice` 不再截断（整条回复又进 transcript） | `a_copy_fallback_notice_is_truncated` 变红 |
 | `a9b490df` | `scroll_indicator_no_overlap` | 渲染层退回修复前的写法：列表画满整个 transcript 区，两个指示器画在正文的第一行/最后一行上 | `the_overflow_indicator_does_not_eat_the_first_row_of_the_transcript` + `the_user_scroll_indicator_does_not_eat_the_last_row_of_the_transcript` 变红（其余断言仍绿） |
 
-四条注入全部命中，无一条"注入了但测试仍全绿"。
+七条注入全部命中，无一条"注入了但测试仍全绿"。
 
 ---
 

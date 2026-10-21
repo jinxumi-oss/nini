@@ -1,5 +1,9 @@
 //! v0.8.3: Dispatch + per-command implementation helpers.
 //!
+//! invariant: fe56543d —— 声明本文件守住了哪几条历史不变量。
+//! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
+//! 真正的证据是 docs/invariant-verification.md 里的注入-观察记录。
+//!
 //! `dispatch()` is the public entry — it routes `CommandId` to the
 //! matching `cmd_xxx()` private helper below. Each helper is a pure
 //! function over `&mut AppState` (and optionally `&mut SettingsManager`
@@ -1705,6 +1709,56 @@ mod honesty_tests {
     // ----------------------------------------------------------------
     // P0-4: /copy
     // ----------------------------------------------------------------
+
+    /// A fallback notice is a row, not a document.
+    ///
+    /// The whole answer used to go into the transcript: every line
+    /// rendered, every line indexed for search, every line in the HTML
+    /// export — for a fallback whose job is to show the reader
+    /// something they can copy from somewhere better.
+    #[test]
+    fn a_copy_fallback_notice_is_truncated() {
+        let long = "x".repeat(NOTICE_MAX_CHARS * 3);
+        let notice = truncate_for_notice(&long);
+        assert!(
+            notice.chars().count() < long.chars().count(),
+            "the notice must be shorter than the message it announces"
+        );
+        assert!(
+            notice.contains("/export"),
+            "the notice must say where the full text is: {notice}"
+        );
+        // The head of the message is what the reader needs.
+        assert!(
+            notice.starts_with("xxxx"),
+            "the notice must start with the message: {notice}"
+        );
+    }
+
+    /// A short message is shown whole — truncation is for the long ones.
+    #[test]
+    fn a_short_copy_fallback_notice_is_not_truncated() {
+        let short = "a short answer";
+        assert_eq!(truncate_for_notice(short), short);
+    }
+
+    /// The cut is at a character boundary: a CJK message must not end
+    /// in half a character (the terminal would draw a replacement
+    /// glyph — the very defect this whole exercise is about).
+    #[test]
+    fn a_copy_fallback_notice_cuts_at_a_character_boundary() {
+        let cjk = "汉字测试".repeat(NOTICE_MAX_CHARS);
+        let notice = truncate_for_notice(&cjk);
+        let head: String = notice.chars().take_while(|c| *c != '\n').collect();
+        assert!(
+            !head.contains('\u{fffd}'),
+            "the cut must not produce a replacement character"
+        );
+        assert!(
+            cjk.starts_with(&head),
+            "the notice must be the head of the message"
+        );
+    }
 
     #[test]
     fn copy_success_is_only_claimed_when_copy_really_succeeded() {

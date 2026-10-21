@@ -1,5 +1,6 @@
 //! The library must not write to the terminal the TUI is painting.
 //! invariant: ca97731b
+//! invariant: 72dafe4a
 //!
 //! What this is about: the TUI owns the terminal while it runs — raw
 //! mode, the alternate screen, a full repaint every tick. The library
