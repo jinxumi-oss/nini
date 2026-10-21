@@ -75,7 +75,9 @@ if cargo build -q --release 2>/dev/null; then ok "build (release)"; else bad "bu
 # 身份必须能自报来源（8c8a009d：CI 产物曾自称 unknown）
 if [[ $FULL -eq 1 ]]; then
   VER="$(./target/release/nini --version 2>&1 | head -1)"
-  if printf '%s' "$VER" | grep -q "commit"; then
+  # 不能 grep "commit"：`main.rs` 的格式是 `{commit} ({when}) [{profile}]`，
+  # 输出里从不出现该单词，那样这条检查恒红（终审实测）。
+  if printf '%s' "$VER" | grep -qE 'nini [0-9]+\.[0-9]+\.[0-9]+ - [0-9a-f]{7}'; then
     ok "版本自报身份"
   else
     bad "版本自报身份" "release 二进制 --version: $VER"
