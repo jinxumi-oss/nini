@@ -171,14 +171,41 @@ fn the_binary_names_the_profile_it_was_compiled_with() {
     );
 }
 
-/// A dirty work tree must say so, and a clean one must not. The check is
-/// against `git status --porcelain` run now — the same command `build.rs` runs
-/// — so this also fails if the binary describes a tree that is not the tree it
-/// was built from (which is what a stale build looks like).
+/// A dirty work tree must say so, and a clean one must not.
+///
+/// The check is against `git status --porcelain` run now — the same command
+/// `build.rs` runs — so this also fails if the binary describes a tree that
+/// is not the tree it was built from (which is what a stale build looks like).
+///
+/// But the binary's `+dirty` is a **snapshot taken at build time**, while
+/// `git status` here is a **live reading**. Comparing the two without
+/// noticing the gap made this test red for every developer who had touched
+/// a file since their last build: the tree was dirty *now*, the binary said
+/// "clean" because it was built *before* the edit, and neither statement
+/// was wrong. The suite was reporting the age of a binary, not a lie in it.
+///
+/// So the comparison is made only when the two can be compared at all: if
+/// any file in the tree was modified after the build's own timestamp, the
+/// tree has changed since the binary was built and the two readings are
+/// about different states. Then this test says so and stops — it does not
+/// manufacture a verdict. When nothing moved (CI, a fresh checkout, a
+/// developer who has not edited anything since building), the comparison is
+/// exact and the assertion is the original one.
 #[test]
 fn a_dirty_worktree_is_reported_dirty() {
     let dirty_now = !git(&["status", "--porcelain"]).is_empty();
     let claims_dirty = commit_field().contains("+dirty");
+
+    if let Some(changed_at) = newest_tree_change_epoch() {
+        let built_at = build_epoch();
+        if changed_at > built_at {
+            eprintln!(
+                "skipped: the tree changed at {changed_at}, after this binary was built \
+                 at {built_at}; the binary's claim is a snapshot of an earlier state"
+            );
+            return;
+        }
+    }
 
     assert_eq!(
         claims_dirty,
@@ -188,6 +215,49 @@ fn a_dirty_worktree_is_reported_dirty() {
         if dirty_now { "dirty" } else { "clean" },
         version_line()
     );
+}
+
+/// The instant this binary was built, as `build.rs` recorded it: the `time`
+/// field of the identity line, in epoch seconds.
+fn build_epoch() -> i64 {
+    let raw = field_between('(', ')');
+    let trimmed = raw.trim_end_matches(" UTC");
+    chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S")
+        .expect("the time field is a UTC instant")
+        .and_utc()
+        .timestamp()
+}
+
+/// The newest mtime among the files the tree is made of: every tracked file
+/// (an edit, or a revert, moves one) plus everything `git status` reports
+/// as untracked (a new file moves the tree's dirty state without touching
+/// a tracked file). `None` when the tree is empty.
+fn newest_tree_change_epoch() -> Option<i64> {
+    use std::time::UNIX_EPOCH;
+
+    let mut paths: Vec<PathBuf> = git(&["ls-files", "-z"])
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    for line in git(&["status", "--porcelain"]).lines() {
+        // "XY <path>", and "XY <old> -> <new>" for a rename.
+        if line.len() < 4 {
+            continue;
+        }
+        let tail = &line[3..];
+        let path = tail.rsplit(" -> ").next().unwrap_or(tail);
+        paths.push(PathBuf::from(path));
+    }
+
+    paths
+        .iter()
+        .filter_map(|p| std::fs::metadata(repo_root().join(p)).ok())
+        .filter_map(|m| m.modified().ok())
+        .filter_map(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .max()
 }
 
 /// The timestamp is the only thing that tells "three weeks old" from "built
