@@ -1,6 +1,7 @@
 //! v0.8.3: Dispatch + per-command implementation helpers.
 //!
 //! invariant: fe56543d —— 声明本文件守住了哪几条历史不变量。
+//! invariant: cc2e35ff —— 同一批修复里的「不许谎报字节数」。
 //! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
 //! 真正的证据是 docs/invariant-verification.md 里的注入-观察记录。
 //!

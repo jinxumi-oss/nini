@@ -1,6 +1,10 @@
 //! A notice is a line the user reads. It has to be readable, and it has
 //! to be safe to export.
 //!
+//! invariant: cc2e35ff —— 声明本文件守住了哪几条历史不变量。
+//! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
+//! 真正的证据是 docs/invariant-verification.md 里的注入-观察记录。
+//!
 //! Two defects, both found by the second-round review:
 //!
 //! * a notice was drawn as **one** string in a `List`, which clips
