@@ -154,7 +154,7 @@ if [[ -n "$README_TESTS" && -n "$ACTUAL" ]]; then
     bad "README 测试数与实测不符" "README 徽章写 $README_TESTS，实测 $ACTUAL（低报也是失真）"
   fi
 else
-  skip "README 测试数（解析失败）"
+  bad "README 测试数无法解析" "解析不出数字等于没有声明，而没有声明同样是对外声明失真"
 fi
 
 # CHANGELOG 同样是对外声明，同样必须精确相等。它和 README 的区别只在于
@@ -168,7 +168,7 @@ if [[ -n "$CHANGELOG_TESTS" && -n "$ACTUAL" ]]; then
     bad "CHANGELOG 测试数与实测不符" "CHANGELOG 顶部段落写 $CHANGELOG_TESTS，实测 $ACTUAL（低报也是失真）"
   fi
 else
-  skip "CHANGELOG 测试数（解析失败）"
+  bad "CHANGELOG 测试数无法解析" "把数字整句删掉不该让这项检查消失"
 fi
 
 # --- 7. 录屏对照（慢，需 tmux + 真 Pi）------------------------------------
