@@ -507,7 +507,7 @@ where
     // while the TUI is shutting down goes to the real terminal, not to
     // a screen that is about to be erased.
     let guard = crate::terminal_guard::TerminalGuard::install(shared.clone());
-    let guard = match guard {
+    let mut guard = match guard {
         Ok(g) => Some(g),
         Err(e) => {
             // A TUI without the guard is still a TUI — just a noisier
@@ -533,12 +533,20 @@ where
     terminal.clear()?;
     terminal.hide_cursor()?;
 
-    let result = run_loop(&mut terminal, shared, agent_driver).await;
+    let result = run_loop(&mut terminal, shared, agent_driver, &mut guard).await;
 
     terminal.show_cursor()?;
     // Must go before leaving the alt screen or the shell inherits a
     // reporting mode and starts eating clicks.
     let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
+    // The transcript is about to disappear with the alternate screen, so
+    // the guard must stop delivering to it **before** the screen goes
+    // away — a line delivered after that point would be delivered to a
+    // screen that no longer exists, which is the same as losing it.
+    // The lines go to the real stderr instead.
+    if let Some(g) = guard.as_ref() {
+        g.begin_shutdown();
+    }
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     disable_raw_mode()?;
     crate::signals::mark_raw_mode(false);
@@ -556,6 +564,7 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     shared: SharedState,
     agent_driver: AgentDriver,
+    guard: &mut Option<crate::terminal_guard::TerminalGuard>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(50));
@@ -859,7 +868,7 @@ async fn run_loop(
             // check the flag cheaply here.
             _ = editor_poll_tick.tick() => {
                 if lock_state(&shared).run_state.pending_external_editor {
-                    handle_external_editor_dance(terminal, &shared);
+                    handle_external_editor_dance(terminal, &shared, guard);
                 }
             }
             _ = tick.tick() => { /* animation tick */ }
@@ -1307,6 +1316,7 @@ fn clear_status_after_selector(shared: &SharedState) {
 fn handle_external_editor_dance(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     shared: &SharedState,
+    guard: &mut Option<crate::terminal_guard::TerminalGuard>,
 ) {
     // 1. Snapshot input and clear the flag.
     let (initial_text, initial_cursor) = {
@@ -1332,12 +1342,31 @@ fn handle_external_editor_dance(
         let _ = execute!(stdout, crossterm::cursor::Show);
     }
 
-    // 3. Spawn the editor synchronously. This call blocks the
+    // 3. The editor runs in the user's **real** terminal, not in the
+    // TUI's. The guard would swallow the editor's diagnostics — `vim:
+    // error reading ...`, `code: command not found` — into a
+    // transcript that is *not on screen* right now, so the user would
+    // never see them. The guard is therefore taken down for the
+    // duration of the editor and put back afterwards.
+    crate::terminal_guard::suspend_for_external_editor(guard);
+
+    // 4. Spawn the editor synchronously. This call blocks the
     // run loop until the user finishes editing. That's OK —
     // the TUI is suspended, so no UI updates are expected.
     let result = crate::editor::edit_in_external_editor(&initial_text);
 
-    // 4. Resume the TUI BEFORE applying the result. We must be
+    // 5. Put the guard back before the TUI paints again: the library's
+    // stderr must not land on the frame we are about to draw. If the
+    // guard cannot be installed, the TUI keeps running without it —
+    // noisier, but not broken — and says so in the transcript.
+    if let Err(e) = crate::terminal_guard::resume_after_external_editor(guard, shared.clone()) {
+        push_notice(
+            shared,
+            format!("terminal guard not reinstalled after the editor: {e}"),
+        );
+    }
+
+    // 6. Resume the TUI BEFORE applying the result. We must be
     // able to write to the terminal again to redraw the new state.
     {
         let mut stdout = stdout();
@@ -1348,7 +1377,7 @@ fn handle_external_editor_dance(
         let _ = execute!(stdout, crossterm::cursor::Hide);
     }
 
-    // 5. Apply the result (or the error) and force a redraw.
+    // 7. Apply the result (or the error) and force a redraw.
     match result {
         Ok(Some(new_text)) => {
             let mut g = lock_state(&shared);
@@ -1372,7 +1401,7 @@ fn handle_external_editor_dance(
         }
     }
 
-    // 6. Force the next render — terminal.clear() wipes any stale
+    // 8. Force the next render — terminal.clear() wipes any stale
     // content from the editor session.
     let _ = terminal.clear();
 }
