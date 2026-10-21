@@ -108,6 +108,30 @@ fi
 
 # --- 4. 链③ 基线：裸奔不变量不许增加 --------------------------------------
 head2 "链③ 不变量基线"
+# 每条 `//! invariant: <sha>` 是人工担保。本检查要求它在
+# docs/invariant-verification.md 里有对应的变异验证结论（注入什么、哪个断言红了）。
+# 写一行注释骗不过这一条；编造的记录会在独立审计里露馅。
+VERIF="docs/invariant-verification.md"
+if [[ -f "$VERIF" ]]; then
+  MISSING_VERIF="$(python3 - "$VERIF" <<'PYEOF'
+import json, re, subprocess, sys
+verif = open(sys.argv[1], encoding="utf-8").read()
+out = subprocess.run(["python3", "scripts/invariants.py", "--json"],
+                     capture_output=True, text=True).stdout
+d = json.loads(out)
+miss = [r["sha"] for r in d["invariants"]
+        if r["tier"] == "ANNOTATED" and r["sha"] not in verif]
+print(" ".join(miss))
+PYEOF
+)"
+  if [[ -z "${MISSING_VERIF// /}" ]]; then
+    ok "每条不变量声明都有变异验证留痕"
+  else
+    bad "不变量声明缺少变异验证留痕" "$MISSING_VERIF —— 在 $VERIF 里补上：注入了什么、哪个断言红了"
+  fi
+else
+  bad "缺少 $VERIF" "每条 invariant 声明都需要变异验证留痕"
+fi
 if [[ $UPDATE -eq 1 ]]; then
   skip "不变量基线（--update-baseline）"
 else

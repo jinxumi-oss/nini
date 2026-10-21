@@ -221,13 +221,38 @@ def test_annotations() -> dict[str, list[str]]:
             text = path.read_text(errors="replace")
         except OSError:
             continue
+        tests = len(re.findall(r"#[\[]?(?:tokio::)?test", text))
+        is_test_file = (
+            "/tests/" in str(path)
+            or "\\tests\\" in str(path)
+            or "#[cfg(test)]" in text
+        )
         for sha in ANNOTATION.findall(text):
-            # 标注写短 sha（人写短的全称太丑），而 git log 给的是完整 40 位。
-            # 统一按短 sha 存，否则两者永远对不上——这个 bug 实测过一次，
-            # 症状是加了标注而 ANNOTATED 仍然是 0。
             key = sha[:8].lower()
+            # 形式校验——**只抓明显的错，不构成防线**。
+            #
+            # 2026-10-19 的终审实测过它的上限：往一个与该修复毫无关系的
+            # 测试文件插一行标注，NONE 从 1 变 0、门禁照样绿。我随后加的
+            # 形式校验（必须在测试文件、必须含 #[test]）**同样被绕过**——
+            # 因为"这个文件里的断言是否与这条不变量有关"无法自动判断。
+            #
+            # 所以真正的防线在别处：
+            #   docs/invariant-verification.md —— 每条声明必须在那里留有
+            #   变异验证的结论（注入哪个 bug、哪个断言红了）。写一行注释
+            #   骗不过它；而编造的记录会在独立审计里露馅。
+            # 这里的形式校验只负责把"连测试文件都不是"这种低级错误报出来。
+            problem = None
+            if not is_test_file:
+                problem = "标注不在测试文件里"
+            elif tests == 0:
+                problem = "被标注的文件里没有任何 #[test]"
             out.setdefault(key, []).append(path.stem)
+            if problem:
+                INVALID.append((key, path.name, problem))
     return out
+
+
+INVALID: list[tuple[str, str, str]] = []
 
 
 def doc_freq(corpus: dict[str, set[str]]) -> dict[str, int]:
@@ -401,6 +426,10 @@ def main() -> int:
                 "counts": counts,
                 "regression_protected": regression,
                 "regression_rate": round(regression / total * 100, 1) if total else 0.0,
+                "annotated": counts["ANNOTATED"],
+                "invalid_annotations": [
+                    {"sha": k, "file": f, "problem": w} for k, f, w in INVALID
+                ],
                 "invariants": rows,
             },
             sys.stdout,
