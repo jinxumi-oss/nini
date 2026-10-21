@@ -68,8 +68,6 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use crate::runtime::SharedState;
-
 /// The descriptor the guard takes over: stderr.
 const STDERR_FD: RawFd = 2;
 
@@ -279,6 +277,19 @@ pub struct TerminalGuard {
     /// reader stops delivering to the transcript and keeps the lines
     /// for the real stderr instead.
     closing: Arc<AtomicBool>,
+    /// Lines the reader has read and the render loop has not yet put
+    /// in the transcript.
+    ///
+    /// The reader thread must never take the render loop's state lock:
+    /// a writer that fills the pipe would then block, and the pipe is
+    /// finite. So the reader hands the lines to this queue — its own
+    /// lock, uncontended — and the render loop drains it on every tick.
+    ///
+    /// It also means a line is not lost just because the render loop
+    /// happened to hold the lock at that instant, which is what a bare
+    /// `try_lock` did: the line went to the residual and the user saw
+    /// it in their scrollback at exit instead of in the transcript.
+    pending: Arc<Mutex<Vec<String>>>,
     /// How many residual lines were dropped because the buffer was
     /// full.
     ///
@@ -296,7 +307,7 @@ impl TerminalGuard {
     /// Every step that can fail restores fd 2 before returning, so a
     /// failed install leaves the process exactly as it was — a TUI that
     /// cannot install the guard is still a TUI, just a noisier one.
-    pub fn install(state: SharedState) -> std::io::Result<TerminalGuard> {
+    pub fn install() -> std::io::Result<TerminalGuard> {
         // One atomic step claims the process-global slot. A
         // check-then-act here would be a race: two threads could both
         // see "no guard installed", both `dup` fd 2 — and the second
@@ -349,6 +360,7 @@ impl TerminalGuard {
         let residual: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let closing = Arc::new(AtomicBool::new(false));
         let dropped = Arc::new(AtomicUsize::new(0));
+        let pending: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
         // Publish the saved descriptor so the panic hook can hand the
         // real stderr back.
@@ -393,6 +405,7 @@ impl TerminalGuard {
         let thread_residual = residual.clone();
         let thread_closing = closing.clone();
         let thread_dropped = dropped.clone();
+        let thread_pending = pending.clone();
         let reader = std::thread::Builder::new()
             .name("nini-stderr".to_string())
             .spawn(move || {
@@ -404,10 +417,10 @@ impl TerminalGuard {
                     read_loop(
                         read_end,
                         stop_read,
-                        &state,
                         &thread_residual,
                         &thread_closing,
                         &thread_dropped,
+                        &thread_pending,
                     );
                     // The lines that could not be delivered go to the
                     // *real* stderr, not to the transcript: the
@@ -440,6 +453,7 @@ impl TerminalGuard {
             reader_done: Some(done_rx),
             residual,
             closing,
+            pending: pending.clone(),
             dropped: dropped.clone(),
             stop: Some(stop),
         })
@@ -454,6 +468,23 @@ impl TerminalGuard {
     /// be delivered to a screen that no longer exists — which is the
     /// same as losing it.
     ///
+    /// Take the lines the reader has read and the render loop has not
+    /// put in the transcript yet.
+    ///
+    /// The render loop calls this on every tick. It is the whole
+    /// delivery path: the reader thread never touches the state lock,
+    /// so a diagnostic cannot be lost because the render loop happened
+    /// to hold the lock at that instant, and a writer that fills the
+    /// pipe cannot block on it either.
+    pub fn take_pending(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
     /// Calling it twice is harmless.
     pub fn begin_shutdown(&self) {
         self.closing.store(true, Ordering::SeqCst);
@@ -481,11 +512,8 @@ pub fn suspend_for_external_editor(guard: &mut Option<TerminalGuard>) {
 /// the frame. If the guard cannot be installed, the TUI keeps running
 /// without it — noisier, but not broken — and the caller says so in
 /// the transcript.
-pub fn resume_after_external_editor(
-    guard: &mut Option<TerminalGuard>,
-    state: SharedState,
-) -> std::io::Result<()> {
-    let installed = TerminalGuard::install(state)?;
+pub fn resume_after_external_editor(guard: &mut Option<TerminalGuard>) -> std::io::Result<()> {
+    let installed = TerminalGuard::install()?;
     *guard = Some(installed);
     Ok(())
 }
@@ -644,12 +672,12 @@ fn write_dropped_notice(restore: &Arc<Restore>, count: usize) {
 fn read_loop(
     read_end: OwnedFd,
     stop_read: OwnedFd,
-    state: &SharedState,
     residual: &Arc<Mutex<Vec<String>>>,
     closing: &Arc<AtomicBool>,
     dropped: &AtomicUsize,
+    pending: &Arc<Mutex<Vec<String>>>,
 ) {
-    let mut pending: Vec<u8> = Vec::new();
+    let mut raw_buf: Vec<u8> = Vec::new();
     let mut buf = [0u8; 8192];
     loop {
         // Wait for either the pipe or the stop signal.
@@ -700,28 +728,28 @@ fn read_loop(
             }
             break;
         }
-        pending.extend_from_slice(&buf[..n as usize]);
+        raw_buf.extend_from_slice(&buf[..n as usize]);
         // Split the buffer into lines. A line without its newline is
         // kept until the rest of it arrives.
-        while let Some(pos) = pending.iter().position(|b| *b == b'\n') {
-            let raw: Vec<u8> = pending.drain(..=pos).collect();
-            handle_line(&raw, state, residual, closing, dropped);
+        while let Some(pos) = raw_buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = raw_buf.drain(..=pos).collect();
+            handle_line(&line, residual, closing, dropped, pending);
         }
     }
     // A last line without a newline is still a line.
-    if !pending.is_empty() {
-        let raw = std::mem::take(&mut pending);
-        handle_line(&raw, state, residual, closing, dropped);
+    if !raw_buf.is_empty() {
+        let line = std::mem::take(&mut raw_buf);
+        handle_line(&line, residual, closing, dropped, pending);
     }
 }
 
 /// Turn one raw line (with or without its newline) into a notice.
 fn handle_line(
     raw: &[u8],
-    state: &SharedState,
     residual: &Arc<Mutex<Vec<String>>>,
     closing: &Arc<AtomicBool>,
     dropped: &AtomicUsize,
+    pending: &Arc<Mutex<Vec<String>>>,
 ) {
     // `from_utf8_lossy` rather than `from_utf8`: a library that writes
     // non-UTF-8 bytes must not kill the reader thread (which would
@@ -739,7 +767,7 @@ fn handle_line(
         push_residual(residual, line, dropped);
         return;
     }
-    deliver(state, line, residual, dropped);
+    deliver(line, pending, dropped);
 }
 
 /// Push one line into the transcript — or into the residual, if the
@@ -751,21 +779,21 @@ fn handle_line(
 /// finished. `try_lock` keeps the reader thread free: the line goes
 /// into the residual (and from there to the real stderr) instead of
 /// waiting.
-fn deliver(
-    state: &SharedState,
-    line: &str,
-    residual: &Arc<Mutex<Vec<String>>>,
-    dropped: &AtomicUsize,
-) {
-    match state.try_lock() {
-        Ok(mut guard) => guard.push_notice(line.to_string()),
-        Err(_) => {
-            // The state is locked by the render loop. The line is not
-            // lost: it goes to the residual, and the residual is
-            // written to the real stderr when the guard is dropped.
-            push_residual(residual, line, dropped);
-        }
+fn deliver(line: &str, pending: &Arc<Mutex<Vec<String>>>, dropped: &AtomicUsize) {
+    // The queue is the guard's own: the render loop drains it, so the
+    // reader never touches the state lock. That matters twice over —
+    // a writer that fills the pipe must not block, and a line must not
+    // be lost because the render loop held the lock at that instant.
+    let mut queue = pending
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if queue.len() >= RESIDUAL_LIMIT {
+        // The same bound as the residual: the queue is a hand-off, not
+        // a log. The oldest line goes.
+        queue.remove(0);
+        dropped.fetch_add(1, Ordering::SeqCst);
     }
+    queue.push(line.to_string());
 }
 
 /// Add a line to the residual, keeping the buffer bounded.

@@ -506,7 +506,7 @@ where
     // dropped after the event loop returns — so a line that arrives
     // while the TUI is shutting down goes to the real terminal, not to
     // a screen that is about to be erased.
-    let guard = crate::terminal_guard::TerminalGuard::install(shared.clone());
+    let guard = crate::terminal_guard::TerminalGuard::install();
     let mut guard = match guard {
         Ok(g) => Some(g),
         Err(e) => {
@@ -605,6 +605,16 @@ async fn run_loop(
     let (event_tx, mut event_rx) = tokio::sync::watch::channel(false);
 
     loop {
+        // The guard's lines become transcript notices here, and only
+        // here: the reader thread hands them over through its own
+        // queue, so it never takes the state lock (a writer that
+        // filled the pipe would then block) and a line is never lost
+        // because the render loop held the lock at that instant.
+        if let Some(g) = guard.as_ref() {
+            for line in g.take_pending() {
+                push_notice(&shared, line);
+            }
+        }
         // Snapshot state for rendering (cheap clone, doesn't hold lock long).
         // v0.8.5: large transcripts make this clone expensive; we still
         // hold the lock briefly. The watch channel above means we no
@@ -1359,7 +1369,7 @@ fn handle_external_editor_dance(
     // stderr must not land on the frame we are about to draw. If the
     // guard cannot be installed, the TUI keeps running without it —
     // noisier, but not broken — and says so in the transcript.
-    if let Err(e) = crate::terminal_guard::resume_after_external_editor(guard, shared.clone()) {
+    if let Err(e) = crate::terminal_guard::resume_after_external_editor(guard) {
         push_notice(
             shared,
             format!("terminal guard not reinstalled after the editor: {e}"),

@@ -111,6 +111,36 @@ fn write_to_stderr(msg: &str) {
 }
 
 /// The notice lines the transcript holds.
+/// Move the guard's pending lines into the transcript, the way the
+/// render loop does on every tick.
+///
+/// The reader thread does not write to the transcript itself — it hands
+/// the lines over through the guard's own queue, so it never takes the
+/// render loop's state lock. The runtime drains that queue here.
+fn drain_into(guard: &TerminalGuard, state: &SharedState) {
+    for line in guard.take_pending() {
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_notice(line);
+    }
+}
+
+/// Drain the guard's queue into the transcript until `needle` shows up
+/// (or the deadline passes). The render loop does this on every tick; a
+/// test has to do it too.
+fn wait_for_drained_notice(guard: &TerminalGuard, state: &SharedState, needle: &str) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        drain_into(guard, state);
+        if notices(state).iter().any(|n| n == needle) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
 fn notices(state: &SharedState) -> Vec<String> {
     let guard = state.lock().unwrap_or_else(|e| e.into_inner());
     guard
@@ -142,11 +172,22 @@ fn a_library_write_to_stderr_becomes_a_transcript_notice() {
     let _terminal = terminal();
     let stderr = StderrToFile::install();
     let state = shared_state(AppState::new("test-model"));
-    let guard = TerminalGuard::install(state.clone()).expect("install the guard");
+    let guard = TerminalGuard::install().expect("install the guard");
 
     // The line that produced the garbled screen, verbatim.
     let line = "[nini] trust: cwd '/home/jin/nini2' is at Ask level; defaulting to Allow (v0.8 will add interactive prompt)";
     write_to_stderr(line);
+
+    // The render loop drains the guard's queue; a test has to do the
+    // same thing.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        drain_into(&guard, &state);
+        if notices(&state).iter().any(|n| n == line) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     assert!(
         wait_for_notice(&state, line),
@@ -169,10 +210,10 @@ fn the_real_stderr_works_again_after_the_guard_is_dropped() {
     let state = shared_state(AppState::new("test-model"));
 
     {
-        let guard = TerminalGuard::install(state.clone()).expect("install the guard");
+        let guard = TerminalGuard::install().expect("install the guard");
         write_to_stderr("caught by the guard");
         assert!(
-            wait_for_notice(&state, "caught by the guard"),
+            wait_for_drained_notice(&guard, &state, "caught by the guard"),
             "the line never reached the transcript: {:?}",
             notices(&state)
         );
@@ -196,8 +237,8 @@ fn the_real_stderr_works_again_after_the_guard_is_dropped() {
 fn a_writer_that_fills_the_pipe_is_not_blocked() {
     let _terminal = terminal();
     let _stderr = StderrToFile::install();
-    let state = shared_state(AppState::new("test-model"));
-    let _guard = TerminalGuard::install(state.clone()).expect("install the guard");
+    let _state = shared_state(AppState::new("test-model"));
+    let _guard = TerminalGuard::install().expect("install the guard");
 
     // A pipe holds 64 KiB on Linux. This writes four times that, so the
     // writer can only finish if the reader thread keeps draining.
@@ -260,8 +301,8 @@ fn dropping_the_guard_does_not_wait_for_a_child_that_inherited_the_pipe() {
     // comes back. Ctrl+D hung.
     let _terminal = terminal();
     let _stderr = StderrToFile::install();
-    let state = shared_state(AppState::new("test-model"));
-    let guard = TerminalGuard::install(state.clone()).expect("install the guard");
+    let _state = shared_state(AppState::new("test-model"));
+    let guard = TerminalGuard::install().expect("install the guard");
 
     // A child that inherits fd 2 (the pipe's write end) and keeps it
     // open. It is never waited for.
@@ -298,12 +339,12 @@ fn a_failed_install_does_not_poison_the_global_slot() {
     // means by then, when the panic hook fires.
     let _terminal = terminal();
     let stderr = StderrToFile::install();
-    let state = shared_state(AppState::new("test-model"));
+    let _state = shared_state(AppState::new("test-model"));
 
     // Make the install fail at the last step — after the descriptor has
     // been published, which is where the rollback has to happen.
     nini_tui::terminal_guard::fail_next_install_after_publish();
-    let failed = TerminalGuard::install(state.clone());
+    let failed = TerminalGuard::install();
     assert!(
         failed.is_err(),
         "the simulated failure did not happen: the install succeeded"
@@ -311,8 +352,7 @@ fn a_failed_install_does_not_poison_the_global_slot() {
     drop(failed);
 
     // The slot must be free again …
-    let guard =
-        TerminalGuard::install(state.clone()).expect("the failed install poisoned the global slot");
+    let guard = TerminalGuard::install().expect("the failed install poisoned the global slot");
     drop(guard);
 
     // … and fd 2 must still be the real terminal, not a stale number.
@@ -335,7 +375,7 @@ fn a_notice_is_never_lost_when_the_state_is_locked() {
     let _terminal = terminal();
     let stderr = StderrToFile::install();
     let state = shared_state(AppState::new("test-model"));
-    let guard = TerminalGuard::install(state.clone()).expect("install the guard");
+    let guard = TerminalGuard::install().expect("install the guard");
 
     // Hold the lock, the way the render loop does while it runs a
     // command.
@@ -366,17 +406,23 @@ fn a_notice_is_never_lost_when_the_state_is_locked() {
     drop(held);
 
     // The line was not delivered to the transcript (the state was
-    // locked) — but it must not be lost either: it goes to the real
-    // stderr when the guard goes away.
+    // locked) — but it must not be lost either: the reader hands it to
+    // the guard's own queue, which the render loop drains, and whatever
+    // is still in the queue at the end goes to the real stderr.
+    let in_queue = guard
+        .take_pending()
+        .iter()
+        .any(|l| l == "written while the state was locked");
+    let mut in_transcript = false;
+    if let Some(g) = Some(&guard) {
+        in_transcript = wait_for_drained_notice(g, &state, "written while the state was locked");
+    }
     drop(guard);
     let seen = stderr.contents();
-    let in_transcript = notices(&state)
-        .iter()
-        .any(|n| n == "written while the state was locked");
     assert!(
-        seen.contains("written while the state was locked") || in_transcript,
-        "the line was lost: the reader did not deliver it and the residual \
-         did not give it back:\n{seen}"
+        seen.contains("written while the state was locked") || in_transcript || in_queue,
+        "the line was lost: the reader did not deliver it, the queue did \
+         not hold it, and the residual did not give it back:\n{seen}"
     );
 }
 
@@ -390,7 +436,7 @@ fn a_line_written_after_the_shutdown_begins_goes_to_the_real_stderr() {
     let _terminal = terminal();
     let stderr = StderrToFile::install();
     let state = shared_state(AppState::new("test-model"));
-    let guard = TerminalGuard::install(state.clone()).expect("install the guard");
+    let guard = TerminalGuard::install().expect("install the guard");
 
     guard.begin_shutdown();
     write_to_stderr("after the shutdown began");
@@ -424,7 +470,7 @@ fn the_editors_stderr_is_not_swallowed_while_the_tui_is_suspended() {
     let _terminal = terminal();
     let stderr = StderrToFile::install();
     let state = shared_state(AppState::new("test-model"));
-    let _guard = TerminalGuard::install(state.clone()).expect("install the guard");
+    let _guard = TerminalGuard::install().expect("install the guard");
 
     nini_tui::terminal_guard::release_stderr();
     write_to_stderr("vim: error reading stdin");
@@ -455,7 +501,7 @@ fn the_guard_comes_back_after_the_external_editor() {
     let _terminal = terminal();
     let stderr = StderrToFile::install();
     let state = shared_state(AppState::new("test-model"));
-    let mut guard = Some(TerminalGuard::install(state.clone()).expect("install the guard"));
+    let mut guard = Some(TerminalGuard::install().expect("install the guard"));
 
     // The editor runs: the guard is down, the editor's error is
     // visible in the real terminal.
@@ -469,11 +515,12 @@ fn the_guard_comes_back_after_the_external_editor() {
 
     // The editor is done: the guard is back, and the library's stderr
     // goes to the transcript again.
-    nini_tui::terminal_guard::resume_after_external_editor(&mut guard, state.clone())
+    nini_tui::terminal_guard::resume_after_external_editor(&mut guard)
         .expect("reinstall the guard");
     write_to_stderr("after the editor");
+    let guard_ref = guard.as_ref().expect("the guard must be back");
     assert!(
-        wait_for_notice(&state, "after the editor"),
+        wait_for_drained_notice(guard_ref, &state, "after the editor"),
         "the guard did not come back: the library's stderr would land on the \
          frame the TUI is painting: {:?}",
         notices(&state)
