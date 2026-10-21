@@ -1,6 +1,6 @@
 ## Unreleased — the TUI, the library and the terminal were all writing to the same screen (2026-10-22)
 
-1514 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
+1519 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
 Three defects, all of them two writers fighting over one row.
 
 ### 1. The library wrote to the terminal the TUI was painting
@@ -159,6 +159,42 @@ screen when a stale scroll offset said there was more below while every
 line was already visible (and it took a row the content could have used),
 and the trust test that claimed a trusted project "never asks" only
 asserted the decision, not the silence.
+
+### 6. The second review found four things that were not true
+
+The fixes above were reviewed again, independently, and the review found
+that the *repair* had four defects of its own — none of them the
+garbled screen, all of them the project cares about more: claims that
+were not true.
+
+**The copy fallback counted bytes it never copied.** It said "copied 3482
+bytes to the transcript" — 3482 being the length of the *source*
+message, while the transcript received a truncated copy of it. The
+message now says what happened: the clipboard was unavailable, the
+message is in the transcript above, the full text is in `/export`.
+
+**A notice reached the HTML export unescaped.** A notice can carry
+model output (the copy fallback puts the assistant's text in one), so a
+`<script>` in a model answer became markup in the exported file. Notices
+are escaped like every other content that reaches the export.
+
+**A notice was clipped instead of wrapped.** It was built as one string
+and drawn in a `List`, which clips rather than wraps — so the tail of a
+long diagnostic was never on screen. A notice that stops mid-word looks
+exactly like the corruption this whole change was about.
+
+**The order that keeps lines from being lost had no assertion.** The
+guard has to stop delivering to the transcript before the alternate
+screen goes away; the call was once missing and nothing noticed. There
+is now a test that reads `runtime.rs` and fails if the order is wrong.
+
+Two smaller ones: the dropped-lines notice now says *how many* lines
+were dropped (and says it even when the reader thread was detached and
+could not say it itself), and the structural test now catches
+`print ! ("…")` — Rust allows whitespace between a macro name and its
+`!`, and the test had been blind to it. The crate-coverage test was
+also rewritten: it compared a list with itself, so it could never fail,
+and it now compares the scan with a list written out by hand.
 
 ### 6. The trust warning repeated once per tool call
 

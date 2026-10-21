@@ -495,6 +495,20 @@ fn truncate_for_notice(msg: &str) -> String {
     )
 }
 
+/// What to say when the clipboard could not be reached.
+///
+/// Every word of it has to be true. It used to say "copied 3482 bytes to
+/// the transcript" — 3482 being the length of the *source* message,
+/// while the transcript received a truncated copy of it — and to point
+/// at `/export` for the full text, which is only true because the
+/// assistant's own turn is in the transcript anyway.
+fn copy_fallback_message(reason: &str) -> String {
+    format!(
+        "(clipboard unavailable: {reason}) — the message is in the transcript above; \
+         the full text is in /export"
+    )
+}
+
 fn cmd_copy(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
     // Copy the last assistant message to the system clipboard.
     // If no clipboard is reachable (headless, no $DISPLAY), print to
@@ -530,10 +544,18 @@ fn cmd_copy(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) 
                 // fallback whose whole purpose is to show the user
                 // something they can copy from somewhere better.
                 state.push_notice(truncate_for_notice(&msg));
-                CommandResult::output(vec![format!(
-                    "(copied {bytes} bytes to the transcript — no clipboard: {reason}; \
-                     the full text is in /export)"
-                )])
+                // What is true, and nothing more: the clipboard was not
+                // reachable, the head of the message is in the notice
+                // above, and the whole message is in the transcript (the
+                // assistant's own turn) and in `/export`.
+                //
+                // It used to say "copied N bytes to the transcript" — N
+                // being the length of the *source* message, while the
+                // transcript got a truncated copy of it. A byte count
+                // that describes something else is a lie in a
+                // diagnostic.
+                let _ = bytes;
+                CommandResult::output(vec![copy_fallback_message(&reason)])
             }
         },
         None => CommandResult::output(vec!["(no assistant message to copy)".to_string()]),
@@ -1709,6 +1731,29 @@ mod honesty_tests {
     // ----------------------------------------------------------------
     // P0-4: /copy
     // ----------------------------------------------------------------
+
+    /// The fallback message must not claim things that did not happen.
+    #[test]
+    fn the_copy_fallback_message_says_only_what_is_true() {
+        let msg = copy_fallback_message("clipboard unavailable: no DISPLAY");
+        assert!(
+            msg.contains("clipboard unavailable"),
+            "the message must say what failed: {msg}"
+        );
+        assert!(
+            !msg.contains("copied"),
+            "nothing was copied — the message must not say so: {msg}"
+        );
+        assert!(
+            !msg.contains("bytes"),
+            "no byte count describes what happened — the transcript got a \
+             truncated notice, not the message: {msg}"
+        );
+        assert!(
+            msg.contains("/export"),
+            "the message must say where the full text is: {msg}"
+        );
+    }
 
     /// A fallback notice is a row, not a document.
     ///

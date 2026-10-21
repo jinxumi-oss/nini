@@ -98,8 +98,14 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
             // export can tell "the TUI said this" from "the model said
             // this".
             TranscriptLine::Notice(msg) => {
+                // A notice can carry model output (the `/copy` fallback
+                // puts the assistant's text in one), so it is escaped
+                // like every other piece of content that reaches the
+                // export. Without this, a `<script>` in a model answer
+                // would land in the exported HTML as markup.
                 out.push_str(&format!(
-                    "<p class=\"notice\" style=\"color:#888\">⚠ {msg}</p>\n"
+                    "<p class=\"notice\" style=\"color:#888\">⚠ {}</p>\n",
+                    html_escape(msg)
                 ));
             }
         }

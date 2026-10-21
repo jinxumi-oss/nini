@@ -1233,13 +1233,36 @@ fn items_for_line(
         // prints the whole message), so it is split: the first row
         // carries the marker, the rest are indented under it.
         TranscriptLine::Notice(text) => {
+            // A notice is wrapped, like every other line of the
+            // transcript. It was not: the row was built as one string,
+            // and the transcript is drawn in a `List`, which clips
+            // rather than wraps — so the tail of a long diagnostic was
+            // never on screen. A notice that ends mid-word looks
+            // exactly like the corruption this whole change was about.
             let mut rows = Vec::new();
             for (i, line) in text.lines().enumerate() {
                 let prefix = if i == 0 { "  \u{26a0} " } else { "    " };
-                rows.push(RLine::from(Span::styled(
-                    format!("{prefix}{line}"),
-                    theme.fg_style("dim"),
-                )));
+                let wrapped =
+                    max_w.and_then(|w| crate::width::wrap_text_to_width(line, w.saturating_sub(4)));
+                match wrapped {
+                    Some(parts) if !parts.is_empty() => {
+                        for (n, part) in parts.iter().enumerate() {
+                            let lead = if i == 0 && n == 0 {
+                                "  \u{26a0} "
+                            } else {
+                                "    "
+                            };
+                            rows.push(RLine::from(Span::styled(
+                                format!("{lead}{part}"),
+                                theme.fg_style("dim"),
+                            )));
+                        }
+                    }
+                    _ => rows.push(RLine::from(Span::styled(
+                        format!("{prefix}{line}"),
+                        theme.fg_style("dim"),
+                    ))),
+                }
             }
             if rows.is_empty() {
                 rows.push(RLine::from(Span::styled(

@@ -166,11 +166,12 @@ const STDERR_WHITELIST: &[(&str, usize, &str)] = &[
     ),
 ];
 
-/// The macros that write to **stdout**.
-const STDOUT_MACROS: &[&str] = &["print!", "println!"];
+/// The macros that write to **stdout** (the `!` is matched separately,
+/// because Rust allows whitespace between the name and the `!`).
+const STDOUT_MACROS: &[&str] = &["print", "println"];
 
 /// The macros that write to **stderr**.
-const STDERR_MACROS: &[&str] = &["eprint!", "eprintln!"];
+const STDERR_MACROS: &[&str] = &["eprint", "eprintln"];
 
 /// Function-call spellings of the same thing.
 ///
@@ -343,8 +344,30 @@ fn sites_of(src: &str, macros: &[&str], calls: &[&str]) -> Vec<usize> {
             if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
                 continue;
             }
-            let after = code[from..].chars().next();
-            if after.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            // A macro call is `name` `!` `(` — and Rust allows
+            // whitespace between the name and the `!`, so `print ! ("…")`
+            // is a call to stdout. The name is matched without the `!`
+            // for exactly that reason.
+            let mut probe = from;
+            while probe < code.len() && code[probe..].starts_with(char::is_whitespace) {
+                probe += code[probe..]
+                    .chars()
+                    .next()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(1);
+            }
+            if !code[probe..].starts_with('!') {
+                continue;
+            }
+            probe += 1;
+            while probe < code.len() && code[probe..].starts_with(char::is_whitespace) {
+                probe += code[probe..]
+                    .chars()
+                    .next()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(1);
+            }
+            if !code[probe..].starts_with('(') {
                 continue;
             }
             sites.push(code[..at].matches('\n').count() + 1);
@@ -548,6 +571,21 @@ fn the_crates_that_can_write_to_the_terminal_are_all_checked() {
         }
     }
     crates.sort();
+    // The expected list is written out, not derived from the same
+    // function the scan uses: a test that compares a thing with itself
+    // cannot fail, and a test that cannot fail is a false assurance.
+    // Adding a crate to the workspace means adding it here, and the
+    // scan has to cover it.
+    const EXPECTED: &[&str] = &[
+        "nini-ai",
+        "nini-cli",
+        "nini-conformance",
+        "nini-core",
+        "nini-ext",
+        "nini-session",
+        "nini-tools",
+        "nini-tui",
+    ];
     let scanned = crate_dirs()
         .iter()
         .map(|d| {
@@ -557,7 +595,14 @@ fn the_crates_that_can_write_to_the_terminal_are_all_checked() {
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        scanned, crates,
-        "every crate in the workspace must be scanned for terminal writes"
+        scanned,
+        EXPECTED.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        "the crates whose sources are scanned for terminal writes changed — \
+         a new crate has to be scanned, and a removed one has to go"
+    );
+    assert_eq!(
+        crates,
+        EXPECTED.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        "the workspace has a crate the scan does not know about"
     );
 }

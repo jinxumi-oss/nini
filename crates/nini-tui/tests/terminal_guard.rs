@@ -479,3 +479,44 @@ fn the_guard_comes_back_after_the_external_editor() {
         notices(&state)
     );
 }
+
+/// The guard must stop delivering to the transcript **before** the
+/// alternate screen goes away.
+///
+/// The transcript is drawn on the alternate screen, so a line delivered
+/// after `LeaveAlternateScreen` goes to a screen that no longer exists
+/// — which is the same as losing it. The order is a fact about two
+/// statements in `run()`, and a fact like that needs an assertion: the
+/// call was once missing, and nothing noticed.
+#[test]
+fn the_guard_stops_delivering_before_the_screen_goes_away() {
+    let runtime = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime.rs"),
+    )
+    .expect("runtime.rs");
+
+    // The body of `run()` — the function that owns the screen's
+    // lifetime. The editor dance has a LeaveAlternateScreen of its
+    // own, in a different function, and comparing across functions
+    // would compare the wrong two things.
+    let start = runtime
+        .find("pub async fn run<F>")
+        .expect("runtime.rs must have run()");
+    let body = &runtime[start..];
+    let end = body.find("\nasync fn run_loop").unwrap_or(body.len());
+    let body = &body[..end];
+
+    let shutdown = body
+        .find("begin_shutdown()")
+        .expect("run() must call begin_shutdown()");
+    let leave = body
+        .find("LeaveAlternateScreen")
+        .expect("run() must leave the alternate screen");
+
+    assert!(
+        shutdown < leave,
+        "the guard keeps delivering to the transcript until the alternate screen is \
+         gone (begin_shutdown at {shutdown}, LeaveAlternateScreen at {leave}): every \
+         line delivered in between goes to a screen that no longer exists"
+    );
+}

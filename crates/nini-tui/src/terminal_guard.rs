@@ -63,7 +63,7 @@
 //! a crash report still reaches the user's terminal.
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -280,7 +280,12 @@ pub struct TerminalGuard {
     /// for the real stderr instead.
     closing: Arc<AtomicBool>,
     /// How many residual lines were dropped because the buffer was
-    /// full. (Held by the reader thread; the guard does not need it.)
+    /// full.
+    ///
+    /// The guard holds it too, not only the reader: a reader that was
+    /// detached (wedged, and the timeout expired) never gets to say
+    /// that it dropped anything, and the count would go with it.
+    dropped: Arc<AtomicUsize>,
     /// The stop signal for the reader thread.
     stop: Option<StopSignal>,
 }
@@ -343,7 +348,7 @@ impl TerminalGuard {
         let restore = Arc::new(Restore::new(saved));
         let residual: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let closing = Arc::new(AtomicBool::new(false));
-        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicUsize::new(0));
 
         // Publish the saved descriptor so the panic hook can hand the
         // real stderr back.
@@ -435,6 +440,7 @@ impl TerminalGuard {
             reader_done: Some(done_rx),
             residual,
             closing,
+            dropped: dropped.clone(),
             stop: Some(stop),
         })
     }
@@ -537,6 +543,14 @@ impl Drop for TerminalGuard {
         if !residual.is_empty() {
             write_lines(&self.restore, &residual);
         }
+        // 8. If the reader was detached (it was wedged, and the timeout
+        //    expired), it never got to say that it dropped lines. The
+        //    count lives in the guard, so the notice is not lost with
+        //    the thread.
+        let dropped_count = self.dropped.load(Ordering::SeqCst);
+        if dropped_count > 0 {
+            write_dropped_notice(&self.restore, dropped_count);
+        }
     }
 }
 
@@ -582,7 +596,7 @@ fn write_lines(restore: &Arc<Restore>, lines: &[String]) {
 fn flush_residual(
     restore: &Arc<Restore>,
     residual: &Arc<Mutex<Vec<String>>>,
-    dropped: &AtomicBool,
+    dropped: &AtomicUsize,
 ) {
     let lines = std::mem::take(
         &mut *residual
@@ -593,19 +607,32 @@ fn flush_residual(
         return;
     }
     write_lines(restore, &lines);
-    if dropped.load(Ordering::SeqCst) {
+    let dropped_count = dropped.load(Ordering::SeqCst);
+    if dropped_count > 0 {
         // Say that something was dropped: a silent drop is a lie about
-        // "nothing is lost".
-        let notice =
-            b"[nini] terminal guard: the residual buffer was full; some lines were dropped\n";
-        // SAFETY: `notice` is a valid buffer and the length matches it.
-        unsafe {
-            libc::write(
-                restore.saved_fd(),
-                notice.as_ptr() as *const libc::c_void,
-                notice.len(),
-            );
-        }
+        // "nothing is lost" — and say *how much*, because "some" is not
+        // an answer.
+        write_dropped_notice(restore, dropped_count);
+    }
+}
+
+/// Tell the user that lines were dropped, and how many.
+///
+/// The count matters: "some lines were dropped" is not an answer, and
+/// the *oldest* are the ones that go — the first diagnostics of a long
+/// session are the ones a reader would want.
+fn write_dropped_notice(restore: &Arc<Restore>, count: usize) {
+    let notice = format!(
+        "[nini] terminal guard: the diagnostic buffer was full; {count} line(s) were \
+         dropped (the oldest first)\n"
+    );
+    // SAFETY: `notice` is a valid buffer and the length matches it.
+    unsafe {
+        libc::write(
+            restore.saved_fd(),
+            notice.as_ptr() as *const libc::c_void,
+            notice.len(),
+        );
     }
 }
 
@@ -620,7 +647,7 @@ fn read_loop(
     state: &SharedState,
     residual: &Arc<Mutex<Vec<String>>>,
     closing: &Arc<AtomicBool>,
-    dropped: &AtomicBool,
+    dropped: &AtomicUsize,
 ) {
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 8192];
@@ -694,7 +721,7 @@ fn handle_line(
     state: &SharedState,
     residual: &Arc<Mutex<Vec<String>>>,
     closing: &Arc<AtomicBool>,
-    dropped: &AtomicBool,
+    dropped: &AtomicUsize,
 ) {
     // `from_utf8_lossy` rather than `from_utf8`: a library that writes
     // non-UTF-8 bytes must not kill the reader thread (which would
@@ -728,7 +755,7 @@ fn deliver(
     state: &SharedState,
     line: &str,
     residual: &Arc<Mutex<Vec<String>>>,
-    dropped: &AtomicBool,
+    dropped: &AtomicUsize,
 ) {
     match state.try_lock() {
         Ok(mut guard) => guard.push_notice(line.to_string()),
@@ -742,7 +769,7 @@ fn deliver(
 }
 
 /// Add a line to the residual, keeping the buffer bounded.
-fn push_residual(residual: &Arc<Mutex<Vec<String>>>, line: &str, dropped: &AtomicBool) {
+fn push_residual(residual: &Arc<Mutex<Vec<String>>>, line: &str, dropped: &AtomicUsize) {
     let mut guard = residual
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -750,7 +777,7 @@ fn push_residual(residual: &Arc<Mutex<Vec<String>>>, line: &str, dropped: &Atomi
         // The oldest line goes: the buffer is a safety net, and an
         // unbounded one is a leak.
         guard.remove(0);
-        dropped.store(true, Ordering::SeqCst);
+        dropped.fetch_add(1, Ordering::SeqCst);
     }
     guard.push(line.to_string());
 }
