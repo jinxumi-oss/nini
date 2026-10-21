@@ -12,6 +12,12 @@ any test asserts on the fix. Of 90: 64 shipped their own test, 8 were
 corroborated elsewhere, **18 have no assertion at all**. Regression
 protection is 80%.
 
+That was the opening position, and the campaign closed it at **1**: 67
+ship their own test, 7 are corroborated elsewhere, 15 are now *declared*
+(`//! invariant: <sha>`), and 1 is still bare — `78593581`, a second
+clipboard entry point. `scripts/invariants.py` prints the tally and the
+gate locks it at 1, so it can only go down.
+
 That number is not the problem. The problem is that a test written inside
 the same commit as the fix is **same-source**: it blocks regression, and
 it cannot block the misunderstanding that produced the fix. `stop_reason`'s
@@ -97,13 +103,36 @@ refusal. That test found `--tui-mode` the moment it existed.
 ### A gate, with a baseline that cannot silently regress
 
 `scripts/gate.sh` — fmt, clippy, two build profiles, tests, and two
-baseline locks: bare invariants (18) and unwired signatures (51) may not
-increase. Full-green tests are not the same as correct, so the gate locks
+baseline locks: bare invariants (**1**, down from the 18 the campaign
+opened on) and unwired signatures (51) may not increase. Full-green tests are not the same as correct, so the gate locks
 the trend instead of trusting the count. It was self-tested by lowering the
 baselines: both checks went red, exit code 1.
 
 Details and the open items (`tui-oracle.py`'s extractor is not yet
 trustworthy and is kept out of the gate) are in `docs/invariant-audit.md`.
+
+### The tag, corrected before it left the machine (2026-10-21)
+
+This release was audited before it was published, and the audit found
+three things that would have shipped broken:
+
+- **`Cargo.lock` still said 0.10.2.** A clean checkout of the tag could
+  not build with `--locked` — `cargo metadata --locked` exited 101. The
+  lockfile now carries 0.10.3, so the tag builds the version it names.
+- **The `--full` version check could only fail.** It grepped the output
+  of `nini --version` for the word "commit"; the binary prints
+  `nini 0.10.3 - 34ddd5a +dirty (...)` and never that word. The check
+  now matches the sha it was always meant to match.
+- **The README contradicted itself.** The badge claimed 1488 tests, the
+  body claimed 1436, and the version stamps said v0.10.2. All three are
+  corrected, and the gate now reads the body's count as well — one
+  number, read in both places, equal to the measurement.
+
+Two further corrections to the gate: an unparsable test count used to be
+a *skip*, which is how a check quietly stops existing; and a
+`//! invariant:` declaration now has to be backed by
+`docs/invariant-verification.md` — for each declared sha, the bug that
+was injected and the assertion that turned red.
 
 ## v0.10.2 — the binary could not tell you what it was (2026-10-18)
 
