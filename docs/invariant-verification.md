@@ -32,6 +32,7 @@
 | `9d954ef0` | `image_temp_concurrent_writers` | 临时文件序号恒为 0 | `concurrent_pastes_get_distinct_files_holding_their_own_bytes` |
 | `be783e9a` | `footer_home_portability` | tilde 替换写死 `/home/jin` | 2 条红 |
 | `632a3617` | `env_lock_scope` | `settings.rs` 第 4 处去掉加锁 | `every_env_mutating_test_in_the_file_takes_the_lock` |
+| `71c0cc19` | `installer_source` | `install.sh` 的 `REPO` 退回旧 slug `jinxumi/nini` | `the_installer_points_at_the_repository_the_releases_live_in` + `the_documented_one_liner_fetches_the_same_repository` 变红（第 3 条仍绿：资产命名未变） |
 
 ## 终审复验（2026-10-21 · 在干净克隆里重新注入，逐条还原）
 
