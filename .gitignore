@@ -33,4 +33,6 @@ references/pi-upstream.git/
 *.key
 secrets/
 .planner/
-/captures/          # 本机抓包的临时产物（根目录）；fixtures/tui/captures/ 是入库的 golden
+# 本机抓包的临时产物（根目录）；fixtures/tui/captures/ 是入库的 golden
+# 注释必须单独一行：gitignore 只认行首的 #，行尾的 # 是模式的一部分。
+/captures/
