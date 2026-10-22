@@ -196,6 +196,38 @@ could not say it itself), and the structural test now catches
 also rewritten: it compared a list with itself, so it could never fail,
 and it now compares the scan with a list written out by hand.
 
+### 7. Five more claims that were not true
+
+The third review round (and one end-to-end run that turned out to be
+*testing the wrong thing*) found five more:
+
+* **The exported session carried live markup.** The export escaped what
+  the user typed and what the model said, but not the tool arguments,
+  the bash command line, or the provider's stop reason. A model asked
+  to `echo '<script>…</script>'` produced a working `<script>` in the
+  exported HTML, which the user then opens in a browser.
+* **The trust warning was printed under the trust store's lock.** While
+  the TUI runs, stderr is a pipe; a blocked print held the mutex every
+  other tool call waits for, so the agent could look frozen with no way
+  out. The decision is now taken under the lock and printed after it.
+* **The queue died with the queue.** A diagnostic that the reader had
+  read but the render loop had not yet drawn was dropped on exit: not
+  in the transcript, not in the scrollback, gone.
+* **The "N lines were dropped" warning appeared twice** — once from the
+  reader, once from the guard. A warning that appears twice is a warning
+  nobody reads.
+* **The provider could fail silently.** A missing API key left the TUI
+  talking to a fixture provider while the status bar said
+  `(openai-compat) MiniMax-M3.1-Flash-Preview`; the user's message went
+  in and nothing came back. The reason is now a transcript notice, and
+  the status bar names the fallback.
+
+Plus two that were not "claims" but plain costs: the guard's batch was
+drained one line at a time, and every line deep-copied the whole
+transcript (200 lines = 200 copies, on the tokio worker); and the
+scrollbar's thumb was drawn in rendered rows but hit-tested in
+transcript lines, so a press on the visible thumb made it jump.
+
 ### 6. The notice queue is the guard's own
 
 The reader thread used to take the render loop's state lock to push a

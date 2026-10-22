@@ -15,6 +15,7 @@
 //! the same thing, and that a drag lands where the row-based geometry says
 //! it should.
 
+//! invariant: 266bc74
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use nini_tui::render::render_frame;
 use nini_tui::runtime::{handle_mouse, lock_state, shared_state, SharedState};

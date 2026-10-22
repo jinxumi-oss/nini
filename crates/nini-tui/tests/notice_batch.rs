@@ -20,6 +20,7 @@
 //! single-line one (order, content, and the copy-on-write semantics under a
 //! live snapshot), and the runtime's drain path really uses the batch API.
 
+//! invariant: 266bc74
 use nini_tui::state::{AppState, TranscriptLine};
 
 /// The text of a notice line, or a panic that says what it found instead.
