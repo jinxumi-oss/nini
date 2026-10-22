@@ -1,6 +1,6 @@
 ## v0.10.5 — a character cut in half by the network killed the whole turn (2026-10-22)
 
-1546 tests, all green. The report is 「一遇到复杂任务/工具调用任务就乱码」, and
+1548 tests, all green. The report is 「一遇到复杂任务/工具调用任务就乱码」, and
 v0.10.4 fixed one cause of it. This is another one, and it is the one that
 matches the report's shape: a *streaming* failure, in Chinese, while a task
 is running.
