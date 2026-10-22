@@ -1,4 +1,4 @@
-## Unreleased — the frame was drawn at twice the terminal's width, because of the box-drawing characters (2026-10-23)
+## v0.10.6 — the frame was drawn at twice the terminal's width, because of the box-drawing characters (2026-10-23)
 
 1550 tests, all green. The report's second photo: every row shifted by a
 different amount, and the horizontal rules cut in half.
