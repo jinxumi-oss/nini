@@ -89,6 +89,7 @@
 | `81fac45` | `trust_gate_lock` | 把警告打印挪回锁内 | `a_blocked_trust_warning_does_not_hold_the_store_lock` 变红（打印被卡住时，信任库的锁仍被占着） |
 | `655db2d` | `notice_rendering` | 通知的折行预算改回 4 列 | `a_notice_row_is_never_wider_than_the_screen` 变红（那一行 61 列，屏幕只有 60 列，尾部被裁掉） |
 | `83a6871` | `nini-cli` 单元测试 | provider 构造失败时不再保留错误 | `a_provider_that_cannot_be_started_is_reported` 变红（错误被吞掉，状态栏还在说 openai-compat） |
+| `7ca58577` | `sse_utf8_split` | 解析器回到修复前的样子：每个 chunk 单独 `from_utf8` | `a_character_split_across_two_chunks_is_not_an_error`、`a_character_split_across_three_chunks_is_not_an_error`、`a_long_chinese_answer_survives_any_chunking` 三条同时变红（症状：`invalid utf-8: incomplete utf-8 byte sequence from index 0`） |
 | `bdfdc06d` | `terminal_guard` | 读线程把通知丢在地上（不进队列） | 4 条守卫断言同时变红：`a_library_write_to_stderr_becomes_a_transcript_notice`、`a_notice_is_never_lost_when_the_state_is_locked`、`the_guard_comes_back_after_the_external_editor`、`the_real_stderr_works_again_after_the_guard_is_dropped` |
 | `cc2e35ff` | `notice_rendering` | `/export` 的 Notice 臂去掉 `html_escape` | `a_notice_in_the_export_is_escaped` 变红（`<script>` 原样进导出 HTML） |
 | `cc2e35ff` | `notice_rendering` | Notice 臂不折行（`wrap_text_to_width` 换成 `None`） | `a_long_notice_is_wrapped_not_clipped` 变红（长诊断的尾部不在屏上） |

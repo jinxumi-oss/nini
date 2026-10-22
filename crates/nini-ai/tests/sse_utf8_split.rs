@@ -28,6 +28,10 @@
 //! The assertions below are about the *stream*, not about one call: the
 //! text has to come out whole, in order, no matter where the boundaries
 //! fall.
+//!
+//! invariant: 7ca58577 —— 声明本文件守住了哪几条历史不变量。
+//! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
+//! 真正的证据是 docs/invariant-verification.md 里的注入-观察记录。
 
 use nini_ai::sse::{SseEvent, SseParser};
 
