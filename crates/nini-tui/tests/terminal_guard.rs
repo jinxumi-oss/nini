@@ -40,6 +40,7 @@
 //!    writing to the screen the TUI is painting.
 
 //! invariant: 851cf4e
+//! invariant: a87797f1
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard};

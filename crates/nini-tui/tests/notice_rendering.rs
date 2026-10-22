@@ -17,6 +17,7 @@
 //!   became markup in the exported file.
 
 //! invariant: 655db2d
+//! invariant: a87797f1
 use nini_tui::render::render_frame;
 use nini_tui::state::AppState;
 use ratatui::backend::TestBackend;

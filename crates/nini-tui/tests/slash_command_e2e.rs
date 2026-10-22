@@ -4,6 +4,7 @@
 //! Enter, the command dispatcher runs, output lands in the transcript, and
 //! the rendered frame reflects the result.
 
+//! invariant: a87797f1
 use nini_tui::commands::{complete, dispatch, parse, CommandId, CommandOutcome, REGISTRY};
 // Mutex serializing tests that mutate the HOME environment variable to
 // avoid cross-test interference when cargo runs tests in parallel.
