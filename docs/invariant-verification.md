@@ -77,6 +77,7 @@
 | `ca97731b` | `terminal_guard` | `terminal_guard` 不再把 fd 2 指向管道（去掉 `dup2`） | `a_library_write_to_stderr_becomes_a_transcript_notice` + `the_real_stderr_works_again_after_the_guard_is_dropped` 变红（症状：transcript 里一条通知都没有） |
 | `ca97731b` | `no_terminal_writes` | 在 `nini-tui/src/runtime.rs` 里加回一处 `eprintln!` | `no_source_file_writes_to_the_terminal_outside_the_whitelist` 变红（报出文件与行号） |
 | `a0d18027` | `project_trust`（src 内单元测试） | 去掉 `ask_level_warning` 的 per-cwd 去重（每次调用都返回 `Some`） | `the_ask_warning_is_stated_once_per_cwd` 变红（症状："the second call for the same cwd must not repeat the warning"） |
+| `a87797f1` | `terminal_guard` / `notice_rendering` / `slash_command_e2e` | 本轮四条修复各自被注入回退 | 顺序：`the_lines_at_the_exit_come_out_in_the_order_they_were_written` 变红；宽度：`a_notice_with_ambiguous_characters_fits_a_cjk_terminal` 变红；fallback：`changing_the_model_does_not_hide_the_provider_fallback` 变红；`check()` 恢复公开 → `cargo build` 失败 |
 | `851cf4e` | `terminal_guard` | 退出时把队列的 flush 挪到 reader 停止之后 | `the_lines_at_the_exit_come_out_in_the_order_they_were_written` 变红（`late1` 印在 `early1` 之前：诊断的尾巴跑到了头前面） |
 | `851cf4e` | `terminal_guard` | reader 在早退之前也写一次「N lines were dropped」 | `the_dropped_warning_appears_exactly_once` 变红（同一句警告出现两次） |
 | `655db2d` | `notice_rendering` | 通知的折行改回 western 口径（不预留歧义宽字符的列） | `a_notice_with_ambiguous_characters_fits_a_cjk_terminal` 变红（`→…✓•·` 在 CJK 终端里多占 12 列，尾部被裁） |
