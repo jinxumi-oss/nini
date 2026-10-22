@@ -83,3 +83,88 @@ fn a_notice_keeps_its_own_text() {
         "the notice must be on screen verbatim:\n{screen}"
     );
 }
+
+/// A notice row must not be wider than the screen it is drawn on.
+///
+/// The warning sign is East-Asian-Ambiguous: one cell in a western
+/// terminal, two in a CJK one. The wrapping budget assumed four
+/// columns for the prefix, so in a CJK terminal the row was one column
+/// too wide — and the transcript's `List` clips rather than wraps, so
+/// the tail of a long diagnostic disappeared again.
+///
+/// The test measures the rows the way a CJK terminal would: the
+/// ambiguous sign counts as two columns.
+#[test]
+fn a_notice_row_is_never_wider_than_the_screen() {
+    let mut state = AppState::new("test-model");
+    let tail = "THE-END-OF-THE-NOTE";
+    // The body is chosen so that the **first** wrapped line is exactly
+    // as long as the budget allows: that is the line that carries the
+    // warning sign, and it is the line that overflows when the budget
+    // is one column too generous. A body that wraps earlier would
+    // leave slack and hide the off-by-one.
+    state.push_notice(format!("{} {} {tail}", "A".repeat(56), "B".repeat(40)));
+
+    let width = 60u16;
+    let rows = frame_rows(&state, width, 24);
+
+    // Only the rows that carry the notice are measured: the rest of
+    // the screen (status bar, input box) has its own layout, and its
+    // own ambiguous-width characters.
+    let mut measured = 0;
+    for (n, row) in rows.iter().enumerate() {
+        if !row.contains('A') && !row.contains('B') && !row.contains(tail) {
+            continue;
+        }
+        measured += 1;
+        // The trailing padding is not content: it is the rest of the
+        // row. What matters is how wide the *text* is.
+        let text = row.trim_end();
+        let columns: usize = text
+            .chars()
+            .map(|c| {
+                // The ambiguous width of the warning sign, counted the
+                // way a CJK terminal counts it.
+                if c == '\u{26a0}' {
+                    2
+                } else {
+                    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
+                }
+            })
+            .sum();
+        assert!(
+            columns <= width as usize,
+            "row {n} is {columns} columns wide, the screen is {width}:\n{row:?}"
+        );
+    }
+    assert!(
+        measured >= 2,
+        "the notice should occupy more than one row — the test did not \
+         measure what it meant to measure"
+    );
+
+    // And nothing was cut: the point of the budget is to fit, not to
+    // lose a character. A row that is one column too wide is clipped
+    // by the `List`, and the clipped character is gone for good.
+    let notice_rows: Vec<&String> = rows
+        .iter()
+        .filter(|r| r.contains('A') || r.contains('B') || r.contains(tail))
+        .collect();
+    let visible_x: usize = notice_rows
+        .iter()
+        .map(|r| r.chars().filter(|c| *c == 'A' || *c == 'B').count())
+        .sum();
+    let screen = notice_rows
+        .iter()
+        .map(|r| r.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        visible_x, 96,
+        "the notice lost characters: {visible_x} of 96 are on screen:\n{screen}"
+    );
+    assert!(
+        screen.contains(tail),
+        "the tail of the notice must survive the narrower budget:\n{screen}"
+    );
+}

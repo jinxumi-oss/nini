@@ -1240,17 +1240,43 @@ fn items_for_line(
             // never on screen. A notice that ends mid-word looks
             // exactly like the corruption this whole change was about.
             let mut rows = Vec::new();
+            // The budget is the row width minus the **prefix**, and the
+            // prefix is not always four columns.
+            //
+            // U+26A0 (the warning sign) is East-Asian-Ambiguous: one
+            // cell in a western terminal, two in a CJK one. Budgeting
+            // four columns for "  ⚠ " made the row one column too wide
+            // in exactly the terminals this project targets, and the
+            // transcript's `List` clips rather than wraps — so the tail
+            // of a long diagnostic disappeared again, just in a new
+            // place. (The scroll indicator had the same problem and
+            // was fixed in v0.8.9; this site was left behind.)
+            //
+            // So: count the ambiguous sign as the two columns it takes
+            // in a CJK terminal. A western terminal then has one spare
+            // column, which is harmless; a CJK terminal has none.
+            const WARNING_PREFIX: &str = "  \u{26a0} ";
+            const CONTINUATION_PREFIX: &str = "    ";
+            // Two spaces, the warning sign (two columns in a CJK
+            // terminal, one in a western one), one space.
+            const WARNING_PREFIX_WIDTH: usize = 5;
             for (i, line) in text.lines().enumerate() {
-                let prefix = if i == 0 { "  \u{26a0} " } else { "    " };
-                let wrapped =
-                    max_w.and_then(|w| crate::width::wrap_text_to_width(line, w.saturating_sub(4)));
+                let prefix = if i == 0 {
+                    WARNING_PREFIX
+                } else {
+                    CONTINUATION_PREFIX
+                };
+                let prefix_width = if i == 0 { WARNING_PREFIX_WIDTH } else { 4 };
+                let wrapped = max_w.and_then(|w| {
+                    crate::width::wrap_text_to_width(line, w.saturating_sub(prefix_width))
+                });
                 match wrapped {
                     Some(parts) if !parts.is_empty() => {
                         for (n, part) in parts.iter().enumerate() {
                             let lead = if i == 0 && n == 0 {
-                                "  \u{26a0} "
+                                WARNING_PREFIX
                             } else {
-                                "    "
+                                CONTINUATION_PREFIX
                             };
                             rows.push(RLine::from(Span::styled(
                                 format!("{lead}{part}"),
