@@ -19,6 +19,12 @@ author's aim is to keep Pi's original flavor: the same configuration,
 the same session files, the same commands, the same feel in the hand,
 with nothing bolted on and nothing taken away.
 
+"Clean" here means two things, and both are meant literally: it is a
+**clean-room** reimplementation — written from Pi's observable behavior
+and file formats, not from its source — and it is a **clean** agent:
+no account, no cloud, no telemetry, no feature bloat, nothing that
+Pi does not also do.
+
 ### Keeping Pi's original flavor
 
 What that means in practice, and nothing more:
