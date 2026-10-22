@@ -5,11 +5,13 @@
 
 use crate::state::TranscriptLine;
 
-/// Escape HTML special characters: `&`, `<`, `>`.
+/// Escape HTML special characters: `&`, `<`, `>`, `"`, `'`.
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// Render the transcript as a minimal HTML document.
@@ -35,8 +37,12 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
                 out.push_str(&format!("<p class=\"assistant\">{}</p>\n", html_escape(t)));
             }
             TranscriptLine::ToolCall { name, args, .. } => {
+                // The tool name and the arguments come from the model:
+                // a `<script>` in the arguments is markup, not text.
                 out.push_str(&format!(
-                    "<p class=\"tool\">[tool call] {name} {args}</p>\n"
+                    "<p class=\"tool\">[tool call] {} {}</p>\n",
+                    html_escape(name),
+                    html_escape(args)
                 ));
             }
             TranscriptLine::BashExecution {
@@ -49,22 +55,20 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
                 ..
             } => {
                 let status = if *ok { "ok" } else { "fail" };
-                let escaped_output = output
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;");
+                let escaped_output = html_escape(output);
                 let stderr_html = if stderr.trim().is_empty() {
                     String::new()
                 } else {
-                    let escaped_stderr = stderr
-                        .replace('&', "&amp;")
-                        .replace('<', "&lt;")
-                        .replace('>', "&gt;");
+                    let escaped_stderr = html_escape(stderr);
                     format!("<pre class=\"bash-stderr\">{escaped_stderr}</pre>")
                 };
+                // The command line is the model's own text: it is
+                // escaped like every other piece of content that reaches
+                // the export.
+                let escaped_cmd = html_escape(cmd);
+                let exit = exit_code.map(|c| format!(" exit={c}")).unwrap_or_default();
                 out.push_str(&format!(
-                    "<p class=\"bash\">! <code>{cmd}</code> [{status}{}] in {duration_ms}ms<br><pre>{escaped_output}</pre>{stderr_html}</p>\n",
-                    exit_code.map(|c| format!(" exit={c}")).unwrap_or_default(),
+                    "<p class=\"bash\">! <code>{escaped_cmd}</code> [{status}{exit}] in {duration_ms}ms<br><pre>{escaped_output}</pre>{stderr_html}</p>\n"
                 ));
             }
             TranscriptLine::ToolResult { ok, content, .. } => {
@@ -89,8 +93,12 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
             // HTML so an exported session record reflects aborted /
             // truncated turns honestly.
             TranscriptLine::StopNotice(msg) => {
+                // The stop reason comes from the provider: it is
+                // external input, and the export is a document the user
+                // opens in a browser.
                 out.push_str(&format!(
-                    "<p class=\"stop-notice\" style=\"color:#c33\">⚠ {msg}</p>\n"
+                    "<p class=\"stop-notice\" style=\"color:#c33\">⚠ {}</p>\n",
+                    html_escape(msg)
                 ));
             }
             // v0.10.3: a system notice the TUI produced. Exported like
@@ -133,6 +141,60 @@ mod tests {
         let html = render_transcript_html(&lines);
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
+    }
+
+    /// The export is a document the user opens in a browser. Every
+    /// piece of content that reaches it is either the user's, the
+    /// model's, or the provider's — and all three can carry markup.
+    ///
+    /// The arms that were missed are the ones that carry *tool* text:
+    /// the command the model asked for, the arguments it passed, and
+    /// the stop reason the provider sent. A model that is asked to
+    /// `echo '<script>...'` produces exactly that string, and the
+    /// export used to carry it as markup.
+    #[test]
+    fn html_escapes_every_arm_that_carries_external_text() {
+        let lines = vec![
+            crate::state::TranscriptLine::ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                args: r#"{"command":"echo '<script>alert(1)</script>'"}"#.into(),
+                collapsed: false,
+            },
+            crate::state::TranscriptLine::BashExecution {
+                id: "1".into(),
+                cmd: "echo '<script>alert(2)</script>'".into(),
+                output: "<b>out</b>".into(),
+                stderr: "<i>err</i>".into(),
+                ok: true,
+                exit_code: Some(0),
+                duration_ms: 1,
+                collapsed: false,
+            },
+            crate::state::TranscriptLine::StopNotice("<script>alert(3)</script>".into()),
+        ];
+        let html = render_transcript_html(&lines);
+        assert!(
+            !html.contains("<script>"),
+            "the export carries live markup:\n{html}"
+        );
+        assert!(
+            !html.contains("<b>out</b>") && !html.contains("<i>err</i>"),
+            "the tool output was not escaped:\n{html}"
+        );
+        assert!(html.contains("&lt;script&gt;"));
+    }
+
+    /// A quote is not markup, but it ends an HTML attribute. The
+    /// escape covers it so that content which later moves into an
+    /// attribute cannot break out of it.
+    #[test]
+    fn html_escape_covers_quotes() {
+        let html = render_transcript_html(&[crate::state::TranscriptLine::User(
+            "he said \"hi\" and 'bye'".into(),
+        )]);
+        assert!(html.contains("&quot;hi&quot;"));
+        assert!(html.contains("&#39;bye&#39;"));
     }
 
     #[test]
