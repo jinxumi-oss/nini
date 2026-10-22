@@ -1,3 +1,36 @@
+## v0.10.7 — the ASCII stand-in had to cover the whole box-drawing block (2026-10-23)
+
+1550 tests, all green. v0.10.6 fixed the frame width; this completes it.
+
+### One character was missing, and it was the one that showed
+
+The ASCII stand-in for a terminal that draws ambiguous characters two
+cells wide was a hand-written list. It had every box-drawing character
+except `┤` (U+2524) — the right-hand junction of a table's separator
+row. So every separator was one column wider than the rows above and
+below it: the frame fitted, and the borders did not meet.
+
+The list is now a **range rule** over the whole block: horizontal to
+`-`, vertical to `|`, corners and junctions to `+`, block elements to
+`#` and `.`. A character cannot be missed by being forgotten.
+
+### The test that would have caught it
+
+The frame test measured whether a row *fits* the terminal. It could not
+see a frame that is the right width and still wrong, so it is joined by
+two assertions:
+
+* rows are grouped into bordered blocks, and every row of a block must
+  have the same width as the first;
+* the measurement ignores the trailing padding — the buffer is always
+  the terminal's full width, so measuring it would say every row is
+  exactly as wide as the terminal and the alignment question would
+  never be asked.
+
+Verified by injection: halving the rule segments again (the mistake this
+change fixes) turns the assertion red with `a bordered block is not one
+width`.
+
 ## v0.10.6 — the frame was drawn at twice the terminal's width, because of the box-drawing characters (2026-10-23)
 
 1550 tests, all green. The report's second photo: every row shifted by a
