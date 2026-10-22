@@ -74,6 +74,21 @@ pub enum SseError {
 /// buffered event followed by an EOF sentinel.
 #[derive(Debug, Default)]
 pub struct SseParser {
+    /// Bytes of a character that has not finished arriving.
+    ///
+    /// A network chunk boundary is wherever the network put it, and a
+    /// Chinese character is three bytes long: every so often a chunk
+    /// ends in the middle of one. Those bytes are not an error — they
+    /// are a character in transit — so they are held here and prepended
+    /// to the next chunk.
+    ///
+    /// Before this, the decoder ran `from_utf8` on each chunk *alone*,
+    /// so the first byte of a Chinese character was reported as invalid
+    /// UTF-8 and the whole turn died with `ProviderError::Sse`. It only
+    /// showed up while a task was running and the model was writing
+    /// Chinese — which is exactly when the report says the screen goes
+    /// wrong.
+    pending_bytes: Vec<u8>,
     buffer: String,
     /// Current event being assembled.
     current: SseEvent,
@@ -106,7 +121,26 @@ impl SseParser {
         } else {
             chunk
         };
-        let s = std::str::from_utf8(chunk).map_err(|e| SseError::InvalidUtf8(e.to_string()))?;
+        // A character may have started in the previous chunk. Prepend it.
+        let mut bytes = std::mem::take(&mut self.pending_bytes);
+        bytes.extend_from_slice(chunk);
+        let s = match std::str::from_utf8(&bytes) {
+            Ok(s) => s,
+            Err(e) if e.error_len().is_none() => {
+                // The error is at the very end and the tail is a *prefix*
+                // of a character: hold those bytes for the next chunk.
+                // (`error_len() == None` is exactly that case; a byte
+                // that can never be valid has a length and stays an
+                // error.)
+                let valid_up_to = e.valid_up_to();
+                self.pending_bytes = bytes[valid_up_to..].to_vec();
+                // SAFETY: `valid_up_to` is a character boundary by
+                // definition.
+                std::str::from_utf8(&bytes[..valid_up_to])
+                    .expect("valid_up_to is a character boundary")
+            }
+            Err(e) => return Err(SseError::InvalidUtf8(e.to_string())),
+        };
         // Normalize line endings: \r\n → \n, lone \r → \n.
         let normalized: String = s.replace("\r\n", "\n").replace('\r', "\n");
         self.buffer.push_str(&normalized);
@@ -122,6 +156,12 @@ impl SseParser {
     /// Flush at end of stream. Emits any pending partial event followed by an
     /// EOF sentinel.
     pub fn flush(&mut self) -> Vec<SseEvent> {
+        // A character that never finished arriving: the stream ended in
+        // the middle of one. There is nothing to decode it into, and
+        // the turn is over anyway — the bytes are dropped rather than
+        // turned into a replacement character, because a replacement
+        // character is a lie about what the model said.
+        self.pending_bytes.clear();
         // Process any line still sitting in the buffer (no terminating \n).
         if !self.buffer.is_empty() {
             let line = std::mem::take(&mut self.buffer);

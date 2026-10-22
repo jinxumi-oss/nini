@@ -1,3 +1,49 @@
+## Unreleased — a character cut in half by the network killed the whole turn (2026-10-22)
+
+1546 tests, all green. The report is 「一遇到复杂任务/工具调用任务就乱码」, and
+v0.10.4 fixed one cause of it. This is another one, and it is the one that
+matches the report's shape: a *streaming* failure, in Chinese, while a task
+is running.
+
+### The parser decoded each chunk on its own
+
+`SseParser::feed` decoded **each network chunk in isolation**:
+
+```text
+let s = std::str::from_utf8(chunk).map_err(|e| SseError::InvalidUtf8(e.to_string()))?;
+```
+
+A chunk boundary is wherever the network put it, and a Chinese character is
+three bytes long — so one of every three of them lands on a boundary from
+time to time. The chunk that holds the first byte of a character is not
+valid UTF-8 on its own, and the decoder said so: `ProviderError::Sse`, the
+turn died, and the screen kept a half-written answer and an error.
+
+The bytes of a character that has not finished arriving are not an error —
+they are a character in transit. The parser now holds them and prepends them
+to the next chunk. A byte that can never be valid (0xFF) is still an error,
+because buffering it would hide a broken stream.
+
+### The failure is now deterministic, and it is a script
+
+"Every so often" cannot be an acceptance criterion, so the mock provider
+grew a `--split-bytes` flag: it writes the stream in N-byte pieces, the way
+a real network does. `scripts/e2e-hostile-stream.sh` then drives the **real
+TUI** against hostile content — Chinese, emoji, a table, a heading, a code
+block — and asserts that the answer is *whole*, that the table's columns
+line up, and that no replacement character (U+FFFD) reaches the screen.
+
+It fails on the published v0.10.4 binary:
+
+```text
+FAIL
+  - the stream died with `invalid utf-8` — a character was cut in half by a chunk boundary
+  - the answer is not complete on screen
+```
+
+and passes on the fixed one. That is the difference between "I think this
+is fixed" and "the failure is a script that goes red without the fix".
+
 ## v0.10.4 — the TUI, the library and the terminal were all writing to the same screen (2026-10-22)
 
 1540 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
