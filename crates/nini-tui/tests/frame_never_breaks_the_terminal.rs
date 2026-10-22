@@ -21,7 +21,7 @@
 //! the terminal has.
 
 use nini_tui::render::render_frame;
-use nini_tui::state::AppState;
+use nini_tui::state::{AppState, TranscriptLine};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -144,15 +144,56 @@ fn hostile_bodies() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Every kind of line the transcript can hold — not just the two that
+/// carry prose. A tool result, a bash execution and a diff are drawn by
+/// different code, and each one has its own width arithmetic.
+fn hostile_lines(body: &str) -> Vec<TranscriptLine> {
+    vec![
+        TranscriptLine::User(body.to_string()),
+        TranscriptLine::AssistantText(body.to_string()),
+        TranscriptLine::ThinkingText(body.to_string()),
+        TranscriptLine::ToolCall {
+            id: "t1".to_string(),
+            name: "bash".to_string(),
+            args: body.to_string(),
+            collapsed: false,
+        },
+        TranscriptLine::ToolResult {
+            id: "t1".to_string(),
+            name: "bash".to_string(),
+            ok: true,
+            content: body.to_string(),
+            collapsed: false,
+            duration_ms: Some(4),
+        },
+        TranscriptLine::BashExecution {
+            id: "t1".to_string(),
+            cmd: body.to_string(),
+            output: body.to_string(),
+            stderr: body.to_string(),
+            ok: true,
+            exit_code: Some(0),
+            duration_ms: 4,
+            collapsed: false,
+        },
+        TranscriptLine::StopNotice(body.to_string()),
+    ]
+}
+
 #[test]
 fn no_content_can_push_the_frame_past_the_terminal_width() {
     for width in [60u16, 80, 100, 120] {
         for (name, body) in hostile_bodies() {
-            let mut state = AppState::new("test-model");
-            state.push_user(body.clone());
-            state.push_assistant(body.clone());
-            assert_no_overflow(&state, width, 24, &format!("{name} @ {width}"));
-            assert_input_box_aligned(&state, width, 24, &format!("{name} @ {width}"));
+            for line in hostile_lines(&body) {
+                let mut state = AppState::new("test-model");
+                {
+                    let ts = std::sync::Arc::make_mut(&mut state.transcript_state);
+                    ts.lines.push(line);
+                }
+                let what = format!("{name} @ {width}");
+                assert_no_overflow(&state, width, 24, &what);
+                assert_input_box_aligned(&state, width, 24, &what);
+            }
         }
     }
 }
