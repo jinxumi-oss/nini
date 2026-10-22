@@ -532,6 +532,12 @@ fn bytecount_lines(b: &[u8]) -> usize {
 }
 
 #[cfg(test)]
+// The test module below guards `91f31b94`: the bash timeout must not
+// silently sit out the full grace period again.
+//
+// invariant: 91f31b94 —— 声明本文件守住了哪几条历史不变量。
+// 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
+// 真正的证据是 docs/invariant-verification.md 里的注入-观察记录。
 mod tests {
     use super::*;
 
