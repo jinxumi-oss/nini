@@ -500,7 +500,12 @@ pub fn startup_theme(shared: &SharedState) -> (String, crate::theme::Theme) {
     (theme.name.clone(), theme)
 }
 
-pub async fn run<F>(bootstrap: F, agent_driver: AgentDriver, initial_model: &str) -> Result<()>
+pub async fn run<F>(
+    bootstrap: F,
+    agent_driver: AgentDriver,
+    initial_model: &str,
+    verbose: bool,
+) -> Result<()>
 where
     F: FnOnce(&mut AppState),
 {
@@ -539,6 +544,18 @@ where
     };
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    if verbose {
+        // The size nini believes it has, and the size the terminal
+        // actually has, are the two numbers that decide whether the
+        // frame fits. A mismatch is the one failure the screen cannot
+        // show: the terminal folds every over-wide row and shifts the
+        // rest of the session down by a line.
+        let size = crossterm::terminal::size().unwrap_or((0, 0));
+        push_notice(
+            &shared,
+            format!("terminal: {}x{} (nini's own reading)", size.0, size.1),
+        );
+    }
     // v0.10: mouse capture, for wheel scrolling and dragging the transcript
     // scrollbar. crossterm's `EnableMouseCapture` emits
     // 1000+1002+1003+1015+1006; Pi uses 1000+1002+1004+1006 and
@@ -552,7 +569,7 @@ where
     terminal.clear()?;
     terminal.hide_cursor()?;
 
-    let result = run_loop(&mut terminal, shared, agent_driver, &mut guard).await;
+    let result = run_loop(&mut terminal, shared, agent_driver, &mut guard, verbose).await;
 
     terminal.show_cursor()?;
     // Must go before leaving the alt screen or the shell inherits a
@@ -584,6 +601,7 @@ async fn run_loop(
     shared: SharedState,
     agent_driver: AgentDriver,
     guard: &mut Option<crate::terminal_guard::TerminalGuard>,
+    verbose: bool,
 ) -> Result<()> {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(50));
@@ -875,7 +893,14 @@ async fn run_loop(
                     Some(Ok(Event::Mouse(m))) => {
                         let _ = handle_mouse(m, &shared);
                     }
-                    Some(Ok(Event::Resize(_, _))) => { /* ratatui handles */ }
+                    Some(Ok(Event::Resize(cols, rows))) => {
+                        // ratatui handles the buffer; the *report* is
+                        // here, because a resize is exactly when the
+                        // two sizes can drift apart.
+                        if verbose {
+                            push_notice(&shared, format!("terminal resized: {cols}x{rows}"));
+                        }
+                    }
                     Some(Ok(_)) => {}
                     Some(Err(e)) => push_notice(&shared, format!("event error: {e}")),
                     None => break,

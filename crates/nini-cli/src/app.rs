@@ -698,6 +698,7 @@ async fn run_tui_bootstrap(
         },
         agent_driver,
         &cfg.model,
+        cfg.verbose,
     )
     .await
 }
