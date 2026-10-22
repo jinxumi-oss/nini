@@ -18,6 +18,11 @@
 //! Measured on this repository's own TUI capture at 100 columns: **501
 //! of 4920 rows overflow**, the widest at **200** columns.
 //!
+//!
+//! invariant: 54758b32 —— 声明本文件守住了哪几条历史不变量。
+//! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
+//! 真正的证据是 docs/invariant-verification.md 里的注入-观察记录。
+//!
 //! # What is asserted
 //!
 //! The frame is measured with `unicode_width::width_cjk` — the width a
