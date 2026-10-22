@@ -303,6 +303,42 @@ pub(crate) fn init_logging(verbose: bool) {
     }
 }
 
+/// Build the provider, or fall back to the scripted fixture — and say
+/// so.
+///
+/// The fallback exists so the TUI still starts (a user can still read
+/// the screen, still use `/help`). What it must not do is *pretend*:
+/// the error used to be discarded, and the status bar went on naming
+/// the provider the user asked for while the app was talking to a
+/// fixture with no scripted turns. The user's message went into the
+/// transcript and nothing came back — no reply, no error, no way to
+/// tell that the provider never started.
+///
+/// So the reason travels with the provider, and the TUI shows it.
+fn build_provider_or_fallback(
+    cfg: &AppConfig,
+    scripted_turns: Vec<Vec<nini_ai::fixture::FixtureTurn>>,
+) -> (Arc<dyn Provider>, Option<String>) {
+    match provider_factory::build_provider(
+        &cfg.provider,
+        scripted_turns,
+        &cfg.fallback_keys,
+        &cfg.fallback_base_urls,
+        cfg.api_key.as_deref(),
+    ) {
+        Ok(p) => (p, None),
+        Err(e) => {
+            let fallback = Arc::new(nini_ai::fixture::ProgrammedProvider::from_turns(
+                std::env::var("NINI_TUI_FIXTURE_TURNS")
+                    .ok()
+                    .and_then(|raw| provider_factory::parse_scripted_turns(&raw))
+                    .unwrap_or_default(),
+            )) as Arc<dyn Provider>;
+            (fallback, Some(e.to_string()))
+        }
+    }
+}
+
 pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
     use nini_tui::runtime::AgentDriver;
 
@@ -337,23 +373,22 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         .and_then(|raw| provider_factory::parse_scripted_turns(&raw))
         .unwrap_or_default();
 
-    // Provider — fallback to ProgrammedProvider on build error so the
+    // Provider — fall back to ProgrammedProvider on build error so the
     // TUI still has *something* to talk to.
-    let shared_provider: Arc<dyn Provider> = provider_factory::build_provider(
-        &cfg.provider,
-        scripted_turns,
-        &cfg.fallback_keys,
-        &cfg.fallback_base_urls,
-        cfg.api_key.as_deref(),
-    )
-    .unwrap_or_else(|_| {
-        Arc::new(nini_ai::fixture::ProgrammedProvider::from_turns(
-            std::env::var("NINI_TUI_FIXTURE_TURNS")
-                .ok()
-                .and_then(|raw| provider_factory::parse_scripted_turns(&raw))
-                .unwrap_or_default(),
-        )) as Arc<dyn Provider>
-    });
+    //
+    // The error used to be dropped (`unwrap_or_else(|_| …)`), and that
+    // made the TUI lie: the status bar said `(openai-compat)
+    // MiniMax-M3.1-Flash-Preview` while the app was talking to a
+    // fixture provider with no scripted turns. The user's message went
+    // into the transcript and **nothing came back** — no reply, no
+    // error, no way to tell that the provider never started. Measured
+    // end to end: `nini` without `OPENAI_API_KEY` is exactly that
+    // silence.
+    //
+    // So the error is kept, and the TUI says so: a notice in the
+    // transcript, and a status bar that names the fallback.
+    let (shared_provider, provider_error): (Arc<dyn Provider>, Option<String>) =
+        build_provider_or_fallback(&cfg, scripted_turns);
 
     let shared_tools = build_run_tools(&cfg, &cwd);
 
@@ -561,7 +596,7 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         })
     });
 
-    run_tui_bootstrap(agent_driver, &cfg, skills_in_prompt).await
+    run_tui_bootstrap(agent_driver, &cfg, skills_in_prompt, provider_error).await
 }
 
 /// Run the TUI itself with the given `AgentDriver`. This is the part
@@ -574,6 +609,10 @@ async fn run_tui_bootstrap(
     // Passed in rather than recomputed so the status bar cannot drift
     // from the prompt (see the comment at the use site).
     skills_in_prompt: usize,
+    // Why the real provider could not be started, if it could not.
+    // The TUI has to say it out loud: a silent fallback is a user who
+    // waits for an answer that will never come.
+    provider_error: Option<String>,
 ) -> Result<()> {
     use nini_tui::run as run_tui_inner;
 
@@ -608,6 +647,19 @@ async fn run_tui_bootstrap(
             // backend is active.
             if !cfg.provider.is_empty() {
                 state.model_state.provider = Some(cfg.provider.clone());
+            }
+            // The provider could not be built: say so, in the
+            // transcript and in the status bar. The status bar is the
+            // part the user reads while waiting, so it must not claim
+            // a backend that is not there.
+            if let Some(error) = &provider_error {
+                state.push_notice(format!(
+                    "provider '{}' could not be started: {error}. Falling back to the \
+                     scripted fixture provider — replies will not come from a model.",
+                    cfg.provider
+                ));
+                state.model_state.provider = Some("fixture (fallback)".to_string());
+                state.model_state.model = "no model".to_string();
             }
             // Seed initial thinking level from settings.
             // Reads the field `/thinking` actually writes. This read
@@ -1254,6 +1306,64 @@ mod cli_flag_wiring_tests {
         assert!(
             !system.contains("discovered"),
             "the discovered skill survived an explicit --skill: {system}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod provider_fallback_tests {
+    use super::*;
+
+    fn cfg_with(provider: &str) -> AppConfig {
+        AppConfig {
+            provider: provider.to_string(),
+            model: "MiniMax-M3.1-Flash-Preview".to_string(),
+            fallback_keys: Vec::new(),
+            fallback_base_urls: Vec::new(),
+            tools: Vec::new(),
+            exclude_tools: Vec::new(),
+            no_tools: false,
+            no_builtin_tools: false,
+            use_theme: None,
+            api_key: None,
+            no_skills: false,
+            system_prompt: None,
+            append_system_prompt: None,
+            skill_paths: Vec::new(),
+            thinking: None,
+            verbose: false,
+        }
+    }
+
+    /// A provider that cannot be started must say so.
+    ///
+    /// The failure used to be dropped, and the TUI went on claiming a
+    /// backend that was not there: the user typed a message, the
+    /// transcript showed it, and nothing ever came back. Silence is
+    /// the worst possible error report, because the user cannot tell
+    /// "the model is slow" from "the model is not there".
+    #[test]
+    fn a_provider_that_cannot_be_started_is_reported() {
+        let mut cfg = cfg_with("openai-compat");
+        // An empty key never resolves: the provider cannot be built.
+        cfg.api_key = Some(String::new());
+        let (_provider, error) = build_provider_or_fallback(&cfg, Vec::new());
+        let error = error.expect("the reason must not be swallowed");
+        assert!(
+            !error.trim().is_empty(),
+            "the reason must say what went wrong, not just that something did"
+        );
+    }
+
+    /// The other half: a provider that *can* be started reports no
+    /// error, so the TUI does not cry wolf.
+    #[test]
+    fn a_provider_that_starts_reports_no_error() {
+        let cfg = cfg_with("fixture");
+        let (_provider, error) = build_provider_or_fallback(&cfg, Vec::new());
+        assert!(
+            error.is_none(),
+            "a working provider must not produce a fallback notice: {error:?}"
         );
     }
 }
