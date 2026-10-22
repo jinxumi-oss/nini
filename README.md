@@ -2,6 +2,10 @@
 
 > A clean Pi agent, rewritten in Rust — the author's aim is to keep Pi's
 > original flavor.
+>
+> 一个干净的 Pi agent，用 Rust 重写——作者力求保留 Pi agent 最初的原滋味。
+
+[English](README.md) | [简体中文](README.zh-CN.md)
 
 [![Status](https://img.shields.io/badge/status-v0.10.4-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -24,6 +28,12 @@ with nothing bolted on and nothing taken away.
 and file formats, not from its source — and it is a **clean** agent:
 no account, no cloud, no telemetry, no feature bloat, nothing that
 Pi does not also do.
+
+> 「干净」在这里是两层意思，两层都是字面意义上的：它是 **clean-room**
+> 重写（照着 Pi 的可观察行为和文件格式写，不看 Pi 的源码），同时它也是
+> 一个**干净**的 agent：没有账号、没有云、没有遥测、没有功能膨胀，
+> 凡 Pi 没做的事 nini 也不做。完整中文版见
+> [README.zh-CN.md](README.zh-CN.md)。
 
 ### Keeping Pi's original flavor
 

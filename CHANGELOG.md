@@ -3,6 +3,9 @@
 1540 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
 Three defects, all of them two writers fighting over one row.
 
+中文：nini 是一个干净的 Pi agent，用 Rust 重写——作者力求保留 Pi agent 最初的原滋味。
+本版修的正是"TUI、库和终端同时往同一块屏幕上写字"这件事。
+
 ### 1. The library wrote to the terminal the TUI was painting
 
 #### Two texts, one row
