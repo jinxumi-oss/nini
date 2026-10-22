@@ -196,14 +196,30 @@ impl ProjectTrustStore {
     /// distrusted or "never". Tool-specific policy is layered on top
     /// in v0.8; for now every tool inherits the cwd decision.
     pub fn check(&self, call: &ToolCall) -> BinaryDecision {
+        let (binary, warning) = self.check_and_warn(call);
+        if let Some(warning) = warning {
+            eprintln!("{warning}");
+        }
+        binary
+    }
+
+    /// The decision **and** the warning, without printing anything.
+    ///
+    /// The caller that owns the store's lock must not print while it
+    /// holds it: the TUI's terminal guard makes stderr a pipe, and a
+    /// pipe that nobody reads fills up and blocks. A blocked `eprintln!`
+    /// inside the lock would stall every other tool call that waits
+    /// for the same lock — the agent would look frozen, and only
+    /// Ctrl+C would not help because the lock holder is the one stuck.
+    ///
+    /// So the warning is *returned*, and the caller prints it after
+    /// the lock is gone.
+    pub fn check_and_warn(&self, call: &ToolCall) -> (BinaryDecision, Option<String>) {
         let cwd_decision = self.get_for_cwd(&call.cwd);
         // For v0.7 we don't differentiate per-tool. The Ask level
         // collapses to Allow (with a log warn emitted by the caller).
         let binary = cwd_decision.to_binary();
-        if let Some(warning) = self.ask_level_warning_for(call) {
-            eprintln!("{warning}");
-        }
-        binary
+        (binary, self.ask_level_warning_for(call))
     }
 
     /// The warning this call produces — if any.

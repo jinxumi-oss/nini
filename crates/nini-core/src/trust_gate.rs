@@ -50,6 +50,17 @@ pub struct ProjectTrustGate {
     /// `ToolCall::tool` is `&'static str` and every built-in tool already
     /// satisfies that bound.
     pub(crate) tool: &'static str,
+    /// How the warning is printed.
+    ///
+    /// Injectable for one reason: the invariant "the print does not
+    /// happen under the lock" is otherwise **untestable**. A test
+    /// cannot make `eprintln!` block without replacing fd 2, and a
+    /// test that replaces fd 2 proves much less than one that simply
+    /// hands the gate a printer which blocks on demand.
+    ///
+    /// The default prints to stderr, which is what the terminal guard
+    /// turns into a transcript notice.
+    printer: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 impl ProjectTrustGate {
@@ -59,12 +70,32 @@ impl ProjectTrustGate {
         session_cwd: &std::path::Path,
         tool: &'static str,
     ) -> Self {
+        Self::with_printer(store, session_cwd, tool, Arc::new(default_printer))
+    }
+
+    /// A gate whose warnings go somewhere else.
+    ///
+    /// Only for tests: it is the seam that lets a test hold the print
+    /// still and look at the lock while the print is in flight.
+    pub fn with_printer(
+        store: Arc<std::sync::Mutex<ProjectTrustStore>>,
+        session_cwd: &std::path::Path,
+        tool: &'static str,
+        printer: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Self {
         Self {
             store,
             session_cwd: session_cwd.display().to_string(),
             tool,
+            printer,
         }
     }
+}
+
+/// The default printer: stderr, which the TUI's terminal guard turns
+/// into a transcript notice.
+fn default_printer(message: &str) {
+    eprintln!("{message}");
 }
 
 #[async_trait::async_trait]
@@ -74,17 +105,27 @@ impl BeforeExecute for ProjectTrustGate {
         args: serde_json::Value,
         _ctx: &ToolContext,
     ) -> Result<Option<serde_json::Value>, ToolError> {
-        let decision = {
+        let (decision, warning) = {
             let store = self
                 .store
                 .lock()
                 .map_err(|_| ToolError::InvalidArgs("project trust store is poisoned".into()))?;
-            store.check(&ToolCall {
+            store.check_and_warn(&ToolCall {
                 tool: self.tool,
                 args: args.clone(),
                 cwd: self.session_cwd.clone(),
             })
         };
+        // The warning is printed *after* the lock is released.
+        //
+        // While the TUI runs, stderr is a pipe with a reader on the
+        // other end; if the reader stalls, the write blocks. Blocking
+        // inside the lock would turn "the diagnostics are slow" into
+        // "every tool call waits for the trust store", and the agent
+        // would look frozen with no way out.
+        if let Some(warning) = warning {
+            (self.printer)(&warning);
+        }
 
         match decision {
             BinaryDecision::Allow => Ok(None),
