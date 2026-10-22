@@ -110,8 +110,12 @@ const STDERR_WHITELIST: &[(&str, usize, &str)] = &[
     ),
     (
         "crates/nini-core/src/trust_gate.rs",
-        1,
-        "library diagnostics — see the note on `nini-core/src/agent.rs`",
+        2,
+        "library diagnostics — see the note on `nini-core/src/agent.rs`. \
+         The second one is the trust warning's default printer: it is a \
+         function so that a test can hold the print still and check that \
+         the trust store's lock is *not* held while it happens (a blocked \
+         print under the lock would stall every other tool call)",
     ),
     (
         "crates/nini-core/src/project_trust.rs",
