@@ -754,10 +754,13 @@ impl<'a> MdState<'a> {
         // overflows, which folds it and shifts the rest of the screen.
         // `ascii_safe` is a no-op in the normal case.
         let rule = |left: &str, mid: &str, right: &str, w: &[usize]| {
-            let cells: Vec<String> = w
-                .iter()
-                .map(|n| "─".repeat(crate::width::chars_for_cells('─', *n)))
-                .collect();
+            // One character per cell: the rule is made of characters
+            // that are either the ambiguous `─` (one cell in a narrow
+            // terminal) or its one-cell ASCII stand-in (one cell in
+            // every terminal), so the count is the cell count either
+            // way. Halving it here as well would draw the rule at half
+            // the width of the rows above and below it.
+            let cells: Vec<String> = w.iter().map(|n| "─".repeat(*n)).collect();
             crate::width::ascii_safe(&format!("{left}─{}─{right}", cells.join(mid)))
         };
 

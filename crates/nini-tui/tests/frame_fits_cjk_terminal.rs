@@ -51,6 +51,16 @@ use ratatui::Terminal;
 /// overflow that is not there.
 fn row_width_cjk(cells: &[&str]) -> usize {
     use unicode_width::UnicodeWidthStr;
+    // The trailing padding is not part of the row's content: the buffer
+    // is always the terminal's full width, so measuring it would say
+    // every row is exactly as wide as the terminal and the alignment
+    // question would never be asked.
+    let end = cells
+        .iter()
+        .rposition(|c| **c != *" ")
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let cells = &cells[..end];
     let mut width = 0usize;
     let mut continuation = false;
     for sym in cells {
@@ -118,12 +128,52 @@ fn the_frame_fits_a_terminal_that_doubles_ambiguous_characters() {
             let mut t = Terminal::new(TestBackend::new(width, 24)).unwrap();
             t.draw(|f| render_frame(f, &state)).unwrap();
             let buf = t.backend().buffer().clone();
+            // A bordered block is one object: the rule above it, its
+            // rows and the rule below must all be the same width. A
+            // block that is one column short on one of its rows is the
+            // frame's version of the report's screenshot — the borders
+            // no longer meet.
+            //
+            // Rows are grouped by "starts with a border character", so
+            // the frame's own rows (the cwd line, the status line) are
+            // not compared with each other.
+            let mut block: Vec<(usize, usize, String)> = Vec::new(); // (y, width, line)
+            let flush = |block: &mut Vec<(usize, usize, String)>, w: usize| {
+                if block.len() < 2 {
+                    block.clear();
+                    return;
+                }
+                let first = block[0].1;
+                for (y, bw, line) in block.iter() {
+                    assert_eq!(
+                        *bw, first,
+                        "case {i} @ {width}: a bordered block is not one width — row {y} is \
+                         {bw} columns, its first row is {first}:\n{line:?}"
+                    );
+                }
+                block.clear();
+                let _ = w;
+            };
             for y in 0..buf.area.height {
                 let cells: Vec<&str> = (0..buf.area.width)
                     .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
                     .collect();
                 let w = row_width_cjk(&cells);
                 let line: String = cells.concat();
+                let starts_block = matches!(
+                    cells.first().copied(),
+                    Some("\u{250c}")
+                        | Some("\u{251c}")
+                        | Some("\u{2502}")
+                        | Some("\u{2514}")
+                        | Some("+")
+                        | Some("|")
+                );
+                if starts_block {
+                    block.push((y as usize, w, line.chars().take(70).collect::<String>()));
+                } else {
+                    flush(&mut block, w);
+                }
                 assert!(
                     w <= width as usize,
                     "case {i} @ {width}: row {y} is {w} columns wide in a CJK terminal \

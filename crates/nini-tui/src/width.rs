@@ -123,19 +123,34 @@ pub fn locale_is_cjk() -> bool {
 /// mapping below is the usual one — box drawing to ASCII, bullets to
 /// ASCII — and it is only used when the wide policy is in force.
 pub fn ascii_fallback(ch: char) -> Option<char> {
+    // The box-drawing block as a whole, by shape: a horizontal line is a
+    // dash, a vertical line is a bar, everything else in the block is a
+    // corner or a junction. Listing the characters one by one misses one
+    // every time — `┤` (U+2524) was missed exactly once, and a table
+    // whose separators were one column wider than its rows is the
+    // screenshot all over again.
+    let c = ch as u32;
+    if (0x2500..=0x257F).contains(&c) {
+        return Some(match ch {
+            '\u{2500}' | '\u{2501}' | '\u{2504}' | '\u{2505}' | '\u{254C}' | '\u{254D}'
+            | '\u{2550}' | '\u{2574}' | '\u{2576}' | '\u{2578}' | '\u{257A}' => '-',
+            '\u{2502}' | '\u{2503}' | '\u{2506}' | '\u{2507}' | '\u{250A}' | '\u{250C}'
+            | '\u{2551}' | '\u{2575}' | '\u{2577}' | '\u{2579}' | '\u{257B}' => '|',
+            _ => '+',
+        });
+    }
+    // Block elements: the context bar, the scrollbar thumb, quadrant
+    // blocks. All of them are ambiguous, so all of them move.
+    if (0x2580..=0x259F).contains(&c) {
+        return Some(match ch {
+            '\u{2594}' | '\u{2595}' => '-',
+            '\u{2596}'..='\u{259F}' => '.',
+            _ => '#',
+        });
+    }
     Some(match ch {
-        // Box drawing.
-        '\u{2500}' | '\u{2501}' | '\u{2504}' | '\u{2505}' => '-',
-        '\u{2502}' | '\u{2503}' | '\u{2506}' | '\u{2507}' => '|',
-        '\u{250c}' | '\u{250f}' | '\u{2510}' | '\u{2513}' | '\u{2514}' | '\u{2517}'
-        | '\u{2518}' | '\u{251c}' | '\u{2523}' | '\u{252b}' | '\u{2533}' | '\u{253b}'
-        | '\u{252c}' | '\u{253c}' | '\u{2534}' => '+',
-        // Blocks used for bars and the scrollbar.
-        '\u{2588}' | '\u{2593}' | '\u{2592}' | '\u{2591}' | '\u{2590}' => '#',
-        '\u{2596}' | '\u{2597}' | '\u{2598}' => '.',
         // Marks nini and the models use.
-        '\u{2022}' | '\u{00b7}' => '*',
-        '\u{25cf}' | '\u{25cb}' => '*',
+        '\u{2022}' | '\u{00b7}' | '\u{25cf}' | '\u{25cb}' => '*',
         '\u{2713}' | '\u{2714}' => '+',
         '\u{2717}' | '\u{2718}' => 'x',
         '\u{25b8}' | '\u{25b6}' | '\u{25c2}' => '>',
@@ -146,13 +161,10 @@ pub fn ascii_fallback(ch: char) -> Option<char> {
         '\u{2190}' => '<',
         '\u{2026}' | '\u{2025}' => '.',
         '\u{00a0}' | '\u{2007}' | '\u{2009}' | '\u{200a}' => ' ',
-        '\u{00ab}' | '\u{00bb}' => '"',
-        '\u{2039}' | '\u{203a}' => '\u{27}',
-        '\u{2032}' | '\u{2033}' => '\'',
+        '\u{00ab}' | '\u{00bb}' | '\u{201c}' | '\u{201d}' => '"',
+        '\u{2039}' | '\u{203a}' | '\u{2018}' | '\u{2019}' | '\u{2032}' | '\u{2033}' => '\'',
         '\u{00d7}' => 'x',
         '\u{2640}' | '\u{2642}' => '+',
-        '\u{2018}' | '\u{2019}' => '\'',
-        '\u{201c}' | '\u{201d}' => '"',
         '\u{2014}' | '\u{2013}' => '-',
         _ => return None,
     })
