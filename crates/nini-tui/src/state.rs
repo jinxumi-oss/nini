@@ -1122,6 +1122,19 @@ pub struct AppState {
     /// only a screen position, and turning that into a scroll position
     /// requires knowing which rectangle it landed in.
     pub transcript_viewport: Arc<StdMutex<crate::scrollbar::Viewport>>,
+    /// Why the real provider could not be started, if it could not.
+    ///
+    /// The TUI falls back to the scripted fixture provider so that it
+    /// can start at all — but a silent fallback is a lie: the status
+    /// bar would name a backend that is not there, and the user's
+    /// message would go in and nothing would come back.
+    ///
+    /// The reason lives in the state (not in a one-off notice) because
+    /// the state outlives the notice: the moment the user changes the
+    /// model with `/model`, a notice-only warning scrolls away and the
+    /// status bar goes back to looking normal. With the reason in the
+    /// state, every later model change says it again.
+    pub provider_fallback_reason: Option<String>,
     /// v0.10.x: how many **rendered rows** the viewport sits above the
     /// live tail — the scrollbar's unit.
     ///
@@ -1738,6 +1751,7 @@ impl Clone for AppState {
             line_heights: Arc::clone(&self.line_heights),
             transcript_viewport: Arc::clone(&self.transcript_viewport),
             items_skipped_from_bottom: Arc::clone(&self.items_skipped_from_bottom),
+            provider_fallback_reason: self.provider_fallback_reason.clone(),
             scroll_activity: Arc::clone(&self.scroll_activity),
             run_state: self.run_state.clone(),
             model_state: self.model_state.clone(),
@@ -1758,6 +1772,7 @@ impl Default for AppState {
             line_heights: Arc::new(StdMutex::new(Vec::new())),
             transcript_viewport: Arc::new(StdMutex::new(crate::scrollbar::Viewport::default())),
             items_skipped_from_bottom: Arc::new(AtomicUsize::new(0)),
+            provider_fallback_reason: None,
             scroll_activity: Arc::new(AtomicU64::new(0)),
             run_state: RunState::default(),
             model_state: ModelState::default(),
@@ -2344,11 +2359,9 @@ impl AppState {
 
     /// v0.10.x: append a **batch** of system notices in one go.
     ///
-    /// The batch form exists because of a performance defect in the
-    /// runtime's drain path. The terminal guard hands the render loop a
-    /// `Vec<String>` of pending lines (a tool that writes 200 lines to
-    /// stderr produces 200 of them), and the loop used to push them one
-    /// at a time:
+    /// The terminal guard hands the render loop a `Vec<String>` of
+    /// pending lines (a tool that writes 200 lines to stderr produces
+    /// 200 of them), and the loop used to push them one at a time:
     ///
     /// ```text
     /// for line in g.take_pending() {
@@ -2356,15 +2369,23 @@ impl AppState {
     /// }
     /// ```
     ///
-    /// `push_notice` goes through `Arc::make_mut(&mut self.transcript_state)`.
-    /// The render loop's snapshot holds its own `Arc` clone, so the
-    /// refcount is ≥ 2 and **every single push deep-copies the whole
-    /// transcript**. Draining 200 lines therefore copied the entire
-    /// transcript 200 times, on the tokio worker, and froze the UI.
+    /// The batch form does one `Arc::make_mut` for the whole batch.
     ///
-    /// This method does one `Arc::make_mut` for the whole batch, so the
-    /// cost is one deep copy per drain, not one per line. The order of
-    /// the notices is the order of the iterator.
+    /// How much that saves is **not** a measured number, and the
+    /// difference matters: `Arc::make_mut` copies the transcript only
+    /// when something else still holds a clone of it. In the drain path
+    /// the render loop's snapshot from the previous iteration has
+    /// already been dropped, so the refcount is 1 and **no copy
+    /// happens at all** — neither before this change nor after. An
+    /// earlier version of this comment claimed that every push
+    /// deep-copied the whole transcript and that a 200-line drain froze
+    /// the UI; that was wrong, and it was wrong in the direction that
+    /// made the bug sound worse than it was.
+    ///
+    /// What the batch form *does* buy is an upper bound: at most one
+    /// copy-on-write per drain instead of one per line, and one
+    /// operation on the transcript instead of N interleaved with the
+    /// agent's own messages.
     pub fn push_notices(&mut self, msgs: impl IntoIterator<Item = String>) {
         let transcript = Arc::make_mut(&mut self.transcript_state);
         transcript
@@ -2544,7 +2565,21 @@ impl AppState {
     /// `model_state.model` directly, so anything derived from it went
     /// stale. Routing both through here means there is one place to forget.
     pub fn set_model(&mut self, model: impl Into<String>) {
-        self.model_state.model = model.into();
+        let model = model.into();
+        self.model_state.model = model;
+        // If the provider could not be started, the model name is a
+        // lie: the app is talking to the scripted fixture, and no model
+        // will answer. The status bar must not go back to looking
+        // normal just because the user picked a model — and the user
+        // has to be told again, because the first notice has long
+        // since scrolled away.
+        if let Some(reason) = self.provider_fallback_reason.clone() {
+            self.model_state.model = "no model".to_string();
+            self.push_notice(format!(
+                "still on the scripted fixture provider ({reason}); no model \
+                 will answer until the provider is fixed"
+            ));
+        }
         self.refresh_context_window();
     }
 

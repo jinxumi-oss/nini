@@ -85,6 +85,76 @@ fn a_notice_keeps_its_own_text() {
     );
 }
 
+/// A notice whose body is full of ambiguous-width characters must not
+/// be wider than the screen either.
+///
+/// `→`, `…`, `✓` and `•` are East-Asian-Ambiguous: one column in a
+/// western terminal, two in a CJK one. A library diagnostic is full of
+/// them (`error: expected one of ..., found →`), and the wrapping
+/// measures with the western width — so the row came out one column
+/// per ambiguous character too wide in a CJK terminal, and the
+/// transcript's `List` cut the tail off.
+///
+/// The fix budgets the extra columns the body will take in a CJK
+/// terminal. The test measures the row the way a CJK terminal would.
+#[test]
+fn a_notice_with_ambiguous_characters_fits_a_cjk_terminal() {
+    let mut state = AppState::new("test-model");
+    let tail = "THE-END-OF-THE-NOTE";
+    // A body made of ambiguous characters: every one of them takes two
+    // columns in a CJK terminal.
+    let body = format!("{} {tail}", "→…✓•·".repeat(12));
+    state.push_notice(body);
+
+    let width = 60u16;
+    let rows = frame_rows(&state, width, 24);
+
+    let mut measured = 0;
+    for (n, row) in rows.iter().enumerate() {
+        if !row.contains('→') && !row.contains(tail) {
+            continue;
+        }
+        measured += 1;
+        let text = row.trim_end();
+        let columns: usize = text.chars().map(cjk_columns).sum();
+        assert!(
+            columns <= width as usize,
+            "row {n} is {columns} columns wide in a CJK terminal, the screen \
+             is {width}:\n{row:?}"
+        );
+    }
+    assert!(
+        measured >= 2,
+        "the notice should occupy more than one row — the test did not \
+         measure what it meant to measure"
+    );
+
+    let screen = rows.join("\n");
+    assert!(
+        screen.contains(tail),
+        "the tail of the notice must survive the CJK budget:\n{screen}"
+    );
+}
+
+/// How many columns a character takes in a CJK terminal: two for the
+/// East-Asian-Ambiguous ones, the usual width otherwise.
+fn cjk_columns(c: char) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    match UnicodeWidthChar::width(c) {
+        Some(1) => {
+            // `unicode-width` says one column. Is the character one of
+            // the ambiguous ones? `width_cjk` says two.
+            if unicode_width::UnicodeWidthChar::width_cjk(c) == Some(2) {
+                2
+            } else {
+                1
+            }
+        }
+        Some(w) => w,
+        None => 0,
+    }
+}
+
 /// A notice row must not be wider than the screen it is drawn on.
 ///
 /// The warning sign is East-Asian-Ambiguous: one cell in a western
@@ -121,18 +191,7 @@ fn a_notice_row_is_never_wider_than_the_screen() {
         // The trailing padding is not content: it is the rest of the
         // row. What matters is how wide the *text* is.
         let text = row.trim_end();
-        let columns: usize = text
-            .chars()
-            .map(|c| {
-                // The ambiguous width of the warning sign, counted the
-                // way a CJK terminal counts it.
-                if c == '\u{26a0}' {
-                    2
-                } else {
-                    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
-                }
-            })
-            .sum();
+        let columns: usize = text.chars().map(cjk_columns).sum();
         assert!(
             columns <= width as usize,
             "row {n} is {columns} columns wide, the screen is {width}:\n{row:?}"

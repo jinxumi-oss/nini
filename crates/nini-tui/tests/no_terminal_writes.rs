@@ -117,13 +117,14 @@ const STDERR_WHITELIST: &[(&str, usize, &str)] = &[
          the trust store's lock is *not* held while it happens (a blocked \
          print under the lock would stall every other tool call)",
     ),
-    (
-        "crates/nini-core/src/project_trust.rs",
-        1,
-        "the trust warning that produced the garbled screen. The guard \
-         catches it while the TUI runs — see the note on \
-         `nini-core/src/agent.rs`",
-    ),
+    // `crates/nini-core/src/project_trust.rs` used to be here: the trust
+    // warning that produced the garbled screen was printed from
+    // `ProjectTrustStore::check`. That print moved into the trust gate's
+    // printer (`crates/nini-core/src/trust_gate.rs`, listed above), so
+    // that it happens **after** the store's lock is released — a blocked
+    // print under that lock stalled every other tool call. The store's
+    // own `check` is now test-only, so the file has no stderr write at
+    // all and a whitelist entry for it would be a stale exemption.
     (
         "crates/nini-cli/src/app.rs",
         16,

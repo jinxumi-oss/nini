@@ -195,6 +195,21 @@ impl ProjectTrustStore {
     /// Returns `Allow` if the cwd is trusted, `Deny` if the cwd is
     /// distrusted or "never". Tool-specific policy is layered on top
     /// in v0.8; for now every tool inherits the cwd decision.
+    ///
+    /// **Test-only.** This is the shape the trust gate used to have:
+    /// it prints the warning itself, so the caller must not be holding
+    /// the store's lock while it runs — and a blocked print (stderr is
+    /// a pipe under the TUI) would then hold that lock and stall every
+    /// other tool call. Production code must use
+    /// [`check_and_warn`](Self::check_and_warn), which returns the
+    /// warning instead of printing it, so the print can happen after
+    /// the lock is gone.
+    ///
+    /// It is `#[cfg(test)]` because that is the only thing it is good
+    /// for: a public "decide and print" API is an invitation to put
+    /// the print back under the lock, and nothing in the type system
+    /// would stop it.
+    #[cfg(test)]
     pub fn check(&self, call: &ToolCall) -> BinaryDecision {
         let (binary, warning) = self.check_and_warn(call);
         if let Some(warning) = warning {

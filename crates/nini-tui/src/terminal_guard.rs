@@ -547,6 +547,28 @@ impl Drop for TerminalGuard {
         //    stderr, not to the transcript: the transcript is about to
         //    disappear with the alternate screen.
         self.begin_shutdown();
+        // 1b. Take the queue **now**, before the reader is told to
+        //     stop.
+        //
+        //     The order of the lines the user sees at the exit depends
+        //     on this. The reader writes the residual out when it
+        //     stops, and the guard used to write the queue out after
+        //     it — so a queue flushed *after* the reader finished
+        //     printed the **older** lines last: the tail of a
+        //     diagnostic before its head.
+        //
+        //     `begin_shutdown()` has already been called, so the reader
+        //     can no longer put anything into the queue: everything
+        //     still in it was read earlier, and the order is right.
+        let pending = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        if !pending.is_empty() {
+            write_lines(&self.restore, &pending);
+        }
         // 2. Hand the terminal back. Writes to fd 2 reach the real
         //    stderr again.
         self.restore.restore();
@@ -583,23 +605,13 @@ impl Drop for TerminalGuard {
         }
         // 7. Whatever the reader read but the render loop never put on
         //    the screen goes to the real stderr, so that a line is never
-        //    silently lost. Two places hold such lines:
-        //    - the pending queue (read, not yet delivered to the
-        //      transcript): it dies with the queue, so it is flushed
-        //      here;
-        //    - the residual (read while the guard was closing): the
-        //      reader usually wrote it out itself, this is the
-        //      belt-and-braces path for a reader that was detached.
-        //    The queue comes first: those lines are the older ones.
-        let pending = std::mem::take(
-            &mut *self
-                .pending
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
-        if !pending.is_empty() {
-            write_lines(&self.restore, &pending);
-        }
+        //    silently lost. The residual holds the lines that were read
+        //    while the guard was closing; the reader usually wrote them
+        //    out itself, and this is the belt-and-braces path for a
+        //    reader that was detached.
+        //
+        //    The queue was already flushed in step 1b — before the
+        //    reader was stopped, so the older lines come first.
         let residual = std::mem::take(
             &mut *self
                 .residual

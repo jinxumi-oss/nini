@@ -654,6 +654,7 @@ async fn run_tui_bootstrap(
             // part the user reads while waiting, so it must not claim
             // a backend that is not there.
             if let Some(error) = &provider_error {
+                state.provider_fallback_reason = Some(error.clone());
                 state.push_notice(format!(
                     "provider '{}' could not be started: {error}. Falling back to the \
                      scripted fixture provider — replies will not come from a model.",

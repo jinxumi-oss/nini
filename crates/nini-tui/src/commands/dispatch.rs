@@ -99,7 +99,11 @@ fn cmd_model(state: &mut AppState, settings: &mut SettingsManager, args: &str) -
             format!("Current model: {}", state.model_state.model),
         ]);
     }
-    state.model_state.model = args.to_string();
+    // `set_model` (not a direct assignment) so that the provider
+    // fallback stays visible: with no provider, the model name is a
+    // lie, and `/model` must not make the status bar look normal
+    // again.
+    state.set_model(args);
     settings.set_default_model(args);
     state.push_assistant(format!("(model set to {})", args));
     state.push_divider();

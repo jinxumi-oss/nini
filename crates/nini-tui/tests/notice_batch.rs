@@ -10,18 +10,33 @@
 //! }
 //! ```
 //!
-//! `push_notice` goes through `Arc::make_mut(&mut transcript_state)`. The
-//! render loop's snapshot holds another `Arc` clone of the same transcript,
-//! so the refcount is ≥ 2 and **every push deep-copies the whole
-//! transcript**. A tool that printed 200 lines therefore copied the entire
-//! transcript 200 times, on the tokio worker, and the UI froze.
+//! `push_notice` goes through `Arc::make_mut(&mut transcript_state)` —
+//! once per line. The batch form does it once per batch.
 //!
-//! These tests cover both halves of the fix: the batch API behaves like the
-//! single-line one (order, content, and the copy-on-write semantics under a
-//! live snapshot), and the runtime's drain path really uses the batch API.
+//! How much that saves is **not** a measured number, and the difference
+//! matters: `Arc::make_mut` copies the transcript only when something
+//! else still holds a clone of it, and in the drain path nothing does
+//! (the previous frame's snapshot has been dropped by then) — so the
+//! per-line form copied nothing in practice either. An earlier version
+//! of this file claimed the opposite, and claimed a 200-line drain
+//! "froze the UI". That premise did not hold.
+//!
+//! What the batch form does buy is an upper bound (at most one
+//! copy-on-write per drain instead of one per line) and one operation on
+//! the transcript instead of N.
+//!
+//! These tests cover both halves: the batch API behaves like the
+//! single-line one (order, content, and the copy-on-write semantics under
+//! a live snapshot), and the runtime's drain path really uses the batch
+//! API.
 
 //! invariant: 266bc74
 use nini_tui::state::{AppState, TranscriptLine};
+
+/// `state.rs`, read so that the *shape* of the batch API can be checked.
+const STATE_SRC: &str = include_str!("../src/state.rs");
+/// `runtime.rs`, read so that the drain path can be checked.
+const RUNTIME_SRC: &str = include_str!("../src/runtime.rs");
 
 /// The text of a notice line, or a panic that says what it found instead.
 fn notice_text(line: &TranscriptLine) -> &str {
@@ -72,12 +87,6 @@ fn push_notices_accepts_any_iterator() {
     assert_eq!(notice_text(&lines[2]), "line 2");
 }
 
-/// The copy-on-write contract must survive the batch form.
-///
-/// The render loop holds a snapshot of the state while it draws, and that
-/// snapshot shares the transcript through an `Arc`. Mutating the live state
-/// must therefore copy the transcript rather than edit the snapshot's copy —
-/// and the batch form must not accidentally edit the shared buffer in place
 /// (which would corrupt the frame being drawn).
 #[test]
 fn push_notices_copies_rather_than_edits_a_live_snapshot() {
@@ -102,15 +111,6 @@ fn push_notices_copies_rather_than_edits_a_live_snapshot() {
     assert_eq!(notice_text(&snapshot.transcript_state.lines[0]), "first");
     assert_eq!(notice_text(&state.transcript_state.lines[2]), "third");
 }
-
-// ---------------------------------------------------------------------------
-// structure: the drain path uses the batch API
-// ---------------------------------------------------------------------------
-
-/// The runtime's source, read at compile time.
-const RUNTIME_SRC: &str = include_str!("../src/runtime.rs");
-/// The state's source, read at compile time.
-const STATE_SRC: &str = include_str!("../src/state.rs");
 
 /// The block in `runtime.rs` that drains the guard's pending lines.
 fn drain_block(src: &str) -> &str {
@@ -142,7 +142,6 @@ fn the_drain_path_pushes_the_whole_batch_in_one_call() {
     );
 }
 
-/// The number of single-notice call sites must not grow because of the
 /// drain: every `push_notice(` in the file lives outside the drain block.
 #[test]
 fn the_drain_adds_no_single_notice_call_sites() {
@@ -159,29 +158,31 @@ fn the_drain_adds_no_single_notice_call_sites() {
     );
 }
 
-/// The batch API must do its work in **one** copy-on-write, and in one
-/// pass over the messages.
-///
-/// `push_notices` exists to replace N deep copies with one. If it ever
-/// grows a second `Arc::make_mut`, or a loop that copies per message, it
-/// is back to copying per line.
+/// The batch must be **one** operation on the transcript.
 ///
 /// The number of deep copies is not observable from outside the type —
-/// `Arc::make_mut` leaves no trace — so this is a source-level check.
-/// It is deliberately narrow: exactly one `Arc::make_mut`, and no `for`
-/// loop over the batch.
+/// `Arc::make_mut` leaves no trace — and in the drain path there is
+/// nothing else holding a clone of the transcript, so the per-line form
+/// did not copy anything either. What *is* observable is the shape: one
+/// `Arc::make_mut`, one `extend`, and no loop over the messages.
+///
+/// (An earlier version of this test claimed the batch avoided "N deep
+/// copies". That was a claim about a premise that did not hold, and a
+/// test that locks a false premise is worse than no test: it sends the
+/// next reader looking for a cost that was never paid.)
 #[test]
-fn push_notices_makes_exactly_one_copy_on_write() {
+fn push_notices_appends_the_batch_in_one_operation() {
     let body = push_notices_body();
     assert_eq!(
         body.matches("Arc::make_mut").count(),
         1,
-        "the batch must copy the transcript once, not once per line:\n{body}"
+        "the batch must touch the transcript once, not once per line:\n{body}"
     );
     assert!(
         !body.contains("for "),
-        "the batch must not loop over the messages — a loop that copies per \
-         message is the defect this API exists to remove:\n{body}"
+        "the batch must not loop over the messages — a loop that touches \
+         the transcript per message is the shape this API exists to \
+         remove:\n{body}"
     );
     assert!(
         body.contains(".extend("),

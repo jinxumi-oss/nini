@@ -73,15 +73,16 @@ fn push_notice(shared: &SharedState, msg: impl Into<String>) {
 
 /// Push a **batch** of system notices into the transcript.
 ///
-/// v0.10.x: the guard's pending lines used to be pushed one at a time.
-/// Each `push_notice` goes through `Arc::make_mut(&mut
-/// transcript_state)`, and the render loop's snapshot holds another
-/// `Arc` clone of the same transcript, so the refcount is ≥ 2 and every
-/// single push deep-copies the whole transcript. A tool that printed 200
-/// lines to stderr therefore copied the entire transcript 200 times, on
-/// the tokio worker — the UI froze while it happened.
+/// v0.10.x: the guard's pending lines used to be pushed one at a time,
+/// each through its own `Arc::make_mut(&mut transcript_state)`.
 ///
-/// One `push_notices` for the whole batch means one deep copy per drain.
+/// The honest version of what that cost: `Arc::make_mut` copies the
+/// transcript only when another clone of it is still alive, and in the
+/// drain path none is (the previous frame's snapshot has been dropped
+/// by then) — so the per-line form copied nothing in practice. The
+/// batch form is not a measured speed-up; it is an upper bound (at
+/// most one copy-on-write per drain instead of one per line) and one
+/// operation on the transcript instead of N.
 fn push_notices(shared: &SharedState, msgs: Vec<String>) {
     if msgs.is_empty() {
         return;
@@ -630,8 +631,7 @@ async fn run_loop(
         // because the render loop held the lock at that instant.
         if let Some(g) = guard.as_ref() {
             // One `Arc::make_mut` for the whole batch — see
-            // `push_notices`. Pushing line by line deep-copied the whole
-            // transcript once per line.
+            // `push_notices`.
             let lines = g.take_pending();
             push_notices(&shared, lines);
         }

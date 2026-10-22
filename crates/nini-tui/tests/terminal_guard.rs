@@ -558,6 +558,15 @@ fn the_dropped_warning_appears_exactly_once() {
         "1500 lines did not overflow the queue: the warning is not being tested"
     );
 
+    // The reader's own path must be walked too: the residual is what
+    // the reader flushes when it stops, and the reader used to write
+    // the warning there. Without a non-empty residual, the reader's
+    // copy of the warning never happens — and the test would pass
+    // against the old code.
+    guard.begin_shutdown();
+    write_to_stderr("a line for the residual");
+    std::thread::sleep(Duration::from_millis(300));
+
     drop(guard);
 
     let seen = stderr.contents();
@@ -571,6 +580,65 @@ fn the_dropped_warning_appears_exactly_once() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+/// The lines the user sees at the exit must be in the order they were
+/// written.
+///
+/// The guard flushes two buffers on the way out: the queue (read
+/// before the guard started closing) and the residual (read after).
+/// The reader writes the residual out when it stops, so the queue has
+/// to be flushed **before** the reader is told to stop — otherwise the
+/// older lines are printed last, and a diagnostic that arrives in
+/// pieces shows its tail before its head.
+#[test]
+fn the_lines_at_the_exit_come_out_in_the_order_they_were_written() {
+    let _terminal = terminal();
+    let stderr = StderrToFile::install();
+    let _state = shared_state(AppState::new("test-model"));
+    let guard = TerminalGuard::install().expect("install the guard");
+
+    // Three lines while the guard is still delivering to the transcript:
+    // they end up in the queue.
+    for i in 1..=3 {
+        write_to_stderr(&format!("early{i}"));
+    }
+    // Wait until the reader has them: the queue is not drained here.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while guard.pending_len() < 3 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        guard.pending_len() >= 3,
+        "the reader never took the first three lines"
+    );
+
+    // The guard starts closing: the lines written now go to the
+    // residual, and they are *newer*.
+    guard.begin_shutdown();
+    for i in 1..=2 {
+        write_to_stderr(&format!("late{i}"));
+    }
+    // Give the reader time to pick them up and to flush the residual.
+    std::thread::sleep(Duration::from_millis(300));
+
+    drop(guard);
+
+    let seen = stderr.contents();
+    let position = |needle: &str| {
+        seen.find(needle).unwrap_or_else(|| {
+            panic!("{needle} never reached the real stderr:\n{seen}");
+        })
+    };
+    let mut last: i64 = -1;
+    for needle in ["early1", "early2", "early3", "late1", "late2"] {
+        let at = position(needle) as i64;
+        assert!(
+            at > last,
+            "{needle} is out of order in the real stderr:\n{seen}"
+        );
+        last = at;
+    }
 }
 
 /// A line the reader read but the render loop never got to draw must

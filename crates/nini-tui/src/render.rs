@@ -1281,8 +1281,20 @@ fn items_for_line(
                     CONTINUATION_PREFIX
                 };
                 let prefix_width = if i == 0 { WARNING_PREFIX_WIDTH } else { 4 };
+                // The body has its own ambiguous characters: `→`, `…`,
+                // `✓`, `•` are all one column in a western terminal and
+                // two in a CJK one, and a library diagnostic is full of
+                // them. The wrapping measures with the western width,
+                // so the budget has to give back the columns those
+                // characters will take in a CJK terminal — otherwise
+                // the row is wider than the screen there and the tail
+                // is cut off. This is the same defect as the one the
+                // warning sign caused, one level down.
                 let wrapped = max_w.and_then(|w| {
-                    crate::width::wrap_text_to_width(line, w.saturating_sub(prefix_width))
+                    crate::width::wrap_text_to_width_cjk(
+                        line,
+                        w.saturating_sub(prefix_width).max(1),
+                    )
                 });
                 match wrapped {
                     Some(parts) if !parts.is_empty() => {

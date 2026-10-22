@@ -518,6 +518,49 @@ fn copy_finds_last_assistant_message() {
     }
 }
 
+/// The provider fallback must survive a model change.
+///
+/// The TUI falls back to the scripted fixture provider when the real
+/// one cannot be started, and says so once — in a transcript notice.
+/// A notice scrolls away, and `/model` used to write the model name
+/// straight into the state: the status bar went back to looking
+/// completely normal while the app was still talking to the fixture,
+/// and the user had no way to tell that no model would answer.
+#[test]
+fn changing_the_model_does_not_hide_the_provider_fallback() {
+    let mut state = AppState::new("test");
+    let mut settings = SettingsManager::default();
+    // The provider could not be started — the state has to remember.
+    state.provider_fallback_reason = Some("OPENAI_API_KEY required".to_string());
+    state.model_state.provider = Some("fixture (fallback)".to_string());
+    state.set_model("no model".to_string());
+
+    let notices_before = state
+        .transcript_state
+        .lines
+        .iter()
+        .filter(|l| matches!(l, TranscriptLine::Notice(_)))
+        .count();
+
+    dispatch(&mut state, &mut settings, CommandId::Model, "gpt-4o");
+
+    assert_eq!(
+        state.model_state.model, "no model",
+        "the model name must not pretend that a model is answering"
+    );
+    let notices_after = state
+        .transcript_state
+        .lines
+        .iter()
+        .filter(|l| matches!(l, TranscriptLine::Notice(_)))
+        .count();
+    assert!(
+        notices_after > notices_before,
+        "the user has to be told again: the first notice has scrolled away \
+         and the status bar would otherwise look normal"
+    );
+}
+
 #[test]
 fn copy_with_no_assistant_message() {
     let mut state = AppState::new("test");

@@ -1,6 +1,6 @@
 ## Unreleased — the TUI, the library and the terminal were all writing to the same screen (2026-10-22)
 
-1537 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
+1540 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
 Three defects, all of them two writers fighting over one row.
 
 ### 1. The library wrote to the terminal the TUI was painting
@@ -223,10 +223,12 @@ The third review round (and one end-to-end run that turned out to be
   the status bar names the fallback.
 
 Plus two that were not "claims" but plain costs: the guard's batch was
-drained one line at a time, and every line deep-copied the whole
-transcript (200 lines = 200 copies, on the tokio worker); and the
-scrollbar's thumb was drawn in rendered rows but hit-tested in
-transcript lines, so a press on the visible thumb made it jump.
+drained one line at a time (now one operation on the transcript per
+drain, which is an upper bound rather than a measured speed-up — the
+per-line form did **not** copy the transcript, because nothing else
+held a clone of it at that moment); and the scrollbar's thumb was drawn
+in rendered rows but hit-tested in transcript lines, so a press on the
+visible thumb made it jump.
 
 ### 6. The notice queue is the guard's own
 

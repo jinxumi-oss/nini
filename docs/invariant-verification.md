@@ -77,6 +77,11 @@
 | `ca97731b` | `terminal_guard` | `terminal_guard` 不再把 fd 2 指向管道（去掉 `dup2`） | `a_library_write_to_stderr_becomes_a_transcript_notice` + `the_real_stderr_works_again_after_the_guard_is_dropped` 变红（症状：transcript 里一条通知都没有） |
 | `ca97731b` | `no_terminal_writes` | 在 `nini-tui/src/runtime.rs` 里加回一处 `eprintln!` | `no_source_file_writes_to_the_terminal_outside_the_whitelist` 变红（报出文件与行号） |
 | `a0d18027` | `project_trust`（src 内单元测试） | 去掉 `ask_level_warning` 的 per-cwd 去重（每次调用都返回 `Some`） | `the_ask_warning_is_stated_once_per_cwd` 变红（症状："the second call for the same cwd must not repeat the warning"） |
+| `851cf4e` | `terminal_guard` | 退出时把队列的 flush 挪到 reader 停止之后 | `the_lines_at_the_exit_come_out_in_the_order_they_were_written` 变红（`late1` 印在 `early1` 之前：诊断的尾巴跑到了头前面） |
+| `851cf4e` | `terminal_guard` | reader 在早退之前也写一次「N lines were dropped」 | `the_dropped_warning_appears_exactly_once` 变红（同一句警告出现两次） |
+| `655db2d` | `notice_rendering` | 通知的折行改回 western 口径（不预留歧义宽字符的列） | `a_notice_with_ambiguous_characters_fits_a_cjk_terminal` 变红（`→…✓•·` 在 CJK 终端里多占 12 列，尾部被裁） |
+| `83a6871` | `slash_command_e2e` | `set_model` 不再理会 provider fallback 的原因 | `changing_the_model_does_not_hide_the_provider_fallback` 变红（`/model` 之后状态栏又变回正常样子） |
+| `81fac45` | `project_trust` | `check()` 恢复成公开的「判断并打印」API | `cargo build` 即失败（`check` 只留给测试，生产路径必须用 `check_and_warn`） |
 | `851cf4e` | `terminal_guard` | 队列在退出时被丢弃（drop 不再 flush pending） | `a_line_still_in_the_queue_reaches_the_real_stderr_at_exit` 变红（那一行既不在 transcript 也不在滚动回放里） |
 | `851cf4e` | `terminal_guard` | 读线程也写一次「N lines were dropped」 | `the_dropped_warning_appears_exactly_once` 变红（同一句警告出现两次） |
 | `3702444` | `html_export` | 导出时不再转义工具参数/命令行/stop reason | `html_escapes_every_arm_that_carries_external_text` 变红（导出文件里出现活的 `<script>`） |
@@ -92,7 +97,7 @@
 | `fe56543d` | `dispatch`（src 内单元测试） | `truncate_for_notice` 不再截断（整条回复又进 transcript） | `a_copy_fallback_notice_is_truncated` 变红 |
 | `a9b490df` | `scroll_indicator_no_overlap` | 渲染层退回修复前的写法：列表画满整个 transcript 区，两个指示器画在正文的第一行/最后一行上 | `the_overflow_indicator_does_not_eat_the_first_row_of_the_transcript` + `the_user_scroll_indicator_does_not_eat_the_last_row_of_the_transcript` 变红（其余断言仍绿） |
 
-十七条注入全部命中，无一条"注入了但测试仍全绿"。
+二十二条注入全部命中，无一条"注入了但测试仍全绿"。
 
 ---
 

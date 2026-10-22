@@ -25,6 +25,78 @@ pub fn display_width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
+/// The width of the text in a **CJK** terminal.
+///
+/// `unicode-width` counts East-Asian-Ambiguous characters as one
+/// column; a CJK terminal draws them as two. `width_cjk` is the other
+/// measurement of the same string — the one a Chinese or Japanese
+/// terminal actually uses.
+///
+/// It matters for anything that has to *fit*: a row measured with
+/// `display_width` can be one column per ambiguous character too wide
+/// in a CJK terminal, and a widget that clips rather than wraps (the
+/// transcript's `List`) then cuts the tail off.
+pub fn display_width_cjk(s: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    UnicodeWidthStr::width_cjk(s)
+}
+
+/// How many columns wider the text is in a CJK terminal than in a
+/// western one — the number of East-Asian-Ambiguous characters it
+/// contains.
+pub fn cjk_extra_width(s: &str) -> usize {
+    display_width_cjk(s).saturating_sub(display_width(s))
+}
+
+/// Wrap the text so that every line fits in `max_width` **columns of a
+/// CJK terminal**.
+///
+/// [`wrap_text_to_width`] measures with the western width, where an
+/// East-Asian-Ambiguous character is one column. A CJK terminal draws
+/// it as two, so a line that fits the western budget can be one column
+/// per ambiguous character too wide there — and a widget that clips
+/// rather than wraps (the transcript's `List`) then cuts the tail off.
+///
+/// So the text is wrapped with a budget that leaves room for the
+/// characters that will take two columns, and the result is checked and
+/// re-wrapped until every line really fits.
+pub fn wrap_text_to_width_cjk(text: &str, max_width: usize) -> Option<Vec<String>> {
+    if max_width == 0 {
+        return None;
+    }
+    if display_width_cjk(text) <= max_width {
+        // It fits in a CJK terminal as it is.
+        return None;
+    }
+    // The first guess: keep the same proportion of the text per line.
+    let western = display_width(text);
+    let cjk = display_width_cjk(text);
+    let mut budget = if cjk > 0 {
+        ((max_width as u64 * western as u64) / cjk as u64) as usize
+    } else {
+        max_width
+    };
+    budget = budget.clamp(1, max_width);
+
+    for _ in 0..8 {
+        let Some(parts) = wrap_text_to_width(text, budget) else {
+            return None;
+        };
+        let worst = parts
+            .iter()
+            .map(|p| display_width(p) + cjk_extra_width(p))
+            .max()
+            .unwrap_or(0);
+        if worst <= max_width {
+            return Some(parts);
+        }
+        // Give back exactly the columns that did not fit.
+        let overflow = worst - max_width;
+        budget = budget.saturating_sub(overflow).max(1);
+    }
+    None
+}
+
 /// Like [`display_width`] but clamps each `&str` slice to a maximum,
 /// returning early once the running total exceeds `max`. Useful for
 /// "does this fit in N columns?" checks without scanning the whole
