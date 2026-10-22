@@ -427,7 +427,7 @@ impl TerminalGuard {
                     // transcript is about to disappear with the
                     // alternate screen, and a line that vanishes with
                     // it was swallowed.
-                    flush_residual(&thread_restore, &thread_residual, &thread_dropped);
+                    flush_residual(&thread_restore, &thread_residual);
                 });
                 let _ = done_tx.send(());
             })
@@ -483,6 +483,29 @@ impl TerminalGuard {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         )
+    }
+
+    /// How many lines were dropped because a buffer was full.
+    ///
+    /// The count is cumulative: it is reported once, when the guard
+    /// goes away, so that "nothing is lost" is not a claim the guard
+    /// cannot back up.
+    pub fn dropped_count(&self) -> usize {
+        self.dropped.load(Ordering::SeqCst)
+    }
+
+    /// How many lines the reader has read and the render loop has not
+    /// put in the transcript yet.
+    ///
+    /// The guard uses it at exit: the lines that are still in the queue
+    /// when the TUI goes away never made it onto the screen, so they
+    /// have to reach the real stderr instead of disappearing with the
+    /// queue.
+    pub fn pending_len(&self) -> usize {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 
     /// Calling it twice is harmless.
@@ -558,10 +581,25 @@ impl Drop for TerminalGuard {
                 self.reader.take();
             }
         }
-        // 7. Whatever was still in the pipe goes to the real stderr, so
-        //    that a line is never silently lost. The reader usually
-        //    did this already (it owns the residual); this is the
-        //    belt-and-braces path for a reader that was detached.
+        // 7. Whatever the reader read but the render loop never put on
+        //    the screen goes to the real stderr, so that a line is never
+        //    silently lost. Two places hold such lines:
+        //    - the pending queue (read, not yet delivered to the
+        //      transcript): it dies with the queue, so it is flushed
+        //      here;
+        //    - the residual (read while the guard was closing): the
+        //      reader usually wrote it out itself, this is the
+        //      belt-and-braces path for a reader that was detached.
+        //    The queue comes first: those lines are the older ones.
+        let pending = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        if !pending.is_empty() {
+            write_lines(&self.restore, &pending);
+        }
         let residual = std::mem::take(
             &mut *self
                 .residual
@@ -621,11 +659,7 @@ fn write_lines(restore: &Arc<Restore>, lines: &[String]) {
 }
 
 /// Write the residual to the saved descriptor and clear it.
-fn flush_residual(
-    restore: &Arc<Restore>,
-    residual: &Arc<Mutex<Vec<String>>>,
-    dropped: &AtomicUsize,
-) {
+fn flush_residual(restore: &Arc<Restore>, residual: &Arc<Mutex<Vec<String>>>) {
     let lines = std::mem::take(
         &mut *residual
             .lock()
@@ -635,13 +669,10 @@ fn flush_residual(
         return;
     }
     write_lines(restore, &lines);
-    let dropped_count = dropped.load(Ordering::SeqCst);
-    if dropped_count > 0 {
-        // Say that something was dropped: a silent drop is a lie about
-        // "nothing is lost" — and say *how much*, because "some" is not
-        // an answer.
-        write_dropped_notice(restore, dropped_count);
-    }
+    // The "N lines were dropped" notice is **not** written here: the
+    // guard's `Drop` writes it, once, with the total count. Writing it
+    // in both places meant the user saw the same warning twice — a
+    // repeated warning is a warning nobody reads.
 }
 
 /// Tell the user that lines were dropped, and how many.

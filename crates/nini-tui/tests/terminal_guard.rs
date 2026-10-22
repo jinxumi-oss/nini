@@ -528,6 +528,95 @@ fn the_guard_comes_back_after_the_external_editor() {
     );
 }
 
+/// The "N lines were dropped" warning must appear **once**.
+///
+/// It used to be written by the reader (when it flushed the residual)
+/// *and* by the guard on the way out — so a session that both dropped
+/// lines and ended with a residual showed the same warning twice. A
+/// warning that appears twice is a warning nobody reads, and it makes
+/// the count look twice as bad as it is.
+#[test]
+fn the_dropped_warning_appears_exactly_once() {
+    let _terminal = terminal();
+    let stderr = StderrToFile::install();
+    let state = shared_state(AppState::new("test-model"));
+    let guard = TerminalGuard::install().expect("install the guard");
+
+    // More lines than the queue keeps, so the oldest ones are dropped.
+    for i in 0..1500 {
+        write_to_stderr(&format!("bulk diagnostic {i}"));
+    }
+
+    // Wait until the guard admits that it dropped something.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while guard.dropped_count() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        guard.dropped_count() > 0,
+        "1500 lines did not overflow the queue: the warning is not being tested"
+    );
+
+    drop(guard);
+
+    let seen = stderr.contents();
+    let count = seen.matches("were dropped").count();
+    assert_eq!(
+        count,
+        1,
+        "the dropped-lines warning must appear exactly once, saw {count}:\n{}",
+        seen.lines()
+            .filter(|l| l.contains("were dropped"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// A line the reader read but the render loop never got to draw must
+/// still reach the user.
+///
+/// The queue is the hand-off between the reader thread and the render
+/// loop. A line that sits in it when the TUI exits never made it onto
+/// the screen — and the screen is about to disappear. If the queue were
+/// simply dropped, the line would be gone: not in the transcript, not
+/// in the scrollback. The guard therefore flushes the queue to the real
+/// stderr on the way out.
+#[test]
+fn a_line_still_in_the_queue_reaches_the_real_stderr_at_exit() {
+    let _terminal = terminal();
+    let stderr = StderrToFile::install();
+    let state = shared_state(AppState::new("test-model"));
+    let guard = TerminalGuard::install().expect("install the guard");
+
+    let line = "read but never drawn";
+    write_to_stderr(line);
+
+    // Wait until the reader has taken the line out of the pipe and put
+    // it in the queue. The render loop is not running here, so nothing
+    // drains the queue: the line stays in it until the guard goes.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while guard.pending_len() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        guard.pending_len() > 0,
+        "the reader never took the line: the test cannot check the queue"
+    );
+    assert!(
+        !stderr.contents().contains(line),
+        "the line went to the terminal before the guard was dropped"
+    );
+
+    drop(guard);
+
+    let seen = stderr.contents();
+    assert!(
+        seen.contains(line),
+        "the line was lost: it was in the queue, the queue died with the \
+         guard, and nothing wrote it to the real stderr:\n{seen}"
+    );
+}
+
 /// The guard must stop delivering to the transcript **before** the
 /// alternate screen goes away.
 ///
