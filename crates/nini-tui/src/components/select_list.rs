@@ -21,7 +21,6 @@
 
 use ratatui::text::Span;
 use serde::{Deserialize, Serialize};
-use unicode_width::UnicodeWidthChar;
 
 /// Default primary column width — matches Pi's `DEFAULT_PRIMARY_COLUMN_WIDTH`.
 pub const DEFAULT_PRIMARY_COLUMN_WIDTH: usize = 32;
@@ -284,7 +283,7 @@ fn truncate_to_cells(s: &str, max: usize) -> String {
     let mut out = String::new();
     let mut used = 0usize;
     for c in s.chars() {
-        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        let w = crate::width::char_width(c);
         if used + w > max {
             out.push('\u{2026}');
             return out;

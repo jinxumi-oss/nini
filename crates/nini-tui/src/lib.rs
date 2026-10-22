@@ -15,6 +15,7 @@
 /// Library version, mirrors workspace version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod ambiguous_probe;
 pub mod ansi;
 
 pub mod clipboard;

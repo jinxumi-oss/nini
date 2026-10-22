@@ -517,6 +517,91 @@ where
     // terminal if anything blows up.
     let _ = crate::signals::install_handlers();
 
+    // Ask the terminal how wide it draws East-Asian **Ambiguous**
+    // characters (`─ │ ┌ ░ •` and the braille spinner), *before* taking
+    // over the screen.
+    //
+    // A row of `cols` cells carrying k ambiguous characters is `cols + k`
+    // columns wide in a terminal that draws them two cells wide: the row
+    // overflows, the terminal folds it, and every row below moves down a
+    // line. Nothing in the frame can be trusted after that — which is
+    // what "the TUI garbles my Chinese" looks like.
+    //
+    // There is no capability query for this, so the terminal is measured
+    // (`ambiguous_probe`), and the answer decides whether the frame uses
+    // box-drawing characters or their one-cell ASCII stand-ins.
+    // `NINI_AMBIGUOUS_WIDTH` overrides the measurement; a terminal that
+    // does not answer keeps the historical behaviour.
+    let forced = std::env::var("NINI_AMBIGUOUS_WIDTH")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    if let Some(mode) = forced.as_deref() {
+        // The user said so; the terminal does not get a vote.
+        crate::width::set_ambiguous_width(mode);
+        if verbose {
+            push_notice(
+                &shared,
+                format!(
+                    "ambiguous-width: forced to {mode:?} by NINI_AMBIGUOUS_WIDTH → {} cell(s) wide",
+                    if crate::width::ambiguous_width_is_wide() {
+                        "two"
+                    } else {
+                        "one"
+                    }
+                ),
+            );
+        }
+    } else {
+        if let Some((cols, rows)) = crossterm::terminal::size().ok() {
+            match crate::ambiguous_probe::detect(rows) {
+                crate::ambiguous_probe::AmbiguousProbe::Measured { wide } => {
+                    crate::width::set_ambiguous_width(if wide { "wide" } else { "narrow" });
+                    if verbose {
+                        push_notice(
+                            &shared,
+                            format!(
+                                "ambiguous-width characters: {} cell(s) wide{}",
+                                if wide { "two" } else { "one" },
+                                if wide {
+                                    " — ASCII chrome, so no row can overflow"
+                                } else {
+                                    " — box-drawing chrome"
+                                }
+                            ),
+                        );
+                    }
+                }
+                crate::ambiguous_probe::AmbiguousProbe::Unknown => {
+                    // The terminal did not answer — tmux does not, for
+                    // one. Fall back to the locale, which is a
+                    // correlation rather than a fact, and then to the
+                    // historical behaviour. The order matters: assuming
+                    // **wide** costs a plainer frame, assuming narrow on
+                    // a wide terminal costs the whole screen.
+                    let wide = crate::width::locale_is_cjk();
+                    crate::width::set_ambiguous_width(if wide { "wide" } else { "narrow" });
+                    if verbose {
+                        push_notice(
+                            &shared,
+                            format!(
+                                "ambiguous-width: the terminal did not answer; using the \
+                                 locale ({}) → {} cell(s) wide{}",
+                                if wide { "CJK" } else { "western" },
+                                if wide { "two" } else { "one" },
+                                if wide {
+                                    " — ASCII chrome, so no row can overflow"
+                                } else {
+                                    " — box-drawing chrome"
+                                }
+                            ),
+                        );
+                    }
+                }
+            }
+            let _ = cols;
+        }
+    }
+
     enable_raw_mode()?;
     crate::signals::mark_raw_mode(true);
     // v0.10.3: from here on, the library's stderr is a pipe, not the

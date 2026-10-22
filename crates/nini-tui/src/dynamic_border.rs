@@ -38,7 +38,7 @@ impl DynamicBorder {
     pub fn render(&self, width: usize, theme: &Theme) -> Line<'static> {
         let w = width.max(1);
         let spans = vec![Span::styled(
-            "\u{2500}".repeat(w),
+            crate::width::horizontal_rule(w),
             theme.fg_style(self.color),
         )];
         Line::from(spans)
@@ -64,12 +64,12 @@ impl DynamicBorder {
 
         let mut spans = Vec::new();
         spans.push(Span::styled(
-            "\u{2500}".repeat(half.max(1)),
+            crate::width::horizontal_rule(half.max(1)),
             theme.fg_style(self.color),
         ));
         spans.push(Span::raw(format!(" {label} ")));
         spans.push(Span::styled(
-            "\u{2500}".repeat(rest.max(1)),
+            crate::width::horizontal_rule(rest.max(1)),
             theme.fg_style(self.color),
         ));
         Line::from(spans)

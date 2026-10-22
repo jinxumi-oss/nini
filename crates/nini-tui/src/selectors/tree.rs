@@ -9,7 +9,6 @@
 use std::any::Any;
 
 use nini_session::SessionEntry;
-use unicode_width::UnicodeWidthChar;
 
 use crate::selector::{SelectorItem, SelectorOutcome, SelectorState};
 
@@ -87,7 +86,7 @@ fn truncate(s: &str, max: usize) -> String {
     let mut out = String::new();
     let mut used = 0usize;
     for c in s.chars() {
-        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        let w = crate::width::char_width(c);
         if used + w + 1 > max {
             // +1 reserves a cell for the trailing ellipsis.
             out.push('\u{2026}');

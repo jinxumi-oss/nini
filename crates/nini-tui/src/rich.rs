@@ -550,9 +550,20 @@ pub fn turn_separator() -> RLine<'static> {
 /// Used both for the existing `render_running_indicator` and for the
 /// new `render_status` 5-state indicator.
 pub fn spinner_frame() -> &'static str {
+    // The braille frames are East-Asian **Ambiguous**: one cell in most
+    // terminals, two in a CJK-configured one. The spinner sits at the
+    // left of the status line, so a two-cell spinner pushes everything
+    // after it one column right — and the status line's right-aligned
+    // model name is already at the edge. The ASCII frames are one cell
+    // in every terminal.
     const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    const ASCII: &[&str] = &["|", "/", "-", "\\", "|", "/", "-", "\\"];
     let i = (chrono::Utc::now().timestamp_millis() / 80) as usize % FRAMES.len();
-    FRAMES[i]
+    if crate::width::ambiguous_width_is_wide() {
+        ASCII[i % ASCII.len()]
+    } else {
+        FRAMES[i]
+    }
 }
 
 /// 5-state agent phase indicator. Mirrors Pi's `StatusIndicatorComponent`

@@ -1,3 +1,18 @@
+## Unreleased — the frame was drawn at twice the terminal's width, because of the box-drawing characters (2026-10-23)
+
+1550 tests, all green. The report's second photo: every row shifted by a
+different amount, and the horizontal rules cut in half.
+
+### The frame was twice as wide as the terminal — because of the box-drawing characters
+
+Every character nini draws as chrome is East-Asian **Ambiguous**: `─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼`, the `░ ▓ █` context bar, `• ▸ ✓ ✗ ❯ ↑ ↓`, and the braille spinner. `unicode-width` — and most terminals — draw those one cell wide. A terminal configured for a Chinese, Japanese or Korean locale very often draws them **two**.
+
+That is not cosmetic. A row of `cols` cells carrying *k* ambiguous characters is `cols + k` columns wide in such a terminal: the row overflows, the terminal folds it, and **every row below it moves down a line**. One rule is enough to shift the whole lower half of the screen — the transcript, the input box, the cursor. Measured on this repository's own TUI capture at 100 columns: **501 of 4920 rows overflow, the widest at 200 columns**. That is what the report's "乱码 + 下划线" looks like, and why each row in the screenshot was shifted by a different amount.
+
+There is no capability query for this, so nini now **asks the terminal**: it writes a known number of `─` on a scratch row, sends a Device Status Report, and reads back where the cursor ended up (`crates/nini-tui/src/ambiguous_probe.rs`). Eight characters, one column each → narrow; sixteen → wide. The ladder is measure, then the locale, then the historical assumption; and `NINI_AMBIGUOUS_WIDTH=wide|narrow` overrides all of it, because a terminal that does not answer the probe (tmux does not) or does not follow its locale is a real thing.
+
+In wide mode the frame is drawn with one-cell ASCII stand-ins — box drawing to `+-|`, bars to `#`, bullets to `*` — and every layout decision is sized with the widths the terminal actually uses, including the table frame's minimum (Pi's `3n + 1` becomes `7n + 2`). The assertion lives in `crates/nini-tui/tests/frame_fits_cjk_terminal.rs`: no row of the frame may exceed the terminal *when measured the way a CJK terminal measures it*, at 60/80/100/120 columns, for every kind of line nini can draw — prose, tables, quotes, code fences, tool calls, tool results, bash output, and the running status line with its spinner and context bar.
+
 ## v0.10.5 — a character cut in half by the network killed the whole turn (2026-10-22)
 
 1548 tests, all green. The report is 「一遇到复杂任务/工具调用任务就乱码」, and

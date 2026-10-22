@@ -30,7 +30,7 @@ use crate::width::{display_width, floor_char_boundary, truncate_cells, truncate_
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as RLine, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::sync::atomic::Ordering;
 
@@ -561,8 +561,8 @@ fn context_bar(pct: f64) -> String {
     let empty = width - filled;
     format!(
         "[{}{}]",
-        "\u{2588}".repeat(filled),
-        "\u{2591}".repeat(empty)
+        crate::width::bar_cells('\u{2588}', filled),
+        crate::width::bar_cells('\u{2591}', empty)
     )
 }
 
@@ -1353,9 +1353,23 @@ fn items_for_line(
             out
         }
     };
+    // One last pass over every span: in a terminal that draws
+    // East-Asian **Ambiguous** characters two cells wide, any of them on
+    // screen — in the model's own text as much as in nini's chrome — makes
+    // the row wider than the terminal, the terminal folds it, and every
+    // row below it moves down a line. A no-op unless that terminal is in
+    // use, so the common case pays nothing.
     items
         .into_iter()
-        .map(|l| ListItem::new(highlight_row(l, highlight, theme)))
+        .map(|l| {
+            let spans = l
+                .spans
+                .into_iter()
+                .map(|sp| Span::styled(crate::width::ascii_safe(&sp.content), sp.style))
+                .collect::<Vec<_>>();
+            highlight_row(RLine::from(spans), highlight, theme)
+        })
+        .map(ListItem::new)
         .collect()
 }
 
@@ -1490,23 +1504,112 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     // matters — was pushed out. Below 3 rows, drop the frame and draw
     // the text bare: an unframed prompt you can type into beats a
     // handsome empty box.
-    let para = if area.height >= 3 {
-        Paragraph::new(line_widgets)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme.fg_style("borderMuted"))
-                    .title(Span::styled(
-                        " \u{2500} input \u{2500} ",
-                        theme.fg_style("borderMuted"),
-                    ))
-                    .padding(Padding::horizontal(padding_x)),
-            )
-            .wrap(Wrap { trim: false })
+    let border_style = theme.fg_style("borderMuted");
+    if area.height >= 3 {
+        // The frame is drawn by hand, not by ratatui's `Block`.
+        //
+        // `Block` puts **one** border character in one cell, because
+        // `unicode-width` says the box-drawing characters are one cell
+        // wide. In a terminal that draws East-Asian **Ambiguous**
+        // characters two cells wide — which is what a CJK locale usually
+        // configures — every one of those characters costs the terminal
+        // two columns, so the row is twice as wide as the frame thinks it
+        // is. The terminal folds it, and every row below it moves down a
+        // line: the input box, the row the cursor sits on, and the whole
+        // lower half of the screen end up in the wrong place.
+        //
+        // Drawing it here means the border is measured in the same units
+        // as the terminal draws it (`width::horizontal_rule` and
+        // `width::ascii_safe` both know the policy).
+        let inner = Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(2),
+        };
+        let body = Rect {
+            x: inner.x + padding_x,
+            y: inner.y,
+            width: inner.width.saturating_sub(padding_x * 2),
+            height: inner.height,
+        };
+        f.render_widget(
+            Paragraph::new(line_widgets).wrap(Wrap { trim: false }),
+            body,
+        );
+
+        // The frame: top rule with the title, bottom rule, the two
+        // sides, and the four corners — every character chosen by the
+        // policy, so a row is never wider than the terminal draws it.
+        let top_left = crate::width::ascii_safe("\u{250c}");
+        let top_right = crate::width::ascii_safe("\u{2510}");
+        let bottom_left = crate::width::ascii_safe("\u{2514}");
+        let bottom_right = crate::width::ascii_safe("\u{2518}");
+        let side = crate::width::ascii_safe("\u{2502}");
+        let title = crate::width::ascii_safe(" \u{2500} input \u{2500} ");
+        let width = area.width as usize;
+
+        let rule_of = |fill: usize| crate::width::horizontal_rule(fill);
+        let mut top_line = format!("{top_left}{}{top_right}", rule_of(width.saturating_sub(2)));
+        // The title sits on the top rule, where a terminal draws a title.
+        let title_w = crate::width::display_width(&title);
+        if width > title_w + 2 {
+            let mut chars = top_line.chars();
+            let left = chars.next().unwrap_or(' ');
+            let mut rest: Vec<char> = chars.collect();
+            let skip = 1; // one cell of rule before the title
+            let fill = rest.iter().take(skip).collect::<String>();
+            rest = rest.into_iter().skip(skip).collect();
+            top_line = format!(
+                "{left}{fill}{title}{}{top_right}",
+                rest.into_iter()
+                    .take(width - title_w - 2 - skip)
+                    .collect::<String>()
+            );
+        }
+        f.render_widget(
+            Paragraph::new(Span::styled(top_line, border_style)),
+            Rect {
+                x: area.x,
+                y: area.y,
+                width: area.width,
+                height: 1,
+            },
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                format!(
+                    "{bottom_left}{}{bottom_right}",
+                    rule_of(width.saturating_sub(2))
+                ),
+                border_style,
+            )),
+            Rect {
+                x: area.x,
+                y: area.y + area.height - 1,
+                width: area.width,
+                height: 1,
+            },
+        );
+        for y in inner.y..inner.y + inner.height {
+            for x in [area.x, area.x + area.width - 1] {
+                f.render_widget(
+                    Paragraph::new(Span::styled(side.clone(), border_style)),
+                    Rect {
+                        x,
+                        y,
+                        width: 1,
+                        height: 1,
+                    },
+                );
+            }
+        }
     } else {
-        Paragraph::new(line_widgets).wrap(Wrap { trim: false })
-    };
-    f.render_widget(para, area);
+        f.render_widget(
+            Paragraph::new(line_widgets).wrap(Wrap { trim: false }),
+            area,
+        );
+    }
 
     // Render cursor. Account for paddingX: x offset starts after the
     // left border (1) + padding (padding_x) + the 2-char prompt symbol.

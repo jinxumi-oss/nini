@@ -223,7 +223,7 @@ impl<'a> MdState<'a> {
         // Pi-style: when inside a blockquote, prefix every output line with
         // the left-border character (`│ `) per nesting level.
         if self.quote_depth > 0 {
-            let prefix = "\u{2502} ".repeat(self.quote_depth);
+            let prefix = crate::width::ascii_safe("\u{2502} ").repeat(self.quote_depth);
             // v0.10.2: the body gets Pi's `theme.quote(theme.italic(text))`
             // (`markdown.ts:557`).
             //
@@ -604,7 +604,22 @@ impl<'a> MdState<'a> {
         if num_cols == 0 {
             return;
         }
-        let border_overhead = 3 * num_cols + 1;
+        // The smallest frame that still fits: `3n + 1` when a border
+        // character costs one cell (Pi's number: `n` columns of one cell
+        // each, plus `n` separators of two cells, plus the closing bar).
+        //
+        // In a terminal that draws East-Asian **Ambiguous** characters two
+        // cells wide — `┌ ─ ┬ │` are all ambiguous, and they are all this
+        // frame — every one of the `2n + 1` border characters costs two,
+        // and the padding around each cell is unaffected. That is
+        // `2(2n + 1) + 3n = 7n + 2`, and a frame narrower than this is not
+        // drawn at all: the table degrades to a borderless one rather than
+        // overflow, which is the whole point of the check.
+        let border_overhead: usize = if crate::width::ambiguous_width_is_wide() {
+            7 * num_cols + 2
+        } else {
+            3 * num_cols + 1
+        };
         // Pi gives up on the frame when even one cell per column will not
         // fit and falls back to the raw source (`markdown.js:557`). nini
         // has no raw text to fall back to, so the degradation is a
@@ -733,9 +748,17 @@ impl<'a> MdState<'a> {
         // border `Σw + 3n + 1` wide, the same as `│ a │ b │`. Leaving it
         // out is a one-cell-per-row mismatch that only shows on tables
         // whose cells are not a multiple of the width.
+        // Every character of a table frame is East-Asian **Ambiguous**,
+        // so in a terminal that draws them two cells wide the frame is
+        // twice as wide as the arithmetic that sized it — and the row
+        // overflows, which folds it and shifts the rest of the screen.
+        // `ascii_safe` is a no-op in the normal case.
         let rule = |left: &str, mid: &str, right: &str, w: &[usize]| {
-            let cells: Vec<String> = w.iter().map(|n| "─".repeat(*n)).collect();
-            format!("{left}─{}─{right}", cells.join(mid))
+            let cells: Vec<String> = w
+                .iter()
+                .map(|n| "─".repeat(crate::width::chars_for_cells('─', *n)))
+                .collect();
+            crate::width::ascii_safe(&format!("{left}─{}─{right}", cells.join(mid)))
         };
 
         self.out.push(Line::from(Span::styled(
@@ -759,10 +782,11 @@ impl<'a> MdState<'a> {
                 .collect();
             let height = wrapped.iter().map(|c| c.len()).max().unwrap_or(1);
             for line_idx in 0..height {
-                let mut spans: Vec<Span<'static>> = vec![Span::styled("│ ", border_style)];
+                let mut spans: Vec<Span<'static>> =
+                    vec![Span::styled(crate::width::ascii_safe("│ "), border_style)];
                 for (i, cell_lines) in wrapped.iter().enumerate() {
                     if i > 0 {
-                        spans.push(Span::styled(" │ ", border_style));
+                        spans.push(Span::styled(crate::width::ascii_safe(" │ "), border_style));
                     }
                     let text = cell_lines.get(line_idx).cloned().unwrap_or_default();
                     let pad = widths[i].saturating_sub(crate::width::display_width(&text));
@@ -786,7 +810,7 @@ impl<'a> MdState<'a> {
                     };
                     spans.push(Span::styled(content, style));
                 }
-                spans.push(Span::styled(" │", border_style));
+                spans.push(Span::styled(crate::width::ascii_safe(" │"), border_style));
                 self.out.push(Line::from(spans));
             }
             if r == 0 {
@@ -834,7 +858,7 @@ impl<'a> MdState<'a> {
 
     fn on_rule(&mut self) {
         self.ensure_block_gap();
-        let rule = "\u{2500}".repeat(self.rule_width());
+        let rule = crate::width::horizontal_rule(self.rule_width());
         self.out
             .push(Line::from(Span::styled(rule, self.theme.fg_style("mdHr"))));
         self.last_was_block_end = true;

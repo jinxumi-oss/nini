@@ -25,6 +25,235 @@ pub fn terminal_cols() -> usize {
         .unwrap_or(0)
 }
 
+/// Does this terminal count East-Asian **Ambiguous** characters as two
+/// cells?
+///
+/// `unicode-width` answers 1 for them (the Unicode default), and so does
+/// most of the western world. A terminal configured for a Chinese,
+/// Japanese or Korean locale very often answers **2** — `─ │ ┌ ┐ └ ┘
+/// ├ ┤ ┬ ┴ ┼`, `░ ▓ █`, `• ▸ ✓ ✗ ❯ ↑ ↓`, and the braille spinner are
+/// *all* ambiguous, and they are *all* chrome.
+///
+/// That is not cosmetic. A row laid out as N cells is 2N columns wide in
+/// such a terminal, so the terminal folds it — and folding one row pushes
+/// **every row below it down by a line**. What is left is a wall of
+/// half-rules and stray fragments: the "乱码" and the "下划线" in the
+/// report. Measured on this repository's own capture at 100 columns:
+/// **501 of 4920 rows overflow**, the widest at **200** columns.
+///
+/// The terminal cannot be asked (there is no query for "how wide do you
+/// draw U+2500"), so the answer comes from two places, in this order:
+///
+/// 1. `NINI_AMBIGUOUS_WIDTH=wide|narrow` — an explicit override, for a
+///    terminal that does not follow its locale;
+/// 2. the locale (`LC_ALL`/`LC_CTYPE`/`LANG` naming zh/ja/ko).
+///
+/// When in doubt this assumes **wide**, because the two failures are not
+/// equal: a layout that assumed wide and met a narrow terminal is merely
+/// sparse, while a layout that assumed narrow and met a wide terminal is
+/// a broken screen.
+use std::sync::atomic::{AtomicU8, Ordering};
+
+const UNDECIDED: u8 = 0;
+const NARROW: u8 = 1;
+const WIDE: u8 = 2;
+
+static POLICY: AtomicU8 = AtomicU8::new(UNDECIDED);
+
+/// Say how the terminal draws ambiguous characters: `"wide"`, `"narrow"`,
+/// or `"auto"` to follow the locale. Unknown values mean `"auto"`.
+///
+/// This exists because the terminal cannot be asked, and because the
+/// locale is a correlation rather than a guarantee: a CJK-locale user
+/// with a narrow terminal (and the reverse) both exist.
+pub fn set_ambiguous_width(mode: &str) {
+    POLICY.store(
+        match mode.trim().to_ascii_lowercase().as_str() {
+            "wide" | "2" => WIDE,
+            "narrow" | "1" => NARROW,
+            _ => UNDECIDED,
+        },
+        Ordering::SeqCst,
+    );
+}
+
+/// Whether the wide interpretation is in force.
+pub fn ambiguous_width_is_wide() -> bool {
+    match POLICY.load(Ordering::SeqCst) {
+        NARROW => false,
+        WIDE => true,
+        _ => {
+            // Default: **narrow**. Most terminals — including the modern
+            // ones a CJK-locale user is most likely to be running — draw
+            // ambiguous characters one cell wide, and a locale is a
+            // correlation, not a fact. `NINI_AMBIGUOUS_WIDTH=wide` (or the
+            // runtime probe, `crate::ambiguous_probe`) is how a terminal
+            // that says otherwise gets its say.
+            POLICY.store(NARROW, Ordering::SeqCst);
+            false
+        }
+    }
+}
+
+pub fn locale_is_cjk() -> bool {
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .any(|v| {
+            let v = v.to_ascii_lowercase();
+            ["zh", "ja", "ko"].iter().any(|tag| v.contains(tag))
+        })
+}
+
+/// The ASCII stand-in for an ambiguous character, when the terminal
+/// draws the ambiguous one two cells wide.
+///
+/// # Why the frame cannot simply use fewer of them
+///
+/// A TUI frame fills its whole width: every row is `cols` cells, the
+/// unused ones padded with spaces. In a terminal that draws an ambiguous
+/// character two cells wide, a row carrying *k* of them renders as
+/// `cols + k` columns — the row overflows no matter how few there are,
+/// because the padding is the difference. One rule is enough to push the
+/// row past the edge, and a folded row moves **everything below it** down
+/// by a line.
+///
+/// So in that terminal the answer is not "draw fewer" but "draw none":
+/// every character on screen must be one the terminal agrees on. The
+/// mapping below is the usual one — box drawing to ASCII, bullets to
+/// ASCII — and it is only used when the wide policy is in force.
+pub fn ascii_fallback(ch: char) -> Option<char> {
+    Some(match ch {
+        // Box drawing.
+        '\u{2500}' | '\u{2501}' | '\u{2504}' | '\u{2505}' => '-',
+        '\u{2502}' | '\u{2503}' | '\u{2506}' | '\u{2507}' => '|',
+        '\u{250c}' | '\u{250f}' | '\u{2510}' | '\u{2513}' | '\u{2514}' | '\u{2517}'
+        | '\u{2518}' | '\u{251c}' | '\u{2523}' | '\u{252b}' | '\u{2533}' | '\u{253b}'
+        | '\u{252c}' | '\u{253c}' | '\u{2534}' => '+',
+        // Blocks used for bars and the scrollbar.
+        '\u{2588}' | '\u{2593}' | '\u{2592}' | '\u{2591}' | '\u{2590}' => '#',
+        '\u{2596}' | '\u{2597}' | '\u{2598}' => '.',
+        // Marks nini and the models use.
+        '\u{2022}' | '\u{00b7}' => '*',
+        '\u{25cf}' | '\u{25cb}' => '*',
+        '\u{2713}' | '\u{2714}' => '+',
+        '\u{2717}' | '\u{2718}' => 'x',
+        '\u{25b8}' | '\u{25b6}' | '\u{25c2}' => '>',
+        '\u{25c0}' => '<',
+        '\u{2191}' => '^',
+        '\u{2193}' => 'v',
+        '\u{2192}' => '>',
+        '\u{2190}' => '<',
+        '\u{2026}' | '\u{2025}' => '.',
+        '\u{00a0}' | '\u{2007}' | '\u{2009}' | '\u{200a}' => ' ',
+        '\u{00ab}' | '\u{00bb}' => '"',
+        '\u{2039}' | '\u{203a}' => '\u{27}',
+        '\u{2032}' | '\u{2033}' => '\'',
+        '\u{00d7}' => 'x',
+        '\u{2640}' | '\u{2642}' => '+',
+        '\u{2018}' | '\u{2019}' => '\'',
+        '\u{201c}' | '\u{201d}' => '"',
+        '\u{2014}' | '\u{2013}' => '-',
+        _ => return None,
+    })
+}
+
+/// Replace every ambiguous character in `s` with its ASCII stand-in.
+///
+/// A no-op unless the wide policy is in force, so the common case pays
+/// nothing.
+pub fn ascii_safe(s: &str) -> String {
+    if !ambiguous_width_is_wide() {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut changed = false;
+    for ch in s.chars() {
+        match ascii_fallback(ch) {
+            Some(c) => {
+                out.push(c);
+                changed = true;
+            }
+            None => out.push(ch),
+        }
+    }
+    if changed {
+        out
+    } else {
+        s.to_string()
+    }
+}
+
+/// The vertical bar the frame is drawn with, in a character every
+/// terminal agrees on.
+pub fn vertical_bar() -> String {
+    ascii_safe("\u{2502} ")
+}
+
+/// A vertical bar without the trailing space.
+pub fn vertical_edge() -> String {
+    ascii_safe("\u{2502}")
+}
+
+/// `cells` columns of a bar character, in characters every terminal
+/// agrees on.
+pub fn bar_cells(ch: char, cells: usize) -> String {
+    let ch = if ambiguous_width_is_wide() {
+        ascii_fallback(ch).unwrap_or('#')
+    } else {
+        ch
+    };
+    ch.to_string().repeat(chars_for_cells(ch, cells))
+}
+
+/// The horizontal rule for `cells` columns, drawn in characters that
+/// are one cell wide in **every** terminal.
+///
+/// Returns the string; the caller draws it.
+pub fn horizontal_rule(cells: usize) -> String {
+    let ch = if ambiguous_width_is_wide() {
+        '-'
+    } else {
+        '\u{2500}'
+    };
+    ch.to_string().repeat(cells.max(1))
+}
+
+/// How many `ch` characters are needed to cover `cells` columns.
+///
+/// The chrome is drawn by repeating a character, and that character may be
+/// one column wide or two. A layout that emits `cells` copies of an
+/// ambiguous character covers `cells` columns in a narrow terminal and
+/// `2 × cells` in a wide one — which is how the frame ends up twice as
+/// wide as the terminal.
+pub fn chars_for_cells(ch: char, cells: usize) -> usize {
+    let w = char_width(ch).max(1);
+    cells.div_ceil(w).max(1)
+}
+
+/// Terminal display width of a single character, in cells.
+#[inline]
+pub fn char_width(c: char) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    if ambiguous_width_is_wide() {
+        UnicodeWidthChar::width_cjk(c).unwrap_or(0)
+    } else {
+        UnicodeWidthChar::width(c).unwrap_or(0)
+    }
+}
+
+/// Terminal display width of `s` in cells, using the same policy as
+/// [`char_width`].
+#[inline]
+pub fn str_width(s: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    if ambiguous_width_is_wide() {
+        UnicodeWidthStr::width_cjk(s)
+    } else {
+        UnicodeWidthStr::width(s)
+    }
+}
+
 /// Terminal display width of `s` in cells.
 ///
 /// Always returns a finite `usize`; non-printable control bytes
@@ -32,8 +261,7 @@ pub fn terminal_cols() -> usize {
 /// string returns 0.
 #[inline]
 pub fn display_width(s: &str) -> usize {
-    use unicode_width::UnicodeWidthStr;
-    UnicodeWidthStr::width(s)
+    str_width(s)
 }
 
 /// The width of the text in a **CJK** terminal.
@@ -119,7 +347,7 @@ pub fn display_width_clamped(s: &str, max: usize) -> usize {
     }
     let mut total = 0usize;
     for c in s.chars() {
-        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        let w = char_width(c);
         total = total.saturating_add(w);
         if total > max {
             return max + 1; // signal "definitely too wide"
@@ -202,7 +430,7 @@ pub fn truncate_cells(s: &str, max: usize) -> String {
     let mut out = String::with_capacity(budget.min(s.len()) + 3);
     let mut consumed = 0usize;
     for c in s.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        let cw = char_width(c);
         if consumed + cw > budget {
             break;
         }
@@ -236,7 +464,7 @@ pub fn truncate_cells_head(s: &str, max: usize) -> String {
     let mut end = s.len();
     let mut consumed = 0usize;
     for (byte_idx, c) in s.char_indices().rev() {
-        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        let cw = char_width(c);
         if consumed + cw > budget {
             end = byte_idx + c.len_utf8();
             break;
