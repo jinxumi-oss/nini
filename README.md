@@ -1,6 +1,7 @@
 # nini
 
-> A Pi-compatible coding agent, rewritten in Rust.
+> A clean Pi agent, rewritten in Rust — the author's aim is to keep Pi's
+> original flavor.
 
 [![Status](https://img.shields.io/badge/status-v0.10.4-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -13,9 +14,37 @@ configuration, produces the same session JSONL v4, and exposes the same
 23 slash commands plus 5 of its own. Drop it in alongside Pi and your
 existing skills, settings, and models.json keep working.
 
+nini is not trying to be a different agent. It is Pi, in Rust — and the
+author's aim is to keep Pi's original flavor: the same configuration,
+the same session files, the same commands, the same feel in the hand,
+with nothing bolted on and nothing taken away.
+
+### Keeping Pi's original flavor
+
+What that means in practice, and nothing more:
+
+- **The same `~/.pi/agent/`.** Your skills, `settings.json` and
+  `models.json` are read as they are, and nini reads and writes the
+  same session JSONL v4 — the whole real Pi session corpus is read
+  with **0 lines dropped** (the conformance suite measures it, because
+  before v0.10 nini dropped 48% of it).
+- **The same 23 slash commands**, dispatched the same way. One of them
+  (`/share`) is not implemented yet, and says so instead of pretending
+  to. The 5 nini-only commands are additions, not replacements.
+- **No account, no cloud, no phone-home.** There is no login, no
+  telemetry, no sync, no updater. The only network traffic is the
+  model provider you configured, and `/login` only tells you which
+  environment variable to set.
+- **One executable.** No Node runtime, no package manager, no daemon —
+  MIT, with no license riders.
+- **The same hand-feel.** Pi's keybindings, its streaming rhythm, its
+  command palette, its transcript: ratatui draws them, but they are
+  Pi's.
+
 ## Why nini?
 
-- **Single 5.4 MB binary** instead of a Node.js toolchain
+- **Single 6.4 MiB executable** (2.4 MB compressed) instead of a Node.js
+  toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
 - **1540 unit + integration tests**, including property-based SSE fuzz and
