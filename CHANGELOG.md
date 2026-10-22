@@ -1,4 +1,4 @@
-## Unreleased — the TUI, the library and the terminal were all writing to the same screen (2026-10-22)
+## v0.10.4 — the TUI, the library and the terminal were all writing to the same screen (2026-10-22)
 
 1540 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
 Three defects, all of them two writers fighting over one row.
@@ -230,7 +230,7 @@ held a clone of it at that moment); and the scrollbar's thumb was drawn
 in rendered rows but hit-tested in transcript lines, so a press on the
 visible thumb made it jump.
 
-### 6. The notice queue is the guard's own
+### 8. The notice queue is the guard's own
 
 The reader thread used to take the render loop's state lock to push a
 notice — with `try_lock`, so it could never block. That was right about
@@ -247,7 +247,7 @@ state lock: a writer that fills the pipe cannot block, and a line is
 never lost because the render loop happened to hold the lock at that
 instant.
 
-### 6. The trust warning repeated once per tool call
+### 9. The trust warning repeated once per tool call
 
 Routing stderr into the transcript made a second defect visible: the
 warning was a fact about the *tool call*, and `check()` runs before every
@@ -257,10 +257,53 @@ It is a fact about the **project's** trust posture, so it is now stated
 once per cwd (`ask_level_warning`). The test that says so is red when the
 dedupe is removed — it was verified that way, not assumed.
 
-## Unreleased — the installer named a repository that had been renamed (2026-10-21)
+### 10. The last review found a claim of ours that was not true
 
-1491 tests, all green. v0.10.3 is published (tag + release + binary asset);
-this is what came out of shipping it.
+The end-to-end run that finally *worked* (it had been testing nothing:
+no API key in a non-interactive shell, so the provider never started)
+found four more things, and one of them was a claim we had written
+ourselves.
+
+**The claim was false.** The comment said every `push_notice` deep-copied
+the whole transcript — because the render loop's snapshot holds another
+`Arc` clone — so a 200-line drain copied the transcript 200 times and
+froze the UI. It does not: the snapshot from the previous iteration has
+been dropped by the time the next drain runs, so the refcount is 1 and
+`Arc::make_mut` copies nothing. The comment, the paragraph here, and a
+structural test that locked the false premise are all corrected. A test
+that locks a false premise is worse than no test — it sends the next
+reader looking for a cost that was never paid.
+
+**The exit printed the tail before the head.** The guard flushes two
+buffers on the way out: the queue (read before the guard started
+closing) and the residual (read after). The reader writes the residual
+out when it stops, and the queue was flushed *after* it, so the older
+lines were printed last — a diagnostic that arrives in pieces showed
+its tail before its head. The queue is flushed before the reader is
+told to stop.
+
+**The width was measured in the wrong terminal.** The CJK fix covered
+the warning sign in the prefix; the body has ambiguous characters of
+its own (`→`, `…`, `✓`, `•`), and a library diagnostic is full of them,
+so the row was still one column per ambiguous character too wide in a
+CJK terminal and the tail was still cut.
+
+**The fallback could be talked out of.** The provider's failure was
+reported once, in a notice. The notice scrolls away, and `/model`
+wrote the model name straight into the state — so the status bar went
+back to looking completely normal while the app was still talking to
+the fixture, and the user had no way to tell that no model would
+answer. The reason now lives in the state, and every later model change
+says it again.
+
+And `ProjectTrustStore::check()` — the "decide and print" shape this
+whole campaign removed — is test-only now. It was a public API waiting
+for the next person to put the print back under the lock.
+
+### The installer named a repository that had been renamed (2026-10-21)
+
+v0.10.3 is published (tag + release + binary asset); this is what came
+out of shipping it.
 
 ### The one-liner that could not install anything
 
