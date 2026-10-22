@@ -31,6 +31,7 @@
 //! at the lock. (Replacing fd 2 with a full pipe would prove less: it
 //! cannot say whether the print had started.)
 
+//! invariant: 81fac45
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};

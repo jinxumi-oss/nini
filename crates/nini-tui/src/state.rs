@@ -1122,6 +1122,25 @@ pub struct AppState {
     /// only a screen position, and turning that into a scroll position
     /// requires knowing which rectangle it landed in.
     pub transcript_viewport: Arc<StdMutex<crate::scrollbar::Viewport>>,
+    /// v0.10.x: how many **rendered rows** the viewport sits above the
+    /// live tail — the scrollbar's unit.
+    ///
+    /// Published by the render path for the same reason as `line_heights`:
+    /// the renderer is the only place that knows how tall each
+    /// `TranscriptLine` is, and the scrollbar's geometry is expressed in
+    /// rows, not in lines.
+    ///
+    /// The mouse used to hit-test the scrollbar with
+    /// `transcript_state.scroll_offset`, which counts `TranscriptLine`s —
+    /// a *different unit* from the one the renderer drew the thumb with.
+    /// With one-row lines the two coincide and the bug is invisible; with
+    /// a wrapped assistant message or a tall tool result they do not, and
+    /// a press on the visible thumb landed somewhere else entirely, so the
+    /// thumb jumped.
+    ///
+    /// The mouse now uses this number, so the render and the hit-test
+    /// always speak the same unit.
+    pub items_skipped_from_bottom: Arc<AtomicUsize>,
     /// v0.10: milliseconds since the epoch of the last scroll action, used
     /// by the scrollbar's `auto` mode to fade itself out
     /// (`scroll-view.ts` `transientScrollbarVisible` + a 1000 ms timer).
@@ -1718,6 +1737,7 @@ impl Clone for AppState {
             prompt_inner_width: Arc::clone(&self.prompt_inner_width),
             line_heights: Arc::clone(&self.line_heights),
             transcript_viewport: Arc::clone(&self.transcript_viewport),
+            items_skipped_from_bottom: Arc::clone(&self.items_skipped_from_bottom),
             scroll_activity: Arc::clone(&self.scroll_activity),
             run_state: self.run_state.clone(),
             model_state: self.model_state.clone(),
@@ -1737,6 +1757,7 @@ impl Default for AppState {
             prompt_inner_width: Arc::new(AtomicUsize::new(0)),
             line_heights: Arc::new(StdMutex::new(Vec::new())),
             transcript_viewport: Arc::new(StdMutex::new(crate::scrollbar::Viewport::default())),
+            items_skipped_from_bottom: Arc::new(AtomicUsize::new(0)),
             scroll_activity: Arc::new(AtomicU64::new(0)),
             run_state: RunState::default(),
             model_state: ModelState::default(),
@@ -2321,6 +2342,36 @@ impl AppState {
             .push(TranscriptLine::Notice(msg.into()));
     }
 
+    /// v0.10.x: append a **batch** of system notices in one go.
+    ///
+    /// The batch form exists because of a performance defect in the
+    /// runtime's drain path. The terminal guard hands the render loop a
+    /// `Vec<String>` of pending lines (a tool that writes 200 lines to
+    /// stderr produces 200 of them), and the loop used to push them one
+    /// at a time:
+    ///
+    /// ```text
+    /// for line in g.take_pending() {
+    ///     push_notice(&shared, line);   // one Arc::make_mut per line
+    /// }
+    /// ```
+    ///
+    /// `push_notice` goes through `Arc::make_mut(&mut self.transcript_state)`.
+    /// The render loop's snapshot holds its own `Arc` clone, so the
+    /// refcount is ≥ 2 and **every single push deep-copies the whole
+    /// transcript**. Draining 200 lines therefore copied the entire
+    /// transcript 200 times, on the tokio worker, and froze the UI.
+    ///
+    /// This method does one `Arc::make_mut` for the whole batch, so the
+    /// cost is one deep copy per drain, not one per line. The order of
+    /// the notices is the order of the iterator.
+    pub fn push_notices(&mut self, msgs: impl IntoIterator<Item = String>) {
+        let transcript = Arc::make_mut(&mut self.transcript_state);
+        transcript
+            .lines
+            .extend(msgs.into_iter().map(TranscriptLine::Notice));
+    }
+
     pub fn push_divider(&mut self) {
         Arc::make_mut(&mut self.transcript_state)
             .lines
@@ -2331,6 +2382,18 @@ impl AppState {
     /// render path. Falls back to 1 before the first frame.
     pub fn page_lines(&self) -> usize {
         self.page_lines.load(Ordering::Relaxed).max(1)
+    }
+
+    /// How many **rendered rows** the transcript viewport is above the live
+    /// tail, as published by the render path.
+    ///
+    /// This is the scrollbar's unit. `transcript_state.scroll_offset` is
+    /// *not*: that counts `TranscriptLine`s, and one line can be many
+    /// rows tall. The scrollbar's geometry must be computed from this
+    /// number, or the thumb the user sees and the thumb the mouse hits
+    /// are two different things.
+    pub fn items_skipped_from_bottom(&self) -> usize {
+        self.items_skipped_from_bottom.load(Ordering::Relaxed)
     }
 
     /// Record that the user just scrolled, so the scrollbar's `auto` mode

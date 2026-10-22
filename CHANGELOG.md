@@ -1,6 +1,6 @@
 ## Unreleased — the TUI, the library and the terminal were all writing to the same screen (2026-10-22)
 
-1519 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
+1537 tests, all green. The report was 「一遇到工具调用任务就乱码」: a tool call makes the screen garble.
 Three defects, all of them two writers fighting over one row.
 
 ### 1. The library wrote to the terminal the TUI was painting

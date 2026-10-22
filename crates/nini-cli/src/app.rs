@@ -14,6 +14,7 @@
 //!   2. It's the only entry with a runtime-effect (TUI vs. demo vs. -p)
 //!   3. Future entry modes (e.g., REPL without TUI) can reuse most of this
 
+//! invariant: 83a6871
 use std::sync::Arc;
 
 use std::io::IsTerminal;

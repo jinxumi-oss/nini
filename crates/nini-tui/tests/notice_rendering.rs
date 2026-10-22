@@ -16,6 +16,7 @@
 //!   assistant's text in one) — so a `<script>` in a model answer
 //!   became markup in the exported file.
 
+//! invariant: 655db2d
 use nini_tui::render::render_frame;
 use nini_tui::state::AppState;
 use ratatui::backend::TestBackend;

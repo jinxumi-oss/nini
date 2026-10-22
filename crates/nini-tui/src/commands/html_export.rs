@@ -3,6 +3,7 @@
 //! Pure function — input is a slice of `TranscriptLine`, output is
 //! a self-contained HTML string.
 
+//! invariant: 3702444
 use crate::state::TranscriptLine;
 
 /// Escape HTML special characters: `&`, `<`, `>`, `"`, `'`.

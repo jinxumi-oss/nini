@@ -39,6 +39,7 @@
 //!    symptom of a poisoned slot is the original bug: the library
 //!    writing to the screen the TUI is painting.
 
+//! invariant: 851cf4e
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard};
@@ -539,7 +540,7 @@ fn the_guard_comes_back_after_the_external_editor() {
 fn the_dropped_warning_appears_exactly_once() {
     let _terminal = terminal();
     let stderr = StderrToFile::install();
-    let state = shared_state(AppState::new("test-model"));
+    let _state = shared_state(AppState::new("test-model"));
     let guard = TerminalGuard::install().expect("install the guard");
 
     // More lines than the queue keeps, so the oldest ones are dropped.
@@ -585,7 +586,7 @@ fn the_dropped_warning_appears_exactly_once() {
 fn a_line_still_in_the_queue_reaches_the_real_stderr_at_exit() {
     let _terminal = terminal();
     let stderr = StderrToFile::install();
-    let state = shared_state(AppState::new("test-model"));
+    let _state = shared_state(AppState::new("test-model"));
     let guard = TerminalGuard::install().expect("install the guard");
 
     let line = "read but never drawn";

@@ -1453,6 +1453,7 @@ dependencies = [
  "chrono",
  "futures-core",
  "futures-util",
+ "libc",
  "nini-ai",
  "nini-tools",
  "regex",

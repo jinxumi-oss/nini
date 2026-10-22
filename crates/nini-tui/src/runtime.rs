@@ -71,6 +71,24 @@ fn push_notice(shared: &SharedState, msg: impl Into<String>) {
     lock_state(shared).push_notice(msg);
 }
 
+/// Push a **batch** of system notices into the transcript.
+///
+/// v0.10.x: the guard's pending lines used to be pushed one at a time.
+/// Each `push_notice` goes through `Arc::make_mut(&mut
+/// transcript_state)`, and the render loop's snapshot holds another
+/// `Arc` clone of the same transcript, so the refcount is ≥ 2 and every
+/// single push deep-copies the whole transcript. A tool that printed 200
+/// lines to stderr therefore copied the entire transcript 200 times, on
+/// the tokio worker — the UI froze while it happened.
+///
+/// One `push_notices` for the whole batch means one deep copy per drain.
+fn push_notices(shared: &SharedState, msgs: Vec<String>) {
+    if msgs.is_empty() {
+        return;
+    }
+    lock_state(shared).push_notices(msgs);
+}
+
 /// A trimmed-down agent event for cross-task delivery. Avoids leaking
 /// `nini_core::AgentEvent` (and its `AgentError`/`Provider` dependencies)
 /// across the spawn boundary.
@@ -611,9 +629,11 @@ async fn run_loop(
         // filled the pipe would then block) and a line is never lost
         // because the render loop held the lock at that instant.
         if let Some(g) = guard.as_ref() {
-            for line in g.take_pending() {
-                push_notice(&shared, line);
-            }
+            // One `Arc::make_mut` for the whole batch — see
+            // `push_notices`. Pushing line by line deep-copied the whole
+            // transcript once per line.
+            let lines = g.take_pending();
+            push_notices(&shared, lines);
         }
         // Snapshot state for rendering (cheap clone, doesn't hold lock long).
         // v0.8.5: large transcripts make this clone expensive; we still
@@ -1936,6 +1956,16 @@ pub fn handle_mouse(m: crossterm::event::MouseEvent, shared: &SharedState) -> bo
 
     let current_offset = state.transcript_state.scroll_offset;
 
+    // v0.10.x: the scrollbar's unit is **rendered rows**, not lines.
+    //
+    // `current_offset` counts `TranscriptLine`s, and the scrollbar's
+    // geometry is expressed in rows. The two coincide only when every
+    // line is one row tall; with a wrapped message or a tall tool result
+    // they do not, and the mouse hit-tested a different thumb from the
+    // one the renderer drew — so a press on the visible thumb made it
+    // jump. The render path publishes the number it used.
+    let skipped_items = state.items_skipped_from_bottom();
+
     match m.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let up = matches!(m.kind, MouseEventKind::ScrollUp);
@@ -1959,7 +1989,7 @@ pub fn handle_mouse(m: crossterm::event::MouseEvent, shared: &SharedState) -> bo
                 Some(v) => v,
                 None => return false,
             };
-            let Some(g) = vp.geometry(current_offset) else {
+            let Some(g) = vp.geometry(skipped_items) else {
                 return false;
             };
             if !vp.hits_column(m.column, m.row) {
@@ -1981,7 +2011,7 @@ pub fn handle_mouse(m: crossterm::event::MouseEvent, shared: &SharedState) -> bo
                 Some(v) => v,
                 None => return false,
             };
-            let Some(g) = vp.geometry(current_offset) else {
+            let Some(g) = vp.geometry(skipped_items) else {
                 return false;
             };
             let heights = state

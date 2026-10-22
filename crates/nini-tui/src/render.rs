@@ -963,6 +963,20 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         }
     }
 
+    // v0.10.x: publish the scrollbar's own unit — how many rendered rows
+    // the viewport is above the live tail.
+    //
+    // The scrollbar's geometry is expressed in rows, and the mouse's
+    // hit-test has to use the *same* number the renderer drew the thumb
+    // with. It used to use `transcript_state.scroll_offset`, which counts
+    // `TranscriptLine`s instead of rows: a different unit, and one that
+    // only coincides with the row count when every line happens to be
+    // one row tall. Publishing the number the renderer actually used is
+    // what keeps the visible thumb and the hittable thumb the same thing.
+    state
+        .items_skipped_from_bottom
+        .store(items_skipped_from_bottom, Ordering::Relaxed);
+
     // v0.8.4 (ux-001): welcome card for empty cold-start state.
     if visible_items.is_empty() && total_lines == 0 && state.input.text.is_empty() {
         render_welcome_card(f, theme, area);
