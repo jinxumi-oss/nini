@@ -184,8 +184,16 @@ def main() -> int:
         print(__doc__)
         return 2
     path = sys.argv[1]
-    cols = int(sys.argv[2]) if len(sys.argv) > 2 else 80
-    rows = int(sys.argv[3]) if len(sys.argv) > 3 else 24
+    def num(arg: str | None, fallback: int) -> int:
+        # `tput cols` can come back empty when TERM is not set; an empty
+        # argument must not crash the analyzer.
+        try:
+            return int(arg) if arg and arg.strip() else fallback
+        except ValueError:
+            return fallback
+
+    cols = num(sys.argv[2] if len(sys.argv) > 2 else None, 80)
+    rows = num(sys.argv[3] if len(sys.argv) > 3 else None, 24)
     raw = open(path, "rb").read()
 
     problems: list[str] = []
@@ -195,11 +203,22 @@ def main() -> int:
         problems.append(f"流里有非法 UTF-8 字节（{e}）—— 半个字符，终端会画成替换字符")
         text = raw.decode("utf-8", errors="replace")
 
+    # `script` writes its own header ("Script started on …" / "脚本启动于 …")
+    # into the log, and that header is the first line the terminal sees.
+    # It is not the application's output, and it is not what we are here
+    # for — but it *is* in the terminal, so it is replayed and it can
+    # fold. It is reported separately.
+    script_header = False
+    for marker in ("Script started on", "脚本启动于"):
+        if marker in text[:400]:
+            script_header = True
+            break
+
     r = Replay(cols, rows)
     r.feed(text)
 
     for p in r.problems:
-        problems.append(p)
+        problems.append(("script 自己的头" if script_header else "") + p)
 
     # 流结束时的样式：终端会把后面的字都画成那个样式
     if r.style:

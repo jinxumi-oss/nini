@@ -14,6 +14,17 @@
 //! place; replacing it later (e.g. with a faster manual table) is a
 //! single-file change.
 
+/// The terminal's width in columns, or 0 when it cannot be determined.
+///
+/// The terminal is the only place that knows how wide a cell is; the
+/// width module is the only place that knows how wide a *character* is.
+/// Code that writes to the terminal needs both.
+pub fn terminal_cols() -> usize {
+    crossterm::terminal::size()
+        .map(|(c, _)| c as usize)
+        .unwrap_or(0)
+}
+
 /// Terminal display width of `s` in cells.
 ///
 /// Always returns a finite `usize`; non-printable control bytes

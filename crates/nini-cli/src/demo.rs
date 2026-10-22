@@ -116,6 +116,43 @@ pub(crate) async fn run_demo(
 ///
 /// Streams all events to stdout + stderr; the assistant's final text
 /// goes to stdout (printable), tool calls/results go to stderr.
+/// Wrap `text` so that no line is wider than the terminal, breaking at
+/// character boundaries.
+///
+/// The terminal's last column is a hard edge for a wide character: it
+/// needs two columns, and with one left the terminal folds the line
+/// *before* the character. A fold in the middle of an answer is a broken
+/// answer, so the wrap happens here, where the width is known.
+fn wrap_to_terminal_width(text: &str) -> String {
+    let cols = nini_tui::width::terminal_cols();
+    wrap_to_width(text, cols)
+}
+
+/// The same wrap, with the width given — so it can be tested without a
+/// terminal.
+fn wrap_to_width(text: &str, cols: usize) -> String {
+    if cols == 0 {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut width = 0usize;
+    for ch in text.chars() {
+        if ch == '\n' {
+            out.push(ch);
+            width = 0;
+            continue;
+        }
+        let cw = nini_tui::width::display_width(&ch.to_string());
+        if width + cw > cols {
+            out.push('\n');
+            width = 0;
+        }
+        out.push(ch);
+        width += cw;
+    }
+    out
+}
+
 pub(crate) async fn run_print(
     user_input: &str,
     provider: &str,
@@ -180,7 +217,15 @@ pub(crate) async fn run_print(
             _ => {}
         }
     }
-    print!("{stdout_text}");
+    // The answer is printed raw, and a raw print does not know where the
+    // terminal's last column is: a **wide** character (Chinese, emoji)
+    // that lands in the last column does not fit, and the terminal folds
+    // the line *before* it — so the answer arrives broken in half, one
+    // character early, and the rest of the line lands on the next row.
+    //
+    // Wrap on cell boundaries first, so the character never reaches the
+    // edge it cannot fit in.
+    print!("{}", wrap_to_terminal_width(&stdout_text));
     if any_error {
         std::process::exit(1);
     }
@@ -277,5 +322,43 @@ mod tests {
             name: "test".into(),
         });
         let _ = cli_entry_legacy(&entry);
+    }
+}
+
+#[cfg(test)]
+mod print_wrap_tests {
+    use super::wrap_to_width;
+
+    /// No line may be wider than the terminal: a line that is too wide
+    /// is folded by the terminal, and the fold lands in the middle of
+    /// the answer.
+    ///
+    /// A wide character (Chinese, emoji) is the case that matters: it
+    /// needs two columns, so it must be moved to the next line rather
+    /// than left in the last column, where the terminal would fold
+    /// *before* it.
+    #[test]
+    fn no_line_is_wider_than_the_terminal() {
+        for cols in [4usize, 5, 8, 11] {
+            let text = "中".repeat(cols);
+            let wrapped = wrap_to_width(&text, cols);
+            for line in wrapped.split('\n') {
+                let w = nini_tui::width::display_width(line);
+                assert!(
+                    w <= cols,
+                    "a line is {w} cells wide, the terminal has {cols}: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_text_survives_the_wrap() {
+        let text = "统计结果：crates 下共有二百一十三个 Rust 源文件。";
+        for cols in [4usize, 7, 16, 40] {
+            let wrapped = wrap_to_width(text, cols);
+            let joined: String = wrapped.chars().filter(|c| *c != '\n').collect();
+            assert_eq!(joined, text, "the wrap lost or changed text");
+        }
     }
 }
