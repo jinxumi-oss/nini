@@ -1,6 +1,6 @@
 ## v0.10.8 — the guard against a second agent was the editor's state (2026-10-23)
 
-1588 tests, all green. The defect was measured on v0.10.2 and had been sitting
+1591 tests, all green. The defect was measured on v0.10.2 and had been sitting
 in the plan as a P0 with a written exit criterion that nobody had executed.
 
 ### Esc could start a second agent, and the session file kept the receipts
@@ -208,6 +208,20 @@ T4 ✗  测试不存在
 
 In CI the board runs as a **report** (`continue-on-error`) until the plan is
 done; then it becomes a hard gate.
+
+### `/export` now honours the path you give it
+
+Pi's `/export` says *"Export session (HTML default, or specify path:
+.html/.jsonl)"*. nini **declared that argument and then ignored it** — the
+signature was literally `_args` — so the file always landed in the exports
+directory no matter what you typed. Declaring a parameter the implementation
+does not read is a dishonesty bug (T4), and the ledger had it as B1b.
+
+`/export <path>.html` writes the transcript there; `/export <path>.jsonl`
+writes the **session** (Pi's own JSONL format, first line the session
+header); any other extension is refused **out loud** — *"use .html or
+.jsonl"* — instead of quietly writing somewhere else. With no argument the
+behaviour is unchanged (HTML into the exports directory).
 
 ### A message you typed during an interrupt no longer disappears
 

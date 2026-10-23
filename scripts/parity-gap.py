@@ -46,7 +46,7 @@ STATUSES = ("open", "fixed", "blocked-owner", "blocked-external")
 ROUNDS = ("W0", "W1-A", "W1-B", "W1-C", "W2", "W3", "W4", "W5", "—",
           # 工具对标计划的四个工作项（docs/plans/tool-parity.md）
           "T1", "T2", "T3", "T4", "T2+T3")
-DECISIONS = ("R4", "R5", "R9", "R10")
+DECISIONS = ("R4", "R5", "R9", "R10", "R11")
 
 # Every field a gap record must carry, with the type it must have.
 REQUIRED_FIELDS = {

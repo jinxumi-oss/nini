@@ -298,6 +298,64 @@ fn cmd_scoped_models(
 }
 
 fn cmd_export(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
+    // v0.10.8 (B1b)：**认路径**。
+    //
+    // Pi 的 `/export` 描述明写「(HTML default, or specify path: .html/.jsonl)」，
+    // 而 nini 此前**声明了这个参数却完全不用它**（签名是 `_args`）——用户看到
+    // 提示以为能指定文件，实际上文件总被丢进 exports 目录。
+    // 「声明了参数但实现不用」正是差距 B1b 记的那一类。
+    //
+    // 现在：给了路径就写到那个路径（.html 写 HTML，.jsonl 写会话 JSONL）；
+    // 没给路径就保持原样（exports 目录 + HTML）。
+    let requested = args.trim();
+    if !requested.is_empty() {
+        let target = std::path::PathBuf::from(requested);
+        let ext = target
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        match ext.as_str() {
+            "html" | "htm" => {
+                let html = render_transcript_html(&state.transcript_state.lines);
+                return match std::fs::write(&target, html) {
+                    Ok(()) => CommandResult::output(vec![format!(
+                        "exported transcript to {}",
+                        target.display()
+                    )]),
+                    Err(e) => CommandResult::output(vec![format!(
+                        "(failed to write {}: {e})",
+                        target.display()
+                    )]),
+                };
+            }
+            "jsonl" => {
+                // 会话 JSONL：Pi 的会话格式（nini 写的就是它）。
+                let Some(session) = state.session_state.session.as_ref() else {
+                    return CommandResult::output(vec![
+                        "(no session to export — the session is not recorded)".to_string(),
+                    ]);
+                };
+                let snapshot = crate::state::lock_session(session).clone();
+                return match snapshot.write_to_file(&target) {
+                    Ok(()) => CommandResult::output(vec![format!(
+                        "exported session to {}",
+                        target.display()
+                    )]),
+                    Err(e) => CommandResult::output(vec![format!(
+                        "(failed to write {}: {e})",
+                        target.display()
+                    )]),
+                };
+            }
+            _ => {
+                return CommandResult::output(vec![format!(
+                    "(unsupported export target `{requested}` — use .html or .jsonl)"
+                )]);
+            }
+        }
+    }
+
     // A minimal HTML snapshot of the transcript, into the agent directory.
     let html = render_transcript_html(&state.transcript_state.lines);
     let dir = nini_core::paths::exports_dir();

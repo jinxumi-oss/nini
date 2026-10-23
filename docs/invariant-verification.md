@@ -170,3 +170,12 @@ CLI 与测试共用**同一份实现**。改完再注入 → 三条全红。
 |---|---|---|
 | `crates/nini-tui/tests/queued_delivery.rs` | 回合收尾时**不再**置 `auto_turn_pending`（也就是「没人再捞这条消息了」） | `a_message_queued_after_the_turn_ended_is_delivered_without_another_enter` |
 | `crates/nini-tui/tests/queued_delivery.rs` | 投递时把已在 transcript 的消息**再显示一遍** | `a_delivered_message_is_not_shown_twice` |
+
+
+---
+
+## `/export` 认路径（B1b，2026-10-23）
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-tui/tests/export_path.rs` | 让 `/export` **又变成忽略路径**（`let requested = "";`） | 三条全红：`an_html_path_is_honoured`、`a_jsonl_path_is_honoured_and_holds_the_session`、`an_unsupported_extension_is_refused_out_loud` |

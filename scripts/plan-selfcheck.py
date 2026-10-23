@@ -43,7 +43,21 @@ REQUIRED_GAP_FIELDS = [
     "id", "class", "severity", "title", "pi_basis", "nini_state",
     "oracle", "status", "round", "exit_criterion", "machine_checkable",
 ]
-OWNER_DECISIONS = {"R4", "R5", "R9", "R10"}
+def _owner_decisions() -> set:
+    """决策号白名单**只有一份**：从 scripts/parity-gap.py 里读。
+
+    v0.10.8：这个集合此前在两个脚本里各抄一份，于是加了 R11 之后，
+    parity-gap 认、B10 通过，plan-selfcheck 却说「没挂决策号」——
+    **同一份真相的两份副本**（这个项目在键位表上已经付过一次学费）。
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "parity_gap_mod", Path(__file__).resolve().parent / "parity-gap.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return set(mod.DECISIONS)
 
 
 def run(cmd):
@@ -105,9 +119,10 @@ def main() -> int:
           f"缺：{bad[:8]}" if bad else f"{len(gaps)} 条齐全")
 
     # C6 blocked-owner 必须挂在决策上
+    decisions = _owner_decisions()
     bad = [g["id"] for g in gaps
            if g.get("status") == "blocked-owner"
-           and g.get("blocking_decision") not in OWNER_DECISIONS]
+           and g.get("blocking_decision") not in decisions]
     check(results, "S6 被 owner 决策阻塞的条目都挂着决策号", not bad,
           f"问题条目：{bad}" if bad else "全部挂着 R4/R5/R9/R10")
 
