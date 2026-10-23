@@ -1078,19 +1078,13 @@ fn cmd_new(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -
     state.invalidate_item_counts();
     state.run_state.tokens = Default::default();
 
-    // Session file path: <agent dir>/sessions/<project>/<timestamp>.jsonl
-    let project = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "default".to_string());
-
-    match nini_core::paths::sessions_dir() {
-        Some(base) => {
-            let dir = base.join(&project);
-            let _ = std::fs::create_dir_all(&dir);
-            let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
-            state.session_init(dir.join(format!("{ts}.jsonl")));
-        }
+    // Session file path: <agent dir>/sessions/<project>/<timestamp>_<suffix>.jsonl
+    //
+    // v0.10.8 (A5)：与**启动时**用的是同一个 helper（`paths::new_session_path`），
+    // 否则 `/new` 与启动会造出两种命名的文件，`/resume` 的排序就乱了。
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    match nini_core::paths::new_session_path(&cwd) {
+        Some(path) => state.session_init(path),
         // No `HOME` and no `NINI_AGENT_DIR`: run the conversation, record
         // nothing, and say so. The previous `unwrap_or_else(|| ".")` wrote
         // `./.nini/agent/sessions/...` into the user's project.

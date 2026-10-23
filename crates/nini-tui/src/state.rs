@@ -1903,6 +1903,34 @@ impl AppState {
     /// somewhere invented. `/new` used to fall back to `"."` here, so a
     /// session file would quietly appear inside whatever project the user
     /// happened to be standing in.
+    /// **启动即建立会话**（v0.10.8 / A5）。
+    ///
+    /// 此前 nini 启动后不建会话文件——footer 显示 `[no session]`，对话在退出后
+    /// **整个消失**，`/resume` 也列不出任何东西。Pi 每次启动一个会话就有一个文件
+    /// （`~/.pi/agent/sessions/<project>/…`）。
+    ///
+    /// 这里只**定下路径**（状态里有 id、有去处），文件本身在第一次 flush 时才
+    /// 写出——所以「启动后立刻退出」不会留下一堆空文件。
+    ///
+    /// 没有 `HOME` 也没有 `NINI_AGENT_DIR` 时：照旧不记录，但**要说出来**
+    /// （而不是让用户以为记下来了）。
+    ///
+    /// 它住在库里而不是 CLI 里，是为了让**测试能测到同一份实现**——
+    /// 曾经有一版测试自己重写了一遍逻辑，于是「把 CLI 里的实现删掉」那条
+    /// 变异注入**没有让测试变红**：测试根本没碰被测对象。
+    pub fn start_session(&mut self, cwd: &std::path::Path) {
+        match nini_core::paths::new_session_path(cwd) {
+            Some(path) => self.session_init(path),
+            None => {
+                self.session_init_ephemeral();
+                self.push_notice(
+                    "(not recorded — set NINI_AGENT_DIR to give nini a place to keep sessions)"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
     pub fn session_init_ephemeral(&mut self) {
         self.session_begin();
         self.session_state.session_path = None;

@@ -139,3 +139,24 @@
 `createToolDefinition`，`scripts/truncate-oracle.mjs` 执行 Pi 自己的 `truncate.js`，
 结果冻进 `references/pi-0.85.1/{tool-contracts,truncate-oracle}.json`。
 这补上了差距 C1 的一部分：**行为层第一次有了「Pi 侧可执行对照物」**。
+
+
+---
+
+## 会话落盘（A5，2026-10-23）
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-cli/tests/session_at_startup.rs` | 让 `AppState::start_session` **不再建立会话**（`match None::<PathBuf>`） | 三条全红：`starting_up_creates_a_session_path_under_the_project`、`two_sessions_started_in_the_same_second_do_not_collide`、`the_conversation_actually_reaches_the_disk` |
+
+**这一轮抓到的最重要的一条，不是那个 bug，是判据本身**：
+
+第一版的测试**自己重写了一遍** `start_session` 的逻辑（因为 CLI 里那个函数是
+`pub(crate)`，集成测试看不到它）。于是把产品代码里的「不建会话」注入进去之后，
+**测试照样全绿**——它根本没碰到被测对象。
+
+修法：把 `start_session` 挪进 **nini-tui 库**（`AppState::start_session`），
+CLI 与测试共用**同一份实现**。改完再注入 → 三条全红。
+
+**教训**：「测试全绿」不等于「被测行为被覆盖」。判据必须**打到产品代码**；
+如果它不得不自己复刻一份逻辑，那它测的是**复刻品**，不是产品。

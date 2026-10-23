@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.10.7-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1583%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1586%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -63,7 +63,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **1583 unit + integration tests**, including property-based SSE fuzz and
+- **1586 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -237,10 +237,10 @@ trying to be; this section is the user-facing summary of it.
 - Compaction uses a deterministic local summary, not an LLM-based one
 - `--continue-session` / `--session-id` / `--fork` on the command line are
   refused with a pointer to the TUI command. **A conversation started in the
-  TUI is not written to disk unless you run `/new` first** — the footer says
-  `[no session]` until you do, and `/resume` only lists sessions that a
-  `/new` (or `/fork`) created. Measured on v0.10.7 (2026-10-23); tracked as
-  gap **A5** in `docs/plans/parity-with-pi.md`.
+  TUI is written to disk**: it lives in
+  `~/.nini/agent/sessions/<project>/<timestamp>_<suffix>.jsonl` (Pi's shape),
+  the footer shows its session id, and `/resume` lists it. (Before v0.10.8 a
+  conversation was lost on exit unless you ran `/new` first — gap **A5**.)
 - No LLM-backed *branch* summary: `/fork` creates a real branch, but Pi's
   `navigateTree` (moving to another node inside one file, optionally
   summarising what was abandoned) is not implemented

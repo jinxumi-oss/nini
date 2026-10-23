@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.10.7-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1583%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1586%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
@@ -50,7 +50,7 @@ nini 也不做。
 
 - **单个 6.4 MiB 可执行文件**（压缩后 2.4 MB），取代一整套 Node.js 工具链
 - **无授权附加条款**——纯 MIT，不像某些带着 OpenAI/Anthropic 再分发限制的分支
-- **1583 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
+- **1586 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
   HTTP 服务器的端到端线格式测试
 - **内置工具可扩展**——bash、read、write、edit、grep、find
 - **流式 TUI**，带斜杠命令自动补全
@@ -218,10 +218,10 @@ session JSONL。
   `/tree`、`/fork`、`/settings` 是真实实现
 - 压缩用的是本地确定性摘要，不是基于 LLM 的摘要
 - 命令行上的 `--continue-session` / `--session-id` / `--fork` 会被拒绝，
-  并指向对应的 TUI 命令。**TUI 里开始的对话默认不落盘**——除非先执行 `/new`，
-  footer 会一直显示 `[no session]`，`/resume` 也只会列出 `/new`（或 `/fork`）
-  亲手造出来的会话。v0.10.7 实测（2026-10-23），对应差距 **A5**
-  （见 `docs/plans/parity-with-pi.md`）
+  并指向对应的 TUI 命令。**TUI 里开始的对话会落盘**：写在
+  `~/.nini/agent/sessions/<project>/<timestamp>_<suffix>.jsonl`（Pi 的形状），
+  footer 显示会话 id，`/resume` 能列出来。（v0.10.8 之前，对话退出即丢，
+  除非先执行 `/new`——那是差距 **A5**）
 - 没有基于 LLM 的**分支**摘要：`/fork` 会创建真正的分支，但 Pi 的
   `navigateTree`（在同一个文件里跳到另一个节点，并可选地总结被放弃的内容）
   尚未实现

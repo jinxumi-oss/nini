@@ -1,6 +1,6 @@
 ## v0.10.8 — the guard against a second agent was the editor's state (2026-10-23)
 
-1583 tests, all green. The defect was measured on v0.10.2 and had been sitting
+1586 tests, all green. The defect was measured on v0.10.2 and had been sitting
 in the plan as a P0 with a written exit criterion that nobody had executed.
 
 ### Esc could start a second agent, and the session file kept the receipts
@@ -208,6 +208,29 @@ T4 ✗  测试不存在
 
 In CI the board runs as a **report** (`continue-on-error`) until the plan is
 done; then it becomes a hard gate.
+
+### A conversation no longer disappears when you close the TUI
+
+nini started, ran, and **never wrote a session file**. The footer said
+`[no session]`, `/resume` listed nothing, and everything said in a session
+was gone the moment the process exited — unless you happened to run `/new`
+first. Pi creates a session file per conversation, under
+`~/.pi/agent/sessions/<project>/`.
+
+nini now does the same, with Pi's shape:
+`~/.nini/agent/sessions/<project>/<timestamp>_<suffix>.jsonl`. The startup
+path and `/new` share one helper (`paths::new_session_path`), so the files
+sort the same way in `/resume`; the suffix keeps two sessions opened in the
+same second from colliding (the second would have overwritten the first).
+The file is written on the first flush, so starting and quitting immediately
+does not litter empty files.
+
+The footer now shows the session id instead of `[no session]`, and when
+there is no agent directory at all, nini says so plainly rather than
+letting the user believe the conversation was saved.
+
+Also: the no-TTY banner said **`nini v0.4.0`** while the binary was 0.10.8.
+It now reports the real version.
 
 ### The conformance fixture is now Pi 0.85.1's own output — and it proves the graph
 

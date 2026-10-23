@@ -175,3 +175,30 @@ pub fn agent_lock() -> AgentDirGuard {
         path,
     }
 }
+
+/// 新会话的落盘路径：`<agent dir>/sessions/<project>/<timestamp>_<suffix>.jsonl`
+///
+/// v0.10.8 (A5)：TUI **启动时**就该知道自己的会话写在哪儿——此前 nini
+/// 启动后不建会话文件（footer 显示 `[no session]`），对话在退出后**整个消失**，
+/// 而 Pi 每次启动一个会话就有一个文件。
+///
+/// 名字带一个随机后缀：秒级时间戳在同一秒里开两个会话会撞名
+/// （Pi 的做法是 `{timestamp}_{session id}`）。
+pub fn new_session_path(cwd: &std::path::Path) -> Option<PathBuf> {
+    let base = sessions_dir()?;
+    let project = cwd
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "default".to_string());
+    let dir = base.join(&project);
+    let _ = std::fs::create_dir_all(&dir);
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    // 不用 uuid：nini-core 没有这个依赖，而「进程号 + 纳秒」已经足够唯一
+    // （同一个进程里同一纳秒开两个会话的概率可以忽略）。
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let suffix = format!("{:x}{:03x}", std::process::id(), nanos & 0xfff);
+    Some(dir.join(format!("{ts}_{suffix}.jsonl")))
+}

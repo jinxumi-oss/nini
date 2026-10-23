@@ -618,7 +618,12 @@ async fn run_tui_bootstrap(
     use nini_tui::run as run_tui_inner;
 
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        eprintln!("nini v0.4.0 — Pi-compatible Rust coding agent");
+        // v0.10.8 (D2): 这个横幅硬编码着 **v0.4.0**——而二进制实际是 0.10.8。
+        // 一次对外的自报与事实不符，就是一次失真（GOALS T4）。
+        eprintln!(
+            "nini {} — Pi-compatible Rust coding agent",
+            env!("CARGO_PKG_VERSION")
+        );
         eprintln!();
         eprintln!("(no TTY detected — interactive TUI unavailable in this env)");
         eprintln!();
@@ -643,6 +648,7 @@ async fn run_tui_bootstrap(
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let dir = cwd.clone();
             state.set_status_bar_metadata(Some(dir.clone()), nini_core::git::git_branch(&dir));
+            state.start_session(&cwd);
             // v0.8.1: surface the provider name in the status bar
             // (Pi-style `(provider) model`). Helps users tell which
             // backend is active.
