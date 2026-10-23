@@ -169,6 +169,11 @@ def main() -> int:
           not dead, f"这些模式抓不到任何东西：{dead}" if dead else
           f"{len(COUNT_PATTERNS) + len(STALE_PATTERNS)} 条模式全部有效")
 
+    # S11 对标目标版本冻结（owner 的长期指令）
+    r = run([sys.executable, "scripts/pi-target-lock.py"])
+    check(results, "S11 对标目标版本唯一且冻结（pi-target-lock）", r.returncode == 0,
+          r.stdout.strip()[-400:] if r.returncode != 0 else "")
+
     ok = all(x["ok"] for x in results)
     if args.json:
         print(json.dumps({"ok": ok, "checks": results}, ensure_ascii=False, indent=2))

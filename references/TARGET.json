@@ -1,0 +1,16 @@
+{
+  "targetVersion": "0.85.1",
+  "snapshot": "references/pi-0.85.1",
+  "spec": "references/spec-v0.85.1",
+  "frozen": true,
+  "frozenBy": "owner directive, 2026-10-23：以后的 nini 对标，统一锚定一个版本，直到 owner 认为完全没有问题为止",
+  "releaseCondition": "owner 明确宣布解除为止。在此之前：不得引入第二个版本、不得重锚到别的版本、不得随 Pi 升级自动改目标",
+  "why": "两个目标版本不是「分层」，是同一段代码可以有两种答案。实测代价：0.84.2 → 0.85.1 之间，90 处行号引用只有 11 处仍指向同一行，78 处指向别的内容，1 处越界，而没有任何东西会红。（证据：docs/pi-version-delta-0.84.2-to-0.85.1.md）",
+  "citationForm": "file#symbol（含义钉住，行号由脚本在目标快照里解析）",
+  "enforcedBy": "python3 scripts/pi-target-lock.py（并入 CI 与 scripts/plan-selfcheck.py）",
+  "ifTargetChanges": [
+    "先跑 python3 scripts/pi-version-delta.py --from references/pi-0.85.1 --to references/pi-<新版本>，把差分写成文档",
+    "再按 scripts/pi-reanchor.py 重锚全部引用（唯一匹配的自动改写，其余人工判断）",
+    "然后才允许改本文件。顺序不能反：先看差异，再改目标"
+  ]
+}

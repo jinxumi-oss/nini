@@ -157,6 +157,31 @@ The cost was measured, not guessed:
    counterpart is no longer there. That is the price of not knowing whose
    responsibility a piece of code was when you copied it.
 
+### The target version is frozen, and the freeze is machine-enforced
+
+owner's standing directive (2026-10-23): *from now on, nini's parity work
+anchors to **one** version, until I say there is no problem left with it.*
+
+A rule that lives only in a conversation evaporates at the next session, and a
+rule without a gate is not a rule. So it is now machine-checked
+(`scripts/pi-target-lock.py`, wired into CI and into
+`scripts/plan-selfcheck.py`):
+
+- exactly **one** Pi snapshot under `references/` — two snapshots means two
+  answers for the same piece of code;
+- the snapshot, the format spec and the machine's `pi --version` must all be
+  the **same** version;
+- no source file may point at another Pi version;
+- `docs/GOALS.md` and this plan must declare the same target;
+- the freeze flag itself must be true — **releasing it is the owner's action,
+  not the script's**.
+
+The order for a future version change is written down in
+`references/TARGET.json` and cannot be reversed: **diff first, re-anchor
+second, change the target last.** Skipping the first step is exactly how the
+0.84.2 round produced 78 citations that quietly pointed at the wrong
+statements with nothing turning red.
+
 ### The tools are two different projects, and now they are labelled as such
 
 Pi's own words (`dist/core/sdk.d.ts`): `noTools: "builtin"` disables "the

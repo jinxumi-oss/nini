@@ -127,3 +127,25 @@ jobs:
         run: ./target/release/nini info < /dev/null
       - name: Demo
         run: ./target/release/nini demo < /dev/null
+
+  parity-target:
+    name: parity target lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The parity target version is unique and frozen
+        # owner 的长期指令：对标只锚定一个版本，直到 owner 宣布解除。
+        # 这条规矩必须由机器守住 —— 只写在文档里的规矩会在下一次会话蒸发。
+        run: python3 scripts/pi-target-lock.py
+      - name: Every Pi citation resolves inside the target snapshot
+        run: python3 scripts/pi-oracle-lock.py --check --verify-refs
+      - name: The plan and the ledger agree
+        run: |
+          python3 scripts/parity-gap.py --check-plan docs/plans/parity-with-pi.md
+          python3 scripts/plan-selfcheck.py
+      - name: The target snapshot is what it claims to be
+        run: |
+          python3 scripts/pi-tool-contracts.py --extract
+          git diff --exit-code -- references/pi-0.85.1/tool-contracts.json \
+            || (echo "tool-contracts.json 与快照不一致——快照被改过？" && exit 1)
