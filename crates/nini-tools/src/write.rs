@@ -31,19 +31,22 @@ impl Tool for WriteTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "write".to_string(),
-            description: "Write a file atomically (temp file + rename). Creates parent \
-                          directories. Overwrites if the file exists."
+            // v0.10.8 (T1): 与 Pi 0.85.1 的契约逐字对齐
+            // （references/pi-0.85.1/tool-contracts.json，由 scripts/pi-tool-dump.mjs
+            //  执行 Pi 自己的代码产出）。
+            description: "Write content to a file. Creates the file if it doesn't exist, \
+                          overwrites if it does. Automatically creates parent directories."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute or cwd-relative path to write to."
+                        "description": "Path to the file to write (relative or absolute)"
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full file content to write."
+                        "description": "Content to write to the file"
                     }
                 },
                 "required": ["path", "content"],
@@ -54,17 +57,11 @@ impl Tool for WriteTool {
 
     fn system_prompt_contribution(&self) -> Option<nini_core::tool::ToolSystemPrompt> {
         Some(nini_core::tool::ToolSystemPrompt {
-            snippet: "Write a file atomically (temp file + rename). \
-                      Overwrites if the file exists."
-                .to_string(),
-            guidelines: vec![
-                "For whole-file rewrites use write, not edit (which is for \
-                 targeted patches)."
-                    .to_string(),
-                "Creates parent directories as needed; do NOT mkdir \
-                 beforehand."
-                    .to_string(),
-            ],
+            // v0.10.8 (T1): 与 Pi 0.85.1 的契约逐字对齐
+            // （references/pi-0.85.1/tool-contracts.json，由 scripts/pi-tool-dump.mjs
+            //  执行 Pi 自己的代码产出）。
+            snippet: "Create or overwrite files".to_string(),
+            guidelines: vec!["Use write only for new files or complete rewrites.".to_string()],
         })
     }
 

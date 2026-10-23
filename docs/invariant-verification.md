@@ -120,3 +120,22 @@
    （`welcome_card` / `stop_reason_notice` / `stop_reason_producer`），所以
    本文件此前唯一的"未复验"缺口已经关闭——15 条声明现在都有可复现的注入记录。
    局限不变：复验者与执行者仍是同一个模型，独立性来自独立上下文与强制自复算。
+
+
+---
+
+## 工具对标（T1–T4，2026-10-23）
+
+四条新判据，每条都做过**变异验证**：注入一个 bug → 断言变红 → 还原。
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-tools/tests/tool_contract_parity.rs` | 把 `write` 的 description 改成旧措辞（"Write a file. …"） | `工具 write 的 description 与 Pi 0.85.1 不一致` |
+| `crates/nini-core/tests/prompt_tool_linkage.rs` | 把 prompt 的条件 guideline 改成 `if false && …` | `the_bash_guideline_appears_only_when_no_better_tool_exists` |
+| `crates/nini-tools/tests/truncation_parity.rs` | 把 `DEFAULT_MAX_BYTES` 改回 1 MiB | `字节上限与 Pi 不一致` |
+| `crates/nini-tools/tests/truncation_parity.rs` | 把 `truncate_tail` 的「保留尾部」改成保留头部 | `tail_truncation_matches_pi_case_by_case`（样本 `many-lines` / `tail-byte-limit`） |
+
+**期望值的来源不是手算**：`scripts/pi-tool-dump.mjs` 执行 Pi 0.85.1 自己的
+`createToolDefinition`，`scripts/truncate-oracle.mjs` 执行 Pi 自己的 `truncate.js`，
+结果冻进 `references/pi-0.85.1/{tool-contracts,truncate-oracle}.json`。
+这补上了差距 C1 的一部分：**行为层第一次有了「Pi 侧可执行对照物」**。

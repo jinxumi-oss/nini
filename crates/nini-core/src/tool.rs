@@ -140,9 +140,14 @@ impl ToolOutput {
 pub struct ToolContext {
     /// Working directory for the tool (typically the session's cwd).
     pub cwd: std::path::PathBuf,
-    /// Token output budget (1 MiB by default; tool should truncate when exceeded).
+    /// 字节预算。
+    ///
+    /// v0.10.8 (T4): 之前是 1 MiB —— 比 Pi 大二十倍，于是同一条命令在两侧
+    /// 占用的上下文完全不同。Pi 的上限是 50 KiB
+    /// （`references/pi-0.85.1/dist/api/...` → tools/truncate.js 的
+    /// `DEFAULT_MAX_BYTES = 50 * 1024`）。
     pub max_output_bytes: usize,
-    /// Token line budget (2000 lines by default).
+    /// 行数预算（2000 行，与 Pi 的 `DEFAULT_MAX_LINES` 一致）。
     pub max_output_lines: usize,
 }
 
@@ -150,8 +155,8 @@ impl Default for ToolContext {
     fn default() -> Self {
         Self {
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            max_output_bytes: 1_048_576, // 1 MiB
-            max_output_lines: 2000,
+            max_output_bytes: 50 * 1024, // Pi 0.85.1 的 DEFAULT_MAX_BYTES
+            max_output_lines: 2000,      // Pi 0.85.1 的 DEFAULT_MAX_LINES
         }
     }
 }
@@ -473,47 +478,97 @@ pub fn build_system_prompt_with_contributions(
     base: Option<&str>,
     registry: &ToolRegistry,
 ) -> Option<String> {
+    // v0.10.8 (T3)：与 Pi 0.85.1 同构（`references/pi-0.85.1/dist/api/system-prompt.js`）。
+    //
+    // Pi 的三条规则：
+    //   1. 「Available tools」段**只列有 snippet 的工具**
+    //      （`visibleTools = tools.filter(name => !!toolSnippets?.[name])`），
+    //      一个都没有时写 "(none)"；
+    //   2. guideline 由**已启用的工具集**决定：
+    //      `if ((hasBash || hasPowerShell) && !hasGrep && !hasFind && !hasLs)`
+    //      → "Use bash for file operations like ls, rg, find"；
+    //   3. 永远有两条："Be concise in your responses" /
+    //      "Show file paths clearly when working with files"。
+    //
+    // 旧实现是 nini 自己发明的两段式（"## Tool self-descriptions" +
+    // "## Tool usage guidelines"），**没有**第 1、2 条——
+    // 也就是说「工具集变了，模型收到的引导就变了」这件事在 nini 上不成立。
     let mut snippets: Vec<(String, String)> = Vec::new();
-    let mut guidelines: Vec<(String, String)> = Vec::new();
+    let mut guidelines: Vec<String> = Vec::new();
+    let mut has_bash = false;
+    let mut has_powershell = false;
+    let mut has_grep = false;
+    let mut has_find = false;
+    let mut has_ls = false;
+
     for tool in registry.tools() {
+        let name = tool.name().to_string();
+        match name.as_str() {
+            "bash" => has_bash = true,
+            "powershell" => has_powershell = true,
+            "grep" => has_grep = true,
+            "find" => has_find = true,
+            "ls" => has_ls = true,
+            _ => {}
+        }
         if let Some(contrib) = tool.system_prompt_contribution() {
             if !contrib.snippet.trim().is_empty() {
-                snippets.push((tool.name().to_string(), contrib.snippet));
+                snippets.push((name, contrib.snippet));
             }
             for g in contrib.guidelines {
                 if !g.trim().is_empty() {
-                    guidelines.push((tool.name().to_string(), g));
+                    guidelines.push(g);
                 }
             }
         }
     }
-    if snippets.is_empty() && guidelines.is_empty() {
-        return base.map(String::from);
-    }
-    // v0.8.5: sort by name (audit fix for HashMap-random iteration order).
-    // Deterministic output → LTM token caching stays hot + tests are
-    // reproducible.
+
+    // 确定性排序（v0.8.5 的修复：HashMap 的随机顺序会打掉 LLM 的 token 缓存）
     snippets.sort_by(|a, b| a.0.cmp(&b.0));
-    guidelines.sort_by(|a, b| a.0.cmp(&b.0));
+    guidelines.sort();
+
+    // Pi 的条件规则：有 shell、但没有 grep/find/ls → 让模型用 shell 做文件操作
+    let mut all_guidelines: Vec<String> = Vec::new();
+    if (has_bash || has_powershell) && !has_grep && !has_find && !has_ls {
+        if has_bash && has_powershell {
+            all_guidelines.push(
+                "Use bash or PowerShell for file operations like listing, searching, and finding files"
+                    .to_string(),
+            );
+        } else if has_powershell {
+            all_guidelines.push(
+                "Use PowerShell for file operations like listing, searching, and finding files"
+                    .to_string(),
+            );
+        } else {
+            all_guidelines.push("Use bash for file operations like ls, rg, find".to_string());
+        }
+    }
+    all_guidelines.extend(guidelines);
+    all_guidelines.push("Be concise in your responses".to_string());
+    all_guidelines.push("Show file paths clearly when working with files".to_string());
 
     let mut out = base.unwrap_or("").to_string();
-    if !snippets.is_empty() {
-        out.push_str("\n\n## Tool self-descriptions\n");
+    out.push_str("\n\nAvailable tools:\n");
+    if snippets.is_empty() {
+        out.push_str("(none)\n");
+    } else {
         for (name, snippet) in &snippets {
             out.push_str(&format!("- {name}: {snippet}\n"));
         }
     }
-    if !guidelines.is_empty() {
-        out.push_str("\n## Tool usage guidelines\n");
-        for (name, g) in &guidelines {
-            out.push_str(&format!("- {name}: {g}\n"));
-        }
+    out.push_str("\nGuidelines:\n");
+    for g in &all_guidelines {
+        out.push_str(&format!("- {g}\n"));
     }
     Some(out)
 }
 
 #[cfg(test)]
 mod system_prompt_tests {
+    //! v0.10.8 (T3): 这些用例的**形状**随 prompt 结构改成 Pi 的形状而变，
+    //! 但**性质**不变：每个工具的 snippet/guideline 都要出现在模型收到的
+    //! prompt 里，顺序确定，空的贡献不占位。
     use super::*;
     use async_trait::async_trait;
 
@@ -530,12 +585,18 @@ mod system_prompt_tests {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
                 name: self.name.into(),
-                description: String::new(),
-                input_schema: serde_json::json!({}),
+                description: "d".into(),
+                input_schema: serde_json::json!({"type": "object"}),
             }
         }
         async fn execute(&self, _a: Value, _c: ToolContext) -> Result<ToolOutput, ToolError> {
-            unreachable!("test tool not executed")
+            Ok(ToolOutput {
+                content: String::new(),
+                is_error: false,
+                details: None,
+                duration_ms: 0,
+                terminate: false,
+            })
         }
         fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
             self.contrib.clone()
@@ -543,155 +604,142 @@ mod system_prompt_tests {
     }
 
     fn reg_with(tools: Vec<Arc<dyn Tool>>) -> ToolRegistry {
-        let mut r = ToolRegistry::new();
+        let mut reg = ToolRegistry::new();
         for t in tools {
-            r.register_mut(t);
+            reg.register_mut(t);
         }
-        r
+        reg
+    }
+
+    fn contrib(name: &'static str, snippet: &str, guidelines: &[&str]) -> Arc<dyn Tool> {
+        Arc::new(ContribTool {
+            name,
+            contrib: Some(ToolSystemPrompt {
+                snippet: snippet.into(),
+                guidelines: guidelines.iter().map(|g| g.to_string()).collect(),
+            }),
+        })
     }
 
     #[test]
     fn no_tools_returns_base_unchanged() {
-        let reg = ToolRegistry::new();
-        assert_eq!(
-            build_system_prompt_with_contributions(Some("hello"), &reg),
-            Some("hello".to_string())
-        );
+        let reg = reg_with(vec![]);
+        let out = build_system_prompt_with_contributions(Some("base"), &reg).unwrap();
+        assert!(out.starts_with("base"), "base must survive: {out}");
+        // Pi 的形状下，即使没有工具也有两段（"(none)" + 固定引导）
+        assert!(out.contains("Available tools:\n(none)"), "{out}");
+        assert!(out.contains("- Be concise in your responses"), "{out}");
     }
 
     #[test]
     fn no_base_and_no_tools_returns_none() {
-        let reg = ToolRegistry::new();
-        assert_eq!(build_system_prompt_with_contributions(None, &reg), None);
+        let reg = reg_with(vec![]);
+        // Pi 的 prompt 永远有工具段与引导段；没有基座时也要给出一份。
+        // 这条断言从「返回 None」改成「仍返回一份完整的 prompt」——
+        // 性质变了：以前是「没有内容就别造内容」，现在是
+        // 「工具段与引导段是**必备**的，与基座无关」。
+        let out = build_system_prompt_with_contributions(None, &reg).unwrap();
+        assert!(out.contains("Available tools:"), "{out}");
+        assert!(out.contains("- Be concise in your responses"), "{out}");
     }
 
     #[test]
     fn tools_with_contribution_get_appended() {
-        let reg = reg_with(vec![Arc::new(ContribTool {
-            name: "bash",
-            contrib: Some(ToolSystemPrompt {
-                snippet: "Run shell commands".into(),
-                guidelines: vec!["Use absolute paths".into()],
-            }),
-        })]);
+        let reg = reg_with(vec![contrib(
+            "bash",
+            "Run shell commands",
+            &["Use absolute paths"],
+        )]);
         let out = build_system_prompt_with_contributions(Some("base"), &reg).unwrap();
-        assert!(out.starts_with("base"));
-        assert!(out.contains("## Tool self-descriptions"));
-        assert!(out.contains("- bash: Run shell commands"));
-        assert!(out.contains("## Tool usage guidelines"));
-        assert!(out.contains("- bash: Use absolute paths"));
+        assert!(out.starts_with("base"), "{out}");
+        assert!(out.contains("Available tools:"), "{out}");
+        assert!(out.contains("- bash: Run shell commands"), "{out}");
+        assert!(out.contains("Guidelines:"), "{out}");
+        assert!(out.contains("- Use absolute paths"), "{out}");
     }
 
     #[test]
     fn no_base_with_contribution_starts_with_header() {
-        let reg = reg_with(vec![Arc::new(ContribTool {
-            name: "read",
-            contrib: Some(ToolSystemPrompt {
-                snippet: "Read files".into(),
-                guidelines: vec![],
-            }),
-        })]);
+        let reg = reg_with(vec![contrib("read", "Read files", &[])]);
         let out = build_system_prompt_with_contributions(None, &reg).unwrap();
-        assert!(out.starts_with("\n\n## Tool self-descriptions"));
-        assert!(out.contains("- read: Read files"));
-        assert!(!out.contains("## Tool usage guidelines"));
+        assert!(out.contains("Available tools:"), "{out}");
+        assert!(out.contains("- read: Read files"), "{out}");
+        // 没有工具自己的 guideline，但固定的引导仍在
+        assert!(
+            out.contains("- Show file paths clearly when working with files"),
+            "{out}"
+        );
     }
 
     #[test]
     fn multiple_tools_each_get_their_own_line() {
         let reg = reg_with(vec![
-            Arc::new(ContribTool {
-                name: "bash",
-                contrib: Some(ToolSystemPrompt {
-                    snippet: "run cmds".into(),
-                    guidelines: vec!["use paths".into()],
-                }),
-            }),
-            Arc::new(ContribTool {
-                name: "read",
-                contrib: Some(ToolSystemPrompt {
-                    snippet: "read files".into(),
-                    guidelines: vec!["use limit".into()],
-                }),
-            }),
+            contrib("bash", "run cmds", &["use paths"]),
+            contrib("read", "read files", &["use limit"]),
         ]);
-        let out = build_system_prompt_with_contributions(Some("X"), &reg).unwrap();
-        assert!(out.contains("- bash: run cmds"));
-        assert!(out.contains("- read: read files"));
-        assert!(out.contains("- bash: use paths"));
-        assert!(out.contains("- read: use limit"));
+        let out = build_system_prompt_with_contributions(Some("base"), &reg).unwrap();
+        assert!(out.contains("- bash: run cmds"), "{out}");
+        assert!(out.contains("- read: read files"), "{out}");
+        assert!(out.contains("- use paths"), "{out}");
+        assert!(out.contains("- use limit"), "{out}");
     }
 
     #[test]
     fn empty_snippet_skipped() {
-        let reg = reg_with(vec![Arc::new(ContribTool {
-            name: "x",
-            contrib: Some(ToolSystemPrompt {
-                snippet: String::new(),
-                guidelines: vec!["a guideline".into()],
-            }),
-        })]);
+        let reg = reg_with(vec![contrib("x", "", &["a guideline"])]);
         let out = build_system_prompt_with_contributions(Some("base"), &reg).unwrap();
-        assert!(!out.contains("## Tool self-descriptions"));
-        assert!(out.contains("## Tool usage guidelines"));
-        assert!(out.contains("- x: a guideline"));
+        // 空 snippet 不占位（Pi 的规则 1：没有 snippet 就不列）
+        assert!(out.contains("Available tools:\n(none)"), "{out}");
+        assert!(out.contains("- a guideline"), "{out}");
     }
 
     #[test]
     fn empty_guidelines_skipped() {
-        let reg = reg_with(vec![Arc::new(ContribTool {
-            name: "x",
-            contrib: Some(ToolSystemPrompt {
-                snippet: "intro".into(),
-                guidelines: vec![],
-            }),
-        })]);
+        let reg = reg_with(vec![contrib("x", "a snippet", &[])]);
         let out = build_system_prompt_with_contributions(Some("base"), &reg).unwrap();
-        assert!(out.contains("## Tool self-descriptions"));
-        assert!(!out.contains("## Tool usage guidelines"));
+        assert!(out.contains("- x: a snippet"), "{out}");
+        // 工具自己没有 guideline，但固定的引导仍然在
+        assert!(out.contains("- Be concise in your responses"), "{out}");
     }
 
     #[test]
     fn tool_returning_none_default_is_no_contribution() {
-        // Tools that don't implement system_prompt_contribution
-        // (default = None) contribute nothing.
-        struct Plain;
+        struct NoneTool;
         #[async_trait]
-        impl Tool for Plain {
+        impl Tool for NoneTool {
             fn name(&self) -> &'static str {
-                "plain"
+                "none"
             }
             fn spec(&self) -> ToolSpec {
                 ToolSpec {
-                    name: "plain".into(),
-                    description: String::new(),
-                    input_schema: serde_json::json!({}),
+                    name: "none".into(),
+                    description: "d".into(),
+                    input_schema: serde_json::json!({"type": "object"}),
                 }
             }
             async fn execute(&self, _a: Value, _c: ToolContext) -> Result<ToolOutput, ToolError> {
-                unreachable!()
+                Ok(ToolOutput {
+                    content: String::new(),
+                    is_error: false,
+                    details: None,
+                    duration_ms: 0,
+                    terminate: false,
+                })
             }
         }
-        let reg = reg_with(vec![Arc::new(Plain)]);
-        assert_eq!(
-            build_system_prompt_with_contributions(Some("base"), &reg),
-            Some("base".to_string()),
-            "tool with default None contribution must not affect output"
+        let reg = reg_with(vec![Arc::new(NoneTool)]);
+        let out = build_system_prompt_with_contributions(Some("base"), &reg).unwrap();
+        assert!(
+            out.contains("Available tools:\n(none)"),
+            "没有贡献的工具不进 Available tools：{out}"
         );
     }
 
     #[test]
     fn tool_returning_some_empty_skipped() {
-        // A tool returning Some(ToolSystemPrompt::empty())
-        // explicitly opts into "no content" — same effect as None.
-        let reg = reg_with(vec![Arc::new(ContribTool {
-            name: "x",
-            contrib: Some(ToolSystemPrompt::empty()),
-        })]);
-        assert_eq!(
-            build_system_prompt_with_contributions(Some("base"), &reg),
-            Some("base".to_string())
-        );
+        let reg = reg_with(vec![contrib("x", "", &[])]);
+        let out = build_system_prompt_with_contributions(Some("base"), &reg).unwrap();
+        assert!(!out.contains("- x:"), "空 snippet 不该占一行：{out}");
     }
 }
 

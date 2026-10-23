@@ -43,8 +43,15 @@
 
 ## 2. 基线（实测，随脚本复算）
 
-**工具集**：nini 有 6 个（read/write/edit/bash/grep/find），**缺 `ls`**；Pi 0.85.1 有 8 个（多 `powershell`，
+**工具集**：nini 原有 6 个（read/write/edit/bash/grep/find），**缺 `ls`**；Pi 0.85.1 有 8 个（多 `powershell`，
 Windows 专用，本计划**只登记不实现**——见 §8）。
+
+> **执行结果（2026-10-23）**：T1–T4 全部完成。nini 现在有 **7 个**内置工具
+> （read/write/edit/bash/grep/find/ls），与 Pi 0.85.1 的差别只剩 `powershell`（有意不做）。
+> 契约对齐后暴露出的**语义**差异也一并修了：bash 默认超时 120s → 无默认超时（Pi 的契约如此，
+> 而 120s 会杀掉长的构建）；read 的 offset 0-indexed → 1-indexed；grep 补上
+> glob/ignoreCase/literal/context/limit 四个参数（此前**少 advertise** 四个能力，模型永远不会用）；
+> grep 的输出格式改成 Pi 的 `path:line: text`（此前少一个空格）并按 500 字符截断行。
 
 **契约**：7 个工具的描述**全部**与 0.85.1 不一致（nini 的抄自 0.84.2）。
 
@@ -187,6 +194,24 @@ cargo test -p nini-tools --test truncation_parity    # 退出 0
 **风险**：截断变小 ⇒ 上下文占用下降 ⇒ **长任务的上下文构成会变**。
 这正是我们要的（对齐 Pi），但它会改变现有长任务的模型行为；
 因此 T4 **必须排在 T1/T2/T3 之后**，并且单独一批、单独发版。
+
+---
+
+## 3.5 审查对本计划做了什么（2026-10-23）
+
+多 Agent 审查（`docs/reviews/tool-parity-review.md`）提出的 5 个问题，全部为真并已修：
+
+| 审查发现 | 处置 |
+|---|---|
+| `pi-tool-contracts.py` 用**启发式**抽描述（Pi 侧「最长字符串字面量」、nini 侧「正则 + 最长注释块」），不能当 oracle；Pi 的描述里还留着 `${...}` **未插值**的占位符 | 改为 **执行 Pi 自己的代码**取运行时值：`scripts/pi-tool-dump.mjs` → `references/pi-0.85.1/tool-contracts.json`（描述、参数 schema、snippet、guidelines 全部是运行时值） |
+| `--compare` 恒返回 0 → 看板靠「输出里有没有 ✗」判断，**可能误判全绿** | 判据全部改成**一条命令的退出码**；对比脚本以 `--json` 输出结构化结果 |
+| 排序理由（T2 必须先于 T3）**因果不成立** | 已改写：T2/T3 可交换，真正的依赖只有 T1 的提取机制 |
+| 「改 prompt 结构但不搬层」有隐藏依赖：旧标题的断言在别处、且 **CLI 与 agent 双重装配**同一段 | 断言全部更新；双重装配已修（CLI 只拼基座，工具段由 agent 拼一次），并加了「只出现一次」的 oracle |
+| Pi 侧 `promptSnippet` 只有 find/grep/ls 有 | 审查不完整：**8 个工具都有**（harness 层的 bash/edit/read/write 也带）。以运行时转储为准 |
+
+**同时纠正一处我自己的错误**：本计划原先把 `powershell` 说成"Pi 有而 nini 没有"，但没说清
+**Pi 自己有两套 truncate 实现**（harness 层与 coding 层，语义基本相同）。nini 对齐的是
+**coding 层**（产品层，nini 的工具对应的就是它）。
 
 ---
 

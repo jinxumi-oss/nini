@@ -1,6 +1,6 @@
 ## v0.10.8 — the guard against a second agent was the editor's state (2026-10-23)
 
-1557 tests, all green. The defect was measured on v0.10.2 and had been sitting
+1580 tests, all green. The defect was measured on v0.10.2 and had been sitting
 in the plan as a P0 with a written exit criterion that nobody had executed.
 
 ### Esc could start a second agent, and the session file kept the receipts
@@ -208,6 +208,73 @@ T4 ✗  测试不存在
 
 In CI the board runs as a **report** (`continue-on-error`) until the plan is
 done; then it becomes a hard gate.
+
+### The tools: seven of Pi's eight, with the contract checked against Pi's own runtime
+
+The built-in tool set now matches **Pi 0.85.1** — `read`, `write`, `edit`,
+`bash`, `grep`, `find`, `ls` — down to the tool descriptions, the parameter
+schemas, and the prompt contributions. The only exception is `powershell`
+(Windows-only in Pi), which nini does not ship.
+
+**How the comparison is made.** Not by transcribing Pi's source: Pi's tool
+descriptions are *template literals* (`Output is truncated to
+${DEFAULT_MAX_BYTES / 1024}KB`), so reading the source yields the wrong
+string, and comparing it against nini's Rust literals compares two *ways of
+writing* rather than one contract. `scripts/pi-tool-dump.mjs` now **executes
+Pi's own `createToolDefinition`** and freezes the runtime values — description,
+parameter names/types/descriptions, `required`, `promptSnippet`,
+`promptGuidelines` — into `references/pi-0.85.1/tool-contracts.json`.
+`crates/nini-tools/tests/tool_contract_parity.rs` asserts nini against that
+file, tool by tool.
+
+**What the alignment exposed** — four behavioural differences that no schema
+comparison would have caught:
+
+- **`bash` had a 120-second default timeout.** Pi's contract says "optional, no
+  default timeout". nini's cap would **kill a long build** — exactly the thing
+  a user asks an agent to do. Now there is no default timeout; an explicit one
+  is still bounded.
+- **`read`'s `offset` was 0-indexed** while the contract (now Pi's) says
+  1-indexed. A contract that lies is worse than an inconsistency: the model
+  would read the wrong line. Both are now 1-indexed.
+- **`grep` advertised three parameters** (`pattern`/`path`/`include`) while Pi
+  has seven. The model never used what it was not shown — `glob`,
+  `ignoreCase`, `literal`, `context` and `limit` are now implemented, and
+  `include` is renamed to Pi's `glob`.
+- **The output formats differed**: grep printed `path:line:content` where Pi
+  prints `path:line: content` (with a space), and Pi truncates long lines at
+  500 characters.
+
+**The system prompt now follows Pi's rules**, which nini did not have at all:
+
+- a tool appears in "Available tools" **only when it provides a one-line
+  snippet** (Pi: `visibleTools = tools.filter(name => !!toolSnippets?.[name])`);
+- the guidelines depend on **which tools are enabled** — Pi emits "Use bash
+  for file operations like ls, rg, find" only when there is a shell but no
+  grep/find/ls;
+- two guidelines are always present ("Be concise in your responses", "Show
+  file paths clearly when working with files");
+- and the sections are assembled **exactly once** — the CLI used to build them
+  and the agent built them again, so the model saw the same instructions twice.
+
+**One truncation path instead of five.** Pi has a single `truncate.js`
+(2000 lines *and* 50 KiB, whichever comes first; head never splits a line,
+tail may keep half a line; single lines cut at 500 characters). nini had a
+per-tool implementation with a 1 MiB budget — twenty times Pi's, so the same
+command consumed twenty times the context. `crates/nini-tools/src/truncate.rs`
+implements Pi's semantics, and `scripts/truncate-oracle.mjs` **executes Pi's
+own `truncate.js`** to freeze the expected values
+(`references/pi-0.85.1/truncate-oracle.json`) that
+`crates/nini-tools/tests/truncation_parity.rs` asserts against. `bash` now
+also spills the full output to a temp file and says so, because its contract
+promises that ("If truncated, full output is saved to a temp file") — a
+description that lies is a bug.
+
+An independent review of the plan found five holes in it (the comparison was
+heuristic, the ordering rationale was wrong, two checks could pass vacuously,
+and the prompt was assembled twice); all five are closed, and the plan records
+the corrections in `docs/plans/tool-parity.md` §3.5 and
+`docs/reviews/tool-parity-review.md`.
 
 ### The tools are two different projects, and now they are labelled as such
 

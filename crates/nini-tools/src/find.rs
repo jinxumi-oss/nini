@@ -34,24 +34,25 @@ impl Tool for FindTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "find".to_string(),
-            description: "Enumerate files matching a glob (e.g. `*.rs`, `**/*.toml`). \
-                          Honors .gitignore. NOT for listing a directory's contents — \
-                          use bash (`ls`) for that."
+            // v0.10.8 (T1): 与 Pi 0.85.1 的契约逐字对齐
+            description: "Search for files by glob pattern. Returns matching file paths \
+                          relative to the search directory. Respects .gitignore. Output is \
+                          truncated to 1000 results or 50KB (whichever is hit first)."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Glob pattern to match file names (e.g. `*.rs`, `src/**/*.rs`)."
+                        "description": "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'"
                     },
                     "path": {
                         "type": "string",
-                        "description": "Root directory. Defaults to cwd."
+                        "description": "Directory to search in (default: current directory)"
                     },
                     "limit": {
                         "type": "number",
-                        "description": "Maximum number of results. Default 1000."
+                        "description": "Maximum number of results (default: 1000)"
                     }
                 },
                 "required": ["pattern"],
@@ -106,8 +107,19 @@ impl Tool for FindTool {
         let mut output = results.join("\n");
         if output.is_empty() {
             output = format!("no files matching `{}`", parsed.pattern);
-        } else if results.len() >= limit {
-            output.push_str(&format!("\n[... truncated at {limit} results]"));
+        } else {
+            // v0.10.8 (T4): 统一截断（Pi 的 tools/truncate.js：行数与字节两个
+            // 上限，先到者胜）。此前 nini 只有「条目数到顶」一种提示，
+            // 字节上限根本不管——于是大结果集会灌进上下文。
+            let t =
+                crate::truncate::truncate_head(&output, ctx.max_output_lines, ctx.max_output_bytes);
+            output = t.content;
+            if t.truncated {
+                output.push_str(&format!(
+                    "\n[... truncated at {limit} results, {} of the output kept]",
+                    crate::truncate::format_size(t.output_bytes)
+                ));
+            }
         }
 
         Ok(ToolOutput {
@@ -124,10 +136,9 @@ impl Tool for FindTool {
 
     fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
         Some(ToolSystemPrompt {
-            snippet: "Enumerate files matching a glob (e.g. `*.rs`).".into(),
-            guidelines: vec!["Use this to find which files EXIST; not to list \
-                 directory contents — use bash (`ls`) for that."
-                .into()],
+            // v0.10.8 (T1): Pi 0.85.1 的 find 没有 guidelines
+            snippet: "Find files by glob pattern (respects .gitignore)".into(),
+            guidelines: vec![],
         })
     }
 }

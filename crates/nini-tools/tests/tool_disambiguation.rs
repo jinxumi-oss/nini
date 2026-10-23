@@ -1,9 +1,26 @@
-//! Oracle: `find` must be distinguishable from `bash` when the request is
-//! "list the files in a directory".
+//! Oracle: `find`, `ls` and `bash` must be distinguishable from each other.
 //! invariant: 545fd548
+//!
+//! # 这条不变量的形状变了（2026-10-23，T2）
+//!
+//! 原���言：nini **没有** `ls`，所以「列一个目录」只能靠 bash，而 find 的
+//! 描述曾经写着 "Find files by glob pattern …"——正是这句话让模型把
+//! "列目录"选成 find（实测：`arguments: null`）。修法是给 find 的描述加一条
+//! **否定式指引**（"not for listing … use bash"）。
+//!
+//! 现在 nini 有 `ls` 了（Pi 0.85.1 也有），而且三个工具的描述都按 Pi 逐字对齐。
+//! Pi 的做法**不是**否定式指引，而是**职责互斥的精确描述**：
+//!
+//! * `ls`   —— "List directory contents. Returns entries sorted alphabetically…"
+//! * `find` —— "Search for files by glob pattern. Returns matching file paths…"
+//! * `bash` —— "Execute a bash command in the current working directory…"
+//!
+//! 不变的是**性质**（模型必须能把「列目录 / 按 glob 找文件 / 执行命令」
+//! 三种请求分到三个工具上），变的是**载体**（否定式指引 → 互斥的职责描述）。
+//! 护住性质，放弃载体——否则就是在保一条已经不成立的规则。
 
 use nini_core::tool::Tool;
-use nini_tools::{BashTool, FindTool};
+use nini_tools::{BashTool, FindTool, LsTool};
 
 fn norm(s: &str) -> String {
     s.to_lowercase()
@@ -17,81 +34,75 @@ fn contribution_text(tool: &dyn Tool) -> String {
     format!("{}\n{}", c.snippet, c.guidelines.join("\n")).to_lowercase()
 }
 
+/// Everything the model reads about a tool: its description + its prompt section.
+fn model_facing_text(tool: &dyn Tool) -> String {
+    format!(
+        "{}\n{}",
+        norm(&tool.spec().description),
+        contribution_text(tool)
+    )
+}
+
 #[test]
-fn find_description_points_listing_at_bash() {
-    let description = norm(&FindTool::new().spec().description);
+fn ls_owns_listing_and_find_owns_the_glob() {
+    let ls_text = model_facing_text(&LsTool::new());
+    let find_text = model_facing_text(&FindTool::new());
 
-    // The pre-fix description was "Find files by glob pattern ..." — the exact
-    // wording that made the model pick find for "list files in <dir>".
+    // `ls` 必须自报家门：列目录
     assert!(
-        !description.contains("find files by glob pattern"),
-        "the description is back to the wording that collides with `list files`"
+        ls_text.contains("list directory contents"),
+        "ls must say it lists directory contents: {ls_text}"
     );
-
-    // The fix's actual content: a negative direction naming the right tool.
+    // `find` 必须自报家门：按 glob 找文件
     assert!(
-        description.contains("bash"),
-        "find's description must name bash as the alternative: {description}"
+        find_text.contains("glob pattern"),
+        "find must say it matches files by glob: {find_text}"
+    );
+    // `find` 不得**抢占**列目录的活——那正是当初那个缺陷
+    assert!(
+        !find_text.contains("list directory contents"),
+        "find must not claim the listing capability that `ls` owns: {find_text}"
     );
     assert!(
-        description.contains("ls"),
-        "find's description must name `ls`, the command the model should reach for: {description}"
-    );
-    assert!(
-        description.contains("not for listing"),
-        "find's description must explicitly exclude listing a directory's contents: {description}"
+        !ls_text.contains("glob pattern"),
+        "ls must not claim the glob capability that `find` owns: {ls_text}"
     );
 }
 
 #[test]
-fn find_guideline_states_the_negative_direction() {
-    let text = contribution_text(&FindTool::new());
-    assert!(
-        text.contains("bash") && text.contains("ls"),
-        "the guidelines must say when NOT to use find: {text}"
-    );
-    // Pre-fix guideline was only mechanics ("Anchor glob patterns with `**/`").
-    assert!(
-        !text.contains("anchor glob patterns"),
-        "the guidelines reverted to mechanics-only, losing the routing signal"
-    );
-}
+fn the_three_tools_present_different_guidance() {
+    let find_text = model_facing_text(&FindTool::new());
+    let ls_text = model_facing_text(&LsTool::new());
+    let bash_text = model_facing_text(&BashTool::new());
 
-#[test]
-fn find_and_bash_are_not_interchangeable_on_a_listing_request() {
-    // The end-to-end symptom: "List files in crates/nini-tui/src/, just first 5"
-    // chose find (with arguments: null) instead of bash + ls. What the model
-    // reads is each tool's full guidance — description plus system-prompt
-    // section — so the assertion is made on exactly that text.
-    let find_text = format!(
-        "{}\n{}",
-        norm(&FindTool::new().spec().description),
-        contribution_text(&FindTool::new())
-    );
-    let bash_text = format!(
-        "{}\n{}",
-        norm(&BashTool::new().spec().description),
-        contribution_text(&BashTool::new())
-    );
-
+    assert_ne!(find_text, ls_text, "find and ls present the same guidance");
     assert_ne!(
         find_text, bash_text,
-        "find and bash present the same guidance to the model"
+        "find and bash present the same guidance"
     );
-    // bash advertises `ls` as a first-class capability ...
+    assert_ne!(ls_text, bash_text, "ls and bash present the same guidance");
+
+    // bash 仍然自报「执行命令」——它是 shell，不是文件浏览器
     assert!(
-        bash_text.contains("ls"),
-        "bash's guidance must advertise `ls`: {bash_text}"
+        bash_text.contains("bash command"),
+        "bash must advertise command execution: {bash_text}"
     );
-    // ... and find must hand the listing case over to it. Without this the
-    // model has no signal and picks find with `arguments: null`.
+}
+
+#[test]
+fn a_listing_request_has_an_exact_owner() {
+    // 端到端症状：「List files in crates/nini-tui/src/, just first 5」
+    // 曾经选中 find（arguments: null）。现在必须有一个工具**精确地**承担
+    // 「列目录」，模型才有信号。
+    let ls_text = model_facing_text(&LsTool::new());
+    let find_text = model_facing_text(&FindTool::new());
+
     assert!(
-        find_text.contains("not for listing") && find_text.contains("bash"),
-        "find does not defer the listing case to bash: {find_text}"
+        ls_text.contains("list directory contents") && ls_text.contains("sorted alphabetically"),
+        "ls must describe exactly what a listing request asks for: {ls_text}"
     );
-    // find must not also claim the capability it handed over.
     assert!(
-        !find_text.contains("list the files") && !find_text.contains("lists the files"),
-        "find must not claim the listing capability it handed to bash: {find_text}"
+        !find_text.contains("list"),
+        "find must not contain the word that would attract a listing request: {find_text}"
     );
 }

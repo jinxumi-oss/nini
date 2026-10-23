@@ -1061,7 +1061,7 @@ mod trust_wiring_tests {
                 gated += 1;
             }
         }
-        assert_eq!(total, 6, "the six built-ins should survive the filters");
+        assert_eq!(total, 7, "the seven built-ins should survive the filters");
         assert_eq!(
             gated, total,
             "{gated}/{total} tools carry the trust gate — a run built from \
@@ -1078,7 +1078,7 @@ mod trust_wiring_tests {
         c.exclude_tools = vec!["bash".into(), "write".into()];
         let tools = build_run_tools(&c, std::path::Path::new("/tmp"));
         let names: Vec<String> = tools.tools().map(|t| t.name().to_string()).collect();
-        assert_eq!(names.len(), 4, "exclusions were not applied: {names:?}");
+        assert_eq!(names.len(), 5, "exclusions were not applied: {names:?}");
         for n in &names {
             assert!(
                 !n.contains("bash") && !n.contains("write"),
@@ -1096,7 +1096,7 @@ mod trust_wiring_tests {
     #[test]
     fn a_missing_agent_directory_still_yields_working_tools() {
         let tools = build_run_tools(&cfg(), std::path::Path::new("/tmp"));
-        assert_eq!(tools.tools().count(), 6);
+        assert_eq!(tools.tools().count(), 7);
     }
 }
 
@@ -1134,7 +1134,7 @@ mod print_mode_tool_tests {
             !names.iter().any(|n| n == "bash"),
             "`nini --exclude-tools bash -p …` still had bash: {names:?}"
         );
-        assert_eq!(names.len(), 5);
+        assert_eq!(names.len(), 6);
     }
 
     #[test]
@@ -1168,7 +1168,7 @@ mod print_mode_tool_tests {
             build_run_tools(&c, std::path::Path::new("/tmp"))
                 .tools()
                 .count(),
-            6
+            7
         );
     }
 }

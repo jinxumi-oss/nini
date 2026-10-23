@@ -1,7 +1,7 @@
 //! v0.8.2: Tool registry factory + CLI filtering.
 //!
 //! Two functions:
-//!   * `build_tools()` — registers all 6 built-in tools
+//!   * `build_tools()` — registers all 7 built-in tools
 //!   * `filter_tools()` — applies `--tools` / `--exclude-tools` /
 //!     `--no-tools` / `--no-builtin-tools` CLI flags to a registry
 //!
@@ -10,9 +10,13 @@
 use std::sync::Arc;
 
 use nini_core::tool::{Tool, ToolRegistry};
-use nini_tools::{BashTool, EditTool, FindTool, GrepTool, ReadTool, WriteTool};
+use nini_tools::{BashTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, WriteTool};
 
-/// Register all 6 built-in tools in their canonical order.
+/// Register all 7 built-in tools in their canonical order.
+///
+/// v0.10.8 (T2): Pi 0.85.1 有 8 个内置工具，nini 此前 6 个；
+/// 本次补上 `ls`（`powershell` 是 Windows 专用，有意不做，
+/// 见 README known limitations）。
 pub(crate) fn build_tools() -> ToolRegistry {
     let bash: Arc<dyn Tool> = Arc::new(BashTool::new());
     let read: Arc<dyn Tool> = Arc::new(ReadTool::new());
@@ -20,6 +24,7 @@ pub(crate) fn build_tools() -> ToolRegistry {
     let edit: Arc<dyn Tool> = Arc::new(EditTool::new());
     let grep: Arc<dyn Tool> = Arc::new(GrepTool::new());
     let find: Arc<dyn Tool> = Arc::new(FindTool::new());
+    let ls: Arc<dyn Tool> = Arc::new(LsTool::new());
     let mut reg = ToolRegistry::new();
     reg.register_mut(bash);
     reg.register_mut(read);
@@ -27,6 +32,7 @@ pub(crate) fn build_tools() -> ToolRegistry {
     reg.register_mut(edit);
     reg.register_mut(grep);
     reg.register_mut(find);
+    reg.register_mut(ls);
     reg
 }
 
@@ -47,7 +53,7 @@ pub(crate) fn filter_tools(
     no_tools: bool,
     no_builtin: bool,
 ) -> ToolRegistry {
-    let builtin = ["bash", "read", "write", "edit", "grep", "find"];
+    let builtin = ["bash", "read", "write", "edit", "grep", "find", "ls"];
     let tools: Vec<(String, Arc<dyn Tool>)> = registry
         .tools()
         .map(|t| (t.name().to_string(), t))
@@ -80,10 +86,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_tools_registers_all_six() {
+    fn build_tools_registers_all_seven() {
         let reg = build_tools();
         let names: Vec<&str> = reg.tools().map(|t| t.name()).collect();
-        assert_eq!(names.len(), 6, "expected 6 built-in tools");
+        assert_eq!(names.len(), 7, "expected 7 built-in tools");
         for n in &["bash", "read", "write", "edit", "grep", "find"] {
             assert!(names.contains(&n), "missing tool: {n}");
         }
@@ -100,7 +106,7 @@ mod tests {
     fn filter_tools_no_builtin_drops_only_builtins() {
         let reg = build_tools();
         let out = filter_tools(reg, &[], &[], false, true);
-        assert_eq!(out.tools().count(), 0, "all 6 are builtin");
+        assert_eq!(out.tools().count(), 0, "all 7 are builtin");
     }
 
     #[test]
@@ -118,7 +124,7 @@ mod tests {
         let deny = vec!["bash".to_string()];
         let out = filter_tools(reg, &[], &deny, false, false);
         let names: Vec<&str> = out.tools().map(|t| t.name()).collect();
-        assert_eq!(names.len(), 5);
+        assert_eq!(names.len(), 6);
         assert!(!names.contains(&"bash"));
     }
 
@@ -143,17 +149,25 @@ fn every_built_in_tool_has_system_prompt_contribution() {
     let names: Vec<&str> = reg.tools().map(|t| t.name()).collect();
     assert_eq!(
         names.len(),
-        6,
-        "build_tools() must register exactly 6 tools (current: {names:?})"
+        7,
+        "build_tools() must register exactly 7 tools (current: {names:?})"
     );
     for name in &names {
         let tools_for_prompt = build_tools();
-        let prompt = crate::prompt_setup::settings_to_system_prompt(
-            &Settings::default(),
-            std::path::Path::new("/tmp/proj"),
+        // v0.10.8 (T3): 工具段现在由 **agent** 统一拼一次
+        // （nini-core::tool::build_system_prompt_with_contributions），
+        // CLI 的 prompt_setup 只拼基座——所以这条断言要问对地方：
+        // 「每个工具的 snippet 出现在模型收到的 prompt 里」。
+        let prompt = nini_core::tool::build_system_prompt_with_contributions(
+            Some(&crate::prompt_setup::settings_to_system_prompt(
+                &Settings::default(),
+                std::path::Path::new("/tmp/proj"),
+                &tools_for_prompt,
+                "",
+            )),
             &tools_for_prompt,
-            "",
-        );
+        )
+        .unwrap_or_default();
         let line = format!("- {name}:");
         assert!(
             prompt.contains(&line),

@@ -58,26 +58,29 @@ impl Tool for ReadTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read".to_string(),
-            description: "Read a file's contents into context. Use `offset` + `limit` \
-                          for large files (line numbers are 1-indexed)."
+            // v0.10.8 (T1): 与 Pi 0.85.1 的契约逐字对齐
+            // （references/pi-0.85.1/tool-contracts.json，由 scripts/pi-tool-dump.mjs
+            //  执行 Pi 自己的代码产出）。
+            description: "Read the contents of a file. Supports text files and images \
+                          (jpg, png, gif, webp, bmp). Images are sent as attachments. For \
+                          text files, output is truncated to 2000 lines or 50KB (whichever \
+                          is hit first). Use offset/limit for large files. When you need \
+                          the full file, continue with offset until complete."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute or cwd-relative file path."
+                        "description": "Path to the file to read (relative or absolute)"
                     },
                     "offset": {
                         "type": "number",
-                        "description": "Line offset to start reading from (0-indexed). Optional."
+                        "description": "Line number to start reading from (1-indexed)"
                     },
                     "limit": {
                         "type": "number",
-                        "description": format!(
-                            "Maximum number of lines to read. Optional; defaults to \
-                             {DEFAULT_READ_MAX_LINES}."
-                        )
+                        "description": "Maximum number of lines to read"
                     }
                 },
                 "required": ["path"],
@@ -127,7 +130,16 @@ impl Tool for ReadTool {
             })?;
 
         let total_lines = content.lines().count();
-        let offset = parsed.offset.unwrap_or(0) as usize;
+        // v0.10.8 (T1): `offset` 变成 **1-indexed**，与 Pi 0.85.1 一致
+        // （契约原文："Line number to start reading from (1-indexed)"；
+        //  Pi 的实现是 `Math.max(0, offset - 1)`）。
+        // 之前 nini 是 0-indexed，而契约（对齐后）说的是 1-indexed ——
+        // **契约说谎比不一致更糟**：模型按 1-indexed 读，会错位一行。
+        // 换算：offset=1 → 第一行；offset=None → 第一行。
+        let offset = parsed
+            .offset
+            .map(|n| n.saturating_sub(1) as usize)
+            .unwrap_or(0);
         let limit = parsed
             .limit
             .map(|n| n as usize)
@@ -155,6 +167,40 @@ impl Tool for ReadTool {
                 .join("\n")
         };
 
+        // v0.10.8 (T4): 统一截断 + Pi 的「这是窗口」标记。
+        //
+        // Pi 的三种标记（dist/tools-t1/read.js）：
+        //   "[Showing lines A-B of N. Use offset=N+1 to continue.]"
+        //   "[Showing lines A-B of N (50KB limit). Use offset=N+1 to continue.]"
+        //   "[M more lines in file. Use offset=N+1 to continue.]"
+        // nini 此前**一个标记都没有**——模型看不出自己拿到的是窗口而不是全文。
+        let mut selected = selected;
+        let mut truncated_by_bytes = false;
+        if total_lines > 0 {
+            let t = crate::truncate::truncate_head(&selected, limit.max(1), ctx.max_output_bytes);
+            truncated_by_bytes = t.truncated_by == Some("bytes");
+            selected = t.content;
+        }
+        let next_offset = end + 1;
+        if end < total_lines {
+            if truncated_by_bytes {
+                selected.push_str(&format!(
+                    "\n\n[Showing lines {}-{} of {} ({} limit). Use offset={next_offset} to continue.]",
+                    start + 1,
+                    end,
+                    total_lines,
+                    crate::truncate::format_size(ctx.max_output_bytes),
+                ));
+            } else {
+                selected.push_str(&format!(
+                    "\n\n[Showing lines {}-{} of {}. Use offset={next_offset} to continue.]",
+                    start + 1,
+                    end,
+                    total_lines,
+                ));
+            }
+        }
+
         let details = json!({
             "path": path.display().to_string(),
             "total_lines": total_lines,
@@ -180,24 +226,9 @@ impl Tool for ReadTool {
 
     fn system_prompt_contribution(&self) -> Option<nini_core::tool::ToolSystemPrompt> {
         Some(nini_core::tool::ToolSystemPrompt {
-            snippet: "Read a file's contents into your context.".into(),
-            guidelines: vec![
-                "Always read a file before editing it — never edit blind.".into(),
-                // v0.8.9 (P2-7): the defaults are no longer "everything",
-                // so the model has to be told what they are and how to
-                // get more. A model that assumes `read` returns the whole
-                // file will happily act on a truncated view.
-                format!(
-                    "A bare `read` returns at most {DEFAULT_READ_MAX_LINES} lines. \
-                     Pass `offset` + `limit` to page through the rest; `offset` is \
-                     0-indexed."
-                ),
-                format!(
-                    "Files over {} KB are refused outright — use `grep` to find the \
-                     relevant lines first.",
-                    READ_HARD_MAX_BYTES / 1024
-                ),
-            ],
+            // v0.10.8 (T1): Pi 的 snippet 与 guidelines 逐字对齐
+            snippet: "Read file contents".into(),
+            guidelines: vec!["Use read to examine files instead of cat or sed.".into()],
         })
     }
 }
@@ -233,7 +264,9 @@ mod tests {
         // not silently return "".
         let out = tool
             .execute(
-                json!({"path": path.to_string_lossy(), "offset": 2}),
+                // v0.10.8 (T1): offset 是 1-indexed（与 Pi 0.85.1 一致），
+                // 所以「第 3 行开始」写 3（旧语义下同样的位置要写 2）。
+                json!({"path": path.to_string_lossy(), "offset": 3}),
                 ToolContext::default(),
             )
             .await
@@ -260,7 +293,7 @@ mod tests {
         let tool = ReadTool::new();
         let out = tool
             .execute(
-                json!({"path": path.to_string_lossy(), "offset": 1, "limit": u64::MAX}),
+                json!({"path": path.to_string_lossy(), "offset": 2, "limit": u64::MAX}),
                 ToolContext::default(),
             )
             .await
@@ -294,10 +327,17 @@ mod tests {
             details["default_limit"], true,
             "the model should be able to tell the cap was not its idea"
         );
+        // v0.10.8 (T4): 末尾多了 Pi 的「这是窗口」标记，计数只看窗口本身
+        let window = out.content.split("\n\n[").next().unwrap_or(&out.content);
         assert_eq!(
-            out.content.lines().count(),
+            window.lines().count(),
             DEFAULT_READ_MAX_LINES,
             "exactly the default window should come back"
+        );
+        assert!(
+            out.content.contains("Use offset=2001 to continue."),
+            "必须告诉模型怎么继续：{}",
+            out.content
         );
     }
 
@@ -308,12 +348,24 @@ mod tests {
         let tool = ReadTool::new();
         let out = tool
             .execute(
-                json!({"path": path.to_string_lossy(), "offset": 10, "limit": 5}),
+                json!({"path": path.to_string_lossy(), "offset": 11, "limit": 5}),
                 ToolContext::default(),
             )
             .await
             .unwrap();
-        assert_eq!(out.content, "line 10\nline 11\nline 12\nline 13\nline 14");
+        // v0.10.8 (T4): 末尾带 Pi 的「这是窗口」标记
+        assert!(
+            out.content
+                .starts_with("line 10\nline 11\nline 12\nline 13\nline 14"),
+            "窗口内容不对：{}",
+            out.content
+        );
+        assert!(
+            out.content
+                .contains("[Showing lines 11-15 of 5000. Use offset=16 to continue.]"),
+            "必须告诉模型这是窗口、以及怎么继续：{}",
+            out.content
+        );
         let details = out.details.unwrap();
         assert_eq!(details["default_limit"], false);
         assert_eq!(details["truncated"], true);
@@ -373,15 +425,26 @@ mod tests {
     async fn system_prompt_states_the_new_defaults() {
         // A model that assumes `read` returns everything will act on a
         // truncated view. The limits have to be in the prompt.
-        let contrib = ReadTool::new().system_prompt_contribution().unwrap();
-        let joined = contrib.guidelines.join(" ");
+        //
+        // v0.10.8 (T1): Pi 0.85.1 把这条信息放在**description** 里，
+        // 而它的 guidelines 只有一句 "Use read to examine files instead of
+        // cat or sed."。所以这条性质改在 Pi 的载体上断言——**性质不变，
+        // 载体对齐**。测试断言的是「prompt 里必须写明上限与翻页方式」。
+        let tool = ReadTool::new();
+        let desc = tool.spec().description;
         assert!(
-            joined.contains(&DEFAULT_READ_MAX_LINES.to_string()),
-            "guidelines must state the default line cap: {joined}"
+            desc.contains("2000 lines") && desc.contains("50KB"),
+            "description must state the truncation caps: {desc}"
         );
         assert!(
-            joined.contains("offset"),
-            "guidelines must explain how to get more: {joined}"
+            desc.contains("offset") && desc.contains("limit"),
+            "description must explain how to page: {desc}"
+        );
+        let contrib = tool.system_prompt_contribution().unwrap();
+        assert_eq!(
+            contrib.guidelines.join(" "),
+            "Use read to examine files instead of cat or sed.",
+            "guidelines must match Pi 0.85.1 verbatim"
         );
     }
 
@@ -439,12 +502,22 @@ mod tests {
         let tool = ReadTool::new();
         let out = tool
             .execute(
-                json!({"path": path, "offset": 3, "limit": 2}),
+                // v0.10.8 (T1): 1-indexed —— 第 4 行开始（旧的 0-indexed 语义下是 3）
+                json!({"path": path, "offset": 4, "limit": 2}),
                 ToolContext::default(),
             )
             .await
             .unwrap();
-        assert_eq!(out.content, "line 3\nline 4");
+        assert!(
+            out.content.starts_with("line 3\nline 4"),
+            "窗口内容不对：{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("Use offset=6 to continue."),
+            "必须告诉模型怎么继续：{}",
+            out.content
+        );
     }
 
     #[tokio::test]

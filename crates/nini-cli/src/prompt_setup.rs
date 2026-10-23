@@ -86,12 +86,6 @@ pub(crate) fn settings_to_system_prompt_with(
     if let Some(t) = &settings.thinking_level {
         s.push_str(&format!("Thinking level: {t}\n"));
     }
-    // v0.8.6: v0.7.1's system_prompt_contribution() was never wired up.
-    // Append each registered tool's snippet + guidelines (sorted by name
-    // for stable token-cache hits). The hardcoded
-    // "Available tools: bash, read, write, edit, grep, find" line is
-    // replaced with Pi-style "## Tool self-descriptions" + "## Tool usage
-    // guidelines" sections built from the live registry.
     if let Some(extra) = append_prompt {
         if !extra.trim().is_empty() {
             s.push_str("\n\n");
@@ -99,9 +93,17 @@ pub(crate) fn settings_to_system_prompt_with(
             s.push('\n');
         }
     }
-    let mut s =
-        nini_core::tool::build_system_prompt_with_contributions(Some(&s), tools).unwrap_or(s);
     s.push_str(skills_prompt);
+    // v0.10.8 (T3): **工具段不再在这里拼**。
+    //
+    // 原来这里拼一次（"## Tool self-descriptions" + "## Tool usage
+    // guidelines"），`nini-core/src/agent.rs` 在发请求前又拼一次——
+    // 于是**同一段工具说明在 prompt 里出现了两遍**。模型看到重复的
+    // 指令与重复的 token，而 nini 与 Pi 的 prompt 结构就此不同。
+    //
+    // 现在只有 agent 拼（Pi 的形状："Available tools:" + "Guidelines:"），
+    // 这里是**基座**（身份、cwd、skills、用户追加段）。
+    let _ = tools; // 基座不再需要 registry；工具段由 agent 统一拼
     s
 }
 

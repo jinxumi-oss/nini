@@ -131,15 +131,17 @@ impl Tool for EditTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "edit".to_string(),
-            // Pi 0.84.2's description, captured verbatim. It carries the
-            // non-overlap guidance the snippet deliberately omits, so the
-            // two must stay different (a v0.8 guard enforces this).
-            description: "Edit a single file using exact text replacement.\
-                          Every edits[].oldText must match a unique,\"
-                          non-overlapping region of the original file. If two\"
-                          changes affect the same block or nearby lines, merge\"
-                          them into one edit instead of emitting overlapping\"
-                          edits. Do not include large unchanged regions just\"
+            // v0.10.8 (T1): 与 Pi 0.85.1 的契约逐字对齐
+            // （references/pi-0.85.1/tool-contracts.json，由 scripts/pi-tool-dump.mjs
+            //  执行 Pi 自己的代码产出）。
+            //
+            // 它与 snippet 仍然必须不同：Pi 的 description 带非重叠指引，
+            // snippet 是一句话简介（v0.8 的守卫还在）。
+            description: "Edit a single file using exact text replacement. Every \
+                          edits[].oldText must match a unique, non-overlapping region of \
+                          the original file. If two changes affect the same block or \
+                          nearby lines, merge them into one edit instead of emitting \
+                          overlapping edits. Do not include large unchanged regions just \
                           to connect distant changes."
                 .to_string(),
             // Pi's schema, captured from 0.84.2 at runtime. `old_text` /
@@ -154,19 +156,18 @@ impl Tool for EditTool {
                     },
                     "edits": {
                         "type": "array",
-                        "description": "One or more replacements applied in a single call.",
+                        "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
                         "items": {
                             "type": "object",
                             "required": ["oldText", "newText"],
                             "properties": {
                                 "oldText": {
                                     "type": "string",
-                                    "description": "Exact text for one targeted replacement. \
-                                                   It must be unique in the file."
+                                    "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
                                 },
                                 "newText": {
                                     "type": "string",
-                                    "description": "Replacement text."
+                                    "description": "Replacement text for this targeted edit."
                                 }
                             }
                         }
@@ -257,19 +258,14 @@ impl Tool for EditTool {
 
     fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
         Some(ToolSystemPrompt {
-            snippet: "Make precise file edits with exact text replacement, \
-                      including multiple disjoint edits in one call."
+            // v0.10.8 (T1): Pi 0.85.1 的 snippet 与 guidelines 逐字对齐
+            snippet: "Make precise file edits with exact text replacement, including multiple disjoint edits in one call"
                 .into(),
             guidelines: vec![
                 "Use edit for precise changes (edits[].oldText must match exactly)".into(),
-                "When changing multiple separate locations in one file, use one edit \
-                 call with multiple entries in edits[] instead of multiple edit calls"
-                    .into(),
-                "Each edits[].oldText must be unique in the file. Do not emit \
-                 overlapping or nested edits."
-                    .into(),
-                "Keep edits[].oldText as small as possible while still being unique.".into(),
-                "For whole-file rewrites use `write`, not edit.".into(),
+                "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls".into(),
+                "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.".into(),
+                "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.".into(),
             ],
         })
     }

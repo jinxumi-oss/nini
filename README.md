@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.10.7-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1557%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1580%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -63,7 +63,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **1557 unit + integration tests**, including property-based SSE fuzz and
+- **1580 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -247,6 +247,12 @@ trying to be; this section is the user-facing summary of it.
 - 9 native provider implementations (7 brands: `anthropic`, `openai` (incl.
   `openai-responses` / `openai-compat`), `google`, `deepseek`, `groq`, `mistral`,
   `cohere`) out of the 40 Pi 0.84.2 ships; configure the rest via `models.json`
+- **The built-in tool set matches Pi 0.85.1's** — `read`, `write`, `edit`,
+  `bash`, `grep`, `find`, `ls` — down to the tool descriptions, parameter
+  schemas and prompt contributions, checked against a runtime dump of Pi's own
+  tool definitions (`references/pi-0.85.1/tool-contracts.json`). The one
+  exception is **`powershell`** (Windows-only in Pi), which nini does not ship;
+  `bash` covers the same ground on POSIX.
 - No OAuth / device-flow auth — env API keys only
 - No extension runtime. Removed from scope deliberately: it was specified
   as a Rust cdylib while Pi loads TypeScript, so the two have no common

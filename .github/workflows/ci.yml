@@ -144,14 +144,22 @@ jobs:
         run: |
           python3 scripts/parity-gap.py --check-plan docs/plans/parity-with-pi.md
           python3 scripts/plan-selfcheck.py
-      - name: Tool-parity board (report only until the plan is done)
+      - name: Tool-parity board
         # 工具对标计划（docs/plans/tool-parity.md）的判据看板。
-        # 现在它是**报告**：计划未完成时看板是红的，不该阻断别人的 PR。
-        # 等四个工作项都完成，就把 continue-on-error 去掉，让它变成硬门禁。
-        continue-on-error: true
+        # 2026-10-23：T1–T4 全部完成（5/5 绿），所以它从**报告**升级为**硬门禁**——
+        # 往后谁把工具契约改歪了，CI 会直接红。
         run: python3 scripts/tool-parity-check.py
       - name: The target snapshot is what it claims to be
         run: |
           python3 scripts/pi-tool-contracts.py --extract
           git diff --exit-code -- references/pi-0.85.1/tool-contracts.json \
             || (echo "tool-contracts.json 与快照不一致——快照被改过？" && exit 1)
+      - name: The Pi-side gold values are reproducible
+        # 工具契约与截断的期望值是**执行 Pi 自己的代码**产出的。
+        # 这一步保证：改了实现却没重录期望值，会被 CI 抓到。
+        run: |
+          node scripts/pi-tool-dump.mjs
+          node scripts/truncate-oracle.mjs
+          git diff --exit-code -- references/pi-0.85.1/tool-contracts.json \
+                             references/pi-0.85.1/truncate-oracle.json \
+            || (echo "Pi 侧黄金值与快照不一致——重新生成过？" && exit 1)

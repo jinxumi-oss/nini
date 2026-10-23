@@ -47,8 +47,6 @@ struct BashArgs {
     command: String,
     #[serde(default)]
     timeout: Option<u64>,
-    #[serde(default)]
-    description: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -88,25 +86,24 @@ impl Tool for BashTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "bash".to_string(),
-            description: "Run a shell command (ls, grep, cat, mkdir, cargo test, etc.) and \
-                          return its stdout + stderr + exit code. Set `timeout` to bound \
-                          long-running commands; on timeout the process tree is killed."
+            // v0.10.8 (T1): 与 Pi 0.85.1 的契约逐字对齐
+            // （references/pi-0.85.1/tool-contracts.json，由 scripts/pi-tool-dump.mjs
+            //  执行 Pi 自己的代码产出）。
+            description: "Execute a bash command in the current working directory. Returns \
+                          stdout and stderr. Output is truncated to last 2000 lines or 50KB \
+                          (whichever is hit first). If truncated, full output is saved to a \
+                          temp file. Optionally provide a timeout in seconds."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "The shell command to execute."
+                        "description": "Shell command to execute"
                     },
                     "timeout": {
                         "type": "number",
-                        "description": "Maximum execution time in seconds. Defaults to 120s. \
-                                        Max ~24.8 days."
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "A short human-readable description of what the command does."
+                        "description": "Timeout in seconds (optional, no default timeout)"
                     }
                 },
                 "required": ["command"],
@@ -119,14 +116,23 @@ impl Tool for BashTool {
         let parsed: BashArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
 
-        let timeout_secs = parsed.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
-        if timeout_secs * 1000 > MAX_TIMEOUT_MS {
-            return Err(ToolError::InvalidArgs(format!(
-                "timeout too large: max {} seconds",
-                MAX_TIMEOUT_MS / 1000
-            )));
-        }
-        let timeout_duration = Duration::from_secs(timeout_secs);
+        // v0.10.8 (T1): Pi 0.85.1 的 bash **没有默认超时**
+        // （契约原文："Timeout in seconds (optional, no default timeout)"）。
+        // nini 之前默认 120s，那会**杀掉长的构建**——而那正是 Pi 允许、
+        // 而用户会做的事。这不是文案问题，是行为问题。
+        // 显式给的 timeout 仍然受上界约束（~24.8 天），防止荒谬值。
+        let timeout_duration = match parsed.timeout {
+            Some(secs) => {
+                if secs * 1000 > MAX_TIMEOUT_MS {
+                    return Err(ToolError::InvalidArgs(format!(
+                        "timeout too large: max {} seconds",
+                        MAX_TIMEOUT_MS / 1000
+                    )));
+                }
+                Some(Duration::from_secs(secs))
+            }
+            None => None,
+        };
 
         let started = std::time::Instant::now();
 
@@ -168,7 +174,10 @@ impl Tool for BashTool {
             tokio::spawn(async move { read_stream_capped(&mut stderr, stderr_cap).await });
 
         // Wait for child with timeout
-        let wait_result = timeout(timeout_duration, child.wait()).await;
+        let wait_result = match timeout_duration {
+            Some(d) => timeout(d, child.wait()).await,
+            None => Ok(child.wait().await),
+        };
         let (exit_code, signal_name) = match wait_result {
             Ok(Ok(status)) => {
                 use std::os::unix::process::ExitStatusExt;
@@ -223,14 +232,42 @@ impl Tool for BashTool {
         let total_bytes = stdout_total_b + stderr_total_b + usize::from(has_stderr);
         let total_lines = stdout_total_l + stderr_total_l + usize::from(has_stderr);
         let stream_capped = stdout_capped || stderr_capped;
-        let (truncated_content, truncated) = truncate(
-            &raw,
-            ctx.max_output_bytes,
-            ctx.max_output_lines,
-            total_bytes,
-            total_lines,
-            stream_capped,
-        );
+        // v0.10.8 (T4): 统一截断（Pi 的 tools/truncate.js 的 truncateTail：
+        // **保留尾部**——命令的报错与最后几行通常在末尾）。
+        // 此前 nini 自成一套「头尾各半」，那不是 Pi 的行为，
+        // 而且两边的上下文占用完全不同。
+        let full_text = String::from_utf8_lossy(&raw).into_owned();
+        let t =
+            crate::truncate::truncate_tail(&full_text, ctx.max_output_lines, ctx.max_output_bytes);
+        let truncated = t.truncated;
+        let truncated_content = if truncated {
+            // Pi 的契约写着「If truncated, full output is saved to a temp file」——
+            // 描述既然这么写，就**必须真的存**，否则模型被告知去读一个不存在的文件。
+            let spill_path = spill_full_output(&full_text);
+            let start_line = t.total_lines.saturating_sub(t.output_lines) + 1;
+            let end_line = t.total_lines;
+            let marker = if t.last_line_partial {
+                format!(
+                    "\n\n[Showing last {} of line {end_line} (line is {}). Full output: {spill_path}]",
+                    crate::truncate::format_size(t.output_bytes),
+                    crate::truncate::format_size(t.output_bytes),
+                )
+            } else if t.truncated_by == Some("lines") {
+                format!(
+                    "\n\n[Showing lines {start_line}-{end_line} of {}. Full output: {spill_path}]",
+                    t.total_lines,
+                )
+            } else {
+                format!(
+                    "\n\n[Showing lines {start_line}-{end_line} of {} ({} limit). Full output: {spill_path}]",
+                    t.total_lines,
+                    crate::truncate::format_size(ctx.max_output_bytes),
+                )
+            };
+            format!("{}{marker}", t.content)
+        } else {
+            t.content
+        };
 
         let duration_ms = started.elapsed().as_millis() as u64;
 
@@ -265,15 +302,11 @@ impl Tool for BashTool {
 
     fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
         Some(ToolSystemPrompt {
-            snippet: "Run shell commands (ls, grep, cat, cargo test, ...).".into(),
+            // v0.10.8 (T1): Pi 0.85.1 的 snippet 与 guidelines 逐字对齐
+            snippet: "Execute bash commands (ls, grep, find, etc.)".to_string(),
             guidelines: vec![
-                "Default for any shell operation; pick this unless a more \
-                 specific tool (read, grep, find, edit) clearly fits."
-                    .into(),
-                "Set `timeout` for anything that could run unboundedly.".into(),
-                "Confirm with the user before destructive commands \
-                 (`rm -rf`, `git push --force`)."
-                    .into(),
+                "You can inspect PI_* environment variables for current model and session details."
+                    .to_string(),
             ],
         })
     }
@@ -371,67 +404,21 @@ pub const STREAM_CAPTURE_CAP: usize = 8 * 1024 * 1024;
 /// The function is also single-pass now: it used to `lines().collect()`
 /// the entire output into a `Vec<&str>` just to take two halves, which
 /// for a 6-million-line capture is ~50 MB of pointers on its own.
-fn truncate(
-    raw: &[u8],
-    max_bytes: usize,
-    max_lines: usize,
-    total_bytes: usize,
-    total_lines: usize,
-    capped: bool,
-) -> (String, bool) {
-    let truncated = capped || total_bytes > max_bytes || total_lines > max_lines;
-
-    // Fast path: nothing was dropped.
-    if !truncated {
-        return (String::from_utf8_lossy(raw).into_owned(), false);
+/// 把**完整**输出写到临时文件，返回路径（Pi 的 spill 机制）。
+///
+/// Pi 的 bash 契约写着：「If truncated, full output is saved to a temp file.」
+/// 描述里写了，就得真的做——否则模型被告知去读一个不存在的文件。
+fn spill_full_output(content: &str) -> String {
+    let dir = std::env::temp_dir();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = dir.join(format!("nini-bash-{}-{stamp}.log", std::process::id()));
+    match std::fs::write(&path, content) {
+        Ok(()) => path.display().to_string(),
+        Err(e) => format!("<无法写入临时文件: {e}>"),
     }
-
-    let initial = String::from_utf8_lossy(raw).into_owned();
-    let mut kept = if total_lines > max_lines {
-        // Single pass: keep the head, and a bounded rolling tail.
-        // `max_lines` can be 0 or 1 — clamp so the arithmetic below
-        // never underflows.
-        let half = (max_lines / 2).max(1);
-        let mut head: Vec<&str> = Vec::with_capacity(half.min(initial.len()));
-        let mut tail: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
-        for line in initial.lines() {
-            if head.len() < half {
-                head.push(line);
-            } else {
-                if tail.len() == half {
-                    tail.pop_front();
-                }
-                tail.push_back(line);
-            }
-        }
-        let omitted = total_lines.saturating_sub(head.len() + tail.len());
-        let mut s = head.join("\n");
-        s.push_str(&format!("\n[... {omitted} lines omitted ...]\n"));
-        s.push_str(&tail.iter().copied().collect::<Vec<_>>().join("\n"));
-        s
-    } else {
-        initial
-    };
-
-    // If still too large by bytes, hard-truncate with a tail marker.
-    if kept.len() > max_bytes {
-        let half = (max_bytes / 2).max(1);
-        let head_end = floor_char_boundary(&kept, half);
-        let tail_start = floor_char_boundary(&kept, kept.len().saturating_sub(half));
-        // `if kept.len() > max_bytes` guarantees `head_end < tail_start`
-        // for any budget of at least 2, so the two slices never overlap.
-        let kept_bytes = head_end + (kept.len() - tail_start);
-        let mut out = String::with_capacity(max_bytes + 128);
-        out.push_str(&kept[..head_end]);
-        out.push_str(&format!(
-            "\n[... {} bytes omitted ...]\n",
-            total_bytes.saturating_sub(kept_bytes)
-        ));
-        out.push_str(&kept[tail_start..]);
-        kept = out;
-    }
-
-    (kept, true)
 }
 
 /// Largest byte index <= `at` that is a UTF-8 character boundary in `s`.
@@ -731,31 +718,25 @@ mod tests {
 
     #[test]
     fn truncate_short_input_passes_through() {
-        let raw = b"hello\nworld\n";
-        let (out, truncated) = truncate(raw, 1024, 100, raw.len(), bytecount_lines(raw), false);
-        assert_eq!(out, "hello\nworld\n");
-        assert!(!truncated);
+        let t = crate::truncate::truncate_tail("hello\nworld\n", 100, 1024);
+        assert_eq!(t.content, "hello\nworld\n");
+        assert!(!t.truncated);
     }
 
     #[test]
-    fn truncate_omits_middle_when_too_many_lines() {
+    fn truncate_keeps_the_tail_when_too_many_lines() {
+        // v0.10.8 (T4): 语义改成 Pi 的 truncateTail —— **保留尾部**
+        // （命令的报错与最后几行在末尾）。nini 此前是「头尾各半」，
+        // 那不是 Pi 的行为。
         let mut input = String::new();
         for i in 0..1000 {
             input.push_str(&format!("line {i}\n"));
         }
-        let (out, truncated) = truncate(
-            input.as_bytes(),
-            1024 * 1024,
-            100,
-            input.len(),
-            bytecount_lines(input.as_bytes()),
-            false,
-        );
-        assert!(truncated);
-        assert!(out.contains("omitted"));
-        assert!(out.contains("line 0"));
-        assert!(out.contains("line 999"));
-        assert!(!out.contains("line 500"));
+        let t = crate::truncate::truncate_tail(&input, 100, 1024 * 1024);
+        assert!(t.truncated);
+        assert!(t.content.contains("line 999"), "尾部必须保留");
+        assert!(!t.content.contains("line 0"), "头部必须被丢掉");
+        assert!(!t.content.contains("line 500"));
     }
 
     // ---- v0.8.9 (P0-3) regression guards ------------------------------
@@ -775,42 +756,32 @@ mod tests {
     fn truncate_multibyte_output_does_not_panic() {
         // 3 MiB of 3-byte CJK against a 1 MiB budget, i.e. the exact
         // shape that panicked before.
+        //
+        // v0.10.8 (T4): 截断实现搬到了 `crate::truncate`（Pi 语义），
+        // 但这条守卫**一个都不许少**——它是当初那个 panic 的墓碑。
         let cjk = "文";
         let count = (3 * 1024 * 1024) / cjk.len();
         let input: String = std::iter::repeat_n(cjk, count).collect();
-        let raw = input.as_bytes();
-        let (out, truncated) = truncate(
-            raw,
-            1024 * 1024,
-            2000,
-            raw.len(),
-            bytecount_lines(raw),
-            false,
-        );
-        assert!(truncated);
-        assert!(
-            out.contains("bytes omitted"),
-            "got: {}",
-            &out[..out.len().min(200)]
-        );
-        // Must be valid UTF-8 end to end — `truncate` returns a String
-        // so this is really a "did we cut mid-char" assertion.
-        assert!(out.len() > 0);
+        let t = crate::truncate::truncate_tail(&input, 2000, 1024 * 1024);
+        assert!(t.truncated);
+        assert!(t.content.len() > 0);
+        // Must be valid UTF-8 end to end — this is really a
+        // "did we cut mid-char" assertion.
+        assert!(std::str::from_utf8(t.content.as_bytes()).is_ok());
     }
 
     #[test]
     fn truncate_multibyte_output_at_every_byte_budget_does_not_panic() {
-        // Walk the budget across a range that lands `half` on both sides
-        // of every character boundary — a single size would only prove
+        // Walk the budget across a range that lands on both sides of
+        // every character boundary — a single size would only prove
         // that one size is lucky.
         let input = "文".repeat(5000);
         for budget in 1..600usize {
-            let raw = input.as_bytes();
-            let (_out, truncated) =
-                truncate(raw, budget, 2000, raw.len(), bytecount_lines(raw), false);
-            if budget < raw.len() {
-                assert!(truncated, "budget {budget} should have truncated");
+            let t = crate::truncate::truncate_tail(&input, 2000, budget);
+            if budget < input.len() {
+                assert!(t.truncated, "budget {budget} should have truncated");
             }
+            assert!(std::str::from_utf8(t.content.as_bytes()).is_ok());
         }
     }
 
