@@ -344,8 +344,8 @@
       "oracle": "none",
       "status": "open",
       "blocking_decision": null,
-      "round": "W2",
-      "exit_criterion": "nini 有 ls 工具（参数与 Pi 的 path/limit 对齐）；且 nini 的 system prompt 在工具集不同的两种配置下产出可区分的 prompt，并有一条 oracle 断言该联动（用 mock provider 录 Pi 侧 prompt 做对照）",
+      "round": "T2+T3",
+      "exit_criterion": "T2：`python3 scripts/tool-parity-check.py --quick` 的 W2 行绿（ls 工具已实现并注册）且 `pi-tool-contracts.py --compare` 的 ls 行 ✓；T3：`cargo test -p nini-core --test prompt_tool_linkage` 退出 0（四种工具集组合：列出的工具、guideline、snippet 缺失则不列出）",
       "machine_checkable": true,
       "layer": "builtin"
     },
@@ -359,8 +359,8 @@
       "oracle": "none",
       "status": "open",
       "blocking_decision": null,
-      "round": "W2",
-      "exit_criterion": "nini-tools 有一条统一的 truncate 路径，默认值与 Pi 对齐（50KB head/tail + 行宽上限）；且有一条 oracle 断言同一份超长输出在两侧进入上下文的字节数一致（用 mock provider 录 Pi 侧上下文长度做对照）",
+      "round": "T4",
+      "exit_criterion": "cargo test -p nini-tools --test truncation_parity 退出 0（50KB head/tail + 行宽 500；进入上下文的字节数与 Pi 一致）",
       "machine_checkable": true,
       "layer": "builtin"
     },
@@ -389,8 +389,8 @@
       "oracle": "none",
       "status": "open",
       "blocking_decision": null,
-      "round": "W2",
-      "exit_criterion": "7（+ls=8）个工具的描述与参数 schema 逐条对齐 references/pi-0.85.1/tool-contracts.json；每条差异要么改 nini、要么写进 README 的 known limitations",
+      "round": "T1",
+      "exit_criterion": "python3 scripts/pi-tool-contracts.py --compare 退出 0 且 7 个工具逐条 ✓（powershell 只登记不实现，并在 README known limitations 写明）",
       "machine_checkable": false,
       "layer": "builtin"
     },

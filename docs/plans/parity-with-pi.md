@@ -145,7 +145,7 @@ Pi 的三个工厂函数把边界写死：`createCodingTools()` = [read, bash, e
 
 | 工作流 | 范围 | 退出判据 |
 |---|---|---|
-| **WF-BUILTIN** | 八个内置工具的**契约**（描述 + 参数 schema，按 0.85.1 重捕获）与**语义**（截断、超时、并发、变更队列） | `references/pi-0.85.1/tool-contracts.json` 与 nini 逐条对齐；语义差异各有 oracle |
+| **WF-BUILTIN** | 八个内置工具的**契约**（描述 + 参数 schema，按 0.85.1 重捕获）与**语义**（截断、超时、并发、变更队列） | **执行细则在 [`plans/tool-parity.md`](tool-parity.md)**（T1–T4；判据看板 `scripts/tool-parity-check.py`） |
 | **WF-EXTENSION** | 扩展运行时：渲染钩子、流式更新、signal、受限采样 | 每项能力各有 1 条 oracle；在此之前 **README 明确声明「扩展工具不在 parity 范围内」** |
 
 **WF-BUILTIN 是「高效、准确完成任务」的载体；WF-EXTENSION 是「生态」，成本高一个数量级。**

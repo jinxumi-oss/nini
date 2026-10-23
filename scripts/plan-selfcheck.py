@@ -169,6 +169,23 @@ def main() -> int:
           not dead, f"这些模式抓不到任何东西：{dead}" if dead else
           f"{len(COUNT_PATTERNS) + len(STALE_PATTERNS)} 条模式全部有效")
 
+    # S12 工具对标计划（WF-BUILTIN）存在，且它的判据看板已接线
+    tp = REPO / "docs" / "plans" / "tool-parity.md"
+    ok_tp = tp.is_file()
+    if ok_tp:
+        ttext = tp.read_text(encoding="utf-8")
+        need = ["## 0.", "## 1.", "## 2.", "## 3.", "## 4.", "## 5.", "## 6.", "## 7.", "## 8.",
+                "T1", "T2", "T3", "T4", "退出判据", "红的凭据"]
+        miss = [x for x in need if x not in ttext]
+        ok_tp = not miss
+        detail = f"缺：{miss}" if miss else ""
+    else:
+        detail = "docs/plans/tool-parity.md 不存在"
+    check(results, "S12 工具对标计划存在且四个工作项与判据齐全", ok_tp, detail)
+    r2 = run([sys.executable, "scripts/tool-parity-check.py", "--quick"])
+    check(results, "S12b 工具对标判据看板可运行", r2.returncode in (0, 1),
+          r2.stderr.strip()[-200:] if r2.returncode not in (0, 1) else "")
+
     # S11 对标目标版本冻结（owner 的长期指令）
     r = run([sys.executable, "scripts/pi-target-lock.py"])
     check(results, "S11 对标目标版本唯一且冻结（pi-target-lock）", r.returncode == 0,

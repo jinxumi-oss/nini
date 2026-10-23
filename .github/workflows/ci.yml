@@ -144,6 +144,12 @@ jobs:
         run: |
           python3 scripts/parity-gap.py --check-plan docs/plans/parity-with-pi.md
           python3 scripts/plan-selfcheck.py
+      - name: Tool-parity board (report only until the plan is done)
+        # 工具对标计划（docs/plans/tool-parity.md）的判据看板。
+        # 现在它是**报告**：计划未完成时看板是红的，不该阻断别人的 PR。
+        # 等四个工作项都完成，就把 continue-on-error 去掉，让它变成硬门禁。
+        continue-on-error: true
+        run: python3 scripts/tool-parity-check.py
       - name: The target snapshot is what it claims to be
         run: |
           python3 scripts/pi-tool-contracts.py --extract

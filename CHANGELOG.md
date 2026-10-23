@@ -182,6 +182,33 @@ second, change the target last.** Skipping the first step is exactly how the
 0.84.2 round produced 78 citations that quietly pointed at the wrong
 statements with nothing turning red.
 
+### A plan for the built-in tools, with a board you can run
+
+`docs/plans/tool-parity.md` is the execution detail for **WF-BUILTIN** — the
+eight built-in tools (read/write/edit/bash/grep/find/ls/powershell) against
+**Pi 0.85.1**, in four items:
+
+| | item | criterion (one command, one exit code) |
+|---|---|---|
+| **T1** | re-capture every tool's **contract** (description + parameter schema) from 0.85.1 — nini's are transcribed from 0.84.2 and all seven differ | `python3 scripts/pi-tool-contracts.py --compare` |
+| **T2** | add the missing **`ls` tool** (Pi's coding layer; `path` + `limit`, default 500) | `python3 scripts/tool-parity-check.py --quick` |
+| **T3** | **tool set → system prompt**: Pi only lists a tool in "Available tools" when the caller gave it a one-line snippet, and the guidelines depend on which tools are enabled (`hasBash && !grep && !find && !ls` → "Use bash for file operations like ls, rg, find"). nini has neither rule, and its prompt is assembled in `nini-core` while Pi 0.85.1 assembles it in **`pi-ai`** — the layering is inverted there | `cargo test -p nini-core --test prompt_tool_linkage` |
+| **T4** | **truncation semantics**: Pi has one `truncate.js` (50 KiB head/tail, 500-char grep lines); nini has per-tool implementations (bash 1 MiB / 2000 lines) | `cargo test -p nini-tools --test truncation_parity` |
+
+Every item states how to make its own assertion go red, because a criterion
+that cannot fail is decoration. The board starts red on purpose — it is the
+baseline:
+
+```
+T1 ✗  7 个工具与 0.85.1 不一致：bash edit find grep ls read write
+T2 ✗  crates/nini-tools/src/ls.rs 不存在
+T3 ✗  测试不存在
+T4 ✗  测试不存在
+```
+
+In CI the board runs as a **report** (`continue-on-error`) until the plan is
+done; then it becomes a hard gate.
+
 ### The tools are two different projects, and now they are labelled as such
 
 Pi's own words (`dist/core/sdk.d.ts`): `noTools: "builtin"` disables "the
