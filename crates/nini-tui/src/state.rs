@@ -1325,6 +1325,19 @@ pub struct RunState {
     /// missed reset is the worse failure of the two: it silences every
     /// later submission for the life of the process.
     pub agent_alive: bool,
+    /// **有一条消息在排队，而回合已经结束了**（v0.10.8 / A6）。
+    ///
+    /// 排队消息的正常归宿有两个：回合还活着时，agent 循环每轮会
+    /// `get_steering_messages` 把它捞进**当前** turn（Pi 的 steer）；
+    /// 回合已经收尾时，就没人再捞了——消息会一直躺在队列里，**用户说的
+    /// 那句话凭空消失**。
+    ///
+    /// 这个标记就是「该投递了」的信号：运行循环看到它就把队列里的消息
+    /// 作为**新的一轮**送出去（Pi 在 session 层做的事，nini 的等价物是
+    /// 这个运行循环）。
+    pub auto_turn_pending: bool,
+    /// 自动投递的次数上限（防止「投递 → 用户又排队 → 再投递」无限循环）。
+    pub auto_turn_count: usize,
     /// Monotonic id of the currently-spawned agent turn. Bumped at spawn
     /// time; the watchdog that reaps a driver which never pushed `Done`
     /// only clears `agent_alive` if this still matches, so a slow reap of
@@ -1628,6 +1641,8 @@ impl Clone for RunState {
         Self {
             mode: self.mode,
             agent_alive: self.agent_alive,
+            auto_turn_pending: self.auto_turn_pending,
+            auto_turn_count: self.auto_turn_count,
             run_seq: self.run_seq,
             status: self.status.clone(),
             pending_quit: self.pending_quit,
@@ -1649,6 +1664,8 @@ impl Default for RunState {
         Self {
             mode: RunMode::Editing,
             agent_alive: false,
+            auto_turn_pending: false,
+            auto_turn_count: 0,
             run_seq: 0,
             status: "ready".to_string(),
             pending_quit: None,

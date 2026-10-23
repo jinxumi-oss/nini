@@ -160,3 +160,13 @@ CLI 与测试共用**同一份实现**。改完再注入 → 三条全红。
 
 **教训**：「测试全绿」不等于「被测行为被覆盖」。判据必须**打到产品代码**；
 如果它不得不自己复刻一份逻辑，那它测的是**复刻品**，不是产品。
+
+
+---
+
+## 排队消息的自动投递（A6，2026-10-23）
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-tui/tests/queued_delivery.rs` | 回合收尾时**不再**置 `auto_turn_pending`（也就是「没人再捞这条消息了」） | `a_message_queued_after_the_turn_ended_is_delivered_without_another_enter` |
+| `crates/nini-tui/tests/queued_delivery.rs` | 投递时把已在 transcript 的消息**再显示一遍** | `a_delivered_message_is_not_shown_twice` |

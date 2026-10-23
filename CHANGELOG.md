@@ -1,6 +1,6 @@
 ## v0.10.8 — the guard against a second agent was the editor's state (2026-10-23)
 
-1586 tests, all green. The defect was measured on v0.10.2 and had been sitting
+1588 tests, all green. The defect was measured on v0.10.2 and had been sitting
 in the plan as a P0 with a written exit criterion that nobody had executed.
 
 ### Esc could start a second agent, and the session file kept the receipts
@@ -208,6 +208,28 @@ T4 ✗  测试不存在
 
 In CI the board runs as a **report** (`continue-on-error`) until the plan is
 done; then it becomes a hard gate.
+
+### A message you typed during an interrupt no longer disappears
+
+The A1 fix made Esc hand the editor back immediately — which is right — but it
+also created a hole: a message submitted in that window was **queued** (the
+agent was still winding down, so a second agent must not start), and then
+**nobody ever picked it up**. The agent loop polls for steering messages
+*during* a turn; once the turn is over there is no poll left, so the message
+sat in the queue forever. What the user typed was simply gone.
+
+Pi solves this in its session layer: when a run settles, the session sends
+the pending messages as follow-up turns. nini's equivalent is the runtime
+loop, and it now does the same thing: when a turn ends (or the watchdog
+reaps it) and messages are queued, the loop sends them as **new turns** —
+one message per turn, in order, so the order is preserved and each message
+gets its own turn, exactly like Pi's follow-up shape.
+
+The user does not press Enter again. A message already shown in the
+transcript (it was shown when it was queued) is written to the session but
+**not displayed a second time**, and the number of automatic deliveries is
+bounded so that "delivered → the user queues another → delivered again"
+cannot loop forever.
 
 ### A conversation no longer disappears when you close the TUI
 

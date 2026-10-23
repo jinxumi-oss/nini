@@ -436,6 +436,14 @@ impl AgentSink {
                         s.run_state.mode = RunMode::Editing;
                         s.run_state.status = "ready".to_string();
                         s.run_state.abort_signal = None; // clear stale abort signal
+                                                         // v0.10.8 (A6): 回合收尾了，但队列里还压着消息
+                                                         // （典型场景：用户在 Esc 之后、agent 还在收尾时又提交了
+                                                         // 一条）。agent 循环已经结束，不会再去捞它们——
+                                                         // 消息会永远躺在队列里。标记出来，运行循环会把它
+                                                         // 作为**新的一轮**送出去。
+                        if !s.run_state.pending_next_turn_messages.is_empty() {
+                            s.run_state.auto_turn_pending = true;
+                        }
                     } else {
                         // A stale turn's terminal event: it must not touch
                         // the current turn's state at all.
@@ -790,6 +798,15 @@ async fn run_loop(
     let (event_tx, mut event_rx) = tokio::sync::watch::channel(false);
 
     loop {
+        // v0.10.8 (A6)：回合收尾后，队列里还压着消息 → 作为**新的一轮**送出去。
+        //
+        // 放在循环开头（而不是 select! 之后）是有意的：agent 的 Done 事件
+        // 会唤醒这个循环，下一轮就会把消息送出去——用户不需要再按一次 Enter。
+        if lock_state(&shared).run_state.auto_turn_pending {
+            let auto_done = Arc::new(Notify::new());
+            submit_queued_turn(&shared, &agent_driver, auto_done, event_tx.clone());
+        }
+
         // The guard's lines become transcript notices here, and only
         // here: the reader thread hands them over through its own
         // queue, so it never takes the state lock (a writer that
@@ -2245,7 +2262,60 @@ pub fn submit_user_input(
     // the same loop subscription. Replaces v0.7.4's per-call fresh
     // `Arc::new(Notify::new())` that was never connected to the
     // runtime's select!.
-    submit_user_input_inner(shared, agent_driver, done, event_tx)
+    submit_user_input_inner(shared, agent_driver, done, event_tx, None)
+}
+
+/// v0.10.8 (A6)：把**排队中的**消息作为新的一轮送出去。
+///
+/// 排队消息的正常归宿：回合还活着时，agent 循环每轮 `get_steering_messages`
+/// 会把它捞进当前 turn（Pi 的 steer）。可如果它是在**回合收尾之后**排进来的
+/// （典型：用户按了 Esc，又在 agent 还在收尾时提交了一条），就没有人再捞它了——
+/// 消息永远躺在队列里，**用户说的那句话凭空消失**。
+///
+/// Pi 在 session 层解决这件事：run 结算之后，session 会把 pending 的消息作为
+/// follow-up 送出去。nini 的等价物是这个运行循环。
+///
+/// 一次只送**一条**：其余的留在队列里，等这一轮结束后再送——于是顺序不乱，
+/// 每条消息也各自成为一轮（与 Pi 的 follow-up 形状一致）。
+///
+/// 已经在 transcript 里显示过的消息（排队时就显示了）这一轮**不再显示一遍**，
+/// 只写 session。
+pub fn submit_queued_turn(
+    shared: &SharedState,
+    agent_driver: &AgentDriver,
+    done: Arc<Notify>,
+    event_tx: tokio::sync::watch::Sender<bool>,
+) -> bool {
+    /// 自动投递的轮数上限：防止「投递 → 用户又排队 → 再投递」无限循环。
+    const MAX_AUTO_TURNS: usize = 8;
+
+    let text = {
+        let mut g = lock_state(shared);
+        if !g.run_state.auto_turn_pending {
+            return false;
+        }
+        g.run_state.auto_turn_pending = false;
+        if g.run_state.auto_turn_count >= MAX_AUTO_TURNS {
+            tracing::warn!("auto-delivery stopped after {MAX_AUTO_TURNS} turns");
+            return false;
+        }
+        let mut queue = std::mem::take(&mut g.run_state.pending_next_turn_messages);
+        if queue.is_empty() {
+            return false;
+        }
+        g.run_state.auto_turn_count += 1;
+        let first = queue.remove(0);
+        // 其余的留在队列里：这一轮结束后会再投递（顺序不乱）
+        g.run_state.pending_next_turn_messages = queue;
+        g.run_state.mode = RunMode::Editing;
+        first
+    };
+
+    if text.trim().is_empty() {
+        return false;
+    }
+    submit_user_input_inner(shared, agent_driver, done, event_tx, Some(text));
+    true
 }
 
 /// Internal helper for `submit_user_input` — takes an additional
@@ -2256,6 +2326,7 @@ fn submit_user_input_inner(
     agent_driver: &AgentDriver,
     done: Arc<Notify>,
     event_tx: tokio::sync::watch::Sender<bool>,
+    explicit_text: Option<String>,
 ) {
     let (text, seq) = {
         let mut g = lock_state(&shared);
@@ -2297,7 +2368,20 @@ fn submit_user_input_inner(
         if g.run_state.mode != RunMode::Editing {
             return;
         }
-        let text = g.input.submit();
+        // v0.10.8 (A6)：**显式文本**的提交路径。
+        //
+        // 正常提交：文本来自输入框。
+        // 自动投递（A6）：文本来自排队队列，而且**它已经在 transcript 里
+        // 显示过了**（排队时就显示过），所以这一轮不能再往 transcript 里
+        // 推一遍——否则用户会看到自己那句话出现两次。
+        let is_auto_delivery = explicit_text.is_some();
+        let (text, already_shown) = match explicit_text {
+            Some(t) => (t, true),
+            None => {
+                let t = g.input.submit();
+                (t, false)
+            }
+        };
         if text.trim().is_empty() {
             return;
         }
@@ -2495,16 +2579,21 @@ fn submit_user_input_inner(
         // Pi parity: flush any branch summaries or compaction-time queued
         // messages into the transcript as User-content (so the agent sees
         // them as context asides on the next turn). Then clear the queue.
-        let queued = std::mem::take(&mut g.run_state.pending_next_turn_messages);
-        for aside in &queued {
-            // v0.10.8 (P2/A1): delivery writes to the **session**; the
-            // transcript already showed the message when it was queued, so
-            // pushing it again would show the user's own message to them
-            // twice, and `push_user` would write it to the session a
-            // second time on top of the queue-time write that
-            // `push_user_queued` no longer makes.
-            g.deliver_queued_user(aside.clone());
-            g.push_divider();
+        // v0.10.8 (A6)：**显式文本**的投递路径**不冲刷**队列——
+        // 队列由投递链自己管（一次送一条，其余留下轮后送），在这里冲刷会把
+        // 它们写成 aside，下一轮又当消息送一遍 → 同一句话出现两次。
+        if !is_auto_delivery {
+            let queued = std::mem::take(&mut g.run_state.pending_next_turn_messages);
+            for aside in &queued {
+                // v0.10.8 (P2/A1): delivery writes to the **session**; the
+                // transcript already showed the message when it was queued, so
+                // pushing it again would show the user's own message to them
+                // twice, and `push_user` would write it to the session a
+                // second time on top of the queue-time write that
+                // `push_user_queued` no longer makes.
+                g.deliver_queued_user(aside.clone());
+                g.push_divider();
+            }
         }
 
         // ── Auto-compaction trigger ───────────────────────────────────────
@@ -2538,7 +2627,13 @@ fn submit_user_input_inner(
             }
         }
 
-        g.push_user(text.clone());
+        if already_shown {
+            // 排队时就显示过了（push_user_queued）——这一轮只写 session，
+            // 否则 transcript 里会出现同一句话两次。
+            g.deliver_queued_user(text.clone());
+        } else {
+            g.push_user(text.clone());
+        }
         g.push_divider();
         g.run_state.mode = RunMode::Running;
         // v0.10.8 (P2/A1): the guard goes up at the same instant, and not
@@ -2626,6 +2721,10 @@ fn submit_user_input_inner(
                     return;
                 }
                 g.run_state.agent_alive = false;
+                // v0.10.8 (A6): 同 `Done` —— 收尾时队列里还有消息就该投递。
+                if !g.run_state.pending_next_turn_messages.is_empty() {
+                    g.run_state.auto_turn_pending = true;
+                }
                 // Same reasoning as `Done`, applied to the editor half of
                 // the state: if the TUI still believes a turn is in flight,
                 // it is wrong, and leaving it wrong locks the editor for
