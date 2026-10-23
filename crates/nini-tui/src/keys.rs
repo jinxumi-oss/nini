@@ -305,7 +305,7 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         // (`tui-alt-screen.ts:634`). So in Pi's full-screen layout
         // `home` reaches the viewport first and the editor's own
         // `cursorLineStart` — which also lists `"home"` first
-        // (`keybindings.ts:186`) — is unreachable.
+        // (`keybindings.ts:217`) — is unreachable.
         //
         // nini had it the other way round and had no top-jump at all.
         // `MoveLineStart` / `MoveLineEnd` keep their real bindings:
@@ -343,7 +343,7 @@ pub fn default_keymap() -> Vec<KeyBinding> {
             action: MoveLineStart,
         },
         // v0.10.2: Pi's second key for `cursorLineEnd`
-        // (`keybindings.ts:186`). Added because `End` moved to the
+        // (`keybindings.ts:217`). Added because `End` moved to the
         // transcript; without this the editor would have lost
         // end-of-line entirely.
         KeyBinding {
@@ -412,7 +412,7 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         // Both vim bindings are gone now.
         //
         // Removing them rather than moving them is the alignment: Pi's
-        // keybindings (pi-tui/src/keybindings.ts:160-174) define
+        // keybindings (pi-tui/src/keybindings.ts:191-174) define
         // `tui.altScreen.pageUp` / `pageDown` and a `halfPageUp` /
         // `halfPageDown` pair, and no vim-motion scroll at all. nini is a
         // rewrite of Pi, so the surface it exposes should be the one Pi

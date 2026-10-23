@@ -2,12 +2,14 @@
 """Behaviour-layer version lock for the Pi oracle.
 
 The *format* layer is frozen in ``references/spec-v0.85.1/`` (sha256 per file).
-The *behaviour* layer was, until now, pinned only by prose: nini's comments
-cite ``agent-loop.js:160`` and friends, but nothing re-resolved those
-citations, so a Pi upgrade silently moved every one of them.
+The *behaviour* layer is frozen in ``references/pi-0.85.1/`` (411 files, sha256).
+Both are the **same version** — 0.85.1 — because a split target is not a
+target: nini's comments cite ``agent-loop.js#shouldStopAfterTurn`` and
+friends, and nothing re-resolved those citations, so a Pi upgrade silently
+moved every one of them.
 
 This script closes that hole against the frozen snapshot in
-``references/pi-0.84.2/``:
+``references/pi-0.85.1/`` (the single target version):
 
   --check         recompute the sha256 of every snapshotted file and compare
                   with ``SNAPSHOT.lock``.  0 = untouched, 1 = something moved.
@@ -38,13 +40,27 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SNAPSHOT_DIR = REPO_ROOT / "references" / "pi-0.84.2"
+# **唯一目标版本**。
+#
+# v0.10.8 之前，nini 的格式层锁 0.85.1、行为层只能对 0.84.2（本机装着的
+# 那个）——那不是"分层"，是**目标不唯一**：同一段代码两个版本可能给出两种
+# 答案。实测：90 处行号引用里只有 3 处在这两个版本之间还指向同一行。
+# 现在两个版本都进了仓库（references/pi-0.84.2 与 references/pi-0.85.1），
+# 目标统一为 0.85.1，0.84.2 保留为**历史对照**。
+DEFAULT_SNAPSHOT = "pi-0.85.1"
+SNAPSHOT_DIR = REPO_ROOT / "references" / DEFAULT_SNAPSHOT
 LOCK_FILE = SNAPSHOT_DIR / "SNAPSHOT.lock"
 REF_SCRIPT = Path(__file__).resolve().parent / "pi-line-refs.py"
+
+# 别名表只有一份（scripts/pi_refs.py）——三个脚本各抄一份就会重演
+# 「同一份失真有三份副本」。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pi_refs import DOC_ALIASES  # noqa: E402
 
 # Files that live in the snapshot directory but are not part of the lock.
 LOCK_EXCLUDE = {"SNAPSHOT.lock", "README.md"}
@@ -123,7 +139,7 @@ def _load_refs_module():
     return module
 
 
-def _snapshot_path(doc: str) -> Path | None:
+def _snapshot_path(doc: str) -> Path | None:  # noqa: D401
     """Map a cited document name onto the snapshot file that backs it.
 
     ``*.js`` citations refer to the compiled bundle shipped in Pi's ``dist/``;
@@ -131,18 +147,8 @@ def _snapshot_path(doc: str) -> Path | None:
     does not ship directly but which are recoverable verbatim from the
     ``sourcesContent`` of the matching ``.js.map``.
     """
-    base, _, ext = doc.rpartition(".")
-    if not base:
-        return None
-    candidates = []
-    if ext == "js":
-        candidates.append(SNAPSHOT_DIR / "dist" / f"{base}.js")
-    elif ext == "ts":
-        candidates.append(SNAPSHOT_DIR / "src" / f"{base}.ts")
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return None
+    from pi_refs import resolve as _resolve
+    return _resolve(SNAPSHOT_DIR, doc)
 
 
 def verify_refs(lock: dict) -> int:
@@ -174,6 +180,31 @@ def verify_refs(lock: dict) -> int:
         lines = cache[doc]
         where = f"{rec['file']}:{rec['line']} -> {doc}:{rec['doc_line']}"
 
+        # 符号引用：把含义钉住，行号由快照解析。
+        #
+        # 规则是"这个 token 在目标版本里还在不在、第一次出现在哪一行"。
+        # 它不判断那是定义还是调用点——引用者写下的**含义**由代码评审负责，
+        # 脚本负责的是「它没有消失」。token 消失 = 漂移 = 红灯。
+        if rec.get("kind") == "symbol":
+            sym = rec.get("symbol") or ""
+            if lines is None:
+                print(_color(f"MISSING-IN-SNAPSHOT  {where} (#{sym})", RED, sys.stdout))
+                missing += 1
+                continue
+            pat = re.compile(r"\b" + re.escape(sym) + r"\b")
+            hit = None
+            for i, ln in enumerate(lines, start=1):
+                if pat.search(ln):
+                    hit = (i, ln.strip())
+                    break
+            if hit is None:
+                print(_color(f"DRIFT    {where} (#{sym})  —— 该符号在目标版本里不存在", RED, sys.stdout))
+                drift += 1
+            else:
+                print(_color(f"ok       {where} (#{sym}) -> {doc}:{hit[0]}  | {hit[1][:90]}", GREEN, sys.stdout))
+                resolved += 1
+            continue
+
         if lines is None:
             print(_color(f"MISSING-IN-SNAPSHOT  {where}", RED, sys.stdout))
             missing += 1
@@ -194,7 +225,7 @@ def verify_refs(lock: dict) -> int:
     if drift or missing:
         print(_color(f"verify-refs FAILED: {drift} drifted, {missing} missing", RED, sys.stdout))
         return 1
-    print("verify-refs OK: every citation resolves inside the 0.84.2 snapshot")
+    print(f"verify-refs OK: every citation resolves inside the {SNAPSHOT_DIR.name} snapshot")
     return 0
 
 

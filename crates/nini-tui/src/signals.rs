@@ -35,7 +35,7 @@
 //!
 //! # What Pi does
 //!
-//! `pi-coding-agent/src/modes/interactive/interactive-mode.ts:3823`:
+//! `pi-coding-agent/src/modes/interactive/interactive-mode.ts:3960`:
 //!
 //! ```ts
 //! // `signal-exit` checks the listener list during the same SIGTERM/SIGHUP

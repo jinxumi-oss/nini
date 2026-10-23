@@ -4,7 +4,7 @@
 > 目标：把「nini 对标 Pi 的功能实现」从**名字层面齐了**推进到**语义与行为层面可证齐**
 > 权威：目标的表述在 [`../GOALS.md`](../GOALS.md)；本文件是执行细则。冲突以 GOALS 为准。
 > 基准：格式层 `references/spec-v0.85.1/`（Pi v0.85.1 `d981de12`，19 文件带 sha256）；
-> 行为层 **Pi 0.84.2**，源码快照锁在 `references/pi-0.84.2/`（12 文件 + `SNAPSHOT.lock` sha256）。
+> 行为层 **Pi 0.85.1**，源码快照锁在 `references/pi-0.85.1/`（411 文件 + `SNAPSHOT.lock` sha256）。
 > 机器台账：**`scripts/parity-gaps.json`** 是差距的唯一数据源，本文件不再手工维护计数。
 
 ---
@@ -20,9 +20,10 @@ v3 的三条硬变化：
    是手工计数——而 v2 §9.4 刚刚判过「手工计数不可靠」的死刑。v3 把差距搬进
    `scripts/parity-gaps.json`，由 `scripts/parity-gap.py --json` 产出**所有**统计，
    文档只引用脚本输出，不复述数字。
-2. **行为层对照物上锁。** v2 的 oracle 全部指向「本机 Pi 0.84.2」的 `dist/*.js` 行号，
-   而本机版本一旦升级，31 处引用会**静默漂移**且没有任何东西会红。v3 把被引用的源码
-   快照进 `references/pi-0.84.2/`，并用 `scripts/pi-oracle-lock.py` 做 sha256 校验与行号解析。
+2. **行为层对照物上锁，且引用改成符号形态。** v2 的 oracle 全部指向「本机 Pi」的
+   `dist/*.js` 行号——实测 0.84.2 → 0.85.1 之间，90 处引用只有 11 处仍指向同一行，
+   而**没有任何东西会红**。v3 把机制面源码快照进 `references/pi-0.85.1/`（411 文件 sha256），
+   并把引用改成 `文件#符号`：含义被钉住，行号由脚本解析，符号消失即红灯。
 3. **每条判据必须机器可判定。** v2 的 W2 判据含「逐条勾掉」、W1-A 含「tmux 实测」这类
    无法复算的项；v3 的每个 DoD 都写成**一条命令 + 一个退出码**。
 
@@ -33,18 +34,23 @@ v3 的三条硬变化：
 | 层 | 对照物 | 可验证方式 | 锁在哪 |
 |---|---|---|---|
 | 格式 | Pi v0.85.1（19 文件） | sha256 逐文件校验 | `references/spec-v0.85.1/SPEC.lock` |
-| 行为 | **Pi 0.84.2** | 快照内行号 + 快照 sha256 | `references/pi-0.84.2/SNAPSHOT.lock` |
+| 行为 | **Pi v0.85.1**（411 个机制面文件） | 快照内解析 + 快照 sha256 | `references/pi-0.85.1/SNAPSHOT.lock` |
+
+**一个目标版本**（2026-10-23 统一）：格式层与行为层同版本，不再分叉。
+此前行为层只能对 0.84.2（本机装得下的那个），代价是
+**90 处行号引用里只有 11 处在 0.85.1 里仍指向同一行**，且没有任何东西会红
+（证据：`docs/pi-version-delta-0.84.2-to-0.85.1.md`）。
 
 **硬规则**
 
-1. 行为层的「Pi 是怎么做的」必须给 `文件:行号`，且行号必须能在
-   `references/pi-0.84.2/` 的快照里解析出来——`scripts/pi-oracle-lock.py --verify-refs`
-   会把每条引用解析到那一行的实际内容，行号越界即退出 1。
-2. **快照是行为层的唯一真相。** 本机 Pi 升级 → 快照失效 → `--check` 红 → 必须重录并重审 oracle。
-3. 行号漂移的两种形态，都要能测出来：
-   - **越界**（行号超出文件行数）——`--verify-refs` 直接判红；
-   - **语义漂移**（行号在范围内但内容已不是那件事）——只能人工核对，所以 `--verify-refs`
-     会把该行内容打印出来供核对，且这条核对**必须写进 `docs/invariant-verification.md`**。
+1. 行为层的「Pi 是怎么做的」用**符号引用**：`文件#符号`，例如
+   `agent-loop.ts#shouldStopAfterTurn`。含义被钉住，行号由脚本在目标版本里解析。
+   `scripts/pi-oracle-lock.py --verify-refs` 逐条解析：**符号消失即退出 1**。
+2. 行号引用（`agent-loop.ts:225`）只作为过渡保留，且必须仍能解析到**代码行**
+   （不是注释行——注释会随代码移动，行为不会）。
+3. **快照是行为层的唯一真相。** Pi 升级 → 快照失效 → `--check` 红 → 必须重录并重审 oracle。
+   别名表只有一份（`scripts/pi_refs.py`）：0.85.1 里 `keybindings.ts` **同名不同物**
+   （pi-tui 的 TUI 键位 vs coding-agent 的 app 键位），抄三份就会重演「同一份失真三份副本」。
 
 > 已知的一处语义漂移（v3 记录在案）：`crates/nini-core/src/agent.rs` 中若干处
 > `agent-loop.js:NNN` 实际写的是 `.ts` 的行号（npm 包不发 `.ts`，作者当时对着还原出的
@@ -81,6 +87,66 @@ $ python3 scripts/parity-gap.py --check-plan docs/plans/parity-with-pi.md   # �
 **与 v2 的差异**：v2 的 C 表有 C1/C1b/C2/C3 四行，v3 把 C1b（手工核对不可靠）并入 C1
 （它本来就是 C1 的证据），并新增 **B10 = `/share` 仍是 stub**——v2 的 B 表里没有它，
 而 README 承认它是唯一一条返回「尚未实现」的命令。**parity 声明不能把「命令名齐」当「语义齐」。**
+
+### 2.1 工具的两层：原始自带 vs 扩展（**两件不同的工程**）
+
+**这一节是 v3 新增的**，因为把两者混在一张待办表里是本项目反复犯的错
+（10-05 的「缺 `ls` 作废」就是混层查错了目录）。
+
+#### Pi 自己的划分（权威措辞来自 `dist/core/sdk.d.ts:25-47`）
+
+```ts
+noTools?: "all" | "builtin";
+//  - "all": start with no tools enabled
+//  - "builtin": disable the default built-in tools (read, bash, edit, write)
+//    but keep extension/custom tools enabled
+tools?: string[];        // "Otherwise it enables the default built-in tools
+                         //  (read, bash, edit, write). Extension/custom tools
+                         //  remain enabled unless noTools changes that default."
+customTools?: ToolDefinition[];   // "in addition to built-in tools"
+```
+
+| 层 | Pi 的名字 | 内容（0.85.1） | 归属 | 性质 |
+|---|---|---|---|---|
+| **原始自带 · harness 层** | built-in | read, write, edit, bash | `pi-agent-core/dist/harness/tools/` | **函数**：进程内实现 + schema |
+| **原始自带 · coding 层** | built-in | grep, find, ls（+ 0.85.1 的 powershell） | `pi-coding-agent/dist/core/tools/` | **函数** |
+| **扩展层** | extension / custom | **Pi 默认一个都不带**（唯一内置扩展 llama.cpp 是隐藏的，且不注册工具） | 扩展运行时 `dist/core/extensions/` | **插件** |
+
+Pi 的三个工厂函数把边界写死：`createCodingTools()` = [read, bash, edit, write]
+（= Pi 说的 built-in 四件套）；`createReadOnlyTools()` = [read, grep, find, ls]；
+`createAllTools()` = 全部。
+
+#### 四条判据（区分两层的**可判定**依据）
+
+| 判据 | 原始自带工具 | 扩展工具 |
+|---|---|---|
+| **谁发布** | 随二进制发布，升级即变 | 第三方插件，独立版本 |
+| **谁进 system prompt** | **自动进**（`Available tools` 段），并且工具集决定 guideline（`system-prompt.js:53-60` 的 `hasBash/hasGrep/hasFind/hasLs/hasRead`） | **默认不进**——除非扩展自己提供 `promptSnippet` / `promptGuidelines` |
+| **谁渲染** | 统一由 TUI 渲染（Pi 的 `ToolExecutionComponent`） | **可以自带** `renderCall` / `renderResult` / `renderShell` |
+| **可否被关掉** | `tools` 白名单 / `excludeTools` / `noTools: "builtin"` | 默认不受 `noTools: "builtin"` 影响（只有 `noTools: "all"` 才关） |
+
+#### nini 两侧的现状
+
+| | 原始自带（T1） | 扩展（T2） |
+|---|---|---|
+| 工具集 | `nini-tools` 有 read/write/edit/bash/grep/find —— **缺 `ls`**（B11）；契约抄自 0.84.2，**未按 0.85.1 重捕获**（B13） | `nini-ext` 的 `register_tool(Arc<dyn Tool>)` —— **只能塞进一个函数式工具** |
+| prompt 归属 | ✅ 已有 `Tool::system_prompt_contribution()`（snippet + guidelines，组装确定性排序） | ✅ 同上（同一个 trait） |
+| 渲染归属 | 统一由 `nini-tui` 渲染 | ❌ **无按工具注册渲染器的入口**（`rich.rs` 按名字通用渲染） |
+| 执行期反馈 | 无流式更新回调 | ❌ 无 `onUpdate`、无 `signal`（`ToolContext` 只有 cwd/两个预算） |
+
+**结论**：nini 已经有「扩展工具」的**一半契约**（prompt 贡献），缺另一半
+（渲染钩子、流式更新、signal）。所以「扩展运行时不可用」这句话不准确——
+准确的说法是：**nini 的扩展只能贡献「一个函数式工具 + 一段 prompt」，
+不能贡献「一个带自己外观与流式进度的工具」**。
+
+#### 两条**独立**的工作流（不要混排期）
+
+| 工作流 | 范围 | 退出判据 |
+|---|---|---|
+| **WF-BUILTIN** | 八个内置工具的**契约**（描述 + 参数 schema，按 0.85.1 重捕获）与**语义**（截断、超时、并发、变更队列） | `references/pi-0.85.1/tool-contracts.json` 与 nini 逐条对齐；语义差异各有 oracle |
+| **WF-EXTENSION** | 扩展运行时：渲染钩子、流式更新、signal、受限采样 | 每项能力各有 1 条 oracle；在此之前 **README 明确声明「扩展工具不在 parity 范围内」** |
+
+**WF-BUILTIN 是「高效、准确完成任务」的载体；WF-EXTENSION 是「生态」，成本高一个数量级。**
 
 **v3 这一轮又新增了三条**（都是执行过程中实测发现的，不在 v2 的表里）：
 **A5**（TUI 启动后不创建 session 文件，普通会话不落盘）、**A6**（中断后排队的消息
@@ -122,7 +188,7 @@ v2 的自我审查又证明了手工读会出错（§9）。v3 的 W0 已经有�
 | `scripts/parity-gaps.json` | 差距的唯一数据源，12 个必填字段 | `python3 scripts/parity-gap.py --json` |
 | `scripts/parity-gap.py` | 台账校验 + 机读统计 + 与本文件对账 | `python3 scripts/parity-gap.py --check-plan docs/plans/parity-with-pi.md` |
 | `scripts/pi-line-refs.py` | 全量行号引用清单（数量以 `scripts/pi-line-refs.py --json` 的输出为准） | `python3 scripts/pi-line-refs.py --json` |
-| `references/pi-0.84.2/` + `SNAPSHOT.lock` | Pi 0.84.2 行为层源码快照（12 文件 sha256） | `python3 scripts/pi-oracle-lock.py --check` |
+| `references/pi-0.85.1/` + `SNAPSHOT.lock` | Pi 0.85.1 行为层源码快照（411 文件 sha256） | `python3 scripts/pi-oracle-lock.py --check` |
 | `scripts/pi-oracle-lock.py` | 快照校验 + 引用逐条解析 | `python3 scripts/pi-oracle-lock.py --verify-refs` |
 
 **未交付（W0 剩余，退出判据如下）**
@@ -304,5 +370,5 @@ C3：provider/成本层是排期问题，记录在案，不在代码层解决。
 | 9 | W2 判据对 owner 阻塞项不可达 | 补「owner 决定不做」的关闭条件 | §4 W4 |
 | 10 | 计划与 `gate.sh` 的交互缺失 | §5.1 写明基线刷新规则与禁令 | §5.1 |
 | 11 | oracle 迁移成本低估（v2 只数了 `.js` 那一半） | 数字按实测改写，并给出 W0 剩余项的逐条清单 | §4 W0、§9.2 |
-| 12 | 行为层对照物无版本锁 | `references/pi-0.84.2/` + `SNAPSHOT.lock` + `pi-oracle-lock.py` | §1、§4 W0 |
+| 12 | 行为层对照物无版本锁 | `references/pi-0.85.1/` + `SNAPSHOT.lock` + `pi-oracle-lock.py` | §1、§4 W0 |
 | 13 | `/share` stub 不在 B 表里；parity 声明把「名字齐」当「语义齐」 | 新增 B10；分类口径明写 | §2 |

@@ -89,7 +89,8 @@ def main() -> int:
     # C4 台账与快照锁被引用
     refs = ["scripts/parity-gap.py", "scripts/parity-gaps.json",
             "scripts/pi-line-refs.py", "scripts/pi-oracle-lock.py",
-            "references/pi-0.84.2"]
+            "scripts/pi_refs.py",
+            "references/pi-0.85.1"]
     missing_refs = [x for x in refs if x not in plan]
     check(results, "S4 计划引用了台账脚本与 Pi 快照锁", not missing_refs,
           f"缺：{missing_refs}" if missing_refs else "全部引用到位")

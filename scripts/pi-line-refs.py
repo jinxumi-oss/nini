@@ -33,7 +33,19 @@ from collections import Counter
 from pathlib import Path
 
 # The citation shape used in nini's comments.
-REF_RE = re.compile(r"(agent-loop|interactive-mode|agent-session|keybindings|agent-model)\.(js|ts):(\d+)")
+#
+# 两种形态，都必须有：
+#   行号引用   agent-loop.js:160        —— 脆：Pi 一升级就漂
+#   **符号引用** agent-loop.js#shouldStopAfterTurn —— 稳：含义被钉住，
+#               行号由脚本在目标版本里解析出来。升级只会让脚本报告
+#               「符号从 160 挪到了 172」，而不会让引用悄悄指错。
+#
+# 2026-10-23 实测：0.84.2 → 0.85.1 之间，90 处行号引用只有 3 处还指向
+# 同一行。所以目标统一到单一版本之后，**行号引用必须能被机器复核**。
+REF_RE = re.compile(
+    r"(agent-loop|interactive-mode|agent-session|keybindings|agent-model|tui-alt-screen)\.(js|ts)"
+    r"(?::(\d+)|#([A-Za-z_$][A-Za-z0-9_$]*))"
+)
 
 # How much of the citing line is kept in the ledger record.
 TEXT_LIMIT = 80
@@ -70,7 +82,9 @@ def scan(root: Path = CRATES_DIR) -> list[dict]:
                         "file": rel,
                         "line": lineno,
                         "doc": f"{m.group(1)}.{m.group(2)}",
-                        "doc_line": int(m.group(3)),
+                        "kind": "symbol" if m.group(4) else "line",
+                        "symbol": m.group(4),
+                        "doc_line": int(m.group(3)) if m.group(3) else None,
                         "text": excerpt,
                     }
                 )
@@ -79,9 +93,11 @@ def scan(root: Path = CRATES_DIR) -> list[dict]:
 
 def _summary(records: list[dict]) -> dict:
     by_doc = Counter(r["doc"] for r in records)
+    by_kind = Counter(r.get("kind", "line") for r in records)
     by_file = Counter(r["file"] for r in records)
     return {
         "total": len(records),
+        "by_kind": dict(sorted(by_kind.items())),
         "by_doc": dict(sorted(by_doc.items())),
         "by_file": dict(sorted(by_file.items())),
         "refs": records,
@@ -90,6 +106,7 @@ def _summary(records: list[dict]) -> dict:
 
 def _human(records: list[dict]) -> None:
     by_doc = Counter(r["doc"] for r in records)
+    by_kind = Counter(r.get("kind", "line") for r in records)
     by_file = Counter(r["file"] for r in records)
     print(f"Pi line-number references in crates/: {len(records)}")
     print()

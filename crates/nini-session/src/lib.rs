@@ -470,7 +470,7 @@ impl Session {
     /// `(1-based position in the path, entry id, first line of text)`.
     ///
     /// Pi builds the same list for its fork selector
-    /// (`agent-session.ts:3098`: *"Get all user messages from session for
+    /// (`agent-session.ts:3309`: *"Get all user messages from session for
     /// fork selector"*). Deriving it from the session rather than from the
     /// transcript matters: the transcript is a *rendering* of the session
     /// and can hold lines the session does not (notices, dividers) or miss

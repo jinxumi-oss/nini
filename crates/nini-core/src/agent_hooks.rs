@@ -64,7 +64,7 @@ use crate::provider::Message;
 ///     it. A field with no reader is worse than an absent one: it looks
 ///     implemented.
 ///   * `context` — Pi re-syncs it from a long-lived session object
-///     (`agent-session.ts:534-554`). nini's `Agent` is constructed fresh
+///     (`agent-session.ts#_installAgentNextTurnRefresh-554`). nini's `Agent` is constructed fresh
 ///     per `run` by the driver closure, so there is no session to re-read.
 ///
 /// `model` is the one field with a real reader: `build_request` uses
@@ -171,7 +171,7 @@ pub trait AgentLoopHooks: Send + Sync {
     /// v0.10 (R1e): called after `turn_end` and before the loop decides
     /// whether to make another provider request.
     ///
-    /// Pi (`agent-loop.ts:236-245`):
+    /// Pi (`agent-loop.ts:181-245`):
     ///
     /// ```ts
     /// const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);

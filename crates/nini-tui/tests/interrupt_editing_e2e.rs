@@ -20,7 +20,7 @@
 //! Pi has no such state. `onEscape` aborts and calls
 //! `restoreQueuedMessagesToEditor({ abort: true })` — the editor is usable
 //! the instant you press the key
-//! (`@earendil-works/pi-coding-agent` `interactive-mode.js:2219`).
+//! (`@earendil-works/pi-coding-agent` `interactive-mode.js:2253`).
 //!
 //! # Why these assertions compile against the old code
 //!

@@ -1105,7 +1105,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
 ///
 /// v0.10.2. Pi paints a hit with `underline + bg(searchMatchBg) +
 /// fg(searchMatchText)` and the *current* hit with `bold + inverse` on top
-/// (`interactive-mode.ts:349` creates `searchMatchStyle` and
+/// (`tui-alt-screen.ts#searchMatchStyle` creates `searchMatchStyle` and
 /// `searchCurrentMatchStyle` and hands both to the alt-screen scroll
 /// view). Before this, nini computed the match list, drew the count, and
 /// painted nothing — `searchMatchBg` / `searchMatchText` were palette
@@ -1124,7 +1124,7 @@ pub enum SearchHighlight {
 
 /// The style Pi uses for a search hit.
 ///
-/// `interactive-mode.ts:349` builds two closures:
+/// `tui-alt-screen.ts#searchMatchStyle` builds two closures:
 /// ```js
 /// searchMatchStyle:       (t) => theme.underline(theme.bg("searchMatchBg", theme.fg("searchMatchText", t)))
 /// searchCurrentMatchStyle: (t) => theme.bold(theme.inverse(styleSearchMatch(t)))

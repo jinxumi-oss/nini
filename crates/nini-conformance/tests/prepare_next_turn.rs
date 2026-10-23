@@ -3,7 +3,7 @@
 //! This is the last unimplemented field of Pi's `AgentLoopConfig`
 //! (`pi-agent-core/src/types.ts`). It is not an abstract extension point:
 //! Pi's own session layer uses it for one concrete job
-//! (`pi-coding-agent/src/core/agent-session.ts:534-554`,
+//! (`pi-coding-agent/src/core/agent-session.ts#_installAgentNextTurnRefresh-554`,
 //! `_installAgentNextTurnRefresh`):
 //!
 //! ```ts
@@ -42,7 +42,7 @@
 //!     there is no session to re-read.
 //!
 //! The loop ORDER is also pinned, because it is easy to get backwards:
-//! `agent-loop.ts:225-250` runs `prepareNextTurn` first, then
+//! `agent-loop.ts#prepareNextTurn-250` runs `prepareNextTurn` first, then
 //! `shouldStopAfterTurn`.
 
 use nini_core::agent::Agent;
@@ -213,7 +213,7 @@ async fn a_hook_that_returns_nothing_changes_nothing() {
 }
 
 /// Pi runs `prepareNextTurn` BEFORE `shouldStopAfterTurn`
-/// (`agent-loop.ts:236-250`). Getting this backwards would let a stop
+/// (`agent-loop.ts:181-250`). Getting this backwards would let a stop
 /// verdict be computed against a stale model.
 #[tokio::test(flavor = "current_thread")]
 async fn prepare_next_turn_runs_before_should_stop_after_turn() {

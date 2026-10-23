@@ -402,7 +402,7 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
     // v0.10 (R1e): a hook that re-syncs the live model into the loop.
     //
     // Pi does this from its session layer
-    // (`agent-session.ts:534-554`, `_installAgentNextTurnRefresh`): before
+    // (`agent-session.ts#_installAgentNextTurnRefresh-554`, `_installAgentNextTurnRefresh`): before
     // every provider request it re-reads `agent.state.model` and pushes it
     // into the loop via `prepareNextTurn`. That is the mechanism behind a
     // model change taking effect *mid-run*.
@@ -422,13 +422,13 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
         ///
         /// v0.10's R1 work built the consumer — `agent.rs` polls this at the
         /// top of every iteration and injects what it returns before the next
-        /// model call (`agent-loop.js:96-103`) — and never built a producer.
+        /// model call (`agent-loop.js:112-103`) — and never built a producer.
         /// `LiveConfigHooks` was the only hook implementation in the product
         /// and implemented only `prepare_next_turn`, so the poll always came
         /// back empty: a message submitted mid-run had nowhere to go.
         ///
         /// Pi: `await this.session.prompt(text, { streamingBehavior: "steer" })`
-        /// (`interactive-mode.js:2491`).
+        /// (`interactive-mode.ts#streamingBehavior`).
         fn get_steering_messages(
             &self,
             _recent: &[nini_core::provider::Message],

@@ -3,7 +3,7 @@
 //! v0.10. Pi paints one (`pi-tui/src/layout.ts:293` `paintScrollbar`) and nini
 //! carried only the theme key for it — `theme.rs` has had `scrollbarThumb`
 //! (`#3a3a4a` dark, `#d0d0e0` light) since the theme was ported from Pi's
-//! schema, with nothing that drew it. `interactive-mode.ts:885` styles Pi's
+//! schema, with nothing that drew it. `interactive-mode.ts#scrollbarThumb` styles Pi's
 //! thumb with `theme.bg("scrollbarThumb", …)`, which is where the key name
 //! came from.
 //!

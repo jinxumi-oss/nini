@@ -145,7 +145,7 @@ impl Queue {
     }
 
     /// A steering item that only becomes visible to the poll at
-    /// `agent-loop.js:160`, i.e. the user interjects mid-run.
+    /// `agent-loop.ts#getSteeringMessages`, i.e. the user interjects mid-run.
     fn steering_mid_run(item: nini_core::provider::Message) -> Self {
         let mut q = Self::once(vec![], vec![]);
         *q.steering.lock().unwrap() = Some(vec![item]);
@@ -209,7 +209,7 @@ async fn drain(agent: &mut Agent, input: &str) {
 // =====================================================================
 
 /// A follow-up queued at the end of a run must produce **another model
-/// call**. Pi: `agent-loop.js:163-167` re-seeds `pendingMessages` and
+/// call**. Pi: `agent-loop.js:161-167` re-seeds `pendingMessages` and
 /// `continue`s, and the inner loop's condition
 /// (`pendingMessages.length > 0`) guarantees the LLM is called again.
 // v0.10 (R1): `#[ignore]` because the fix is not landed yet. The test is
@@ -273,7 +273,7 @@ async fn no_followup_means_exactly_one_model_call() {
 // L2 — steering must be polled every turn, unconditionally
 // =====================================================================
 
-/// Pi polls steering at `agent-loop.js:160` after **every** turn, including
+/// Pi polls steering at `agent-loop.ts#getSteeringMessages` after **every** turn, including
 /// a turn that produced no tool calls.
 ///
 /// nini polls it only inside the tool-execution branch (`agent.rs:1451-1456`),
@@ -303,7 +303,7 @@ async fn steering_is_polled_on_a_text_only_turn() {
     assert!(
         queue.steering_polls.load(Ordering::SeqCst) >= 1,
         "steering was never polled on a text-only turn; Pi polls it at the end of \
-         every turn (agent-loop.js:160) regardless of tool calls"
+         every turn (agent-loop.ts#getSteeringMessages) regardless of tool calls"
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),

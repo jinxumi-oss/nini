@@ -7,7 +7,7 @@
 //!
 //! The Agent cannot reach the session, so a caller that can installs a
 //! compaction hook and the Agent delegates. Pi's sequence, at
-//! `agent-session.ts:2137-2161`:
+//! `agent-session.ts#_checkCompaction-2161`:
 //!
 //! ```text
 //!   compact -> sessionManager.appendCompaction(...)
@@ -84,7 +84,7 @@ async fn the_hook_is_called_on_an_overflow_stop() {
             // v0.10 (fix): the seeded history is 20 messages over a
             // 150-token budget, so the **threshold** check now fires before
             // the first request — with only the new user message in hand
-            // (`agent.rs`, Pi `agent-session.ts:1098` Case 2). Slicing a
+            // (`agent.rs`, Pi `agent-session.ts:1141` Case 2). Slicing a
             // fixed 2 here would panic on the first call and mask what this
             // test is about.
             messages: msgs[..msgs.len().min(2)].to_vec(),

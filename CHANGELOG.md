@@ -111,6 +111,81 @@ It is not a decoration: with the fix reverted, the script fails with
 *"request #1 and #2 overlap — a second agent started while the first was
 still streaming"*.
 
+### The target version is now **one** version (0.85.1)
+
+Until now nini aimed at two Pi versions at once: the format layer was frozen
+against the spec copied from **v0.85.1**, while the behaviour layer could only
+be checked against the **v0.84.2** installed on this machine. That is not
+"layering", it is **two targets** — and the same piece of code can be answered
+two different ways.
+
+The cost was measured, not guessed:
+
+- **90 of the tree's line-number citations pointed at Pi source lines.**
+  Between 0.84.2 and 0.85.1, **11 of them still pointed at the same line**;
+  78 pointed at something else; 1 was out of range — and **nothing turned red**.
+  A citation that silently points at the wrong statement is worse than no
+  citation at all: it looks like evidence.
+- The machine's Pi was upgraded to **0.85.1** (`pi --version` = 0.85.1; the
+  four sibling packages moved with it). The one-time `migrateAuthToAuthJson`
+  migration was a **no-op** here — `auth.json` already existed — and the
+  user's `~/.pi/agent/auth.json` is byte-identical after the upgrade.
+- Both versions were snapshotted into the repository while the diff was
+  taken, then **the 0.84.2 snapshot was removed**: one installed Pi, one
+  snapshot, one target. The diff's findings live on in
+  `docs/pi-version-delta-0.84.2-to-0.85.1.md` — they are evidence, not
+  clutter.
+- Citations changed shape: **`file#symbol`** instead of `file:line`
+  (`agent-loop.ts#shouldStopAfterTurn`). The meaning is pinned; the line
+  number is resolved by `scripts/pi-oracle-lock.py --verify-refs` in the
+  target snapshot. A symbol that disappears turns the run red; a symbol that
+  moved is reported as movement. 101 citations resolve against 0.85.1 with
+  zero drift.
+
+### Three structural moves between the versions (they change what "parity" means)
+
+1. **`pi-client` and `pi-protocol` were removed**, replaced by
+   `@earendil-works/chord`. nini's counterpart for that layer was zero nodes
+   to begin with — and now the layer has a different name too.
+2. **Keybindings moved into `pi-tui`.** In 0.85.1 the coding agent *also* has
+   a file called `keybindings.ts` (the app-level bindings). **Same name,
+   different thing** — so the alias table lives in exactly one place
+   (`scripts/pi_refs.py`); three copies would repeat the "same distortion in
+   three copies" bug this project already paid for in its keymap.
+3. **The search-hit styling moved from the coding-agent layer to the `pi-tui`
+   layer.** nini copied that styling from 0.84.2's coding agent — the
+   counterpart is no longer there. That is the price of not knowing whose
+   responsibility a piece of code was when you copied it.
+
+### The tools are two different projects, and now they are labelled as such
+
+Pi's own words (`dist/core/sdk.d.ts`): `noTools: "builtin"` disables "the
+default built-in tools (**read, bash, edit, write**) but keep
+**extension/custom tools** enabled", and `customTools` registers "in
+addition to built-in tools".
+
+- **Original built-in tools** — functions that ship with the binary:
+  `read/write/edit/bash` (harness layer) and `grep/find/ls` + `powershell`
+  (coding layer). nini has six of the eight, **missing `ls`**, and every
+  description was captured from **0.84.2** and never re-captured.
+- **Extension tools** — plugins registered by third parties. **Pi ships none
+  by default** (its one built-in extension, llama.cpp, is hidden and registers
+  no tool). The contract is a different animal: an extension tool can bring
+  its own `renderCall`/`renderResult`, receive `onUpdate` and a `signal`, and
+  contribute prompt fragments.
+
+nini already has **half** of the extension contract — `Tool::system_prompt_contribution()`
+is Pi's `promptSnippet`/`promptGuidelines` equivalent, assembled
+deterministically. What it lacks is the other half: **no per-tool renderer
+registry, no streaming update callback, no signal** in `ToolContext`. So the
+honest statement is not "nini has no extension runtime" but: **a nini
+extension can contribute a function-shaped tool and a prompt fragment, but not
+a tool with its own appearance and streaming progress.**
+
+`references/pi-0.85.1/tool-contracts.json` now holds Pi 0.85.1's tool
+contracts, and `scripts/pi-tool-contracts.py --compare` reports where nini
+still speaks 0.84.2 (all seven differ).
+
 ### The plan was rewritten, because the plan had holes
 
 `docs/plans/parity-with-pi.md` is now **v3**. The v2 plan was audited and

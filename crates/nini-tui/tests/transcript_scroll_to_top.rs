@@ -23,7 +23,7 @@
 //!
 //! The fix is the Pi wiring, plus the binding nini was missing all
 //! along: `Ctrl+E` for end-of-line (Pi's second key for
-//! `cursorLineEnd`, `keybindings.ts:186`), since `Home` and `End` now
+//! `cursorLineEnd`, `keybindings.ts:217`), since `Home` and `End` now
 //! belong to the transcript.
 //!
 //! **Test discipline (v0.10 §35.6)**: driven through

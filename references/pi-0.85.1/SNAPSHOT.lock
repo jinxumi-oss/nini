@@ -1,0 +1,2476 @@
+{
+  "piVersion": "0.85.1",
+  "sourceRoot": "/tmp/pi-0.85.1/node_modules/@earendil-works/pi-coding-agent",
+  "captured": "2026-10-23",
+  "capturedBy": "scripts/pi-snapshot.py",
+  "note": "dist/ = npm 实际发布物；src/ = 由 .js.map 的 sourcesContent 逐字还原；maps/ = 还原证据。三层都可复算。",
+  "missing": [],
+  "files": {
+    "dist/session/agent-session.js": {
+      "sha256": "fb8a3981c20c8c0bbd42231b1c99a10335fb3858b659056b341954de9cfa467f",
+      "bytes": 125310,
+      "origin": "dist/core/agent-session.js",
+      "group": "session"
+    },
+    "maps/session/agent-session.js.map": {
+      "sha256": "6327f6a53142ad1c458a147011a6d120e8a37d993ec12c5900e99a4bf5470929",
+      "bytes": 218938,
+      "origin": "dist/core/agent-session.js.map",
+      "group": "session"
+    },
+    "src/session/agent-session.ts": {
+      "sha256": "23e4acac844638fb0ae60047130f8e1050e4c729c1b8e80d37e359ac9c0eef9a",
+      "bytes": 120078,
+      "origin": "dist/core/agent-session.js.map:sourceContent",
+      "group": "session"
+    },
+    "dist/ext/types.d.ts": {
+      "sha256": "5baa29ca2f541f71f81a400dec25903abfbd03980bd4d9b691d10353e52d169a",
+      "bytes": 61206,
+      "origin": "dist/core/extensions/types.d.ts",
+      "group": "ext"
+    },
+    "maps/ext/types.d.ts.map": {
+      "sha256": "f6133d610f23cd4e1b9408573252c48366cd8a9544cebdc574bfb84becbb078c",
+      "bytes": 104979,
+      "origin": "dist/core/extensions/types.d.ts.map",
+      "group": "ext"
+    },
+    "src/ext/types.ts": {
+      "sha256": "96e20f8038027f0b0172f311b6b9d9ddf42123b2f5b2a018f533af026fd3371e",
+      "bytes": 63623,
+      "origin": "dist/core/extensions/types.d.ts.map:sourceContent",
+      "group": "ext"
+    },
+    "dist/ui/keybindings.js": {
+      "sha256": "588794892300bacf84ddbea13e44882a63d9f03ddfeab5bdbe22cdb9d1816a73",
+      "bytes": 11666,
+      "origin": "dist/core/keybindings.js",
+      "group": "ui"
+    },
+    "maps/ui/keybindings.js.map": {
+      "sha256": "2177eb42d79ddb710c96cacebde231fcd108f0ae6e20ef75dfef08cb6f967ede",
+      "bytes": 23011,
+      "origin": "dist/core/keybindings.js.map",
+      "group": "ui"
+    },
+    "src/ui/keybindings.ts": {
+      "sha256": "e140384fc16be1bc8306648b657af8b14d2625bb73c5e4dd3fe5409d1381f7aa",
+      "bytes": 12701,
+      "origin": "dist/core/keybindings.js.map:sourceContent",
+      "group": "ui"
+    },
+    "dist/api/model-runtime.js": {
+      "sha256": "32cd50599d9e6e001229090e3d0554b60e4addb8ab7b3165635a574feb660b74",
+      "bytes": 27319,
+      "origin": "dist/core/model-runtime.js",
+      "group": "api"
+    },
+    "maps/api/model-runtime.js.map": {
+      "sha256": "8494a564aee4214bc07b58f354f7865225e84436a417fa5cc31d84b91f195b7d",
+      "bytes": 57655,
+      "origin": "dist/core/model-runtime.js.map",
+      "group": "api"
+    },
+    "src/api/model-runtime.ts": {
+      "sha256": "d9e5c3f1b5c1b32aafc8bb06ca64d289de4ab06ff90f264ac9fa7421e398671a",
+      "bytes": 29390,
+      "origin": "dist/core/model-runtime.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/ext/sdk.d.ts": {
+      "sha256": "fbb34394c71e113b1f1fb5dd2e3d1da8d559580b339daace88826cd1a666cc4c",
+      "bytes": 4960,
+      "origin": "dist/core/sdk.d.ts",
+      "group": "ext"
+    },
+    "maps/ext/sdk.d.ts.map": {
+      "sha256": "83bf480654e96d17330296ec2dc742f02f5e1c2b26873136677802059416cd29",
+      "bytes": 17934,
+      "origin": "dist/core/sdk.d.ts.map",
+      "group": "ext"
+    },
+    "src/ext/sdk.ts": {
+      "sha256": "938f9f3d484544040e7a06e6f89a07adb72ab007ea660bcaf4a8c1846d20a021",
+      "bytes": 14567,
+      "origin": "dist/core/sdk.d.ts.map:sourceContent",
+      "group": "ext"
+    },
+    "dist/api/system-prompt.js": {
+      "sha256": "4a57f022a27f2ae22d7d0c0d8f0ef4a63f869b878483699d4102055239bdea0a",
+      "bytes": 5966,
+      "origin": "dist/core/system-prompt.js",
+      "group": "api"
+    },
+    "maps/api/system-prompt.js.map": {
+      "sha256": "2e5503b99eb1e7348ca3ad675303cbfe4f03b46940d52eccaa197383987efc47",
+      "bytes": 10625,
+      "origin": "dist/core/system-prompt.js.map",
+      "group": "api"
+    },
+    "src/api/system-prompt.ts": {
+      "sha256": "c660d28416c4674ba65fb0357d74462749b0741e72a2b15865573198f6b21519",
+      "bytes": 6283,
+      "origin": "dist/core/system-prompt.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/tools-t2/file-mutation-queue.js": {
+      "sha256": "cd300f1ecae2b8d45a7c69011221f4f2e4e289865bf879df537c859889f26e5b",
+      "bytes": 1786,
+      "origin": "dist/core/tools/file-mutation-queue.js",
+      "group": "tools-t2"
+    },
+    "maps/tools-t2/file-mutation-queue.js.map": {
+      "sha256": "9f21f8830c9bb1fbb5fb14559fbec53243e5c02648bf9a6b9b9795155fa1365e",
+      "bytes": 3691,
+      "origin": "dist/core/tools/file-mutation-queue.js.map",
+      "group": "tools-t2"
+    },
+    "src/tools-t2/file-mutation-queue.ts": {
+      "sha256": "33cb06ac9bcdf32c8b84d9d12e33be44c503a7670f668e003a3262cd34294d11",
+      "bytes": 1697,
+      "origin": "dist/core/tools/file-mutation-queue.js.map:sourceContent",
+      "group": "tools-t2"
+    },
+    "dist/tools-t2/find.js": {
+      "sha256": "cbb5e3a76e962899f833452ff26670c1fdbf333e7efdecb9953b07f6ebd14ed7",
+      "bytes": 13876,
+      "origin": "dist/core/tools/find.js",
+      "group": "tools-t2"
+    },
+    "maps/tools-t2/find.js.map": {
+      "sha256": "017b6b968d1d8ffb56a8b003c8374130e960513b491e4f2ca1c0451004b898a5",
+      "bytes": 23082,
+      "origin": "dist/core/tools/find.js.map",
+      "group": "tools-t2"
+    },
+    "src/tools-t2/find.ts": {
+      "sha256": "b06bcae6821a0e9fda1b63be613a7ce28eb0e66e1d01d16564e59e83f9ce10ea",
+      "bytes": 11178,
+      "origin": "dist/core/tools/find.js.map:sourceContent",
+      "group": "tools-t2"
+    },
+    "dist/tools-t2/grep.js": {
+      "sha256": "641ae520a88c7eb86406d9a18880f31412cb41cdc15a7ee3e1da5de62979ca7c",
+      "bytes": 14428,
+      "origin": "dist/core/tools/grep.js",
+      "group": "tools-t2"
+    },
+    "maps/tools-t2/grep.js.map": {
+      "sha256": "d558e9cd98f020263148cbf4fbe2e4116004ad13409a36127d525f2f8c710d9a",
+      "bytes": 23980,
+      "origin": "dist/core/tools/grep.js.map",
+      "group": "tools-t2"
+    },
+    "src/tools-t2/grep.ts": {
+      "sha256": "88be3d00217d1a1caf8a9e7bb2b8d2e6d96edfa4b790c2cf76c746ab36b8841b",
+      "bytes": 11550,
+      "origin": "dist/core/tools/grep.js.map:sourceContent",
+      "group": "tools-t2"
+    },
+    "dist/tools-t2/index.js": {
+      "sha256": "16a517a54e2aa1386fada22cbef63205ca11463394f95fd20d74bee6fb2898a3",
+      "bytes": 5401,
+      "origin": "dist/core/tools/index.js",
+      "group": "tools-t2"
+    },
+    "maps/tools-t2/index.js.map": {
+      "sha256": "6dc77cb6e605a74cdfe25cbccc94a6cbb739a87ab96f6380b45267a794d6ba36",
+      "bytes": 12304,
+      "origin": "dist/core/tools/index.js.map",
+      "group": "tools-t2"
+    },
+    "src/tools-t2/index.ts": {
+      "sha256": "3c66ea1e03530fb85436ee639f35add8bf72718ac6e76b738a1f41be58a2b472",
+      "bytes": 6784,
+      "origin": "dist/core/tools/index.js.map:sourceContent",
+      "group": "tools-t2"
+    },
+    "dist/tools-t2/ls.js": {
+      "sha256": "8e06f1a42e48fcf447558686d8bb4defebcb80eb8e73c3483a7892643e1622a9",
+      "bytes": 6293,
+      "origin": "dist/core/tools/ls.js",
+      "group": "tools-t2"
+    },
+    "maps/tools-t2/ls.js.map": {
+      "sha256": "fcd03ba5c72ca5e549038db3f61b71281b77bc3d6d3bd4eccea1eead011eed86",
+      "bytes": 11337,
+      "origin": "dist/core/tools/ls.js.map",
+      "group": "tools-t2"
+    },
+    "src/tools-t2/ls.ts": {
+      "sha256": "3d0a5457e4f5b9e9967c44608b76b060374d047e80d6871ecec4459b612cb6a3",
+      "bytes": 5840,
+      "origin": "dist/core/tools/ls.js.map:sourceContent",
+      "group": "tools-t2"
+    },
+    "dist/tools-t2/output-accumulator.js": {
+      "sha256": "4fe5f89ce61446ec50da5ea26e9f66e34ed7d628df8563eda403b804a67af50a",
+      "bytes": 6278,
+      "origin": "dist/core/tools/output-accumulator.js",
+      "group": "tools-t2"
+    },
+    "maps/tools-t2/output-accumulator.js.map": {
+      "sha256": "25338a5ac62eee037d88ac8b6f20d8f58b6336eb12049063234c00c0d833ecf4",
+      "bytes": 13134,
+      "origin": "dist/core/tools/output-accumulator.js.map",
+      "group": "tools-t2"
+    },
+    "src/tools-t2/output-accumulator.ts": {
+      "sha256": "c601ddd8e10934be6f3db30696eacba7b9544f2dd1648a5ec3c9935f0d4625c3",
+      "bytes": 6049,
+      "origin": "dist/core/tools/output-accumulator.js.map:sourceContent",
+      "group": "tools-t2"
+    },
+    "dist/tools-t2/truncate.js": {
+      "sha256": "3a627a6407f3726aa56a9580548db230c20e4fee59b212ea3d12e2c45073f75d",
+      "bytes": 7277,
+      "origin": "dist/core/tools/truncate.js",
+      "group": "tools-t2"
+    },
+    "maps/tools-t2/truncate.js.map": {
+      "sha256": "43cd0d4f78db1ee5dced59dab78445530f4a6e3bbeee25aa9f083ce08f392deb",
+      "bytes": 14129,
+      "origin": "dist/core/tools/truncate.js.map",
+      "group": "tools-t2"
+    },
+    "src/tools-t2/truncate.ts": {
+      "sha256": "104e61ea602c7f7894097b2771dad8c68de75c5a10ea6222e615c4ad144451c7",
+      "bytes": 7693,
+      "origin": "dist/core/tools/truncate.js.map:sourceContent",
+      "group": "tools-t2"
+    },
+    "dist/ui/interactive-mode.js": {
+      "sha256": "802ff14f5a47710e5a46d8141b238c4d5ffca30e8ca26bad18f838eddbf086bf",
+      "bytes": 257924,
+      "origin": "dist/modes/interactive/interactive-mode.js",
+      "group": "ui"
+    },
+    "maps/ui/interactive-mode.js.map": {
+      "sha256": "53d1fab3cedda974ab0316d2db5dcbe6fc3a57490c62652b01ea490d7b4ac332",
+      "bytes": 473233,
+      "origin": "dist/modes/interactive/interactive-mode.js.map",
+      "group": "ui"
+    },
+    "src/ui/interactive-mode.ts": {
+      "sha256": "e54888f74a62bf2372be0a7d26809ad975eed218f968839b5202ed2576642e72",
+      "bytes": 228958,
+      "origin": "dist/modes/interactive/interactive-mode.js.map:sourceContent",
+      "group": "ui"
+    },
+    "dist/loop/agent-loop.js": {
+      "sha256": "6732a1c65c09577d2ffcb716b48e4f4673e57e3e333f10ebfce5132d82e4d7a2",
+      "bytes": 22932,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js",
+      "group": "loop"
+    },
+    "maps/loop/agent-loop.js.map": {
+      "sha256": "1f7d62fdcbec91ae08f65476e3e9691961890d1f8a89aa6d5fb562c577d96b7b",
+      "bytes": 44032,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js.map",
+      "group": "loop"
+    },
+    "src/loop/agent-loop.ts": {
+      "sha256": "1e16404a231912fbd7643d8317b15ec4cc6245ed8cedc37582a31d430a1cc6ac",
+      "bytes": 22796,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js.map:sourceContent",
+      "group": "loop"
+    },
+    "dist/tools-t1/bash.js": {
+      "sha256": "d6ee76674e314b273aab7eb107d5998f1c1f39a0316dc4feffc937894048ab7b",
+      "bytes": 5579,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/bash.js",
+      "group": "tools-t1"
+    },
+    "maps/tools-t1/bash.js.map": {
+      "sha256": "3e644af2ed97b6fd133cc28a1380881d0d78ad9d68b515509987a26e56981f61",
+      "bytes": 10992,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/bash.js.map",
+      "group": "tools-t1"
+    },
+    "src/tools-t1/bash.ts": {
+      "sha256": "7ebd769d320feb9c25f9878731aed08f71053dbed7bb398f6eb0e848cc85f80a",
+      "bytes": 5717,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/bash.js.map:sourceContent",
+      "group": "tools-t1"
+    },
+    "dist/tools-t1/edit.js": {
+      "sha256": "d0824912781025b903bde88c07bc9d25092e4f84cb092970f0d813a8b2646b34",
+      "bytes": 5649,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/edit.js",
+      "group": "tools-t1"
+    },
+    "maps/tools-t1/edit.js.map": {
+      "sha256": "4a2e5f041839d8b7ba64ddc0dec41cffc649b8f34b2e2d4db974e551f1318a05",
+      "bytes": 11073,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/edit.js.map",
+      "group": "tools-t1"
+    },
+    "src/tools-t1/edit.ts": {
+      "sha256": "c66f9cab3daa9da5196ca1e98c03a82be7a7756df989e16ceac31f69d9dfb07d",
+      "bytes": 5786,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/edit.js.map:sourceContent",
+      "group": "tools-t1"
+    },
+    "dist/tools-t1/index.js": {
+      "sha256": "e156567eaf997c019956f43fa33cf1c64f7cbb55f54985377fc70a6d2b4fa4ff",
+      "bytes": 214,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/index.js",
+      "group": "tools-t1"
+    },
+    "maps/tools-t1/index.js.map": {
+      "sha256": "c7896b4fabd94574b6899669e8b8e955d7c88f0780cb6c533dde50d5079dedfe",
+      "bytes": 899,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/index.js.map",
+      "group": "tools-t1"
+    },
+    "src/tools-t1/index.ts": {
+      "sha256": "7b11295ec3517b9677886a717ece40183cb70dc92720741a201a9012f8f6f9a4",
+      "bytes": 544,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/index.js.map:sourceContent",
+      "group": "tools-t1"
+    },
+    "dist/tools-t1/read.js": {
+      "sha256": "c3f7b6a58a212c683bf93597200196611326c58f2bda26816711b0d8ce8693fe",
+      "bytes": 6059,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/read.js",
+      "group": "tools-t1"
+    },
+    "maps/tools-t1/read.js.map": {
+      "sha256": "3db22d7745de49ad58f9ca7c8c93741926a408b87282a701150589761140d931",
+      "bytes": 11398,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/read.js.map",
+      "group": "tools-t1"
+    },
+    "src/tools-t1/read.ts": {
+      "sha256": "55dc4a19734dd94c2abf4603d5a41ba385e5a48e22d33bc09de4b1a079c99de1",
+      "bytes": 6141,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/read.js.map:sourceContent",
+      "group": "tools-t1"
+    },
+    "dist/tools-t1/write.js": {
+      "sha256": "0a1a31acc506d26c33a4a18cf7e96fbd8eea7cab79b3888fa217fc0ce54ee215",
+      "bytes": 1472,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/write.js",
+      "group": "tools-t1"
+    },
+    "maps/tools-t1/write.js.map": {
+      "sha256": "bd0d39b0b35694304849b9975f1c3599177dd22c9fa631722cb90bc7fbf23ef0",
+      "bytes": 3047,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/write.js.map",
+      "group": "tools-t1"
+    },
+    "src/tools-t1/write.ts": {
+      "sha256": "10f3086670e64cf531f39c170dcf5da75a7d97f900d18ba4666758aaa4eb5c79",
+      "bytes": 1582,
+      "origin": "node_modules/@earendil-works/pi-agent-core/dist/harness/tools/write.js.map:sourceContent",
+      "group": "tools-t1"
+    },
+    "dist/api/anthropic-messages.js": {
+      "sha256": "f748560c80fe91bb5736b62f6f34c5e2e2bfa224cd5eb959134ca903c226b604",
+      "bytes": 50658,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js",
+      "group": "api"
+    },
+    "maps/api/anthropic-messages.js.map": {
+      "sha256": "58657a82d6f7896ac20c84913949716b84b9046466f4369eeeb857fa93fa0f46",
+      "bytes": 95986,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js.map",
+      "group": "api"
+    },
+    "src/api/anthropic-messages.ts": {
+      "sha256": "9abf35ebe5dbe3a9d7a621c420aa0cbf474eb2ec7c79e1bea8e28966c564b7ab",
+      "bytes": 48413,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/anthropic-messages.lazy.js": {
+      "sha256": "8915ff69b112469fa7bf48f59eeae87bb3d82ce49d3fbddbb2acb1da9675cb39",
+      "bytes": 180,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.lazy.js",
+      "group": "api"
+    },
+    "maps/api/anthropic-messages.lazy.js.map": {
+      "sha256": "dcdfec46cc7c64f0782cc3bed296f818a90bc584fe11780b01a45e27aed68282",
+      "bytes": 521,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/anthropic-messages.lazy.ts": {
+      "sha256": "5d1925e8b2664c91a11ef4c73d8c400b4075597c8c4e8beb085f8e4ba137fc08",
+      "bytes": 199,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/azure-openai-responses.js": {
+      "sha256": "8a3ce644729dc3f9ebdae8822f21f92c1e43a7da8553097f90a5e3651a793d1c",
+      "bytes": 662,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/azure-openai-responses.js",
+      "group": "api"
+    },
+    "maps/api/azure-openai-responses.js.map": {
+      "sha256": "8208d27855ba96840d7c82583391f99ed53ab3f5bb44620c995b0c7c1dbf1fdd",
+      "bytes": 1292,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/azure-openai-responses.js.map",
+      "group": "api"
+    },
+    "src/api/azure-openai-responses.ts": {
+      "sha256": "76e9f5cde761fcd516370d4d99519e4658e0db1029518746d0d0c0550ce54fa5",
+      "bytes": 628,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/azure-openai-responses.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/azure-openai-responses.lazy.js": {
+      "sha256": "7ed84bd0e2dcd46223cc741b4217051e88c4972c4482e2f12367e5e5e3361dd7",
+      "bytes": 191,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/azure-openai-responses.lazy.js",
+      "group": "api"
+    },
+    "maps/api/azure-openai-responses.lazy.js.map": {
+      "sha256": "59da9a013210c91382bfcdce9be116685e99c9ba3a72e14ea278eb0e72d72d48",
+      "bytes": 536,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/azure-openai-responses.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/azure-openai-responses.lazy.ts": {
+      "sha256": "de36a9a2749ac4cb45a5449356bceadb676d1a16e6d46f4fc5522a3f700aa2fd",
+      "bytes": 206,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/azure-openai-responses.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/bedrock-converse-stream.js": {
+      "sha256": "13d6fec97d08f4303714aca50f3113ba0263706e961fc220ccb1cc023c520e6b",
+      "bytes": 49461,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/bedrock-converse-stream.js",
+      "group": "api"
+    },
+    "maps/api/bedrock-converse-stream.js.map": {
+      "sha256": "4d5db7bbb8bbcd5a8e9714df3f22411c4cb03b626c4c649be41084e705d8e261",
+      "bytes": 88709,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/bedrock-converse-stream.js.map",
+      "group": "api"
+    },
+    "src/api/bedrock-converse-stream.ts": {
+      "sha256": "b8cff28740f8a549fc5fd2d466980f8900688c01fcad3df96ba68f7eaf4fbaf3",
+      "bytes": 48022,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/bedrock-converse-stream.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/bedrock-converse-stream.lazy.js": {
+      "sha256": "fc0052380edeeb83d148d89030ed47762bebde39f25f71c6632a1a883c7ab8fd",
+      "bytes": 1521,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/bedrock-converse-stream.lazy.js",
+      "group": "api"
+    },
+    "maps/api/bedrock-converse-stream.lazy.js.map": {
+      "sha256": "d83a306a479999e25d687d3041d79d0bdab6a0eabf2495ff38f5f0a7cf6b5d06",
+      "bytes": 1945,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/bedrock-converse-stream.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/bedrock-converse-stream.lazy.ts": {
+      "sha256": "3ee8a1b2a2cd58927bee18ab5b4150401da810e9d5f4595822b3b10ded35de86",
+      "bytes": 1148,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/bedrock-converse-stream.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cloudflare-ai-binding.js": {
+      "sha256": "4a0fba5a6cc07b1d8366cfb50a93e404a5157483a2250225477450843d2dc39d",
+      "bytes": 3927,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/cloudflare-ai-binding.js",
+      "group": "api"
+    },
+    "maps/api/cloudflare-ai-binding.js.map": {
+      "sha256": "82905c101e05e052a6ff36e00167ea472b3846e056bcb47642d447a70fa48030",
+      "bytes": 5364,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/cloudflare-ai-binding.js.map",
+      "group": "api"
+    },
+    "src/api/cloudflare-ai-binding.ts": {
+      "sha256": "57f702b91453810241fd50a5629628fcc3d556e75909a37fae857d0a5d27d8fb",
+      "bytes": 4604,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/cloudflare-ai-binding.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cloudflare.js": {
+      "sha256": "637350cb0c625807696273fd2d773a32b923fa47e82e774750c23ce625c0378c",
+      "bytes": 873,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/cloudflare.js",
+      "group": "api"
+    },
+    "maps/api/cloudflare.js.map": {
+      "sha256": "6ebd3c0480d145896d15fd0ddcd2cebd357e8c4a3c09b6dedbe0da8e427a72e6",
+      "bytes": 1244,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/cloudflare.js.map",
+      "group": "api"
+    },
+    "src/api/cloudflare.ts": {
+      "sha256": "6333a0f78e8cd6b75e408fdeb594d5e1e02605206247c5a921c2f56dd99cf96a",
+      "bytes": 842,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/cloudflare.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/constrained-sampling.js": {
+      "sha256": "0d43dcad594b8e63ff851a35c2d338bbf5d8dc67fe2b39d7fd48fde39c25b3ce",
+      "bytes": 9216,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/constrained-sampling.js",
+      "group": "api"
+    },
+    "maps/api/constrained-sampling.js.map": {
+      "sha256": "5cc7275673409ee6cd3ccdd06db6b9ae172b88999e38174e173f477dfe3336ef",
+      "bytes": 18652,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/constrained-sampling.js.map",
+      "group": "api"
+    },
+    "src/api/constrained-sampling.ts": {
+      "sha256": "1b869f139e5cd1f09b4ebecb8f7ce9ea44b63e75dc6d6158ac8f5d00f2eaddbb",
+      "bytes": 9295,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/constrained-sampling.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/github-copilot-headers.js": {
+      "sha256": "cd09a447ea282f5df02aab057f372d48ab95d72adb1d9d74510a2b5e1c7d78b3",
+      "bytes": 1133,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/github-copilot-headers.js",
+      "group": "api"
+    },
+    "maps/api/github-copilot-headers.js.map": {
+      "sha256": "57e2e55029240c0e9759164e5e275e5ab4b98cacf9611819ac9dfd0eb0a8de58",
+      "bytes": 2505,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/github-copilot-headers.js.map",
+      "group": "api"
+    },
+    "src/api/github-copilot-headers.ts": {
+      "sha256": "32d154965223d746140957ca6754f69955f1c631ed5e8445dcf2be11bb4b5180",
+      "bytes": 1184,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/github-copilot-headers.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/google-generative-ai.js": {
+      "sha256": "e056d59c2d2b6577d64be29f412b0dbc5377cffdaef3974d1a498b3c52177a45",
+      "bytes": 18790,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-generative-ai.js",
+      "group": "api"
+    },
+    "maps/api/google-generative-ai.js.map": {
+      "sha256": "41d21cd690e93c8bb65ff6aa391662a9369efe598f84852f88a15d8031714da6",
+      "bytes": 33041,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-generative-ai.js.map",
+      "group": "api"
+    },
+    "src/api/google-generative-ai.ts": {
+      "sha256": "1395c3f2a90bf701b8b5fc1b6f7de8d323193ed339e07a60630900099a543757",
+      "bytes": 16027,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-generative-ai.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/google-generative-ai.lazy.js": {
+      "sha256": "5bd07bbf12fc55c73b0e2a26770f192026036aff6d9e4e39a9edda57b214d0a0",
+      "bytes": 185,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-generative-ai.lazy.js",
+      "group": "api"
+    },
+    "maps/api/google-generative-ai.lazy.js.map": {
+      "sha256": "394cb1739f5d5c7c93961353d83887a569260278cb5619e6967e568e573bf488",
+      "bytes": 528,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-generative-ai.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/google-generative-ai.lazy.ts": {
+      "sha256": "ba7700f2e44838fb19da46f866f47f35f4e10f5068800be1ea698e9e95e1e1ce",
+      "bytes": 202,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-generative-ai.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/google-shared.js": {
+      "sha256": "c06c0d8eb5f7727dc8b3cd5b48cd099508bfda668b25e3ca06dde244b11a3be8",
+      "bytes": 16969,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-shared.js",
+      "group": "api"
+    },
+    "maps/api/google-shared.js.map": {
+      "sha256": "e6843d12a848ad5b1fdc93c953e8d6aa1833ab5cea3388987ee78602729ca185",
+      "bytes": 28323,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-shared.js.map",
+      "group": "api"
+    },
+    "src/api/google-shared.ts": {
+      "sha256": "fa9a45177b6c1e1636b8b1ef4c8b332e903e4b379039cb1bacbbc312a8e1662d",
+      "bytes": 15654,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-shared.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/google-vertex.js": {
+      "sha256": "26c13449ea7b57d40878742db956210e70af0c89638cb87a1d9b4739f2bac59a",
+      "bytes": 4282,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google-vertex.js",
+      "group": "api"
+    },
+    "maps/api/google-vertex.js.map": {
+      "sha256": "59d6e2aa09525b33f4d1bfd21a53309ded4bfdb3b231f08fe37c3bb6bb8a7c44",
+      "bytes": 7476,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google-vertex.js.map",
+      "group": "api"
+    },
+    "src/api/google-vertex.ts": {
+      "sha256": "5e321e6d5b80824752ca96e7c9aba8a3fccce722a1793a40d5341a0406ef4878",
+      "bytes": 3734,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google-vertex.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/google-vertex.lazy.js": {
+      "sha256": "944686a19ce1563146a82464dc35532725c006ecff1b66a3e00e5cbce41fb170",
+      "bytes": 165,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-vertex.lazy.js",
+      "group": "api"
+    },
+    "maps/api/google-vertex.lazy.js.map": {
+      "sha256": "8353bdaa846c9d2edb38a33138e24908e1f3f3ceb9c3a73cbbc0c7aea07b9a5e",
+      "bytes": 499,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-vertex.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/google-vertex.lazy.ts": {
+      "sha256": "891f0e07eaaa1bb1df97f0a2d8f067df6acbab50078242108d93b96a710c4712",
+      "bytes": 189,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/google-vertex.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/lazy.js": {
+      "sha256": "4b8083fd71cbbe2ed01be00fc6ae9bc67f84aa7bf50ef815f7863e156a3e003c",
+      "bytes": 2619,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/lazy.js",
+      "group": "api"
+    },
+    "maps/api/lazy.js.map": {
+      "sha256": "b92b43727e095e6cfecf600ccc96984a7e24db3d09f79b01b1f85d2c5058720f",
+      "bytes": 6215,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/lazy.js.map",
+      "group": "api"
+    },
+    "src/api/lazy.ts": {
+      "sha256": "ff4ce241fb72cdd1900d56865a6295815d8d073b321c2ed20435639ed74bf39a",
+      "bytes": 3203,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/mistral-conversations.js": {
+      "sha256": "60c8a1589be1319dfa3a8d9fec4444a8aaa5c4015828e98312fc19a97ec1ab11",
+      "bytes": 30002,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.js",
+      "group": "api"
+    },
+    "maps/api/mistral-conversations.js.map": {
+      "sha256": "4b858f14415b03929018fbbfc9b989636c1e4c76b6d4da6ad2450db5ce35f87d",
+      "bytes": 61793,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.js.map",
+      "group": "api"
+    },
+    "src/api/mistral-conversations.ts": {
+      "sha256": "042e8886f68da48b4218726bcbc20ff440510b23dbdbffe5ea9c7fb8a876b762",
+      "bytes": 30317,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/mistral-conversations.lazy.js": {
+      "sha256": "df0028011c26593830914429185f22bc60fa942e86ac871faa361abd2eaaf83e",
+      "bytes": 189,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.lazy.js",
+      "group": "api"
+    },
+    "maps/api/mistral-conversations.lazy.js.map": {
+      "sha256": "10519516e44c0b3206748da44bd8492308876d031ddfe81fb766133909ff9e6a",
+      "bytes": 533,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/mistral-conversations.lazy.ts": {
+      "sha256": "74267bc430c0c2562d166e4ae9d05966634e91b226bc564010b2b199db52dd86",
+      "bytes": 205,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai-codex-responses.js": {
+      "sha256": "f5705d45ae72102110238d6265a548df3aef50b777f654f1f91a32d563c91b3e",
+      "bytes": 54002,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js",
+      "group": "api"
+    },
+    "maps/api/openai-codex-responses.js.map": {
+      "sha256": "edcdfc35d377ee25a93418bb627e0ff30226855921ddc6a8cf3f6466e477598b",
+      "bytes": 106891,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js.map",
+      "group": "api"
+    },
+    "src/api/openai-codex-responses.ts": {
+      "sha256": "0e314e541bfec8d4375d106f59f084da7d57079c08cfd637c58b1a60d7c6d98d",
+      "bytes": 54279,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai-codex-responses.lazy.js": {
+      "sha256": "cc69ef7cb93175b8ae30e9b6f749cc5c978cd0c168d0bf379ed48a3d7e9c120a",
+      "bytes": 191,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.lazy.js",
+      "group": "api"
+    },
+    "maps/api/openai-codex-responses.lazy.js.map": {
+      "sha256": "6307223320976a52e282a903d72522c2f9952076fe775e4f41f0a553752d8042",
+      "bytes": 536,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/openai-codex-responses.lazy.ts": {
+      "sha256": "89e1883f937df0992b852970f574b5e1fc2a69fefaacc89628cd1d924a8af63f",
+      "bytes": 206,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai-completions.js": {
+      "sha256": "1e2097ced37cf0e21aa5711297eecc77916de8a4ed81a9019bc7d97b22825fa3",
+      "bytes": 64241,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js",
+      "group": "api"
+    },
+    "maps/api/openai-completions.js.map": {
+      "sha256": "00b68663e259dddc28ab3421d536fbd15eaf32137a52fc8f02f9b6353831062d",
+      "bytes": 118895,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js.map",
+      "group": "api"
+    },
+    "src/api/openai-completions.ts": {
+      "sha256": "7c1002a6a17cd081f36a44defea533ea03f65e07477e4ddec49b402760e97df8",
+      "bytes": 62409,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai-completions.lazy.js": {
+      "sha256": "a3d37d272ed600ddae2a9b05884e1c11c65487c1d8aa30d0b19ba571ffc7ea76",
+      "bytes": 180,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-completions.lazy.js",
+      "group": "api"
+    },
+    "maps/api/openai-completions.lazy.js.map": {
+      "sha256": "849fd887e19f0386a755da859dfedc2bb3cdc5f9c208d9f73b747e22a07516d0",
+      "bytes": 521,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-completions.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/openai-completions.lazy.ts": {
+      "sha256": "a1defe07f6d7bd37de3933164cc88cfeb2d46cf390d0bbb52c85b280cc58d193",
+      "bytes": 199,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-completions.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai-prompt-cache.js": {
+      "sha256": "cdb4c30de4e8918994e18556529077ee5d952db0d6960bb299a76f6d8d139d2a",
+      "bytes": 392,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-prompt-cache.js",
+      "group": "api"
+    },
+    "maps/api/openai-prompt-cache.js.map": {
+      "sha256": "c460bccb131b0993b06bc55087649ef223e9b2cacf67cefbbf4a79def34dd81a",
+      "bytes": 866,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-prompt-cache.js.map",
+      "group": "api"
+    },
+    "src/api/openai-prompt-cache.ts": {
+      "sha256": "78727b9b42d5c5cdc47d17f44d532cdf951cbee3b158cacfb3e640d8f792e8a4",
+      "bytes": 358,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-prompt-cache.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai-responses-shared.js": {
+      "sha256": "b5d9f001e97bfafa8dfeef2e292f923c39f77fa8aef014132bf3530760f222e3",
+      "bytes": 31101,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js",
+      "group": "api"
+    },
+    "maps/api/openai-responses-shared.js.map": {
+      "sha256": "2ccf597d9133c64b92cb8dfe01139c41da486013723ff2417cd916c45f1949c7",
+      "bytes": 59323,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js.map",
+      "group": "api"
+    },
+    "src/api/openai-responses-shared.ts": {
+      "sha256": "2562ad7497bfe9cf71533b7584400751746b6a563229a615f6e23848780d2bee",
+      "bytes": 29490,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai-responses.js": {
+      "sha256": "87085aa3c3c865fb51774bc13b669599461fd29e497fc6063bd6f5b9b5262d33",
+      "bytes": 13170,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js",
+      "group": "api"
+    },
+    "maps/api/openai-responses.js.map": {
+      "sha256": "2b7217a0ae3199e151694f28a8fe8559c75c889d3cc0b31a6ed1967c8d760851",
+      "bytes": 26580,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js.map",
+      "group": "api"
+    },
+    "src/api/openai-responses.ts": {
+      "sha256": "dea6113f21ab782bac450fc32ac8b8c99d8fd14f41cfe4c124fc6091c03910ed",
+      "bytes": 13908,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai-responses.lazy.js": {
+      "sha256": "ff6755b78f76a83ab50aee5603eb8f5efd8b9608be449a535847d49c0be0f0ca",
+      "bytes": 174,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-responses.lazy.js",
+      "group": "api"
+    },
+    "maps/api/openai-responses.lazy.js.map": {
+      "sha256": "c1aab60f9c87314451324bbee1da0d6cb56ef7cc9d789bd18538dffc2834a7b2",
+      "bytes": 513,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-responses.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/openai-responses.lazy.ts": {
+      "sha256": "ea6bf6019f6b2f949bce4ad248ec1e0fa25dd058a009cf70fb5eb0e99b4c94db",
+      "bytes": 195,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openai-responses.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openrouter-images.js": {
+      "sha256": "63b661cbe4545210100cb4dbaeb5bbbe659eb6927cd76105cf1abae986d0ebda",
+      "bytes": 892,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openrouter-images.js",
+      "group": "api"
+    },
+    "maps/api/openrouter-images.js.map": {
+      "sha256": "25e53d6ed2ed8bb277b3d054031755d210ef23cda6c1c69cecdf72549ee1c53e",
+      "bytes": 1642,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openrouter-images.js.map",
+      "group": "api"
+    },
+    "src/api/openrouter-images.ts": {
+      "sha256": "921e057fa1880412c29a849505ddd7dbe466996d78087c0c0628437ec2051880",
+      "bytes": 780,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openrouter-images.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openrouter-images.lazy.js": {
+      "sha256": "0ae9c490e8050e8e958d076a9c7ecb21715aa8bc5f85127619d822ca10bc62a6",
+      "bytes": 235,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openrouter-images.lazy.js",
+      "group": "api"
+    },
+    "maps/api/openrouter-images.lazy.js.map": {
+      "sha256": "96960e3152da03da378d69d861ab6a1e97c8c2a8ffcf40dd510ce392278a889b",
+      "bytes": 729,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openrouter-images.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/openrouter-images.lazy.ts": {
+      "sha256": "04c18f8c065779c2f705850e593cee4e0d6207a4121473540a223fc83026a8f4",
+      "bytes": 315,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/openrouter-images.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/pi-messages.js": {
+      "sha256": "0c866c9f1518020fa4a1eeb29e002b2d8bffd3bc4ac947f21f9023210ed911da",
+      "bytes": 12261,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/pi-messages.js",
+      "group": "api"
+    },
+    "maps/api/pi-messages.js.map": {
+      "sha256": "49adafe1bbc1ec97b0a127d9d2ddffdcba084854965607a58b50b35276b36b03",
+      "bytes": 26126,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/pi-messages.js.map",
+      "group": "api"
+    },
+    "src/api/pi-messages.ts": {
+      "sha256": "c8bbdcaaa30064db24afa8e9b2fbc66f9d4be89149c170e2de94b8705e5830b4",
+      "bytes": 13451,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/pi-messages.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/pi-messages.lazy.js": {
+      "sha256": "857a77e2a89923a9c88c136bc06072b9c9577574dd01da97ce2966a646f7d430",
+      "bytes": 159,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/pi-messages.lazy.js",
+      "group": "api"
+    },
+    "maps/api/pi-messages.lazy.js.map": {
+      "sha256": "02e491d3bc69431c7be6e616ac9b46b649f386b2b61c456b5f514f257bde0b8e",
+      "bytes": 491,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/pi-messages.lazy.js.map",
+      "group": "api"
+    },
+    "src/api/pi-messages.lazy.ts": {
+      "sha256": "620e55f1a498f70c8578deb6375f9433c6991c98f6c323465b1889c2f07a72d9",
+      "bytes": 185,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/pi-messages.lazy.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/simple-options.js": {
+      "sha256": "1caf860e028e22639578aba3ec8b79e5be9650c27bd3f19471c78502976555f3",
+      "bytes": 2998,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/simple-options.js",
+      "group": "api"
+    },
+    "maps/api/simple-options.js.map": {
+      "sha256": "bc4289c068b921fb2af0cc9c9e75c29115051c64da22b058ae437a35b838c80e",
+      "bytes": 6114,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/simple-options.js.map",
+      "group": "api"
+    },
+    "src/api/simple-options.ts": {
+      "sha256": "3a9ab7fa885d3a9c73a1aee8c8bf8bd7d205740edef0f0a5219714fd16e38e57",
+      "bytes": 3295,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/simple-options.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/transform-messages.js": {
+      "sha256": "e51975857b2fefa7e9cc108850ddab5a2fd1753a399f3cde00d76cd700ce6d10",
+      "bytes": 8273,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/transform-messages.js",
+      "group": "api"
+    },
+    "maps/api/transform-messages.js.map": {
+      "sha256": "268e69bcbe8c7f49fdb8be30b61318b06c2c57e95418f3d253f1af434d31c9ee",
+      "bytes": 13719,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/transform-messages.js.map",
+      "group": "api"
+    },
+    "src/api/transform-messages.ts": {
+      "sha256": "cf309c00b943bc0a90ccaabb185730a3f27a3c92de6696ada3155b0185904161",
+      "bytes": 7121,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/api/transform-messages.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cli.js": {
+      "sha256": "7917d4b0f49cc4133bf4fbe24a20d1984806ab8633d346ffdaee94690ac48359",
+      "bytes": 4593,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/cli.js",
+      "group": "api"
+    },
+    "maps/api/cli.js.map": {
+      "sha256": "c2ded03e575191f3c81323d693a80fe858dcfcc0e2b3fc966e753529ab8d218b",
+      "bytes": 9638,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/cli.js.map",
+      "group": "api"
+    },
+    "src/api/cli.ts": {
+      "sha256": "e04e6cd5f0e9da829d10b9b285592d5170d59eff29ae985aecf3f5f9bd15cb2d",
+      "bytes": 4295,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/cli.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/provider/all.js": {
+      "sha256": "eb283b6d03ed3f697e6baba6d89826997bc73133799d8aafc10baf9e08413485",
+      "bytes": 5324,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/all.js",
+      "group": "provider"
+    },
+    "maps/provider/all.js.map": {
+      "sha256": "f25b7bb5df5212a02d929b72313784160f8f01ea0ae41a47304d4e5ca04a5696",
+      "bytes": 10713,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/all.js.map",
+      "group": "provider"
+    },
+    "src/provider/all.ts": {
+      "sha256": "6f2107bd324c85133d5b4ca39f8247c1e07ed7b660849b94e8c546072b9fa552",
+      "bytes": 6251,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/all.js.map:sourceContent",
+      "group": "provider"
+    },
+    "dist/api/amazon-bedrock.js": {
+      "sha256": "2529299b0e820465cb3bcbec1ef4d4f2e3513385084e25b80c0e4c016779fa2e",
+      "bytes": 3894,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/amazon-bedrock.js",
+      "group": "api"
+    },
+    "maps/api/amazon-bedrock.js.map": {
+      "sha256": "a822b8420a43b4817304204887e2f70a87665d4cf0d3c7dac2c6078a878289e2",
+      "bytes": 6788,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/amazon-bedrock.js.map",
+      "group": "api"
+    },
+    "src/api/amazon-bedrock.ts": {
+      "sha256": "e32611e8d2d4e71ee5d0ba426da60c0aecf42d1bc34ccc3d0d49ce877c621a8c",
+      "bytes": 3333,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/amazon-bedrock.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/amazon-bedrock.models.js": {
+      "sha256": "0748a4393a9881010d93304d222ef061c4bcd51eeaab506212fdb53dd38a9d30",
+      "bytes": 390,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/amazon-bedrock.models.js",
+      "group": "api"
+    },
+    "maps/api/amazon-bedrock.models.js.map": {
+      "sha256": "3e335bc4d27075e8b3132c4b23f7afc9517a2ce5bb988c36f6c4fb6256507d18",
+      "bytes": 804,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/amazon-bedrock.models.js.map",
+      "group": "api"
+    },
+    "src/api/amazon-bedrock.models.ts": {
+      "sha256": "9c9cbe9b1c977177454ed12dc48c521fdc88d257ee1b92bc3805aa77eaf9b982",
+      "bytes": 410,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/amazon-bedrock.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/ant-ling.js": {
+      "sha256": "518587507d88641fa3ca4da014297b72a4d80900c21fe423bb513fd147836504",
+      "bytes": 605,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/ant-ling.js",
+      "group": "api"
+    },
+    "maps/api/ant-ling.js.map": {
+      "sha256": "42a05dadd0b45ac9d2ce98a6f4d9f240702e905cbb6d71a520323b5513221fa9",
+      "bytes": 1230,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/ant-ling.js.map",
+      "group": "api"
+    },
+    "src/api/ant-ling.ts": {
+      "sha256": "20ba100f8a9150f809fc42bf60f1d23840cc358d636793f1ec9fddf0e9feb2a7",
+      "bytes": 575,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/ant-ling.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/ant-ling.models.js": {
+      "sha256": "8a95baed4c27976509044963e7dadb7b410482afa8bff4614b3205796371d350",
+      "bytes": 366,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/ant-ling.models.js",
+      "group": "api"
+    },
+    "maps/api/ant-ling.models.js.map": {
+      "sha256": "dcca015d8c5b21f2dd635243a595722eaf87c46d413d7090c12c3d7a050eab37",
+      "bytes": 764,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/ant-ling.models.js.map",
+      "group": "api"
+    },
+    "src/api/ant-ling.models.ts": {
+      "sha256": "da223d56dbe033f48b96ed451591498cb7ffa8d4851785ea9ad7542377f6c855",
+      "bytes": 386,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/ant-ling.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/anthropic.js": {
+      "sha256": "a336a632990d2f50a17911ee4710ab3fd8680bfb1ad473763b7d4def8904bc17",
+      "bytes": 2251,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/anthropic.js",
+      "group": "api"
+    },
+    "maps/api/anthropic.js.map": {
+      "sha256": "3fa15d7ca1aa9fd5c987fd60ade534eacb3e1f6d38a016750975cd588b9a2592",
+      "bytes": 4134,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/anthropic.js.map",
+      "group": "api"
+    },
+    "src/api/anthropic.ts": {
+      "sha256": "dda69449a53c84b8b0a17b28f80fba278988d85665557be2db0dc3b20557567a",
+      "bytes": 1934,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/anthropic.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/anthropic.models.js": {
+      "sha256": "b819b6579da673c57acf8cdc4276e4783d50173526829aed4b68f5f86850edbd",
+      "bytes": 370,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/anthropic.models.js",
+      "group": "api"
+    },
+    "maps/api/anthropic.models.js.map": {
+      "sha256": "927d9951d630511cdf87fdde9792cdb5048308bb887339567c52957feb3ea217",
+      "bytes": 772,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/anthropic.models.js.map",
+      "group": "api"
+    },
+    "src/api/anthropic.models.ts": {
+      "sha256": "35fb58e216e45b3d1319b610f3f3021ef30e699a9e44250cbfcbefeeaaea2ff7",
+      "bytes": 390,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/anthropic.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/azure-openai-responses.models.js": {
+      "sha256": "5ff40b9d359bab1265fe945bac51560c5f1f1c3db41c9df929cd1db9ef060572",
+      "bytes": 422,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/azure-openai-responses.models.js",
+      "group": "api"
+    },
+    "maps/api/azure-openai-responses.models.js.map": {
+      "sha256": "85d8a226379414d6f4fa430cec8ec547ef35ab250b3579af5a8d888a5cd1860c",
+      "bytes": 852,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/azure-openai-responses.models.js.map",
+      "group": "api"
+    },
+    "src/api/azure-openai-responses.models.ts": {
+      "sha256": "9d0525eab9472b48dee748f7c6d2f3b65f25467389ff1facbf34dc2d40732717",
+      "bytes": 442,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/azure-openai-responses.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/baseten.js": {
+      "sha256": "cf6a2d4b2ead54db5a44fe7231ca4a48df782c68c5e04a88388dcb2fb9cb5809",
+      "bytes": 601,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/baseten.js",
+      "group": "api"
+    },
+    "maps/api/baseten.js.map": {
+      "sha256": "8ed9ef4d8d228029dea84a007c2241151749613276162c1c1d128c19ecf95e7e",
+      "bytes": 1224,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/baseten.js.map",
+      "group": "api"
+    },
+    "src/api/baseten.ts": {
+      "sha256": "c3833be0c64c4d5c96810403e23e966bb779bf2c045619b6fbac18ff27ac92f5",
+      "bytes": 572,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/baseten.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/baseten.models.js": {
+      "sha256": "4fa9887b3818e27ebaa265d0936ce532e22fe8bfdfe82c941ff503ae031d0ff1",
+      "bytes": 362,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/baseten.models.js",
+      "group": "api"
+    },
+    "maps/api/baseten.models.js.map": {
+      "sha256": "dc68af9c15b0a235573810e049770a7a7ed46cd10b4241da13facf5044f7ef79",
+      "bytes": 758,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/baseten.models.js.map",
+      "group": "api"
+    },
+    "src/api/baseten.models.ts": {
+      "sha256": "c3844bac330f9b0d04eef4349a37dbd6cbe5b6782b9f6726277148526c03ea0a",
+      "bytes": 382,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/baseten.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cerebras.js": {
+      "sha256": "54ad3fdb12d934bf06d69bfc7e586a7e038966eab579539583e02349860784cd",
+      "bytes": 605,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cerebras.js",
+      "group": "api"
+    },
+    "maps/api/cerebras.js.map": {
+      "sha256": "e46920cf93dfce706a3fc1f030070a3136ca6f0cb52fb65742a5a3101f8d58e8",
+      "bytes": 1232,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cerebras.js.map",
+      "group": "api"
+    },
+    "src/api/cerebras.ts": {
+      "sha256": "457fc35499abea92be4ad7add4f08502d069293380be61bf05b11ae5352bce4f",
+      "bytes": 575,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cerebras.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cerebras.models.js": {
+      "sha256": "55431761583bfda11d7d2740ead58ecaf539b5d106a727d15ebc9a4f68a5f5d7",
+      "bytes": 366,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cerebras.models.js",
+      "group": "api"
+    },
+    "maps/api/cerebras.models.js.map": {
+      "sha256": "94005a731ce0266e609b7f4e1e135923b5f108708faaff6c8093370067b1a01b",
+      "bytes": 764,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cerebras.models.js.map",
+      "group": "api"
+    },
+    "src/api/cerebras.models.ts": {
+      "sha256": "45412b6f921b67cf7b82276bac1d8b95f164c5bf2ff3297b950f94f773162c57",
+      "bytes": 386,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cerebras.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cloudflare-ai-gateway.js": {
+      "sha256": "e099b01f7df70041f7e9f5d3237f4da25eabef7e7015e77c13b465036e90ea59",
+      "bytes": 1363,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-ai-gateway.js",
+      "group": "api"
+    },
+    "maps/api/cloudflare-ai-gateway.js.map": {
+      "sha256": "410a2bb2a15830adef3ebc60ec3a1a5b86680e8ca5f635c364450d648f7461b6",
+      "bytes": 2399,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-ai-gateway.js.map",
+      "group": "api"
+    },
+    "src/api/cloudflare-ai-gateway.ts": {
+      "sha256": "6f19bdcb965750aa1367f1c09eb883da16526644ad3a3cbcb60da8b53ca418ff",
+      "bytes": 1404,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-ai-gateway.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cloudflare-ai-gateway.models.js": {
+      "sha256": "a3df0210994f0d8987441981920560222e89936a242cf6a47de1b80fba8e448e",
+      "bytes": 418,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-ai-gateway.models.js",
+      "group": "api"
+    },
+    "maps/api/cloudflare-ai-gateway.models.js.map": {
+      "sha256": "649343e8e52b2d2f44f80effb8818361ed781c261858234562ceaf55e175bc11",
+      "bytes": 846,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-ai-gateway.models.js.map",
+      "group": "api"
+    },
+    "src/api/cloudflare-ai-gateway.models.ts": {
+      "sha256": "c90e50ce6cd8b536e893ca7180a5b9731581d76b31125aff5bdfc62bd17efe26",
+      "bytes": 438,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-ai-gateway.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cloudflare-auth.js": {
+      "sha256": "5a3aaf34dadc97773b77150be31b2327532dab92c8982c77ca8d32e1d84faa59",
+      "bytes": 3655,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-auth.js",
+      "group": "api"
+    },
+    "maps/api/cloudflare-auth.js.map": {
+      "sha256": "c034864cf3523b48aeebdb4c682098343c2ee2cc171b6c408f8f4e2049608933",
+      "bytes": 7077,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-auth.js.map",
+      "group": "api"
+    },
+    "src/api/cloudflare-auth.ts": {
+      "sha256": "d0532efb4f00126286d71dbce6fcb95e581cd9477467dc4bd20f1df1a466f03e",
+      "bytes": 3505,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-auth.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cloudflare-stream.js": {
+      "sha256": "8c02aa4d494297986b2d91388e13e7d56f8d9722282aa97b189e0382622a2b38",
+      "bytes": 1051,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-stream.js",
+      "group": "api"
+    },
+    "maps/api/cloudflare-stream.js.map": {
+      "sha256": "417105cf1abe5ccf461f4d84066d8bb0bfefc74fff90ec00dc192a8f96760254",
+      "bytes": 2241,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-stream.js.map",
+      "group": "api"
+    },
+    "src/api/cloudflare-stream.ts": {
+      "sha256": "866117c0e12f6bba9da36842271d0208b200364dc785dc968fa5d31b6da6594b",
+      "bytes": 1153,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-stream.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cloudflare-workers-ai.js": {
+      "sha256": "c737e89d1f737d8868827a1157a7e5deacc88629ee4f6a8fad732285fa5a4548",
+      "bytes": 708,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-workers-ai.js",
+      "group": "api"
+    },
+    "maps/api/cloudflare-workers-ai.js.map": {
+      "sha256": "879cf5930b6f3e42128949c34ac13f2ae09de58a3bdf2b25c0f0ca711b0b980e",
+      "bytes": 1366,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-workers-ai.js.map",
+      "group": "api"
+    },
+    "src/api/cloudflare-workers-ai.ts": {
+      "sha256": "5ab1575a34fd66e35706fcae8a38516d7c2e427521b7f8680e1f756d8420ec9c",
+      "bytes": 671,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-workers-ai.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/cloudflare-workers-ai.models.js": {
+      "sha256": "2f0748289941b14ce97138b45b02a4e71b4fa87623545c888aa769c31734a242",
+      "bytes": 418,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-workers-ai.models.js",
+      "group": "api"
+    },
+    "maps/api/cloudflare-workers-ai.models.js.map": {
+      "sha256": "c120c24aaf48fdaab1ed6856b26ca8d343a9c8ce7080824db0a6f6ccf89050d9",
+      "bytes": 846,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-workers-ai.models.js.map",
+      "group": "api"
+    },
+    "src/api/cloudflare-workers-ai.models.ts": {
+      "sha256": "95da6a78965178d952b46a4de4e2ea52723ac051ad37583537a3b79e4033ecde",
+      "bytes": 438,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-workers-ai.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/deepseek.js": {
+      "sha256": "d0a155e9c724a36c60ebabd71c47e2f7e26799e1b8b7079a835e9ccec33378f0",
+      "bytes": 603,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/deepseek.js",
+      "group": "api"
+    },
+    "maps/api/deepseek.js.map": {
+      "sha256": "bfba84df67ef2eb9b3f0d13dd8874cdddb55c96054da90c938fdcb9584ed8f43",
+      "bytes": 1230,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/deepseek.js.map",
+      "group": "api"
+    },
+    "src/api/deepseek.ts": {
+      "sha256": "4d4ac9870d3dcdb13a90627a95598314459f5cc2f8a122f802fab3b0d2840fee",
+      "bytes": 573,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/deepseek.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/deepseek.models.js": {
+      "sha256": "e4f6fcf16453062a9a7d79034ae08c52f74341b833ad355c8c755339d00d9f7d",
+      "bytes": 366,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/deepseek.models.js",
+      "group": "api"
+    },
+    "maps/api/deepseek.models.js.map": {
+      "sha256": "56cf7d417c2f96866bc53dc31e6b74613f19ec899c33a2ea6a5f22f85370d33c",
+      "bytes": 764,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/deepseek.models.js.map",
+      "group": "api"
+    },
+    "src/api/deepseek.models.ts": {
+      "sha256": "afce9b250edda8c9df66e800cfa791f1a2c2546503956c45c5262204265624cf",
+      "bytes": 386,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/deepseek.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/faux.js": {
+      "sha256": "74e64817b53b96d0895b186d387115406234b76e659830ba8094b544a2f41994",
+      "bytes": 19579,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/faux.js",
+      "group": "api"
+    },
+    "maps/api/faux.js.map": {
+      "sha256": "a6fb10dc31ea0c2bb0fe70ce7b5dac3e9d397bdcf14c995b83e17f3703143105",
+      "bytes": 43303,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/faux.js.map",
+      "group": "api"
+    },
+    "src/api/faux.ts": {
+      "sha256": "83f09999c95c355b4befcb47019836a1b3636593cd72b96f540108db0b5f570a",
+      "bytes": 21191,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/faux.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/fireworks.js": {
+      "sha256": "e5aaf35df7f54f7f1684cc18c464135f3f1bf0d4a169acff9c9e91ccaf39d0fd",
+      "bytes": 801,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/fireworks.js",
+      "group": "api"
+    },
+    "maps/api/fireworks.js.map": {
+      "sha256": "8764f5798feb6305ea5488d1c06b0cc529fe0bc922c1ee1d44e4b097b78d9cca",
+      "bytes": 1549,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/fireworks.js.map",
+      "group": "api"
+    },
+    "src/api/fireworks.ts": {
+      "sha256": "72dbb53e3bb8b0bc6c42dd7937ec11dd0126efe3176f11153b1d599a0c7776af",
+      "bytes": 769,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/fireworks.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/fireworks.models.js": {
+      "sha256": "f2bbbc6e2c811f30766cd24096d505007161bf48afa1bb1fa7f8542daa5516c1",
+      "bytes": 370,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/fireworks.models.js",
+      "group": "api"
+    },
+    "maps/api/fireworks.models.js.map": {
+      "sha256": "fcde9e23d2de2a73a0ef911a25752956f46acc775406da16ca52e2359eadc361",
+      "bytes": 772,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/fireworks.models.js.map",
+      "group": "api"
+    },
+    "src/api/fireworks.models.ts": {
+      "sha256": "68f77ac268a3e643944401e96fdc71abe7b34e1ccc3c50f885eb3e236b4fb45e",
+      "bytes": 390,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/fireworks.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/github-copilot.js": {
+      "sha256": "a58cc41225577213020f9508b76fbcc1bdccc672ffe66c79a1963e755c855ec5",
+      "bytes": 1667,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.js",
+      "group": "api"
+    },
+    "maps/api/github-copilot.js.map": {
+      "sha256": "23a100728edf0f1cb22b831ead7011b990a099d90197cbe610b83cc6c583ffe9",
+      "bytes": 3108,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.js.map",
+      "group": "api"
+    },
+    "src/api/github-copilot.ts": {
+      "sha256": "9f898d669b65e9650009e4e45518fc207416c94ca9570276ef9bd7f13fde8f3b",
+      "bytes": 1524,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/github-copilot.models.js": {
+      "sha256": "71b77f3c326fddee575dd498cae7d36ee820c03b3cffe159c378060cab9b4c48",
+      "bytes": 390,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.models.js",
+      "group": "api"
+    },
+    "maps/api/github-copilot.models.js.map": {
+      "sha256": "93f3bc65602af9a47ebe920292db5a03dd7ca372645aeda8e533f544bbc7c407",
+      "bytes": 804,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.models.js.map",
+      "group": "api"
+    },
+    "src/api/github-copilot.models.ts": {
+      "sha256": "6bd4c4ae054ea91fe4c9eea8c8372901584e851532352cb621a9e9de6ecece5c",
+      "bytes": 410,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/google-vertex.models.js": {
+      "sha256": "dff87b9670bbcc93118ee16f50c279cd1bd2674502dd6366640a5dc18c18cf1f",
+      "bytes": 386,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google-vertex.models.js",
+      "group": "api"
+    },
+    "maps/api/google-vertex.models.js.map": {
+      "sha256": "369b9061efd5cce2b3b2d1d209f0c57c1e1905f4f946fd1a4872e1cf5c6d322a",
+      "bytes": 796,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google-vertex.models.js.map",
+      "group": "api"
+    },
+    "src/api/google-vertex.models.ts": {
+      "sha256": "964109cc69cadf77329846f4fb4baf6c86b00995f33a813230c5a9e54573e93e",
+      "bytes": 406,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google-vertex.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/google.js": {
+      "sha256": "a3593ee2fa77efa4f867e8ba2a8f3e1a947bf6e873552b92b554145e847e5df0",
+      "bytes": 613,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google.js",
+      "group": "api"
+    },
+    "maps/api/google.js.map": {
+      "sha256": "dce4f5c52a37a42ac6a80a7212d1a270581a3709321b2d7975c42519509d1b08",
+      "bytes": 1237,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google.js.map",
+      "group": "api"
+    },
+    "src/api/google.ts": {
+      "sha256": "2d807d5f9273ede8c23970fe0414883ab362c677df80e4603d30b621232a2036",
+      "bytes": 587,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/google.models.js": {
+      "sha256": "fa6aa05a4c887ee0cac82c27ee93c2d1a4487efbcb062f9676ee352d8ded7312",
+      "bytes": 358,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google.models.js",
+      "group": "api"
+    },
+    "maps/api/google.models.js.map": {
+      "sha256": "85afd55ba66776c873ded4f3394f7d35567f4e03aceca1d8e344a6902ce3c6c1",
+      "bytes": 752,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google.models.js.map",
+      "group": "api"
+    },
+    "src/api/google.models.ts": {
+      "sha256": "cdb63f50fae431dc67c6627ae7a5b9580039b9807f014f838ebe568b11831d27",
+      "bytes": 378,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/google.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/groq.js": {
+      "sha256": "25e580e96ab18f0eaff2791ceaa1384c2d5623b0da5e0376f5aff1ee17bc32b9",
+      "bytes": 573,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/groq.js",
+      "group": "api"
+    },
+    "maps/api/groq.js.map": {
+      "sha256": "74803c672386d6da8651cbac653346d001ab86efd7ecd271196df21c7e782f3f",
+      "bytes": 1189,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/groq.js.map",
+      "group": "api"
+    },
+    "src/api/groq.ts": {
+      "sha256": "a8bbced4fbc37370892fec68fb7f03cf634d08d134d9f003fa63edb5a8b60873",
+      "bytes": 547,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/groq.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/groq.models.js": {
+      "sha256": "2eee220343e511ff4c0652807845071f850e7ede81768b9863d819169ff215a1",
+      "bytes": 350,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/groq.models.js",
+      "group": "api"
+    },
+    "maps/api/groq.models.js.map": {
+      "sha256": "1ae957660a5253e6c651805cbff584d4f1bb2e78b2a740a8ff202b9208abd0d9",
+      "bytes": 740,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/groq.models.js.map",
+      "group": "api"
+    },
+    "src/api/groq.models.ts": {
+      "sha256": "41fbe59a9104788078b57b490ebf2312291905e579a67ceaeff803ff41ffc9c0",
+      "bytes": 370,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/groq.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/huggingface.js": {
+      "sha256": "0b98efc192c8b9bcfbfcfcd123bba32ebed01e003668f37384fbe25416b983f5",
+      "bytes": 627,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/huggingface.js",
+      "group": "api"
+    },
+    "maps/api/huggingface.js.map": {
+      "sha256": "fd30c418992dbc6f38b9aa5afec976b8989e0d357015bd5696d79c0044922e77",
+      "bytes": 1260,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/huggingface.js.map",
+      "group": "api"
+    },
+    "src/api/huggingface.ts": {
+      "sha256": "51c4af194c9989ab033c5b3303831ec9e2df999f51d9fa40ab6d28f632e8ff43",
+      "bytes": 594,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/huggingface.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/huggingface.models.js": {
+      "sha256": "8fbe09ec0a9830d648c87e0a6eeb4c697ef56116bc634eb6be750d885d5fd334",
+      "bytes": 378,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/huggingface.models.js",
+      "group": "api"
+    },
+    "maps/api/huggingface.models.js.map": {
+      "sha256": "05df12fc117c0f549c09221e5b75161c9b4fafe9f923a889a3315ce7f3b527bd",
+      "bytes": 784,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/huggingface.models.js.map",
+      "group": "api"
+    },
+    "src/api/huggingface.models.ts": {
+      "sha256": "0da3c6e72a35d04571f1800989c3731df686a8ab1291065b6dd8855966f0e675",
+      "bytes": 398,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/huggingface.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/kimi-coding.js": {
+      "sha256": "74ccaa976b42fd500c5326b65ef66bc7dd5439754994849c60eb904424ebb47a",
+      "bytes": 947,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/kimi-coding.js",
+      "group": "api"
+    },
+    "maps/api/kimi-coding.js.map": {
+      "sha256": "8c053963db765019ce251a6c65479dab0bb57975805777ae944f033e6b2a2a32",
+      "bytes": 1726,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/kimi-coding.js.map",
+      "group": "api"
+    },
+    "src/api/kimi-coding.ts": {
+      "sha256": "ef864d572eef11900f24bb6a5dc620982bd9c39fac600970deec55466348f8b0",
+      "bytes": 833,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/kimi-coding.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/kimi-coding.models.js": {
+      "sha256": "022ca2caf149f2d5f57baabba03bdf2d445c7d426a799ee493b1c3a2329187b5",
+      "bytes": 378,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/kimi-coding.models.js",
+      "group": "api"
+    },
+    "maps/api/kimi-coding.models.js.map": {
+      "sha256": "398bc18c391d763bedf55bab722f526b804c534de5c80f84fc18120abba5ff82",
+      "bytes": 784,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/kimi-coding.models.js.map",
+      "group": "api"
+    },
+    "src/api/kimi-coding.models.ts": {
+      "sha256": "57ca50b17d1e96ba8f064b63adfe9773c2e494d7495c52336769ef6b86a7e2ff",
+      "bytes": 398,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/kimi-coding.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/minimax-cn.js": {
+      "sha256": "a4287d33e5dc3b91b63c18a0dae07bb3f113b11a8f748343b073b098af84113f",
+      "bytes": 630,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax-cn.js",
+      "group": "api"
+    },
+    "maps/api/minimax-cn.js.map": {
+      "sha256": "65e67b19a33e1c12976c73161bf397243151968955e82c53348d37de157d740c",
+      "bytes": 1264,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax-cn.js.map",
+      "group": "api"
+    },
+    "src/api/minimax-cn.ts": {
+      "sha256": "ae3170234556ef355f7cffcfc666888992ae50caa8daf07352f22bac69cca0ba",
+      "bytes": 598,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax-cn.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/minimax-cn.models.js": {
+      "sha256": "1d250e00d0c1ab5db8d0767f18a8b3a4a2c07ad48fa1f63d2d02642e23611010",
+      "bytes": 374,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax-cn.models.js",
+      "group": "api"
+    },
+    "maps/api/minimax-cn.models.js.map": {
+      "sha256": "49ccc67007c789708ab226685250aa2ff945ca41c30cc4ca943151b49f1b710b",
+      "bytes": 778,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax-cn.models.js.map",
+      "group": "api"
+    },
+    "src/api/minimax-cn.models.ts": {
+      "sha256": "25dd4d8e980898f274a3c787a59e6e7570d596330c7f833f080b780817cdea74",
+      "bytes": 394,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax-cn.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/minimax.js": {
+      "sha256": "db9842be5c86f9498355acdc12e58cc47c1c537d0bcb024d05fa2802e76f9802",
+      "bytes": 602,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax.js",
+      "group": "api"
+    },
+    "maps/api/minimax.js.map": {
+      "sha256": "d16045a558e73835b5c9a426796daa5ac85aae698a180627a0784d6976a9a28b",
+      "bytes": 1225,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax.js.map",
+      "group": "api"
+    },
+    "src/api/minimax.ts": {
+      "sha256": "d571a6a8b5a47daf40b034a2dae4ac902a252fbd44b073c4caee8eeb1d7035b5",
+      "bytes": 573,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/minimax.models.js": {
+      "sha256": "11ee4fc17479b9eaeb4bd1e4542dc7078a65d533b2df422400706ab1c10ac861",
+      "bytes": 362,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax.models.js",
+      "group": "api"
+    },
+    "maps/api/minimax.models.js.map": {
+      "sha256": "b350dc36266603672f001518af8ffaeb180724de156194925293047370cab6ae",
+      "bytes": 758,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax.models.js.map",
+      "group": "api"
+    },
+    "src/api/minimax.models.ts": {
+      "sha256": "e80186fef0f1b647990f029281604c435da5d8ceb659d3f6a79681cdb03c3b41",
+      "bytes": 382,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/minimax.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/mistral.js": {
+      "sha256": "9f7861fb15beb9a42b8c3031ec5ba751c68f0bcd8ce258b0922a9e52c225f3a6",
+      "bytes": 601,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/mistral.js",
+      "group": "api"
+    },
+    "maps/api/mistral.js.map": {
+      "sha256": "e5505916a37fac5a9295e7632d10e78848dedb73cbce8752629c35460078b701",
+      "bytes": 1227,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/mistral.js.map",
+      "group": "api"
+    },
+    "src/api/mistral.ts": {
+      "sha256": "dfcd087d7317d6a6cd1acf701547567435f5eaf0c1cc1d8eb89eed7e977c2fb3",
+      "bytes": 575,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/mistral.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/mistral.models.js": {
+      "sha256": "59cb6acc75c7ac269e7f3d4749f3fc78a2e2e5b36111240c3dea957b676972bb",
+      "bytes": 362,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/mistral.models.js",
+      "group": "api"
+    },
+    "maps/api/mistral.models.js.map": {
+      "sha256": "ae494a4e083b14d239657fadfa5345a50eb7bb07d36d108501b60087efd520fe",
+      "bytes": 758,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/mistral.models.js.map",
+      "group": "api"
+    },
+    "src/api/mistral.models.ts": {
+      "sha256": "949f1e72e32a0028beb855db2642f13783c8697c4be236e9061c241f1d698a51",
+      "bytes": 382,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/mistral.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/moonshotai-cn.js": {
+      "sha256": "bb34cb02d69423877c2db14736918ee879b8a789d0f247bf92ed512714d7b078",
+      "bytes": 643,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai-cn.js",
+      "group": "api"
+    },
+    "maps/api/moonshotai-cn.js.map": {
+      "sha256": "3bb2b737b68eedd732476687bf72e2e6e5ef2fb67f6d52aab915013f7b36f501",
+      "bytes": 1282,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai-cn.js.map",
+      "group": "api"
+    },
+    "src/api/moonshotai-cn.ts": {
+      "sha256": "da8ec0ed30a2cf42972cead61a93b1fcb64380095f9d062ee4ed9e4807ebd5bc",
+      "bytes": 608,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai-cn.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/moonshotai-cn.models.js": {
+      "sha256": "4122d20afd9fcc52e2f233632aa72939c068d474ba6c433919aeeb5fa26223b4",
+      "bytes": 386,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai-cn.models.js",
+      "group": "api"
+    },
+    "maps/api/moonshotai-cn.models.js.map": {
+      "sha256": "9fdcad2ef544883fdbbe0a5051299b21af02ac2d3f790cb06e7c7e5934f28cca",
+      "bytes": 796,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai-cn.models.js.map",
+      "group": "api"
+    },
+    "src/api/moonshotai-cn.models.ts": {
+      "sha256": "059db388929164d03595ead666c3bcf56e8e078be072dc2d4d3a784b9e207cc2",
+      "bytes": 406,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai-cn.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/moonshotai.js": {
+      "sha256": "e8763b3bd10b596a1ad6963904b8fe82795cf6ba5a84fc24273e12976018a41c",
+      "bytes": 623,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai.js",
+      "group": "api"
+    },
+    "maps/api/moonshotai.js.map": {
+      "sha256": "ca1cf87d86e86e371ec7bda068168e475691a36b39bd73313bae46522cae6bed",
+      "bytes": 1257,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai.js.map",
+      "group": "api"
+    },
+    "src/api/moonshotai.ts": {
+      "sha256": "2e269cca0231ebdbd2a58848ab3d19b0a43697e132b48a679e3c1b0cd4897665",
+      "bytes": 591,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/moonshotai.models.js": {
+      "sha256": "ee07d04a15e1d99453ea950f59f24cd77cd5422b4b14e123ddefa25d57699cb6",
+      "bytes": 374,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai.models.js",
+      "group": "api"
+    },
+    "maps/api/moonshotai.models.js.map": {
+      "sha256": "68fbe3908e2bd2f86211ffd24bfd803013b96475af40cd378dd8164a54e33220",
+      "bytes": 778,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai.models.js.map",
+      "group": "api"
+    },
+    "src/api/moonshotai.models.ts": {
+      "sha256": "ddafd640693869455756b31e87d09df13388531cf8e0421bd3618d8836ac5eb2",
+      "bytes": 394,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/moonshotai.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/nvidia.js": {
+      "sha256": "37cb9c92fd0523ddb7cb2a64d0a3549f81e2a9e7070c6d021897654d464aefb9",
+      "bytes": 596,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/nvidia.js",
+      "group": "api"
+    },
+    "maps/api/nvidia.js.map": {
+      "sha256": "9d2e911b545170260456735be72a48e72c3c08f7805fe75d77b846c361282f9d",
+      "bytes": 1218,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/nvidia.js.map",
+      "group": "api"
+    },
+    "src/api/nvidia.ts": {
+      "sha256": "73c981d27b364f83a32983d19f4ded346acf6af7eb4a653334622f891aedf860",
+      "bytes": 568,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/nvidia.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/nvidia.models.js": {
+      "sha256": "abdc1cd0fbf354c8242b38ad6f2d6a3bb08df7b36738fe60aebdb0dd1a994d92",
+      "bytes": 358,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/nvidia.models.js",
+      "group": "api"
+    },
+    "maps/api/nvidia.models.js.map": {
+      "sha256": "e8d9b3b7f5931e414fc48498e523e8264badfd96eb391eb5794fb0e1686c1036",
+      "bytes": 752,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/nvidia.models.js.map",
+      "group": "api"
+    },
+    "src/api/nvidia.models.ts": {
+      "sha256": "15b8e279632a231d1794aec8083f00c17ac94cd5e89717393dd48fc182c0e4b4",
+      "bytes": 378,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/nvidia.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai-codex.js": {
+      "sha256": "769490a94a5bcb062c22e768cf0621c91fb1c5d6be3565e6a6fa765eeeabe674",
+      "bytes": 829,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai-codex.js",
+      "group": "api"
+    },
+    "maps/api/openai-codex.js.map": {
+      "sha256": "c9af6c95aea999184dce33837bb19110315e0e60096355880c9f1bd4b0ff7b4d",
+      "bytes": 1527,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai-codex.js.map",
+      "group": "api"
+    },
+    "src/api/openai-codex.ts": {
+      "sha256": "c63a59ad55921466182f2033240178fca715faf09dd7fd9878533829ca90a70f",
+      "bytes": 739,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai-codex.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai-codex.models.js": {
+      "sha256": "2957c06d0abb6dccbfbd154ff1adabbbba14242001a2ff9d56ce78c3fb4d146e",
+      "bytes": 382,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai-codex.models.js",
+      "group": "api"
+    },
+    "maps/api/openai-codex.models.js.map": {
+      "sha256": "e25be8b9d4df52fe994653f0fce05c5a6aad58070e5f3cc8380ec2d6a040777d",
+      "bytes": 790,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai-codex.models.js.map",
+      "group": "api"
+    },
+    "src/api/openai-codex.models.ts": {
+      "sha256": "11045582d310b854c4a55e510e3628b8a8652efab918f9f017541b9261db474f",
+      "bytes": 402,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai-codex.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai.js": {
+      "sha256": "105d32833a3ff6654c04429e57dee6a710880c59a79fb0e064a34a684000a386",
+      "bytes": 580,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai.js",
+      "group": "api"
+    },
+    "maps/api/openai.js.map": {
+      "sha256": "43b9be181187f8a78c83aeacc9bce34e474231b64115d6b4b92e9a45766aa478",
+      "bytes": 1200,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai.js.map",
+      "group": "api"
+    },
+    "src/api/openai.ts": {
+      "sha256": "1904f9511221f47bbe890dc007571add9ac16ab28cd48c4090b58f13950cbfd0",
+      "bytes": 550,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openai.models.js": {
+      "sha256": "e145e1a744107013e2906f164a1b1bed6742e9bc5f69fb268a5fcc2a6295eb3c",
+      "bytes": 358,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai.models.js",
+      "group": "api"
+    },
+    "maps/api/openai.models.js.map": {
+      "sha256": "47c6d5eb52eeea6642fb7bc08c39d3aa9369b7a3f88754ddfbae27dfa7fc4178",
+      "bytes": 752,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai.models.js.map",
+      "group": "api"
+    },
+    "src/api/openai.models.ts": {
+      "sha256": "9424770fdbf0ca5f3307c6b20217686d8c448379fd8548ac1c362ad678ac7898",
+      "bytes": 378,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openai.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/opencode-go.js": {
+      "sha256": "9c3414b328bdc1717491824af3774615ef0744046d1250a2a602bc6c0e466e16",
+      "bytes": 881,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode-go.js",
+      "group": "api"
+    },
+    "maps/api/opencode-go.js.map": {
+      "sha256": "ce875aa62d661e4a226e7a183e5c826d42af8e4968c931640544a3879a863cb2",
+      "bytes": 1781,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode-go.js.map",
+      "group": "api"
+    },
+    "src/api/opencode-go.ts": {
+      "sha256": "222388196ed7178d1b2298676cdb745c761f855207c208d413ddd303080942c2",
+      "bytes": 931,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode-go.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/opencode-go.models.js": {
+      "sha256": "3e65dfbea578822f2878eb1afbb98dd54a1a410a4db4e9c690f82125815dbf86",
+      "bytes": 378,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode-go.models.js",
+      "group": "api"
+    },
+    "maps/api/opencode-go.models.js.map": {
+      "sha256": "874fe763a56e1477a2e3fb59f3040c9ff0475431ae25befa51b73d9b588fca0a",
+      "bytes": 784,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode-go.models.js.map",
+      "group": "api"
+    },
+    "src/api/opencode-go.models.ts": {
+      "sha256": "db2994d632b02692e3cb1a9c7fde97e5b7e4f77719f7d530c9a2cb2628aee52d",
+      "bytes": 398,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode-go.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/opencode.js": {
+      "sha256": "c859745927ba2708ef578bd35e234300dd522862c797c67c458b1c9ceced3386",
+      "bytes": 1003,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode.js",
+      "group": "api"
+    },
+    "maps/api/opencode.js.map": {
+      "sha256": "5cbd29f5e49114a4f76c27a8edf44262f76568003dc430563c73352f4acccb4b",
+      "bytes": 1929,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode.js.map",
+      "group": "api"
+    },
+    "src/api/opencode.ts": {
+      "sha256": "5907b03b4f4f24cb8457f2a1fadae2683e2ba5101da84f2b100c32c50b355954",
+      "bytes": 1009,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/opencode.models.js": {
+      "sha256": "0c9bac732667ce6740d2fb4b6a164c5f13c378489c6c11aaa4ceb4d78483d1a4",
+      "bytes": 366,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode.models.js",
+      "group": "api"
+    },
+    "maps/api/opencode.models.js.map": {
+      "sha256": "c4c5d63d6bda8cba7c3d1c7c5d20e60765e1776345c09b6eef2de4e8282b5451",
+      "bytes": 764,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode.models.js.map",
+      "group": "api"
+    },
+    "src/api/opencode.models.ts": {
+      "sha256": "ddbfa6ca1f40c0ed1bf96904d3e0ecdb9b8298a4fb8d12a084cd4e1669a6596c",
+      "bytes": 386,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/opencode.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openrouter.js": {
+      "sha256": "828db03dc04c3d9e06ecdf87799377d0475eff01c8bbb0a12a8ca6ee315fe5c4",
+      "bytes": 1084,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openrouter.js",
+      "group": "api"
+    },
+    "maps/api/openrouter.js.map": {
+      "sha256": "8ff44d43c75c4d2c53571dd25f7d791fd9163f405c7f649c7836fdfa5c7412c1",
+      "bytes": 1965,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openrouter.js.map",
+      "group": "api"
+    },
+    "src/api/openrouter.ts": {
+      "sha256": "0985e9d352e1a9794c7ed807d81e06a254abce49aa231e7c5ccc7c4355f01d5e",
+      "bytes": 982,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openrouter.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/openrouter.models.js": {
+      "sha256": "b9bdcf07e4647ee7bdc8dcad74f13f9d4fb34a3076284d726e7254abcc2b3674",
+      "bytes": 374,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openrouter.models.js",
+      "group": "api"
+    },
+    "maps/api/openrouter.models.js.map": {
+      "sha256": "e822b204aa8bcad6cf2fe099303c61f76103f9396656fc003cfb037f665bf187",
+      "bytes": 778,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openrouter.models.js.map",
+      "group": "api"
+    },
+    "src/api/openrouter.models.ts": {
+      "sha256": "101afc36afce8bdac7f893b8c2b1dffddc13caf7774c1a371f37e82e69a87b90",
+      "bytes": 394,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/openrouter.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/qwen-token-plan-cn.js": {
+      "sha256": "a1c291b3a212c5569370fb0d28aa67ac353128c1ee8033820e50bfc45afb4368",
+      "bytes": 732,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-cn.js",
+      "group": "api"
+    },
+    "maps/api/qwen-token-plan-cn.js.map": {
+      "sha256": "626626ad8213a922c9e02b44f0ea487cb2dd363872eb63627a8df7fb9c173083",
+      "bytes": 1378,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-cn.js.map",
+      "group": "api"
+    },
+    "src/api/qwen-token-plan-cn.ts": {
+      "sha256": "1869aabbff4baaa12faef00071aab0a5b1b1d38d43f16ce735137fc0e13fa897",
+      "bytes": 692,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-cn.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/qwen-token-plan-cn.models.js": {
+      "sha256": "4480ae6e07527811e974da584dafe0c5d83bfb5ac0859a9b6e561d42d968eee8",
+      "bytes": 406,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-cn.models.js",
+      "group": "api"
+    },
+    "maps/api/qwen-token-plan-cn.models.js.map": {
+      "sha256": "8fb2bd5ee44542fdf34b432f99c67addf64143edbf779c5a75fa9e1eb9d26329",
+      "bytes": 828,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-cn.models.js.map",
+      "group": "api"
+    },
+    "src/api/qwen-token-plan-cn.models.ts": {
+      "sha256": "cf75bfef4683dd80f98a33cc8894d5b0a37930c13907f29b08e33a745b7d48f0",
+      "bytes": 426,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-cn.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/qwen-token-plan-individual.js": {
+      "sha256": "b4201e8e897d9dea1ac5305157c8d518ac2370739f4d73b4c75abfd7b8c761d4",
+      "bytes": 797,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-individual.js",
+      "group": "api"
+    },
+    "maps/api/qwen-token-plan-individual.js.map": {
+      "sha256": "c2ca6a9ad0423cd42c88b6d0a05a1253b7407c1072cabae1482c863bcab39f1f",
+      "bytes": 1451,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-individual.js.map",
+      "group": "api"
+    },
+    "src/api/qwen-token-plan-individual.ts": {
+      "sha256": "0336ecc9c677d9e295a4832fbc84d9197f58e0468fcd00daff3aec491b896375",
+      "bytes": 749,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-individual.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/qwen-token-plan-individual.models.js": {
+      "sha256": "e653b4b1d2c465e0b7a7986b0e9c24270f5226f8993c70fee0086dcaef932b65",
+      "bytes": 438,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-individual.models.js",
+      "group": "api"
+    },
+    "maps/api/qwen-token-plan-individual.models.js.map": {
+      "sha256": "28c1d72806636163e56e8fd10abe77e3677a8db144f78df1ec02c0b795023efe",
+      "bytes": 876,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-individual.models.js.map",
+      "group": "api"
+    },
+    "src/api/qwen-token-plan-individual.models.ts": {
+      "sha256": "a12f1307cece97d0a582b6ce09f34cef310012052bcb59582324fc26fbeab99c",
+      "bytes": 458,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan-individual.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/qwen-token-plan.js": {
+      "sha256": "0580b8cb75d6e2064409d8bfbdbb10e6daf321e1c641d1fb3bea95da39295449",
+      "bytes": 710,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan.js",
+      "group": "api"
+    },
+    "maps/api/qwen-token-plan.js.map": {
+      "sha256": "84dbb43e5409b76ac8ec25989a44cf8d8af7fcb20cb9e5a751704a289c9578e7",
+      "bytes": 1353,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan.js.map",
+      "group": "api"
+    },
+    "src/api/qwen-token-plan.ts": {
+      "sha256": "c26b85ab529779c4c2e61f6dd749592b515ec25b121b49dc81989d8a767d51f5",
+      "bytes": 673,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/qwen-token-plan.models.js": {
+      "sha256": "38dd51f95ef816b12fddaf73c8cbc34b202b1a2c88dab41ef10b2cbff214b5ea",
+      "bytes": 394,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan.models.js",
+      "group": "api"
+    },
+    "maps/api/qwen-token-plan.models.js.map": {
+      "sha256": "d8554ee677aa603f16b288cb53a617c78548edd972132430ee31886fc9859f78",
+      "bytes": 810,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan.models.js.map",
+      "group": "api"
+    },
+    "src/api/qwen-token-plan.models.ts": {
+      "sha256": "5a45908ccd14785c3aca0307f12e4e462702b0d469ea06bd90ba20b848c918c7",
+      "bytes": 414,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/qwen-token-plan.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/radius-config.js": {
+      "sha256": "d9d863bda4b33f3d98c2717c912cc7f394b93301f9c87d73adc7c8c7e8f8cb5e",
+      "bytes": 2541,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/radius-config.js",
+      "group": "api"
+    },
+    "maps/api/radius-config.js.map": {
+      "sha256": "b1cff0d9becd95d14da64b9850b4859afd0796d282449ba7eeb8e92f176334d1",
+      "bytes": 6348,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/radius-config.js.map",
+      "group": "api"
+    },
+    "src/api/radius-config.ts": {
+      "sha256": "1f82a7db25753be09374792ae0a3cd63417739018fb69b3212ad8b3b9eb11c21",
+      "bytes": 3339,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/radius-config.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/radius.js": {
+      "sha256": "e3a0e5b6acfcd8f0c5cbdcc1f8e0aefd957234c7005e9f378568f3953c10b42f",
+      "bytes": 2939,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/radius.js",
+      "group": "api"
+    },
+    "maps/api/radius.js.map": {
+      "sha256": "6d8d76d7d1148c1a94fcf1f62e6f5951515f15d4f3e4bef17b4e11776a36673b",
+      "bytes": 5561,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/radius.js.map",
+      "group": "api"
+    },
+    "src/api/radius.ts": {
+      "sha256": "a65c0513e1999b318425a49117ebed6f38970702454730287287b644d4825f7f",
+      "bytes": 2573,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/radius.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/together.js": {
+      "sha256": "40a43f847c9320d1f46cc3df3a785f0bb4e246d5f49877d03f5242c033dd1528",
+      "bytes": 605,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/together.js",
+      "group": "api"
+    },
+    "maps/api/together.js.map": {
+      "sha256": "09ac5ea468309230daa19683f575ddeb5db39ee0b10b4d33b254204f0333341c",
+      "bytes": 1232,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/together.js.map",
+      "group": "api"
+    },
+    "src/api/together.ts": {
+      "sha256": "cbf232b1bfe5753bba855f0a95e2c4d180db8155121effcbdffc955fe090738c",
+      "bytes": 575,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/together.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/together.models.js": {
+      "sha256": "ddc0383cdd0d39a5a5b2810cd5cf96c9b16fe4c5bf4a45ea6f7724a774cca7b0",
+      "bytes": 366,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/together.models.js",
+      "group": "api"
+    },
+    "maps/api/together.models.js.map": {
+      "sha256": "e50e971c4a043287392e6fea8ad70e7246cdc27fed2e4923af7bcf93b8478eb3",
+      "bytes": 764,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/together.models.js.map",
+      "group": "api"
+    },
+    "src/api/together.models.ts": {
+      "sha256": "09e3a5b9a2afbced7314acb8bfd7f2d77a17283dab78a49ca786a04b466f9d15",
+      "bytes": 386,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/together.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/vercel-ai-gateway.js": {
+      "sha256": "ac94a094be3af21836212bf62ec7771c4826c12b3aafd85950721187d0aa76a7",
+      "bytes": 679,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/vercel-ai-gateway.js",
+      "group": "api"
+    },
+    "maps/api/vercel-ai-gateway.js.map": {
+      "sha256": "6feeee2bec87f391a887afdfac35e547ac217baaa09ba0d4a7d8d0a7aeb0acde",
+      "bytes": 1324,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/vercel-ai-gateway.js.map",
+      "group": "api"
+    },
+    "src/api/vercel-ai-gateway.ts": {
+      "sha256": "57b77111d50a2238128f56b7f4cc0680415b58c7d3d2eb51cc9f88e508b40343",
+      "bytes": 640,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/vercel-ai-gateway.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/vercel-ai-gateway.models.js": {
+      "sha256": "089134a4c5fe0071841b0ff787c769a0f2b294d6405ac275db8fd4a98f3b489f",
+      "bytes": 402,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/vercel-ai-gateway.models.js",
+      "group": "api"
+    },
+    "maps/api/vercel-ai-gateway.models.js.map": {
+      "sha256": "bcd2570830ffa9ab4d0142af50dc6eb63e0440cb5e8a565ed21ef5b7072414c8",
+      "bytes": 822,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/vercel-ai-gateway.models.js.map",
+      "group": "api"
+    },
+    "src/api/vercel-ai-gateway.models.ts": {
+      "sha256": "3c4227acdc66f716f4a0af4f84d1ba1e8582384763f6850ed9dcc2fdadee10c5",
+      "bytes": 422,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/vercel-ai-gateway.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/xai.js": {
+      "sha256": "e5d69e97c788ce044f6c225fb38c04ec5b04defa639c02abfb022b466a90b9e9",
+      "bytes": 872,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xai.js",
+      "group": "api"
+    },
+    "maps/api/xai.js.map": {
+      "sha256": "5ec12a239f2a05693cc77ca203ba7eeb9470d1e993a2e856a68f13a79e6e3c7d",
+      "bytes": 1627,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xai.js.map",
+      "group": "api"
+    },
+    "src/api/xai.ts": {
+      "sha256": "841c361fc5ebb2d91c3f6aa46ce008f354ea287cce36ed2105ae815b7e5e9831",
+      "bytes": 764,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xai.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/xai.models.js": {
+      "sha256": "8d753cb825702298c7bee8880effadf56460e8bf61540deadd623a35acb7d9a5",
+      "bytes": 346,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xai.models.js",
+      "group": "api"
+    },
+    "maps/api/xai.models.js.map": {
+      "sha256": "fd77a3dbabbadab669353a537adeb9fe4331e20ff2da16723a4d4b1e6f83f06e",
+      "bytes": 734,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xai.models.js.map",
+      "group": "api"
+    },
+    "src/api/xai.models.ts": {
+      "sha256": "8d0a7bf9fd4fc8a0030d9cf93dab88421625bf250030a6d3b2397eea48ea2298",
+      "bytes": 366,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xai.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/xiaomi-token-plan-ams.js": {
+      "sha256": "fe4bfede6558715e94e5e8997dd51fbd176bab8e651a972fe3be667218605222",
+      "bytes": 733,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-ams.js",
+      "group": "api"
+    },
+    "maps/api/xiaomi-token-plan-ams.js.map": {
+      "sha256": "5d181eec1718773a8f7a732adbc200882326d4e03ad39db1ab419614e5148632",
+      "bytes": 1382,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-ams.js.map",
+      "group": "api"
+    },
+    "src/api/xiaomi-token-plan-ams.ts": {
+      "sha256": "59d03fc70eca720f8ca9a9f676aedaf241524dac26c179a78e2e30aabe116e0f",
+      "bytes": 690,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-ams.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/xiaomi-token-plan-ams.models.js": {
+      "sha256": "34043fe91d32692116a912777c3c7f645de27fcf291580a4e9e9af14d952a843",
+      "bytes": 418,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-ams.models.js",
+      "group": "api"
+    },
+    "maps/api/xiaomi-token-plan-ams.models.js.map": {
+      "sha256": "65cf5007537de047c206fff78f5a7aa8597c55da53de1dc3a6e07af4b3a4f9d3",
+      "bytes": 846,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-ams.models.js.map",
+      "group": "api"
+    },
+    "src/api/xiaomi-token-plan-ams.models.ts": {
+      "sha256": "26bc2100a4471d0605e768b8aff2e82aedce9c880622b5c7046ac6e32c14fb8b",
+      "bytes": 438,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-ams.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/xiaomi-token-plan-cn.js": {
+      "sha256": "201773161e1b98269671fd4f23b6b01d7d661fb029e2a6762e261c2a8cf0be09",
+      "bytes": 723,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-cn.js",
+      "group": "api"
+    },
+    "maps/api/xiaomi-token-plan-cn.js.map": {
+      "sha256": "ba7bd10faf8c8e830d56b1af10783989a0a6e4198bb770298b66886ea114f42d",
+      "bytes": 1371,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-cn.js.map",
+      "group": "api"
+    },
+    "src/api/xiaomi-token-plan-cn.ts": {
+      "sha256": "255528bca12e929f0f683bcbf5a6b8ef0de779bb484b128bdda23bf2fb80caa8",
+      "bytes": 681,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-cn.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/xiaomi-token-plan-cn.models.js": {
+      "sha256": "f34bcda1ceec90489715723e9d02341f4c04aa6e08c2de603190c91d44a25ee5",
+      "bytes": 414,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-cn.models.js",
+      "group": "api"
+    },
+    "maps/api/xiaomi-token-plan-cn.models.js.map": {
+      "sha256": "c678995902ac735ca4add4118f1fc8af3a3f528b45100e910a2cb7e3ecf1b517",
+      "bytes": 840,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-cn.models.js.map",
+      "group": "api"
+    },
+    "src/api/xiaomi-token-plan-cn.models.ts": {
+      "sha256": "bcd190721ecfe6233f2d66e86e68f68e2a9d14a8d6afe27132131e5721793093",
+      "bytes": 434,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-cn.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/xiaomi-token-plan-sgp.js": {
+      "sha256": "61019ea4bd04801c227f51b69ae7da4c3c64242124e2da0f89d9971bf50ed0cd",
+      "bytes": 733,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-sgp.js",
+      "group": "api"
+    },
+    "maps/api/xiaomi-token-plan-sgp.js.map": {
+      "sha256": "a03d4bdc6e54508ec7d85d53588335b2e1bb1f4771591e5e198681cdc6a5d049",
+      "bytes": 1382,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-sgp.js.map",
+      "group": "api"
+    },
+    "src/api/xiaomi-token-plan-sgp.ts": {
+      "sha256": "536da73a1588741c6a70809b5e94ab5a1ba2b8e81f24116e3ed734d6bc60b5e8",
+      "bytes": 690,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-sgp.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/xiaomi-token-plan-sgp.models.js": {
+      "sha256": "158ccc3c399719a24558f257db7ada81facbd6d8f447b1f8913b2baf5ed2e037",
+      "bytes": 418,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-sgp.models.js",
+      "group": "api"
+    },
+    "maps/api/xiaomi-token-plan-sgp.models.js.map": {
+      "sha256": "1ce85e156216f3083fab9a949413001a14df8cdcdae4c196533301629cdec462",
+      "bytes": 846,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-sgp.models.js.map",
+      "group": "api"
+    },
+    "src/api/xiaomi-token-plan-sgp.models.ts": {
+      "sha256": "26f56144eac6a3e7d6c86d558a348dc96cea1bb7ec655beea04dc6088e67d761",
+      "bytes": 438,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi-token-plan-sgp.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/xiaomi.js": {
+      "sha256": "e57526646b06815287d13fd320d23944e869c53e046dd4b9f4795b8240226587",
+      "bytes": 590,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi.js",
+      "group": "api"
+    },
+    "maps/api/xiaomi.js.map": {
+      "sha256": "ed8bdd9ec8978326eb1f9ac6c4bc4614487c32d44e28aa715fd864dfdfe90c2a",
+      "bytes": 1212,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi.js.map",
+      "group": "api"
+    },
+    "src/api/xiaomi.ts": {
+      "sha256": "d0d20dbcbcecca8b02948df1506ffa474461565546f7c24dfce44aebebef2344",
+      "bytes": 562,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/xiaomi.models.js": {
+      "sha256": "5c7aa1de72f9b477cdc846a06279342a9679d69bc8578d548dcbd9110fa84116",
+      "bytes": 358,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi.models.js",
+      "group": "api"
+    },
+    "maps/api/xiaomi.models.js.map": {
+      "sha256": "97311cd6ad4223553bc0f1db4749119ba74aa692b3999d8bf7a9924c1f7af3fe",
+      "bytes": 752,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi.models.js.map",
+      "group": "api"
+    },
+    "src/api/xiaomi.models.ts": {
+      "sha256": "326ec2a587d3f83a92aea6dd9548b317ba91ce9dd8dccdfd83ea14035897dcef",
+      "bytes": 378,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/xiaomi.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/zai-coding-cn.js": {
+      "sha256": "3820dea6091183bafa6b0c37e2cca684fba6d50674f190db259b2765c70efa85",
+      "bytes": 667,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai-coding-cn.js",
+      "group": "api"
+    },
+    "maps/api/zai-coding-cn.js.map": {
+      "sha256": "bdff7a4c0b9326239869c71393c55cbde38f8f3f8da34057753e8f20be99a854",
+      "bytes": 1306,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai-coding-cn.js.map",
+      "group": "api"
+    },
+    "src/api/zai-coding-cn.ts": {
+      "sha256": "89ff82b1f7b1a7e3427498598ce03574d76217f1c38b0d1731be82b6d8ff87a7",
+      "bytes": 632,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai-coding-cn.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/zai-coding-cn.models.js": {
+      "sha256": "a5252728a948df6de4ac9d061b91617f8f8832290cb45b957c5e829ed975e6fe",
+      "bytes": 386,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai-coding-cn.models.js",
+      "group": "api"
+    },
+    "maps/api/zai-coding-cn.models.js.map": {
+      "sha256": "5b4f7a4dfb855fef0cd3b3e7d772d9d8c8fd6c0c2db7a6e2e6629d12999cebab",
+      "bytes": 796,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai-coding-cn.models.js.map",
+      "group": "api"
+    },
+    "src/api/zai-coding-cn.models.ts": {
+      "sha256": "b96ff0b9ebb1792993256178de1b6c89741a651dfd07a7735c38dd05bfc25708",
+      "bytes": 406,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai-coding-cn.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/zai.js": {
+      "sha256": "d897597f9bd9749ccc674c34e5c3bb738d9b90911b04c7f7fc7bc66150d6ff40",
+      "bytes": 571,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai.js",
+      "group": "api"
+    },
+    "maps/api/zai.js.map": {
+      "sha256": "7b459bfd3850fa0322b1de4d6fa2dc6ade0b6b444946c182b8f1d7f6872a186e",
+      "bytes": 1186,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai.js.map",
+      "group": "api"
+    },
+    "src/api/zai.ts": {
+      "sha256": "489a48539c3abc291315dad6f8b7c5554f5f3f9bf8b2a11a60d4ab2cbd3c2f74",
+      "bytes": 546,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/api/zai.models.js": {
+      "sha256": "9c286b005d44b6301ae14ae36bddfe637b4d717f351b3e12bf8176b60b79301f",
+      "bytes": 346,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai.models.js",
+      "group": "api"
+    },
+    "maps/api/zai.models.js.map": {
+      "sha256": "fe5a0ae88c1f930c096db7ca9ea7e1009d7c5f69a7e3e69dd028e20de275b5ba",
+      "bytes": 734,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai.models.js.map",
+      "group": "api"
+    },
+    "src/api/zai.models.ts": {
+      "sha256": "9ff2f0e33f4299651cd265543d6387ee3d9ef2715ab7315dfaf5e67130c14125",
+      "bytes": 366,
+      "origin": "node_modules/@earendil-works/pi-ai/dist/providers/zai.models.js.map:sourceContent",
+      "group": "api"
+    },
+    "dist/tui/keybindings.js": {
+      "sha256": "499582d22b576b7e73952ec9e8ad72e833e76fb72005d98bad499b0b7eb6d936",
+      "bytes": 8429,
+      "origin": "node_modules/@earendil-works/pi-tui/dist/keybindings.js",
+      "group": "tui"
+    },
+    "maps/tui/keybindings.js.map": {
+      "sha256": "b5762f4289991bf6b938cd56d04f38c6904c37995dfe0feffe611f137f6c0be6",
+      "bytes": 18304,
+      "origin": "node_modules/@earendil-works/pi-tui/dist/keybindings.js.map",
+      "group": "tui"
+    },
+    "src/tui/keybindings.ts": {
+      "sha256": "eea5e3fe258ad50337595bb5320955a6d97bac0c8f6c0a838f988d75079bcf38",
+      "bytes": 10125,
+      "origin": "node_modules/@earendil-works/pi-tui/dist/keybindings.js.map:sourceContent",
+      "group": "tui"
+    },
+    "dist/tui/tui-alt-screen.js": {
+      "sha256": "78c7d8e096046f727f14c549ab947cc429bde5d2f97e371aa6aec44c9e9c4725",
+      "bytes": 65448,
+      "origin": "node_modules/@earendil-works/pi-tui/dist/tui-alt-screen.js",
+      "group": "tui"
+    },
+    "maps/tui/tui-alt-screen.js.map": {
+      "sha256": "f9b5c8e50436fb0cf497077ec2b38e87febd0c5e55de91a06cf4cdb94abf0bb6",
+      "bytes": 131867,
+      "origin": "node_modules/@earendil-works/pi-tui/dist/tui-alt-screen.js.map",
+      "group": "tui"
+    },
+    "src/tui/tui-alt-screen.ts": {
+      "sha256": "3d9dba300ce3c703716c7aaff77aed7f69975cb153e0aac52f23511869e8737d",
+      "bytes": 61896,
+      "origin": "node_modules/@earendil-works/pi-tui/dist/tui-alt-screen.js.map:sourceContent",
+      "group": "tui"
+    }
+  }
+}

@@ -13,7 +13,7 @@
 //!    `bg=Reset fg=Reset m=NONE`. Pi applies
 //!    `underline + bg(searchMatchBg) + fg(searchMatchText)` to a hit
 //!    and `bold + inverse` on top of that for the current one
-//!    (`interactive-mode.ts:349`). `searchMatchBg` and `searchMatchText`
+//!    (`tui-alt-screen.ts#searchMatchStyle`). `searchMatchBg` and `searchMatchText`
 //!    are defined in the palette (`theme.rs`, `searchMatch*`) and read
 //!    by nothing — the same dead-slot shape as `mdCodeBlockBorder` in
 //!    §32 and `thinkingText` in the 10-17 audit.

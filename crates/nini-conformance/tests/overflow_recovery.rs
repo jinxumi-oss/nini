@@ -13,15 +13,15 @@
 //!      Case 3  stopReason === "length" && usage.output === 0
 //!              && usage.input + cacheRead >= contextWindow * 0.99
 //!
-//!  agent-session.ts:1962  _checkCompaction(assistantMessage)
+//!  agent-session.ts:2132  _checkCompaction(assistantMessage)
 //!      Case 1 (recoverable) → _runAutoCompaction("overflow", willRetry)
 //!      Case 2 (threshold)   → _runAutoCompaction("threshold", willRetry=false)
 //!      — called UNCONDITIONALLY after every assistant message (:1098)
 //!
-//!  agent-session.ts:2001  if (this._overflowRecoveryAttempted) → emit the error
+//!  agent-session.ts:2172  if (this._overflowRecoveryAttempted) → emit the error
 //!                          "Context overflow recovery failed after one
 //!                           compact-and-retry attempt…" and STOP
-//!  agent-session.ts:2016  messages.slice(0, -1)  — drop the failed assistant
+//!  agent-session.ts#messages.slice(0, -1)  messages.slice(0, -1)  — drop the failed assistant
 //!                          from the state that gets compacted and retried
 //! ```
 //!
@@ -291,7 +291,7 @@ fn compacting_hook(log: Arc<HookLog>) -> CompactionHook {
 // ---------------------------------------------------------------------------
 
 /// Pi compacts on threshold after every assistant message
-/// (`agent-session.ts:1098`, Case 2) — so a run whose context crosses the
+/// (`agent-session.ts:1141`, Case 2) — so a run whose context crosses the
 /// window mid-flight compacts without waiting for the API to complain.
 ///
 /// nini deleted this check (`agent.rs:956-975`) and relies on a compaction
@@ -377,7 +377,7 @@ async fn a_provider_reported_overflow_compacts_and_retries() {
 // 3. Recovery is attempted once, then it says so
 // ---------------------------------------------------------------------------
 
-/// Pi's `_overflowRecoveryAttempted` (`agent-session.ts:329/2001`) allows one
+/// Pi's `_overflowRecoveryAttempted` (`agent-session.ts:336/2001`) allows one
 /// compact-and-retry. The second failure emits a specific, actionable error
 /// and stops.
 ///
@@ -411,7 +411,7 @@ async fn a_second_overflow_reports_instead_of_looping() {
     assert!(
         n <= 4,
         "recovery retried {n} times — Pi allows exactly one compact-and-retry \
-         (agent-session.ts:2001)"
+         (agent-session.ts:2172)"
     );
     assert!(
         events.iter().any(|e| matches!(
@@ -429,7 +429,7 @@ async fn a_second_overflow_reports_instead_of_looping() {
 // ---------------------------------------------------------------------------
 
 /// Pi rebuilds state from the compaction and retries with it
-/// (`agent-session.ts:2160-2170`). If nini compacts but re-sends the old
+/// (`agent-session.ts#sessionContext.messages-2170`). If nini compacts but re-sends the old
 /// history, the retry overflows identically.
 #[tokio::test(flavor = "current_thread")]
 async fn the_retry_runs_against_the_compacted_history() {

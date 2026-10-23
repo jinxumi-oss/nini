@@ -124,7 +124,7 @@
       }
     ]
   },
-  "compatClaim": "nini 0.x targets Pi v0.85.1 session format (JSONL v4 native + legacy-v3 bridge) and 23 builtin slash commands",
+  "compatClaim": "nini 0.x targets Pi v0.85.1 for BOTH layers: session format (JSONL v4 native + legacy-v3 bridge) and 23 builtin slash commands; behaviour-layer oracles are pinned to the same version via references/pi-0.85.1/ (sha256-locked snapshot) and cited by SYMBOL, not by line number",
   "upgradeProcedure": [
     "1. cd references/pi-upstream && git fetch --tags --depth=1",
     "2. git checkout <new-tag>",
@@ -133,5 +133,12 @@
     "5. Regenerate sha256 list",
     "6. Run nini-session roundtrip tests against new fixtures",
     "7. Bump nini compatClaim"
-  ]
+  ],
+  "behaviourTarget": {
+    "version": "0.85.1",
+    "snapshot": "references/pi-0.85.1/",
+    "citationForm": "file#symbol",
+    "verifiedBy": "python3 scripts/pi-oracle-lock.py --check --verify-refs",
+    "retired": "0.84.2（差分证据：docs/pi-version-delta-0.84.2-to-0.85.1.md）"
+  }
 }

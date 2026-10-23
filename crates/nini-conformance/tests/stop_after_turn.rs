@@ -1,6 +1,6 @@
 //! Oracle: `shouldStopAfterTurn` is consulted at Pi's position in the turn.
 //!
-//! Pi's per-turn order (`agent-loop.ts:225-250`):
+//! Pi's per-turn order (`agent-loop.ts#prepareNextTurn-250`):
 //!
 //! ```text
 //! LLM call
@@ -8,7 +8,7 @@
 //!   → emit(turn_end)
 //!   → prepareNextTurn          (may swap context / model / thinking level)
 //!   → shouldStopAfterTurn      ← if true: agent_end + return
-//!   → poll steering            (agent-loop.js:160)
+//!   → poll steering            (agent-loop.ts#getSteeringMessages)
 //! ```
 //!
 //! The hook therefore sees the turn that just **finished**, including its
@@ -185,7 +185,7 @@ async fn hook_is_consulted_after_the_turn_it_reports_on() {
     assert!(!seen.is_empty(), "hook was never consulted");
     assert!(
         seen[0] >= 1,
-        "Pi calls shouldStopAfterTurn after turn_end (agent-loop.js:151), so the \
+        "Pi calls shouldStopAfterTurn after turn_end (agent-loop.ts#shouldStopAfterTurn), so the \
          first consultation must already see the assistant message of the turn \
          that just finished. Observations: {seen:?}"
     );

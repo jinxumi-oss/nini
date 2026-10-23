@@ -23,7 +23,7 @@
 //! the same session file.
 //!
 //! Pi cannot reach this state: `AgentSession.isIdle` is `!_isAgentRunActive`
-//! (`agent-session.js:592`), a property of the *agent*, and Esc only calls
+//! (`agent-session.js:620`), a property of the *agent*, and Esc only calls
 //! `agent.abort()` without touching it. A submit during streaming is steered
 //! into the running turn (`streamingBehavior`), so a second agent is never
 //! spawned. nini had one `RunMode` field doing both jobs — hence

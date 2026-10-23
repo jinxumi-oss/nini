@@ -73,7 +73,7 @@ pub struct ToolOutput {
     /// instead of asking the model again.
     ///
     /// Pi: `AgentToolResult.terminate`, consumed by
-    /// `shouldTerminateToolBatch` (`agent-loop.ts:582-584`). A tool that
+    /// `shouldTerminateToolBatch` (`agent-loop.ts:589-584`). A tool that
     /// collects a complete answer sets this so the loop stops rather than
     /// spending another model call to be told what the tool already knows.
     ///
@@ -96,7 +96,7 @@ pub enum ToolExecutionMode {
 
 /// Decide whether a finished tool batch ends the turn.
 ///
-/// Mirrors Pi's `shouldTerminateToolBatch` (`agent-loop.ts:582-584`):
+/// Mirrors Pi's `shouldTerminateToolBatch` (`agent-loop.ts:589-584`):
 ///
 /// ```ts
 /// return finalizedCalls.length > 0 && finalizedCalls.every((f) => f.result.terminate === true);
@@ -213,7 +213,7 @@ pub trait Tool: Send + Sync {
     ///
     /// Returning [`ToolExecutionMode::Sequential`] downgrades the **entire
     /// batch** to serial execution, not just this tool — Pi's behaviour at
-    /// `agent-loop.ts:418-426`:
+    /// `agent-loop.ts:416-426`:
     ///
     /// ```ts
     /// const hasSequentialToolCall = toolCalls.some(

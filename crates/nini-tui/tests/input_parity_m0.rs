@@ -2,7 +2,7 @@
 //!
 //! Source: `docs/plans/input_interrupt_parity.md`. Pi's editor is a separate
 //! component and `isStreaming` never decides whether it accepts typing
-//! (`interactive-mode.js:2491`); nini gates every input path on
+//! (`interactive-mode.ts#streamingBehavior`); nini gates every input path on
 //! `mode == RunMode::Editing`, in thirteen places.
 //!
 //! Measured in tmux against a provider with a ten-second delay:
@@ -73,7 +73,7 @@ fn typing_works_while_a_turn_is_running() {
 /// Gap #2: submitting during a turn must queue, not vanish.
 ///
 /// Pi: `await this.session.prompt(text, { streamingBehavior: "steer" })`
-/// (`interactive-mode.js:2491`). nini had no path at all — the submit was
+/// (`interactive-mode.ts#streamingBehavior`). nini had no path at all — the submit was
 /// refused by a mode check and the text disappeared with the keystroke.
 #[test]
 fn submitting_while_running_queues_the_message() {
@@ -107,7 +107,7 @@ fn a_queued_message_is_visible_in_the_transcript() {
 ///
 /// Pi: `restoreQueuedMessagesToEditor({ abort: true })` merges the queued
 /// messages into the editor text, aborts, and returns — the text survives
-/// the interrupt (`interactive-mode.js:3505`).
+/// the interrupt (`interactive-mode.js:3615`).
 #[test]
 fn an_interrupt_returns_queued_text_to_the_editor() {
     let mut state = state_in(RunMode::Editing);

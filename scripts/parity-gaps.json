@@ -16,7 +16,8 @@
       "blocking_decision": null,
       "round": "W1-A",
       "exit_criterion": "cargo test -p nini-tui --test esc_concurrency_probe 不带 --ignored 退出 0（7 条）；cargo test -p nini-tui 退出 0；bash scripts/e2e-interrupt.sh 退出 0；四条变异注入分别验证四条断言会红（Done 的 seq 判定、watchdog 的 seq 读出、排队写 session、steer 的 mode 条件）",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "A2",
@@ -30,7 +31,8 @@
       "blocking_decision": null,
       "round": "W1-B",
       "exit_criterion": "`grep -rn 'is_compacting = true' crates/nini-tui/src` 命中 ≥1 处赋值点，且 crates/nini-tui/tests/ 下存在 ≥1 条覆盖「压缩中提交」行为的 oracle 且通过",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "A3",
@@ -44,7 +46,8 @@
       "blocking_decision": null,
       "round": "W1-B",
       "exit_criterion": "crates/nini-tui/src/runtime.rs 出现可替换的 Esc 处理器类型（如 EscapeTarget/handler 栈），且 crates/nini-tui/tests/ 下有 3 条 oracle 分别覆盖「压缩中 / 重试中 / 分支摘要中按 Esc」并全绿",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "A4",
@@ -58,7 +61,8 @@
       "blocking_decision": null,
       "round": "W1-C",
       "exit_criterion": "crates/nini-tui/src/state.rs 出现 steering 与 followUp 两个独立队列字段，且 crates/nini-tui/tests/ 下两个队列各有 ≥1 条 oracle 断言 ESC 还回时的顺序与 Pi 一致",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "B1",
@@ -72,7 +76,8 @@
       "blocking_decision": "R10",
       "round": "W2",
       "exit_criterion": "R10 拍板后：cmd_clone 接受 session-id 参数、走 fork-at-leaf 并切换当前 session，crates/nini-tui/tests/ 下有 1 条 oracle 断言 clone 后当前 session 已切换且原分支仍在 session tree 中",
-      "machine_checkable": false
+      "machine_checkable": false,
+      "layer": null
     },
     {
       "id": "B1b",
@@ -86,7 +91,8 @@
       "blocking_decision": null,
       "round": "W2",
       "exit_criterion": "cargo test -p nini-tui 有 1 条 oracle：执行 `/export <tmpdir>/x.html` 后该路径下文件存在；且 registry.rs 的 argument_hint 与 cmd_export 的实参名一致（提示与实现不符的检查脚本归零）",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "B2",
@@ -100,7 +106,8 @@
       "blocking_decision": null,
       "round": "W2",
       "exit_criterion": "crates/nini-tui/tests/ 下有 1 条 oracle 断言执行 /trust 后进入 TrustSelector（而非直接改写信任等级）",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "B3",
@@ -114,7 +121,8 @@
       "blocking_decision": null,
       "round": "W2",
       "exit_criterion": "crates/nini-tui/tests/ 下有 1 条 oracle：改 keybindings/themes 后执行 /reload，运行中的会话即生效（不需要新 session）",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "B4",
@@ -128,7 +136,8 @@
       "blocking_decision": null,
       "round": "W3",
       "exit_criterion": "crates/nini-tui/tests/ 下有 2 条 oracle 覆盖 bash mode（进入/退出与命令执行），且既有 !cmd 行为的 oracle 不变（回归网全绿）",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "B5",
@@ -142,7 +151,8 @@
       "blocking_decision": null,
       "round": "W3",
       "exit_criterion": "crates/nini-tui/tests/ 下有 1 条 oracle：500ms 内连按两次 Esc 触发的动作与 Pi 的 getDoubleEscapeAction() 一致（tree/fork/none）",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "B6",
@@ -156,7 +166,8 @@
       "blocking_decision": null,
       "round": "W2",
       "exit_criterion": "crates/nini-tui/tests/ 下有 1 条 oracle：搜索 \"openai/gpt-5\" 时精确 provider/model 前缀的条目排在前面",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "B7",
@@ -170,7 +181,8 @@
       "blocking_decision": "R9",
       "round": "W4",
       "exit_criterion": "先由脚本给出「引入 synctact 前后的二进制体积增量」数字，owner 拍板 R9 后 crates/nini-tui/tests/ 下 9 个 syntax* 槽至少有 1 条 oracle 通过",
-      "machine_checkable": false
+      "machine_checkable": false,
+      "layer": null
     },
     {
       "id": "B8",
@@ -184,7 +196,8 @@
       "blocking_decision": null,
       "round": "W4",
       "exit_criterion": "crates/nini-tui/tests/ 下有 1 条 oracle：转录里的 mermaid 代码块被渲染为图（或明确的降级占位）",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "B9",
@@ -198,7 +211,8 @@
       "blocking_decision": "R5",
       "round": "W2",
       "exit_criterion": "R5 拍板后：脚本复算 crates/nini-cli/src/provider_factory.rs 支持的 provider 数，且 pi-ai/dist/providers/all.js:67 的 builtinProviders() 数量被登记进 references/pi-0.84.2/SNAPSHOT.lock 可对账",
-      "machine_checkable": false
+      "machine_checkable": false,
+      "layer": null
     },
     {
       "id": "B10",
@@ -212,7 +226,8 @@
       "blocking_decision": null,
       "round": "W2",
       "exit_criterion": "crates/nini-tui/tests/ 下有 1 条 oracle：执行 /share 不再返回 \"not yet implemented\"，而是产出可访问的分享链接（或明确的、已实现的降级说明）",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "C1",
@@ -226,7 +241,8 @@
       "blocking_decision": null,
       "round": "W0",
       "exit_criterion": "python3 scripts/pi-oracle-lock.py --check 退出 0 且 --verify-refs 退出 0（所有行号引用在快照内可解析、无 DRIFT、无 missing-in-snapshot）；行为层可执行 fixture 数由 0 增至 ≥1",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "C2",
@@ -240,7 +256,8 @@
       "blocking_decision": null,
       "round": "W5",
       "exit_criterion": "python3 scripts/parity-gap.py --check-plan docs/plans/parity-with-pi.md 退出 0，且本台账每条 gap 的 nini_state 都能在 crates/ 里 grep 到对应符号或行号",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "C3",
@@ -254,7 +271,8 @@
       "blocking_decision": null,
       "round": "W5",
       "exit_criterion": "R5 拍板后 crates/nini-ai 的 provider 覆盖面有一轮可计量的提交，且 `git log --since=2026-10-12 --oneline -- crates/nini-ai` 的条数被登记进本台账并可复算",
-      "machine_checkable": false
+      "machine_checkable": false,
+      "layer": null
     },
     {
       "id": "D1",
@@ -268,7 +286,8 @@
       "blocking_decision": null,
       "round": "W2",
       "exit_criterion": "本条 6 个小项逐条在 crates/ 里有对应符号，或在本台账里被标记为「明确不做」并写明理由（每条都必须可 grep 到符号或台账条目）",
-      "machine_checkable": false
+      "machine_checkable": false,
+      "layer": null
     },
     {
       "id": "A5",
@@ -282,7 +301,8 @@
       "blocking_decision": null,
       "round": "W1-B",
       "exit_criterion": "启动后发一条消息并退出，`<agent dir>/sessions/<project>/` 下出现非空 jsonl；且 `python3 scripts/parity-gap.py --json` 中 A5 的 oracle 字段不再是 none",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
     },
     {
       "id": "A6",
@@ -296,7 +316,8 @@
       "blocking_decision": null,
       "round": "W1-B",
       "exit_criterion": "中断后提交的消息，在当前 turn 结束时被送进模型（有 1 条 oracle 断言模型确实收到了它）",
-      "machine_checkable": false
+      "machine_checkable": false,
+      "layer": null
     },
     {
       "id": "D2",
@@ -310,7 +331,83 @@
       "blocking_decision": null,
       "round": "W2",
       "exit_criterion": "横幅里的版本号与 `nini --version` 的版本号一致（一条测试断言两者相等）",
-      "machine_checkable": true
+      "machine_checkable": true,
+      "layer": null
+    },
+    {
+      "id": "B11",
+      "class": "B",
+      "severity": "P2",
+      "title": "缺 Pi 的 coding 层工具 `ls`；并且工具集与 system prompt 的联动完全没有（Pi 按 hasBash/hasGrep/hasFind/hasLs/hasRead 决定 prompt 里的 guideline）",
+      "pi_basis": "pi-ai 侧无关；`pi-coding-agent/dist/core/tools/index.js` 的 `allToolNames = {read,bash,edit,write,grep,find,ls}`；`pi-coding-agent/dist/core/system-prompt.js:53-60` 用 hasBash/hasGrep/hasFind/hasLs/hasRead 决定往 prompt 加哪条 guideline；`createCodingTools()`=[read,bash,edit,write]、`createReadOnlyTools()`=[read,grep,find,ls]、`createAllTools()`=7 个",
+      "nini_state": "crates/nini-tools/src/ 有 bash/read/write/edit/grep/find 六个，**无 ls**；nini 的 system prompt 里没有「按已启用工具集决定 guideline」这一层（grep 全仓无 hasBash/hasLs 类分支）；⇒ 少一个工具会同时少一段给模型的引导，模型行为因此不同",
+      "oracle": "none",
+      "status": "open",
+      "blocking_decision": null,
+      "round": "W2",
+      "exit_criterion": "nini 有 ls 工具（参数与 Pi 的 path/limit 对齐）；且 nini 的 system prompt 在工具集不同的两种配置下产出可区分的 prompt，并有一条 oracle 断言该联动（用 mock provider 录 Pi 侧 prompt 做对照）",
+      "machine_checkable": true,
+      "layer": "builtin"
+    },
+    {
+      "id": "B12",
+      "class": "B",
+      "severity": "P1",
+      "title": "工具输出的截断语义与 Pi 不一致：Pi 统一 50KB head/tail + 行宽限制，nini 的 bash 是 1MiB/2000 行且各工具各写各的",
+      "pi_basis": "`pi-coding-agent/dist/core/tools/truncate.js`：DEFAULT_MAX_BYTES = 50*1024、truncateHead/truncateTail/truncateLine(GREP_MAX_LINE_LENGTH)；bash/find/grep/ls/read 都走这一个模块（output-accumulator 同源）",
+      "nini_state": "crates/nini-tools/src/bash.rs 的 ToolContext 默认 max_output_bytes = 1 MiB、max_output_lines = 2000，自己实现 truncate（头尾各半）；其余工具各有各的截断；没有统一的 truncate 模块。⇒ 同一个命令在两侧占用的上下文差约 20 倍，长任务里直接改变后续几轮的上下文构成",
+      "oracle": "none",
+      "status": "open",
+      "blocking_decision": null,
+      "round": "W2",
+      "exit_criterion": "nini-tools 有一条统一的 truncate 路径，默认值与 Pi 对齐（50KB head/tail + 行宽上限）；且有一条 oracle 断言同一份超长输出在两侧进入上下文的字节数一致（用 mock provider 录 Pi 侧上下文长度做对照）",
+      "machine_checkable": true,
+      "layer": "builtin"
+    },
+    {
+      "id": "C4",
+      "class": "C",
+      "severity": "P2",
+      "title": "扩展层能力缺口：nini 的 Tool 能贡献 prompt，但**不能贡献自己的渲染、流式更新与 signal**——所以 nini-ext 的 register_tool 不等价于 Pi 的扩展工具",
+      "pi_basis": "`pi-coding-agent/dist/core/extensions/types.d.ts:342-376` 的 ToolDefinition：promptSnippet / promptGuidelines / renderShell / renderCall / renderResult / executionMode / execute(..., signal, onUpdate, ctx)；SDK 的 customTools 与内置工具并列注册",
+      "nini_state": "crates/nini-core/src/tool.rs 的 `trait Tool` 有 name/spec/execute + before_execute 钩子，**并且已经有 `system_prompt_contribution()`**（snippet + guidelines，Pi 的 promptSnippet/promptGuidelines 等价物，组装在 build_system_prompt_with_contributions 里确定性排序）——⚠ 此前这里写「缺 prompt 贡献片段」是**错的**，已更正；真正的缺口是：① ToolContext 只有 {cwd, max_output_bytes, max_output_lines}，**没有 update 回调、没有 signal**；② crates/nini-tui/src/rich.rs 按工具名通用渲染，**没有按工具注册渲染器的入口**（Pi 的扩展工具可自带 renderCall/renderResult/renderShell）；③ 没有 constrainedSampling / prepareArguments；④ 扩展工具没有 label。crates/nini-ext 的 register_tool 只能塞进这样一个 `dyn Tool`",
+      "oracle": "none",
+      "status": "open",
+      "blocking_decision": null,
+      "round": "—",
+      "exit_criterion": "owner 先决定要不要做扩展兼容（需要一个新的决策号）；若要做，前置条件是 Tool 具备①按工具注册渲染器 ②执行期流式更新回调 ③signal 与受限采样 三项能力，且每项有 oracle；在此之前 README 必须声明「扩展工具不在 parity 范围内」",
+      "machine_checkable": false,
+      "layer": "extension"
+    },
+    {
+      "id": "B13",
+      "class": "B",
+      "severity": "P1",
+      "title": "工具契约（模型看到的描述 + 参数 schema）是从 Pi 0.84.2 捕获的，尚未按 0.85.1 重捕获",
+      "pi_basis": "references/pi-0.85.1/tool-contracts.json（由 scripts/pi-tool-contracts.py 从 0.85.1 快照提取）：7 个工具的 description 与参数集；0.85.1 的工具集多了 powershell（Windows）",
+      "nini_state": "crates/nini-tools/src/{read,write,edit,bash,grep,find}.rs 的描述逐字抄自 Pi 0.84.2；**缺 ls**（B11）；参数 schema 也未按 0.85.1 复核。⚠ 描述直接决定模型怎么调工具 ⇒ 这是行为面，不是文案",
+      "oracle": "none",
+      "status": "open",
+      "blocking_decision": null,
+      "round": "W2",
+      "exit_criterion": "7（+ls=8）个工具的描述与参数 schema 逐条对齐 references/pi-0.85.1/tool-contracts.json；每条差异要么改 nini、要么写进 README 的 known limitations",
+      "machine_checkable": false,
+      "layer": "builtin"
+    },
+    {
+      "id": "C5",
+      "class": "C",
+      "severity": "P2",
+      "title": "conformance 的真 Pi fixture 仍是 0.84.2 录的，不能当作 0.85.1 的 oracle",
+      "pi_basis": "crates/nini-conformance/fixtures/pi-0.84.2-*.jsonl 是 0.84.2 录制的；目标已统一到 0.85.1（docs/pi-version-delta-0.84.2-to-0.85.1.md 记录了 90 处行号引用只有 11 处未漂）",
+      "nini_state": "crates/nini-conformance/fixtures/pi-0.84.2-fresh.jsonl 与 pi-0.84.2-session.jsonl 仍是 0.84.2 的录制；它们是**历史证据**（证明「读 Pi 的会话 0 行丢失」），但不能证明 0.85.1 的行为",
+      "oracle": "crates/nini-conformance 的 session 类测试（14 个文件）当前引用 0.84.2 fixture",
+      "status": "open",
+      "blocking_decision": null,
+      "round": "W0",
+      "exit_criterion": "用 0.85.1 重新录制等价 fixture（mock provider 驱动真 Pi），并让 conformance 的 session 测试指向新 fixture；旧 fixture 保留但标注为 historical",
+      "machine_checkable": false,
+      "layer": null
     }
   ]
 }

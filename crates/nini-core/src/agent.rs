@@ -102,7 +102,7 @@ pub enum AgentEvent {
     /// `/resume` or a restart.
     ///
     /// Pi reaches the same outcome differently: its session layer
-    /// orchestrates compaction (`agent-session.ts:747`) and Pi's
+    /// orchestrates compaction (`agent-session.ts:789`) and Pi's
     /// `AgentEvent` has no compaction variant. nini compacts inside the
     /// loop, so the loop has to publish the fact for the session to record.
     Compacted {
@@ -478,7 +478,7 @@ pub struct RunConfig {
     /// had no field to hold it.
     pub reasoning: Option<crate::provider::ThinkingLevel>,
     /// v0.10 (R1c): force the whole tool batch serial, mirroring Pi's
-    /// `config.toolExecution` (`agent-loop.ts:423`). A single tool can
+    /// `config.toolExecution` (`agent-loop.ts:421`). A single tool can
     /// also opt in with `Tool::execution_mode`; this is the global switch.
     pub tool_execution: crate::tool::ToolExecutionMode,
 }
@@ -536,7 +536,7 @@ pub struct Agent {
     /// attempted after a context overflow.
     ///
     /// Pi bounds this at exactly one (`_overflowRecoveryAttempted`,
-    /// `agent-session.ts:329`): the second failure emits a specific,
+    /// `agent-session.ts:336`): the second failure emits a specific,
     /// actionable error and stops. Without a bound, a compaction that
     /// cannot shrink the context re-sends the identical oversized request
     /// until `max_iterations` trips, and the user sees `TooManyIterations`
@@ -847,7 +847,7 @@ impl Agent {
     /// v0.10 (fix): the in-run threshold check.
     ///
     /// Pi runs `_checkCompaction` after **every** assistant message
-    /// (`agent-session.ts:1098`), so a run that is 30 tool turns long
+    /// (`agent-session.ts:1141`), so a run that is 30 tool turns long
     /// compacts when its context crosses the line rather than when the API
     /// finally refuses. nini only compacted between submissions
     /// (`runtime.rs:2102`), which a single run never reaches — that is the
@@ -944,7 +944,7 @@ impl Agent {
         let tool_specs = self.tools.specs();
         let tool_registry = self.tools.clone();
         // v0.10 (R1e): mutable so `prepare_next_turn` can swap the model
-        // for the next request, as Pi does at `agent-loop.ts:236-245`.
+        // for the next request, as Pi does at `agent-loop.ts:181-245`.
         let mut config = self.config.clone();
         let abort = self.abort.clone();
 
@@ -1031,7 +1031,7 @@ impl Agent {
                     return;
                 }
                 // v0.10 (R1): inject queued messages before the LLM call, as
-                // Pi does at `agent-loop.js:96-103`. Steering and follow-up
+                // Pi does at `agent-loop.js:112-103`. Steering and follow-up
                 // both land here, which is why the two are indistinguishable
                 // in the message stream — only the poll timing differs.
                 //
@@ -1058,7 +1058,7 @@ impl Agent {
                 // v0.10 (fix): the threshold check that A3 removed, restored
                 // — but routed through the session hook instead of folding
                 // this Agent's memory in place, which is the part A3 was
-                // right about. Pi: `agent-session.ts:1098` `_checkCompaction`
+                // right about. Pi: `agent-session.ts:1141` `_checkCompaction`
                 // after every assistant message, Case 2 (threshold).
                 if let Some(result) = self.maybe_compact_at_threshold() {
                     self.set_phase(AgentPhase::Working);
@@ -1161,7 +1161,7 @@ impl Agent {
                 // v0.10 (fix): set when a compaction just rewrote the
                 // history, so the turn that triggered it is discarded and
                 // the request is rebuilt — Pi's `willRetry`
-                // (`agent-session.ts:2021` → `_handlePostAgentRun` →
+                // (`agent-session.ts:2201` → `_handlePostAgentRun` →
                 // `agent.continue()`). Without it the failed assistant turn
                 // is appended *after* the compaction and the two disagree.
                 let mut retry_after_compaction = false;
@@ -1276,7 +1276,7 @@ impl Agent {
                                 // tool calls* is not a context problem, it is
                                 // a truncated serialisation — and Pi refuses
                                 // the whole batch on purpose
-                                // (`agent-loop.ts:122` →
+                                // (`agent-loop.ts:123` →
                                 // `failToolCallsFromTruncatedMessage`: "its
                                 // arguments may be truncated"). Compacting
                                 // instead would run tools whose arguments were
@@ -1297,11 +1297,11 @@ impl Agent {
                                 // budget — it is already past the window,
                                 // and an estimate that says otherwise is
                                 // exactly what left the run with no way
-                                // forward (`agent-session.ts:1994-2021`).
+                                // forward (`agent-session.ts#isContextOverflow-2021`).
                                 if recoverable {
                                     if self.overflow_recovery_attempted {
                                         // Pi: one recovery, then say so
-                                        // (`agent-session.ts:2001-2011`).
+                                        // (`agent-session.ts:2172-2011`).
                                         let msg = "Context overflow recovery \
                                             failed after one compact-and-retry \
                                             attempt. Try reducing context or \
@@ -1318,7 +1318,7 @@ impl Agent {
                                     // compacting: Pi removes it from state so
                                     // the summary is not written *about* the
                                     // error response
-                                    // (`agent-session.ts:2016-2019`).
+                                    // (`agent-session.ts#messages.slice(0, -1)-2019`).
                                     if matches!(
                                         self.messages.last().map(|m| m.role),
                                         Some(Role::Assistant)
@@ -1543,7 +1543,7 @@ impl Agent {
                 // tools with empty args, and surface a cryptic
                 // "tool error: invalid args" to the user.
                 //
-                // Mirrors Pi's agent-loop.js:128
+                // Mirrors Pi's agent-loop.js:144
                 //   failToolCallsFromTruncatedMessage(toolCalls, emit)
                 //
                 // Coordinates with the existing auto-compact-on-length-
@@ -1573,10 +1573,10 @@ impl Agent {
 
                 // v0.10 (R1c): per-call `terminate` flags in batch order.
                 // Declared out here because Pi evaluates the batch verdict
-                // after the batch returns (`agent-loop.js:216`), which is
+                // after the batch returns (`agent-loop.js:214`), which is
                 // outside the execution block. `shouldTerminateToolBatch`
                 // takes the AND over every finalized result
-                // (`agent-loop.js:582-584`).
+                // (`agent-loop.ts#shouldTerminateToolBatch-584`).
                 let mut terminate_flags: Vec<bool> = vec![false; tool_calls.len()];
 
                 if has_more_tool_calls {
@@ -1636,7 +1636,7 @@ impl Agent {
                 // those tools would surface as cryptic 'tool error: invalid
                 // args' — they're really model-level truncation errors.
                 //
-                // Mirrors Pi's agent-loop.js:128
+                // Mirrors Pi's agent-loop.js:144
                 //   failToolCallsFromTruncatedMessage(toolCalls, emit).
                 //
                 // Coordinates with the existing auto-compact-on-length-stop
@@ -1695,7 +1695,7 @@ impl Agent {
                     let mut pending_queue: Option<std::iter::Enumerate<std::vec::IntoIter<PendingToolCall>>>;
 
                     // v0.10 (R1c) — Pi's `executeToolCalls`
-                    // (`agent-loop.ts:418-426`): ONE tool declaring
+                    // (`agent-loop.ts:416-426`): ONE tool declaring
                     // `executionMode === "sequential"` downgrades the WHOLE
                     // batch, not just that tool.
                     //
@@ -1727,7 +1727,7 @@ impl Agent {
                     // ceiling, preserving the pre-v0.8.9 behaviour.
                     // A sequential batch runs one at a time. Pi does the
                     // same via `executeToolCallsSequential`
-                    // (`agent-loop.ts:433`), which has no worker pool at all.
+                    // (`agent-loop.ts:431`), which has no worker pool at all.
                     let parallelism = if batch_is_sequential {
                         1
                     } else if config.max_parallel_tools == 0 {
@@ -1857,14 +1857,14 @@ impl Agent {
                 }   // end of `if has_more_tool_calls`
 
                 // v0.10 (R1c) — Pi's `hasMoreToolCalls = !batch.terminate`
-                // (`agent-loop.js:216`), evaluated *after* the batch
+                // (`agent-loop.js:214`), evaluated *after* the batch
                 // returns. A tool that has the final answer sets
                 // `ToolOutput::terminate`, and when every result agrees the
                 // turn ends instead of spending another model call to be
                 // told what the tool already knows.
                 //
                 // The predicate is `every`, not `some`
-                // (`agent-loop.ts:582-584`): one finished tool must not
+                // (`agent-loop.ts:589-584`): one finished tool must not
                 // cut off a sibling that still has something to report.
                 if !terminate_flags.is_empty()
                     && crate::tool::should_terminate_tool_batch(&terminate_flags)
@@ -1873,7 +1873,7 @@ impl Agent {
                 }
 
                 // v0.10 (R1d) — Pi's per-turn order, verbatim
-                // (`agent-loop.ts:225-250`):
+                // (`agent-loop.ts#prepareNextTurn-250`):
                 //
                 //     await emit({ type: "turn_end", message, toolResults });
                 //     const nextTurnSnapshot = await config.prepareNextTurn?.(…);
@@ -1904,7 +1904,7 @@ impl Agent {
                 let snapshot = self.messages.clone();
 
                 // v0.10 (R1e) — Pi's `prepareNextTurn`
-                // (`agent-loop.ts:236-245`), evaluated BEFORE
+                // (`agent-loop.ts:181-245`), evaluated BEFORE
                 // `shouldStopAfterTurn` so a stop verdict is never computed
                 // against a stale model:
                 //
@@ -1938,7 +1938,7 @@ impl Agent {
                     return;
                 }
 
-                // v0.10 (R1) — Pi's `agent-loop.js:160`: steering is polled
+                // v0.10 (R1) — Pi's `agent-loop.ts#getSteeringMessages`: steering is polled
                 // at the end of EVERY turn, unconditional.
                 //
                 // It used to live inside the tool-execution branch, so a user
@@ -3202,7 +3202,7 @@ mod steering_followup_hook_tests {
     async fn steering_is_polled_on_every_turn_not_only_after_tools() {
         // v0.10 (R1): this test asserted `steering_count() == 0` for a
         // text-only turn, encoding "no tool calls → steering is never
-        // polled". Pi polls steering at `agent-loop.js:160` after *every*
+        // polled". Pi polls steering at `agent-loop.ts#getSteeringMessages` after *every*
         // turn, so a user interjecting while the model streams a long
         // text-only answer is heard on the next turn instead of at the start
         // of the next run.
@@ -3873,7 +3873,7 @@ mod context_hook_tests {
         // v0.10 (R1d): this used to assert 1 message — the hook fired
         // *before* the LLM call, so the run ended with the user message
         // and nothing else. Pi consults `shouldStopAfterTurn` after
-        // `turn_end` (`agent-loop.js:151`), so the first turn completes
+        // `turn_end` (`agent-loop.ts#shouldStopAfterTurn`), so the first turn completes
         // first: user + assistant, then stop.
         assert_eq!(
             agent.messages().len(),
@@ -4041,7 +4041,7 @@ mod context_hook_tests {
     /// v0.10 (R1d) — renamed. The old name and doc asserted the opposite
     /// of Pi: `should_stop_after_turn` was consulted at the START of the
     /// iteration, before the LLM call for that turn. Pi calls it after
-    /// `turn_end` (`agent-loop.js:151`), so it always sees a completed
+    /// `turn_end` (`agent-loop.ts#shouldStopAfterTurn`), so it always sees a completed
     /// turn. A hook implements "stop after the model has produced N turns"
     /// by counting assistant messages, and N is now exact.
     #[tokio::test(flavor = "current_thread")]
@@ -4125,7 +4125,7 @@ mod compaction_recovery_tests {
     }
 
     /// Pi rebuilds context from the messages actually in state after a
-    /// compaction (`agent-session.ts:2160-2163`), so the newest usage
+    /// compaction (`agent-session.ts#sessionContext.messages-2163`), so the newest usage
     /// describes the compacted conversation. nini caches `last_usage`
     /// beside the history: leaving it behind makes `estimated_tokens()` —
     /// and therefore the status-bar context bar and every later threshold

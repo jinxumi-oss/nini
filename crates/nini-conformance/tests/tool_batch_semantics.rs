@@ -10,7 +10,7 @@
 //!  *  "parallel": this tool can execute concurrently with other tool calls. */
 //! executionMode?: ToolExecutionMode
 //!
-//! // agent-loop.ts:418-426 — ONE sequential tool downgrades the WHOLE batch
+//! // agent-loop.ts:416-426 — ONE sequential tool downgrades the WHOLE batch
 //! const hasSequentialToolCall = toolCalls.some(
 //!     (tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential");
 //! if (config.toolExecution === "sequential" || hasSequentialToolCall) {
@@ -18,12 +18,12 @@
 //! }
 //! return executeToolCallsParallel(...);
 //!
-//! // agent-loop.ts:582-584 — ALL results must terminate, and not be empty
+//! // agent-loop.ts:589-584 — ALL results must terminate, and not be empty
 //! function shouldTerminateToolBatch(finalizedCalls) {
 //!     return finalizedCalls.length > 0 && finalizedCalls.every((f) => f.result.terminate === true);
 //! }
 //!
-//! // agent-loop.ts:216 — the batch's verdict drives the inner loop
+//! // agent-loop.ts:235 — the batch's verdict drives the inner loop
 //! hasMoreToolCalls = !executedToolBatch.terminate;
 //! ```
 //!
@@ -191,7 +191,7 @@ async fn one_sequential_tool_downgrades_the_whole_batch() {
     assert_eq!(
         peak.load(Ordering::SeqCst),
         1,
-        "Pi agent-loop.ts:418-426 downgrades the WHOLE batch when any tool is \
+        "Pi agent-loop.ts:416-426 downgrades the WHOLE batch when any tool is \
          sequential; peak concurrency was {}",
         peak.load(Ordering::SeqCst)
     );
@@ -233,7 +233,7 @@ fn terminate_requires_every_result_and_a_non_empty_batch() {
     use nini_core::tool::should_terminate_tool_batch;
     assert!(
         !should_terminate_tool_batch(&[]),
-        "an empty batch must not terminate (agent-loop.ts:583 requires length > 0)"
+        "an empty batch must not terminate (agent-loop.ts:590 requires length > 0)"
     );
     assert!(
         should_terminate_tool_batch(&[true, true, true]),
@@ -393,7 +393,7 @@ async fn calls_with(tool: Arc<dyn Tool>, n_tool_calls: usize) -> usize {
 
 #[tokio::test(flavor = "current_thread")]
 async fn all_results_terminating_ends_the_turn_after_one_model_call() {
-    // Pi: `hasMoreToolCalls = !batch.terminate` (`agent-loop.js:216`). With
+    // Pi: `hasMoreToolCalls = !batch.terminate` (`agent-loop.js:214`). With
     // every result terminating, the model is not asked a second time.
     let tool = Arc::new(TerminatingTool {
         name: "probe",
@@ -409,7 +409,7 @@ async fn all_results_terminating_ends_the_turn_after_one_model_call() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn one_non_terminating_result_keeps_the_loop_alive() {
-    // The `every` in `agent-loop.ts:583`. With `some` instead, the first
+    // The `every` in `agent-loop.ts:590`. With `some` instead, the first
     // call would end the turn and the sibling's work would be discarded.
     let tool = Arc::new(TerminatingTool {
         name: "probe",

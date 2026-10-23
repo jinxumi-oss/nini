@@ -1722,7 +1722,7 @@ fn handle_key(
             // running turn could delete text and move the caret but could
             // not type a character. Pi's editor is a separate component and
             // `isStreaming` never decides whether it accepts keystrokes
-            // (`interactive-mode.js:2491`).
+            // (`interactive-mode.ts#streamingBehavior`).
             state.input.insert_char(c);
             state.refresh_completion();
         }
@@ -1956,7 +1956,7 @@ fn handle_key(
                 // v0.10.1 (M1): the queue goes back to the editor FIRST —
                 // Pi: `restoreQueuedMessagesToEditor({ abort: true })`
                 // merges queued messages with what is being typed and
-                // returns, then aborts (`interactive-mode.js:3505`). Doing
+                // returns, then aborts (`interactive-mode.js:3615`). Doing
                 // it in that order means an interrupt never destroys
                 // something the user wrote and had queued.
                 let restored = return_queue_to_editor(&mut state);
@@ -2270,7 +2270,7 @@ fn submit_user_input_inner(
         // A submit that lands while the agent is still alive is *steered*
         // into the existing queue rather than refused: Pi sends it to the
         // running turn (`streamingBehavior: "steer"`,
-        // `interactive-mode.js:2491`), and refusing it silently threw away
+        // `interactive-mode.ts#streamingBehavior`), and refusing it silently threw away
         // whatever the user had typed. `queue_while_running` is the queue
         // write — the same one the `mode == Running` branch of the key
         // handler already uses, so there is one queue, not two.
@@ -2768,7 +2768,7 @@ fn scroll_to_top(state: &mut AppState) {
     state.mark_scroll_activity();
 }
 
-/// `end` — `tui.altScreen.bottom` (`keybindings.ts:209`).
+/// `end` — `tui.altScreen.bottom` (`keybindings.ts:240`).
 ///
 /// Re-enabling autoscroll is the point: it is what makes subsequent
 /// streaming tokens stick to the bottom again.
@@ -2941,7 +2941,7 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::Submit => {
             // v0.10.1 (M1): a turn in flight no longer swallows the
             // message. Pi steers it into the running turn
-            // (`interactive-mode.js:2491`); the queue is where nini keeps
+            // (`interactive-mode.ts#streamingBehavior`); the queue is where nini keeps
             // pending messages.
             if state.run_state.mode == RunMode::Running {
                 if state.ui_state.completion.is_some() {
@@ -3043,7 +3043,7 @@ fn _typecheck_handle_is_used() {
 ///
 /// v0.10.1 (M1). Pi: `await this.session.prompt(text, { streamingBehavior:
 /// "steer" })` followed by `updatePendingMessagesDisplay()`
-/// (`interactive-mode.js:2491` and `:2500`) — the message goes to the
+/// (`interactive-mode.ts#streamingBehavior` and `:2500`) — the message goes to the
 /// running turn, and the user is told it is pending.
 ///
 /// nini had one queue already, `pending_next_turn_messages`, written only by
@@ -3083,7 +3083,7 @@ pub fn queue_while_running(state: &mut AppState, text: &str) {
 /// Hand the queue back to the editor, then abort.
 ///
 /// Pi: `restoreQueuedMessagesToEditor({ abort: true })`
-/// (`interactive-mode.js:3505`) — queues are drained, merged with whatever
+/// (`interactive-mode.js:3615`) — queues are drained, merged with whatever
 /// is in the editor, and put back so nothing the user typed is lost when a
 /// turn is interrupted.
 pub fn return_queue_to_editor(state: &mut AppState) -> usize {

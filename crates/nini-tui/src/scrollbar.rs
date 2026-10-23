@@ -3,7 +3,7 @@
 //! v0.10. Pi paints one on the last column of the transcript area; nini
 //! carried the theme key for it (`theme.rs` has `scrollbarThumb`, dark
 //! `#3a3a4a` / light `#d0d0e0`) and nothing that drew it. The key name is
-//! Pi's — `interactive-mode.ts:885` styles the thumb with
+//! Pi's — `interactive-mode.ts#scrollbarThumb` styles the thumb with
 //! `theme.bg("scrollbarThumb", text)` — so the theme was ported and the
 //! component never followed. Another instance of the shape the plan calls
 //! "recorded but never wired", alongside `set_status_bar_usage` and
