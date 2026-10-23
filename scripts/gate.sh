@@ -56,6 +56,16 @@ else
   [[ -f "$BASELINE" ]] || { echo "缺少 $BASELINE"; exit 2; }
 fi
 
+# --- 0b. 工具链在不在 -------------------------------------------------------
+# 没有 cargo 时，后面每一步都会失败，然后报出一堆与代码无关的红。门禁的
+# 红必须是关于代码的红。
+if ! command -v cargo >/dev/null 2>&1; then
+  printf 'cargo: command not found\n' >&2
+  printf '门禁的红必须是关于代码的红 —— 先把工具链加进 PATH：\n' >&2
+  printf '  export PATH="$HOME/.cargo/bin:$PATH"\n' >&2
+  exit 2
+fi
+
 # --- 1. 格式与 lint --------------------------------------------------------
 head2 "格式与 lint"
 if cargo fmt --all --check >/dev/null 2>&1; then ok "cargo fmt"; else bad "cargo fmt" "跑 cargo fmt --all 后重试"; fi
