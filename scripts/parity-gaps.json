@@ -400,12 +400,12 @@
       "severity": "P2",
       "title": "conformance 的真 Pi fixture 仍是 0.84.2 录的，不能当作 0.85.1 的 oracle",
       "pi_basis": "crates/nini-conformance/fixtures/pi-0.84.2-*.jsonl 是 0.84.2 录制的；目标已统一到 0.85.1（docs/pi-version-delta-0.84.2-to-0.85.1.md 记录了 90 处行号引用只有 11 处未漂）",
-      "nini_state": "crates/nini-conformance/fixtures/pi-0.84.2-fresh.jsonl 与 pi-0.84.2-session.jsonl 仍是 0.84.2 的录制；它们是**历史证据**（证明「读 Pi 的会话 0 行丢失」），但不能证明 0.85.1 的行为",
-      "oracle": "crates/nini-conformance 的 session 类测试（14 个文件）当前引用 0.84.2 fixture",
-      "status": "open",
+      "nini_state": "已修（2026-10-23）：新增 pi-0.85.1-session.jsonl（真 Pi 0.85.1 录制，**只洗路径**，id/parentId 原样保留）；旧的两个 0.84.2 fixture 保留为**历史证据**并在 fixtures/README.md 里标明；录制脚本可无人值守复算",
+      "oracle": "crates/nini-conformance/tests/session_parity_0_85_1.rs（3 条：0 行丢失 / 父子链全部可解析 / toolCall 与 toolResult 在会话里留痕）；对照物 crates/nini-conformance/fixtures/pi-0.85.1-session.jsonl 由 scripts/pi-session-record.sh 用 mock provider 驱动**真 Pi 0.85.1** 录制",
+      "status": "fixed",
       "blocking_decision": null,
       "round": "W0",
-      "exit_criterion": "用 0.85.1 重新录制等价 fixture（mock provider 驱动真 Pi），并让 conformance 的 session 测试指向新 fixture；旧 fixture 保留但标注为 historical",
+      "exit_criterion": "cargo test -p nini-conformance --test session_parity_0_85_1 退出 0；且 CI 里重录一遍，条目类型与 role 序列必须与已提交的 fixture 一致",
       "machine_checkable": false,
       "layer": null
     }

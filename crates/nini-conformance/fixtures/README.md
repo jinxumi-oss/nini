@@ -2,7 +2,37 @@
 
 Session files used by `nini-conformance`. **Read this before trusting one.**
 
-## `pi-0.84.2-session.jsonl`
+## `pi-0.85.1-session.jsonl` —— **当前对照物**
+
+由 `scripts/pi-session-record.sh` 用**脚本化的 mock provider 驱动真 Pi**
+（本机安装的 **0.85.1**）录制。
+
+**只洗路径**（`cwd` → `/scrubbed/project`）；**id、parentId、时间戳、正文原样保留**。
+
+它证明两件事，而旧 fixture 只能证明一件：
+
+1. **行级 schema** —— Pi 写的每一行，nini 都要能解析（`session_parity_0_85_1.rs`
+   钉住 `failed == 0`）；
+2. **图结构** —— 父子链**全部可解析**（同文件的 `the_fixture_proves_the_graph_too`），
+   所以它能测 `get_path`、压缩重建、分支选择这类**走树**的行为。
+
+它还包含**完整的回合形状**：user → assistant(`toolCall`) → `toolResult` →
+assistant(text) → user → assistant(text)。工具调用与工具结果**在 Pi 的会话里是留痕的**。
+
+**复算**：
+
+```console
+bash scripts/pi-session-record.sh --out /tmp/rec.jsonl
+```
+
+时间戳与 id 每次录制都不同（那是真 Pi 写的），所以 CI 比的是**结构**
+（条目类型与 role 序列），不是逐字节。
+
+## `pi-0.84.2-session.jsonl` —— **历史证据**（不再是当前对照物）
+
+> 目标已统一到 **0.85.1**（见 `references/TARGET.json`）。这个文件是
+> **Pi 0.84.2** 写的，它证明的是「nini 也能读旧版本的会话」；
+> **当前对照物**是上面的 `pi-0.85.1-session.jsonl`。
 
 Real Pi 0.84.2 output with values scrubbed: text bodies, paths and UUIDs
 were replaced so the file carries no user data. **Every key name, enum

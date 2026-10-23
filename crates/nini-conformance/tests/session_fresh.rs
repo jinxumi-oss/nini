@@ -17,6 +17,9 @@
 //! binary settled it: the CLI writes v3. The v4 codec is a second storage
 //! path that the default session writer does not use.
 //!
+//! **当前对照物**是 `pi-0.85.1-session.jsonl`（Pi **0.85.1** 录的）；
+//! 这个 0.84.2 的文件保留为**历史证据**。
+//!
 //! Do not "fix" this test by regenerating the fixture from a different
 //! source. The provenance is the point.
 

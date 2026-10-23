@@ -14,6 +14,9 @@
 //! _the_graph` below pins that fact so it cannot be mistaken for a
 //! property of Pi, and `fixtures/README.md` records it in full.
 //!
+//! **当前对照物**是 `session_parity_0_85_1.rs`（Pi **0.85.1** 录的，父子链完整，
+//! 还能证明图结构）；这个 0.84.2 的文件保留为**历史证据**。
+//!
 //! A related trap, already sprung once: the dangling links read like a
 //! nini bug, and a tree test written against this file fails for reasons
 //! that have nothing to do with nini. `nini-tui/tests/p02_tree.rs` builds

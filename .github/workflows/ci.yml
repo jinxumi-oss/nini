@@ -154,6 +154,33 @@ jobs:
           python3 scripts/pi-tool-contracts.py --extract
           git diff --exit-code -- references/pi-0.85.1/tool-contracts.json \
             || (echo "tool-contracts.json 与快照不一致——快照被改过？" && exit 1)
+      - name: The Pi session fixture is reproducible (in shape)
+        # fixture 是**真 Pi 0.85.1** 写的（scripts/pi-session-record.sh 驱动）。
+        # 时间戳与 id 每次都不同，所以比的是**结构**：条目类型与 role 序列。
+        # 这一步保证：fixture 不会在某天悄悄变成手写样本。
+        run: |
+          bash scripts/pi-session-record.sh --out /tmp/rec.jsonl
+          python3 - <<'PY'
+          import json, sys
+          def shape(path):
+              out = []
+              for line in open(path, encoding="utf-8"):
+                  if not line.strip():
+                      continue
+                  d = json.loads(line)
+                  if d.get("type") == "message":
+                      out.append("message:" + str(d["message"].get("role")))
+                      for b in d["message"].get("content") or []:
+                          if isinstance(b, dict) and b.get("type") not in (None, "text"):
+                              out.append("block:" + b["type"])
+                  else:
+                      out.append(str(d.get("type")))
+              return out
+          a = shape("/tmp/rec.jsonl")
+          b = shape("crates/nini-conformance/fixtures/pi-0.85.1-session.jsonl")
+          assert a == b, f"重录的结构与已提交的 fixture 不一致:\n{a}\n{b}"
+          print("结构一致：", " ".join(b))
+          PY
       - name: The Pi-side gold values are reproducible
         # 工具契约与截断的期望值是**执行 Pi 自己的代码**产出的。
         # 这一步保证：改了实现却没重录期望值，会被 CI 抓到。

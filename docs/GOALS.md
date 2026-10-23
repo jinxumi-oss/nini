@@ -50,6 +50,9 @@
    **符号消失 = 红灯，符号挪位 = 报告位移**。行号引用（`agent-loop.ts:225`）只作为过渡保留，
    且必须仍能被解析——否则门禁红。
 3. **对照物进仓库 + 带哈希。** 本机 Pi 升级后，行号漂移由脚本检出，不靠人记得。
+   行为层的**会话**对照物也已是 0.85.1：`crates/nini-conformance/fixtures/pi-0.85.1-session.jsonl`
+   由 `scripts/pi-session-record.sh` 用 mock provider 驱动**真 Pi** 录制（只洗路径，父子链完整）；
+   旧的 0.84.2 fixture 保留为**历史证据**，不再是当前对照物。
 
 **目标版本是冻结的（owner 指令，2026-10-23）**：「以后的 nini 对标，统一锚定一个版本，
 直到 owner 认为完全没有问题为止。」落成机器判定的门禁（`scripts/pi-target-lock.py`，并入 CI）：

@@ -1,6 +1,6 @@
 ## v0.10.8 — the guard against a second agent was the editor's state (2026-10-23)
 
-1580 tests, all green. The defect was measured on v0.10.2 and had been sitting
+1583 tests, all green. The defect was measured on v0.10.2 and had been sitting
 in the plan as a P0 with a written exit criterion that nobody had executed.
 
 ### Esc could start a second agent, and the session file kept the receipts
@@ -208,6 +208,37 @@ T4 ✗  测试不存在
 
 In CI the board runs as a **report** (`continue-on-error`) until the plan is
 done; then it becomes a hard gate.
+
+### The conformance fixture is now Pi 0.85.1's own output — and it proves the graph
+
+The session fixtures were recorded from **Pi 0.84.2**, and their values were
+scrubbed: every entry id was replaced with an 8-character hash *without*
+carrying the change through to `parentId`. Seventeen of twenty-one parent
+references dangled, so the fixture could prove **line-level schema** and
+nothing else — not `get_path`, not compaction reconstruction, not branch
+selection. One of its own tests pinned that limitation so it could not be
+mistaken for a property of Pi.
+
+`scripts/pi-session-record.sh` now records the real thing: it starts the
+scripted mock provider, drives the **installed Pi 0.85.1** through a turn
+that includes a tool call, and takes the session file Pi wrote. Only the
+path is scrubbed; **ids, parent ids, timestamps and bodies stay verbatim**.
+
+So the fixture now proves two things at once:
+
+- every line Pi writes is readable by nini (`failed == 0`);
+- **the parent chain resolves completely**, so it can be used to test
+  everything that walks the tree;
+- and it contains the full turn shape — user → assistant(`toolCall`) →
+  `toolResult` → assistant(text) → user → assistant(text) — because **tool
+  calls and tool results are recorded in Pi's sessions**. nini's own P0.1
+  notes that nini *writes* without them; this proves nini cannot *read*
+  without them either.
+
+The old 0.84.2 fixtures stay, labelled as historical evidence in
+`fixtures/README.md`. CI re-records the fixture and compares its **shape**
+(entry types and role sequence) — ids and timestamps differ every time,
+because a real Pi wrote them.
 
 ### The tools: seven of Pi's eight, with the contract checked against Pi's own runtime
 
