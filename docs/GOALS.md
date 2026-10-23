@@ -64,16 +64,20 @@ v0.9.2 一整版都在清这个。
 
 ---
 
-## 2. 当前状态（2026-10-17，v0.10.1 + 15 个未发布提交）
+## 2. 当前状态（2026-10-23，v0.10.7）
+
+> 数字以脚本/实测为准，来源写在「证据」列。**手工数字会过期**——本表在每次改动后重算。
 
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
-| 版本 | **v0.10.2** | tag `v0.10.2` 已推送；CI 增加 release profile 测试与 panic 策略门禁 | 见下方“发布链” |
-| 测试 | 1395 → **1428** 通过 / 1 ignored / 0 失败 | 本机全量 `cargo test --workspace`（debug 与 release 两个 profile 各一次，均 0 失败） | 原 2 个 flake 已修 |
-| 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 仍是 stub（`dispatch.rs:1543`） |
+| 版本 | **v0.10.7** | tag `v0.10.7` 已推送；HEAD 比 tag 多 2 个提交 | 见下方“发布链” |
+| 测试 | **1554 通过 / 0 ignored / 0 失败** | 本机全量 `cargo test --workspace --all-targets`（2026-10-23） | A1 修复后 probe 的 5 条不再 ignored |
+| 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 仍是 stub —— **「名字齐」不等于「语义齐」**，已登记为 B10 |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
-| 行为 oracle | **66 条**（v0.10 记的 45 已旧），其中 agent loop 12 条直接引 Pi `agent-loop.js` 行号 | `crates/nini-conformance` | **无可执行的 Pi 侧对照物**：全是“注释引行号 + 断言 nini”，行号会随 Pi 升级漂移且无人核对 |
-| Provider | 5 原生 + `models.json` 其余 | `provider_factory.rs` | 51 个 Pi provider 中 5 个 —— **R5 待 owner 决策**，实现者不自行扩范围 |
+| 行为 oracle | **66 条**（v0.10 记的 45 已旧），其中 agent loop 12 条直接引 Pi 行号 | `crates/nini-conformance` | **无可执行的 Pi 侧对照物**：全是“注释引行号 + 断言 nini”。v3 已把行为层源码快照锁进 `references/pi-0.84.2/`（sha256），行号漂移从此可机器检出 |
+| 行号引用 | 以脚本输出为准（`.js` 与 `.ts` 都要数） | `python3 scripts/pi-line-refs.py --json` | v2 文档写 31（只数了 `.js`）；另有 1 条已被检出越界（`agent-loop.js:582` 实为 `.ts` 行号） |
+| Provider | **9 个原生实现（7 个品牌）+ `models.json` 其余** | `provider_factory.rs`；Pi 侧实测 `pi-ai/dist/providers/all.js` 的 `builtinProviders()` | **Pi 0.84.2 内置 40 个**（旧文档写 51，是错的）—— **R5 待 owner 决策**，实现者不自行扩范围 |
+| 差距台账 | **19 条**（A 4 / B 11 / C 3 / D 1），open 16、blocked-owner 3 | `python3 scripts/parity-gap.py --json` | 差距表不再手工维护 |
 | 能力面投入 | — | 自 10-05 起：`nini-tui` +11861 行、`nini-ai` +1295 行；但 `nini-ai` **最后一次提交停在 10-12** | 单侧化，见 §3 |
 
 ---
@@ -87,6 +91,7 @@ v0.9.2 一整版都在清这个。
 | v0.10 §8 **R8** | 按**节点数比值**排序：`nini-ai` 0.21x 优先于 `nini-tui` 3.20x → 冻结 TUI | §11 自己写过"节点数是代理指标"，R8 没用；§31 用 4 个用户报告缺陷证伪 |
 | §31 **M5** | 按**用户报告条数**排序 | 工作量由外部输入决定，**无上界** —— 修完 4 个报告，又是 15 个。`nini-ai` 自 10-12 起 5 天零提交、`nini-tui` 同期 +11861 行，就是这个规则失效的样子 |
 | **现行** | 按**未验证路径数**排序 | 可枚举、可脚本复算、不随外部输入漂移 |
+| **现行（功能面补充，2026-10-23）** | **功能面 parity 的排序以 [`plans/parity-with-pi.md` §3](./plans/parity-with-pi.md) 为准**：A→B 类，同类内 P0→P3，同严重度内再用上面的「未验证路径数」 | 两条规则原本互相冲突，而 GOALS 规定「冲突本身就是缺陷」。v3 合并为一条 |
 
 **未验证路径数**的定义：一个已实现的、用户可见的行为中，没有对应 oracle 的那些。
 `scripts/sweep-unwired.py` 是同源工具（它查"定义了没被调用"，本规则查"跑了但没被验证"）——
@@ -106,7 +111,7 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 | # | 决策 | 现状 | 阻塞什么 |
 |---|---|---|---|
 | R4 | nini 是否自建凭据存储（`~/.nini/agent/`），是否可选复用 Pi | 待决。`6abadd9` 已整体回滚过一次，回滚理由是产品判断而非技术障碍 | auth 层全部工作 |
-| R5 | 是否把 provider 补齐到 Pi 的 51 个 | 待决 | `nini-ai` 5 天零改动的解法取决于此 |
+| R5 | 是否把 provider 补齐到 Pi 全集（**Pi 0.84.2 实测 40 个**；旧文档写 51 是错的） | 待决 | `nini-ai` 5 天零改动的解法取决于此 |
 | **R9** | 语法高亮是否值得 +2–5 MB 体积（synctact vs 自研） | 待决 | 阻塞 `parity-with-pi.md` B7 |
 | **R10** | `/clone` 改为"切到新分支"会改变用户现有行为 | 待决 | 阻塞 B1 |
 | R6 | 扩展运行时 | **已被证伪**（Pi 加载 TS，`nini-ext` 是 `dlopen` cdylib，无共同执行模型）。`nini-ext` 556 行零调用点，保留并在 crate 头写明原因 | 无（结论已定，不要重开） |
@@ -125,7 +130,7 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 | ~~P0-5~~ | **已做** `↑`/`↓` 加 Pi 的 ladder 语义 | ✅ `prompt_vertical_motion.rs` 7 条绿 | 补齐视觉行几何 + 渲染发布宽度 |
 | ~~P1-1~~ | **已做** `ScrollToTop` + `Home`/`End` 归 transcript | ✅ `transcript_scroll_to_top.rs` 6 条绿；`Ctrl+E` 补齐 | Pi 的 `Home` 被 viewport listener 优先消费 |
 | ~~P2-1~~ | **已做** 发布 v0.10.2 | ✅ 版本已 bump、CHANGELOG 已封版、`--version` 带 profile、CI 增两道门禁；**待 push tag** | CHANGELOG 已补本次审计的 10 项；README 数字已对齐 **1428** |
-| **P0-6** | **新** 修 ESC 并发 spawn（见 §P0-6，实测 `spawns=2`） | probe 转绿且不忽略 | **P0，但会改 TUI 状态机**；需 owner 确认后再动 |
+| ~~P0-6~~ | **已做（2026-10-23）** 修 ESC 并发 spawn（见 §P0-6） | ✅ `RunState::agent_alive` 与 `mode` 解耦；`cargo test -p nini-tui --test esc_concurrency_probe` **不带 --ignored** 退出 0（5 条）；全工作区 1554 通过 / 0 ignored；两条变异注入均验证断言会红 | 修法与证据见 `docs/plans/parity-with-pi.md` §4 W1-A |
 | **P2-2** | 回填 v0.9.2 缺口表 | 每条 ⬜ 要么 ✅+提交号，要么移入“明确不做” | 已被后续版本推翻的条目会误导下一轮调研 |
 | **P2-3** | 能力面最低维持 | R5 未决期间**只做不扩范围**的修复 | 不擅自替 owner 决定范围 |
 
@@ -133,7 +138,7 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 
 按严重度降序：
 
-### P0-6（新，2026-10-18）：ESC 后可并发 spawn 第二个 agent —— **已实测**
+### P0-6（2026-10-18 定位，**2026-10-23 已修**）：ESC 后可并发 spawn 第二个 agent
 
 **本会话最严重的发现。** 复现：
 `cargo test -p nini-tui --test esc_concurrency_probe -- --ignored --nocapture` → `spawns=2 live=2`。

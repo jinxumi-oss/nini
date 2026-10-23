@@ -1302,6 +1302,34 @@ pub struct TranscriptState {
 pub struct RunState {
     /// Agent mode. Drives the input box's enabled state.
     pub mode: RunMode,
+    /// **Is an agent task still running?** — a fact about the *agent*,
+    /// deliberately NOT the same fact as `mode`.
+    ///
+    /// `mode` answers "may the editor take a submission?": Esc sets it back
+    /// to `Editing` the instant it is pressed (v0.10.1/M1), so the user can
+    /// type immediately after an interrupt. `agent_alive` answers "has the
+    /// spawned task finished pushing events?", and stays `true` for as long
+    /// as it takes — abort is a flag the task observes on its own schedule,
+    /// typically a beat after the keystroke.
+    ///
+    /// Do not merge the two. Before this field existed, `mode == Running`
+    /// was the only guard against a second `AgentDriver` invocation, and
+    /// Esc removed the guard while the first agent was still streaming:
+    /// Esc → Enter spawned driver #2 onto one `SharedState` and one session
+    /// file (measured: `spawns=2 live=2`, see
+    /// `tests/esc_concurrency_probe.rs`). This field is Pi's `_isAgentRun-
+    /// Active`, set false only by the run's terminal event.
+    ///
+    /// Every terminal path MUST clear it — `Done`, and the watchdog in
+    /// `runtime.rs` for a driver that returns without pushing `Done`. A
+    /// missed reset is the worse failure of the two: it silences every
+    /// later submission for the life of the process.
+    pub agent_alive: bool,
+    /// Monotonic id of the currently-spawned agent turn. Bumped at spawn
+    /// time; the watchdog that reaps a driver which never pushed `Done`
+    /// only clears `agent_alive` if this still matches, so a slow reap of
+    /// turn *N* can never disarm the guard on turn *N+1*.
+    pub run_seq: u64,
     /// User-visible status (e.g., "running...", "ready").
     pub status: String,
     /// When `Some`, the user pressed Ctrl+D and we're awaiting a
@@ -1599,6 +1627,8 @@ impl Clone for RunState {
     fn clone(&self) -> Self {
         Self {
             mode: self.mode,
+            agent_alive: self.agent_alive,
+            run_seq: self.run_seq,
             status: self.status.clone(),
             pending_quit: self.pending_quit,
             pending_external_editor: self.pending_external_editor,
@@ -1618,6 +1648,8 @@ impl Default for RunState {
     fn default() -> Self {
         Self {
             mode: RunMode::Editing,
+            agent_alive: false,
+            run_seq: 0,
             status: "ready".to_string(),
             pending_quit: None,
             pending_external_editor: false,
@@ -2211,6 +2243,31 @@ impl AppState {
             .lines
             .push(TranscriptLine::User(s.clone()));
         self.session_append(None, nini_core::Role::User, s);
+    }
+
+    /// v0.10.8 (P2/A1): a **queued** user message — one submitted while a
+    /// turn is still running.
+    ///
+    /// It goes into the transcript (the user must see what they queued)
+    /// but **not into the session**: the session write happens when the
+    /// message is actually delivered, with the next turn. Writing it here
+    /// as well put the same user message into the session **twice** — once
+    /// at queue time and once when the queue was flushed — so the model
+    /// saw it twice and `/resume` showed it twice
+    /// (review finding, 2026-10-23).
+    pub fn push_user_queued(&mut self, text: impl Into<String>) {
+        let s = text.into();
+        Arc::make_mut(&mut self.transcript_state)
+            .lines
+            .push(TranscriptLine::User(s));
+    }
+
+    /// v0.10.8 (P2/A1): the **delivery** of a queued message — the session
+    /// write, without a second transcript line (the transcript already
+    /// showed it when it was queued).
+    pub fn deliver_queued_user(&mut self, text: impl Into<String>) {
+        self.session_flush_assistant();
+        self.session_append(None, nini_core::Role::User, text.into());
     }
 
     pub fn push_assistant(&mut self, text: impl Into<String>) {

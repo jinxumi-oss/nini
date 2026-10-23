@@ -179,11 +179,37 @@ pub struct AgentSink {
     /// `changed()` signal that the runtime consumes on its next
     /// iteration.
     notify: tokio::sync::watch::Sender<bool>,
+    /// **Which turn this sink belongs to.**
+    ///
+    /// v0.10.8 (P2/A1): the terminal `Done` of an *older* turn must not
+    /// disarm the guard of a *newer* one. A turn that was aborted can push
+    /// its `Done` late — after the user has already started turn N+1 — and
+    /// an unconditional reset would re-open exactly the window A1 closed.
+    /// `None` means "unknown" (sinks built by tests and by callers that
+    /// are not the spawn path); those keep the old unconditional behaviour.
+    seq: Option<u64>,
 }
 
 impl AgentSink {
     pub fn new(state: SharedState, notify: tokio::sync::watch::Sender<bool>) -> Self {
-        Self { state, notify }
+        Self {
+            state,
+            notify,
+            seq: None,
+        }
+    }
+
+    /// v0.10.8 (P2/A1): the spawn path's sink, which knows its turn.
+    pub fn with_seq(
+        state: SharedState,
+        notify: tokio::sync::watch::Sender<bool>,
+        seq: u64,
+    ) -> Self {
+        Self {
+            state,
+            notify,
+            seq: Some(seq),
+        }
     }
 
     /// The shared state behind this sink.
@@ -390,9 +416,36 @@ impl AgentSink {
                     // Already handled at top of this match (set status).
                 }
                 AgentEventLite::Done => {
-                    s.run_state.mode = RunMode::Editing;
-                    s.run_state.status = "ready".to_string();
-                    s.run_state.abort_signal = None; // clear stale abort signal
+                    // v0.10.8 (P2/A1): the terminal event of an agent run
+                    // is also where the spawn guard comes back down. It is
+                    // a property of the *agent*, not of the editor, so Esc
+                    // must not touch it — see `RunState::agent_alive`.
+                    // `run_state::watchdog` in `submit_user_input_inner` is
+                    // the second writer, covering a driver that ends
+                    // without ever pushing this event.
+                    //
+                    // The reset is **scoped to this sink's turn**: a late
+                    // `Done` from an aborted turn N must not clear the
+                    // guard of turn N+1 (review finding, 2026-10-23).
+                    let is_current = match self.seq {
+                        Some(seq) => s.run_state.run_seq == seq,
+                        None => true,
+                    };
+                    if is_current {
+                        s.run_state.agent_alive = false;
+                        s.run_state.mode = RunMode::Editing;
+                        s.run_state.status = "ready".to_string();
+                        s.run_state.abort_signal = None; // clear stale abort signal
+                    } else {
+                        // A stale turn's terminal event: it must not touch
+                        // the current turn's state at all.
+                        tracing::warn!(
+                            "ignoring a Done event from a stale turn \
+                             (sink seq {:?}, current {:?})",
+                            self.seq,
+                            s.run_state.run_seq
+                        );
+                    }
                 }
             }
         } else {
@@ -439,6 +492,16 @@ impl AgentSink {
 /// moved to the boundary where the session is actually reachable — the
 /// Agent has no session handle, and the driver used to hand it an empty
 /// history while the session held the real one.
+/// v0.10.8 (P2/A1): how long the watchdog waits for an agent task before
+/// it declares it dead and lowers the spawn guard.
+///
+/// Without a timeout, a driver that never returns (a wedged provider
+/// socket, a task that awaits forever) would leave `agent_alive` up for
+/// the rest of the session — and the symptom of that is a TUI that accepts
+/// input and then does nothing with it. Ten minutes is far longer than a
+/// legitimate turn and far shorter than "the user gave up".
+const WATCHDOG_TIMEOUT_SECS: u64 = 600;
+
 pub type AgentDriver = Arc<
     dyn Fn(String, Vec<nini_core::provider::Message>, AgentSink, Arc<Notify>) -> JoinHandle<()>
         + Send
@@ -2194,8 +2257,43 @@ fn submit_user_input_inner(
     done: Arc<Notify>,
     event_tx: tokio::sync::watch::Sender<bool>,
 ) {
-    let text = {
+    let (text, seq) = {
         let mut g = lock_state(&shared);
+        // v0.10.8 (P2/A1): the guard against a second agent is
+        // `agent_alive`, NOT `mode`. Esc sets `mode = Editing` the instant
+        // it is pressed (v0.10.1/M1) while the first agent is still
+        // streaming, so `mode != Editing` answered "is a turn in flight?"
+        // with "no" and Enter went on to spawn driver #2 onto one
+        // `SharedState` and one session file (measured `spawns=2 live=2`;
+        // `tests/esc_concurrency_probe.rs`).
+        //
+        // A submit that lands while the agent is still alive is *steered*
+        // into the existing queue rather than refused: Pi sends it to the
+        // running turn (`streamingBehavior: "steer"`,
+        // `interactive-mode.js:2491`), and refusing it silently threw away
+        // whatever the user had typed. `queue_while_running` is the queue
+        // write — the same one the `mode == Running` branch of the key
+        // handler already uses, so there is one queue, not two.
+        if g.run_state.agent_alive {
+            // v0.10.8 (P2/A1, review finding): the steer branch used to
+            // require `mode == Editing`. During a running turn `mode` is
+            // `Running`, so a submit that reached this path **silently
+            // dropped the user's text** — it stayed in the input buffer and
+            // nothing was queued. The key handler queues a submit during a
+            // turn on its own (`KeyAction::Submit` → `queue_while_running`),
+            // but the API path — which is what a driver, a test or any
+            // future caller uses — dropped it. Queueing is the Pi behaviour
+            // in both states, so queue it in both.
+            //
+            // `Quitting` is the one state where nothing may be queued.
+            if g.run_state.mode != RunMode::Quitting {
+                let steered = g.input.submit();
+                if !steered.trim().is_empty() {
+                    queue_while_running(&mut g, &steered);
+                }
+            }
+            return;
+        }
         if g.run_state.mode != RunMode::Editing {
             return;
         }
@@ -2399,7 +2497,13 @@ fn submit_user_input_inner(
         // them as context asides on the next turn). Then clear the queue.
         let queued = std::mem::take(&mut g.run_state.pending_next_turn_messages);
         for aside in &queued {
-            g.push_user(aside.clone());
+            // v0.10.8 (P2/A1): delivery writes to the **session**; the
+            // transcript already showed the message when it was queued, so
+            // pushing it again would show the user's own message to them
+            // twice, and `push_user` would write it to the session a
+            // second time on top of the queue-time write that
+            // `push_user_queued` no longer makes.
+            g.deliver_queued_user(aside.clone());
             g.push_divider();
         }
 
@@ -2437,8 +2541,21 @@ fn submit_user_input_inner(
         g.push_user(text.clone());
         g.push_divider();
         g.run_state.mode = RunMode::Running;
+        // v0.10.8 (P2/A1): the guard goes up at the same instant, and not
+        // one line earlier — a turn that is refused above never reaches
+        // here, so nothing can leave this flag set without an agent behind
+        // it.
+        g.run_state.agent_alive = true;
+        g.run_state.run_seq = g.run_state.run_seq.wrapping_add(1);
         g.run_state.status = "running...".to_string();
-        text
+        // The turn's own number is read **inside the same critical
+        // section** that raised the guard. Reading it later (after the
+        // driver was spawned) would let a *newer* turn's number be
+        // captured, and then this turn's watchdog would clear the newer
+        // turn's guard — re-opening the window A1 closed
+        // (review finding, 2026-10-23).
+        let seq = g.run_state.run_seq;
+        (text, seq)
     };
 
     // v0.10 (R2a/A3): hand the driver the session's live context.
@@ -2455,11 +2572,104 @@ fn submit_user_input_inner(
     };
 
     // Spawn the agent task with its own sink.
-    let sink = AgentSink::new(shared.clone(), event_tx.clone());
-    let _handle = (agent_driver)(text, seed, sink, done.clone());
-    // The handle is intentionally dropped — the task continues running in
-    // the background. We don't abort the agent on quit; the runtime owns
-    // the SharedState and the sink keeps a clone.
+    let sink = AgentSink::with_seq(shared.clone(), event_tx.clone(), seq);
+    let handle = (agent_driver)(text, seed, sink, done.clone());
+
+    // v0.10.8 (P2/A1) — the watchdog. `Done` is the normal way
+    // `agent_alive` comes back down, but it is the *driver's* promise, and
+    // the driver is a `dyn Fn` supplied by the wiring crate. Every path
+    // where that promise is not kept leaves the flag up forever, and the
+    // symptom is silent and total: **nothing can ever be submitted again**.
+    // The paths are real — a panic inside the task, a `?`/early `return`
+    // before the terminal push, a poisoned state lock (`AgentSink::push`
+    // discards events when the mutex is poisoned; see the v0.10.1 note
+    // there). So the handle is awaited here and the flag is cleared on
+    // task exit whatever happened inside it.
+    //
+    // `run_seq` is what makes the reaper safe: the task can finish a
+    // moment *after* its `Done` landed, by which time the user may already
+    // have started turn N+1. Clearing the flag of turn N then would
+    // silently re-open the very window this fix closes, so the reap only
+    // applies if no newer turn has been spawned.
+    //
+    // The handle is consumed rather than dropped — dropping it did NOT
+    // abort anything (the comment below that claim was wrong: a
+    // `JoinHandle` is just a receiver), so awaiting it changes nothing
+    // about the agent's lifetime.
+    //
+    // `seq` comes from the critical section that raised the guard, not
+    // from a later read: a later read could capture a *newer* turn's
+    // number, and then this turn's watchdog would disarm the newer turn
+    // (review finding, 2026-10-23).
+    match tokio::runtime::Handle::try_current() {
+        Ok(rt) => {
+            let watchdog_shared = shared.clone();
+            rt.spawn(async move {
+                // A driver that never returns would leave the guard up
+                // forever — the symptom is a TUI that can no longer submit
+                // anything. The timeout is the backstop for that.
+                let outcome = tokio::time::timeout(
+                    std::time::Duration::from_secs(WATCHDOG_TIMEOUT_SECS),
+                    handle,
+                )
+                .await;
+                let mut g = lock_state(&watchdog_shared);
+                if g.run_state.run_seq != seq {
+                    // A newer turn is running: this watchdog has nothing
+                    // to say about it.
+                    return;
+                }
+                if !g.run_state.agent_alive {
+                    // The turn already finished properly (`Done` cleared
+                    // the guard). Nothing to repair — and **nothing to
+                    // warn about**: the normal path ends here.
+                    return;
+                }
+                g.run_state.agent_alive = false;
+                // Same reasoning as `Done`, applied to the editor half of
+                // the state: if the TUI still believes a turn is in flight,
+                // it is wrong, and leaving it wrong locks the editor for
+                // the rest of the session — the submit guard refuses
+                // everything while `mode` is not `Editing`. Only `Running`
+                // is rewritten, so a quit or a shutdown in progress is
+                // never resurrected by a task that ended a moment ago.
+                if g.run_state.mode == RunMode::Running {
+                    g.run_state.mode = RunMode::Editing;
+                    g.run_state.abort_signal = None;
+                }
+                match outcome {
+                    Ok(Ok(())) => tracing::warn!(
+                        "agent task ended without a Done event; \
+                         cleared run_state::agent_alive"
+                    ),
+                    Ok(Err(join_err)) => tracing::warn!(
+                        "agent task panicked ({join_err}); \
+                         cleared run_state::agent_alive"
+                    ),
+                    Err(_) => tracing::warn!(
+                        "agent task did not finish within {WATCHDOG_TIMEOUT_SECS}s; \
+                         cleared run_state::agent_alive"
+                    ),
+                }
+            });
+        }
+        Err(_) => {
+            // No tokio runtime in this thread: the driver could not have
+            // spawned a task either, so there is no agent behind the
+            // guard. Leaving it up would mute the TUI for good.
+            let mut g = lock_state(&shared);
+            if g.run_state.run_seq == seq {
+                g.run_state.agent_alive = false;
+                if g.run_state.mode == RunMode::Running {
+                    g.run_state.mode = RunMode::Editing;
+                }
+                tracing::warn!(
+                    "no tokio runtime for the agent watchdog; \
+                     cleared run_state::agent_alive"
+                );
+            }
+        }
+    }
 }
 
 /// Apply a `KeyAction` to a state without spawning anything. Used by tests
@@ -2857,7 +3067,14 @@ pub fn queue_while_running(state: &mut AppState, text: &str) {
     // to the session — so the model would have been handed the marker as
     // part of the user's own words, once through the session and again
     // through steering. The pending count belongs in the status line.
-    state.push_user(text);
+    //
+    // v0.10.8 (P2/A1): `push_user_queued`, not `push_user`. `push_user`
+    // writes to the session **as well as** the transcript, and the queue
+    // is flushed into the session again when the message is finally
+    // delivered — so the same user message landed in the session twice and
+    // the model saw it twice (review finding, 2026-10-23). The session
+    // write belongs to the delivery, not to the queueing.
+    state.push_user_queued(text);
     state.push_divider();
     state.run_state.status = format!("queued: {n} pending");
     state.mark_scroll_activity();

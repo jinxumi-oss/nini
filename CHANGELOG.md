@@ -1,3 +1,158 @@
+## v0.10.8 — the guard against a second agent was the editor's state (2026-10-23)
+
+1557 tests, all green. The defect was measured on v0.10.2 and had been sitting
+in the plan as a P0 with a written exit criterion that nobody had executed.
+
+### Esc could start a second agent, and the session file kept the receipts
+
+Reproduce the old one:
+
+```console
+cargo test -p nini-tui --test esc_concurrency_probe -- --ignored --nocapture
+# → 2 spawns, 2 live
+```
+
+The path is ordinary use: type while the agent is streaming, press **Esc**,
+press **Enter**. Pi cannot reach that state — `AgentSession.isIdle` is
+`!_isAgentRunActive` (`agent-session.js:592`), a property of the *agent*,
+and Esc only calls `agent.abort()` without touching it; a submission during
+streaming is steered into the running turn, so a second agent is never
+spawned.
+
+nini had **one field doing both jobs**. `RunMode` answered "may the editor
+take a submission?" *and* "is an agent running?" — and v0.10.1 (fixing the
+real bug "after Esc I cannot type for four seconds") set it back to `Editing`
+the instant Esc was pressed, which removed the only guard against a second
+spawn. Two turns then wrote to one session file, shared one `TokenStats`, and
+interleaved their events into one transcript.
+
+### Two facts, two fields
+
+`RunState` now carries `agent_alive: bool` — "has the spawned task finished
+pushing events?" — next to `mode`, which keeps its own job. The guard in
+`submit_user_input_inner` reads `agent_alive`; Esc still hands the editor
+back immediately, because that is what the user asked for and it is what Pi
+does.
+
+A flag that is raised must also be lowered, and the lowering is where this
+kind of fix usually leaks:
+
+* the terminal `Done` event clears it;
+* a **watchdog** clears it too, because `Done` is the *driver's* promise and
+  the driver is a `dyn Fn` — a panic, an early return or a poisoned lock
+  inside the task would otherwise leave the flag up forever, and the symptom
+  of that is silence: nothing could ever be submitted again;
+* the watchdog is armed with a monotonic `run_seq`, so a task that finishes a
+  moment *after* its `Done` landed cannot disarm the guard of the next turn.
+
+A submission that arrives while the agent is still alive is **steered into
+the existing queue** rather than refused — refusing it silently threw away
+what the user had typed.
+
+### The receipt
+
+`tests/esc_concurrency_probe.rs` is no longer `#[ignore]`d: a defect that was
+fixed and then re-introduced has to fail a plain `cargo test`. It now has
+seven tests — the original one, the four that guard the *other* direction
+(`Done` clears the guard; a `Done` reopens the editor; an erroring turn
+reopens it; a driver that never says `Done` still reopens it), and two that
+the **review** below asked for. A guard that is never lowered is not a fix,
+it is a mute button.
+
+### The review found five things in the fix itself
+
+An independent review of the change (`docs/reviews/parity-v3-review.md`)
+found five critical problems — three of them **in the fix that was supposed
+to close the hole**. All five were confirmed and closed, each with its own
+mutation test:
+
+1. **The watchdog's turn number was read outside the critical section**, so
+   it could capture a *newer* turn's number and then disarm that newer
+   turn — reopening the window A1 closed. The number is now read in the
+   same critical section that raises the guard.
+2. **A late `Done` from an interrupted turn cleared the guard of the turn
+   running now.** The sink now knows which turn it belongs to, and a stale
+   terminal event is ignored instead of acted upon.
+3. **A queued message was written into the session twice** — once when it
+   was queued and once when it was delivered — so the model saw it twice
+   and `/resume` showed it twice. Queueing now writes to the transcript
+   only; delivery writes to the session.
+4. **The steer path required `mode == Editing`**, so a submission that
+   reached the API while a turn was running (mode `Running`) was silently
+   dropped — the text stayed in the input box and nothing was queued. The
+   product's key handler queued it on its own, which is why only the API
+   path lost it. A new test dug this out.
+5. **Two of the new checks were vacuous** — a `--check-plan` that matched
+   zero ids and passed anyway, and a self-check whose regular expression
+   matched nothing. A check that cannot fail is decoration. The plan
+   cross-check now works on the prose (every gap id the plan mentions must
+   exist in the ledger; every gap the ledger calls fixed must be written
+   down), and the self-check gained a rule that **every regex-based check
+   must catch its own synthetic sample**.
+
+Four mutations were injected to prove the assertions can go red: deleting
+the `Done` reset, disarming the watchdog, writing to the session at queue
+time, and restoring the old `mode == Editing` condition — each turns a
+different test red.
+
+### The end-to-end version, and why a unit test was not enough
+
+`scripts/e2e-interrupt.sh` starts the **real binary** against the scripted
+mock provider, interrupts a turn that is really streaming, submits again, and
+then reads two artefacts instead of the screen:
+
+1. the mock provider's request log — **no two requests may overlap**;
+   overlap is the machine-checkable signature of a second agent starting
+   while the first was still streaming;
+2. the session JSONL — the second turn's text must not be written before the
+   first turn's, and the timestamps must be monotonic.
+
+It is not a decoration: with the fix reverted, the script fails with
+*"request #1 and #2 overlap — a second agent started while the first was
+still streaming"*.
+
+### The plan was rewritten, because the plan had holes
+
+`docs/plans/parity-with-pi.md` is now **v3**. The v2 plan was audited and
+found to have thirteen holes, five of which would have sent an executor
+somewhere wrong (the most serious: its "Pi cannot be triggered offline"
+branch allowed the P0 to be deferred behind P2 work, with no owner in the
+loop). v3:
+
+* moves the gap table out of Markdown into `scripts/parity-gaps.json`, so
+  every count is produced by a script instead of remembered — the plan had
+  convicted itself of "hand-counted numbers are unreliable" and then kept
+  hand-counting;
+* locks the behaviour layer: Pi 0.84.2's source is snapshotted into
+  `references/pi-0.84.2/` with a sha256 lock, and
+  `scripts/pi-oracle-lock.py --verify-refs` resolves every one of the **89**
+  line-number references in the tree (v2's plan counted 31 — it had only
+  counted the `.js` ones) and reports the ones that drifted;
+* makes every exit criterion a command with an exit code, including the ones
+  that used to be "tick the box" or "look at it in tmux";
+* resolves the conflict with `docs/GOALS.md`, which had a second, different
+  ordering rule and a second "only list".
+
+`scripts/plan-selfcheck.py` checks that the plan and the ledger still agree
+(9 checks, all green), and `scripts/parity-gap.py` refuses to report on a
+ledger with an empty field.
+
+### Two things this round found that the ledger did not know
+
+* **A5 — the TUI does not create a session file.** The footer says
+  `[no session]` and the conversation is gone after exit; only `/new` (or
+  `/fork`) creates a file. Measured on v0.10.7. The README's known
+  limitations claimed the opposite ("sessions themselves are persisted"), so
+  both READMEs now say what the binary does. Tracked, not fixed — it is a
+  product decision, and it is bigger than this round.
+* **A6 — a queued message is not delivered after an interrupt.** Pi steers it
+  into the running turn; nini only flushes the queue on the next spawn, so a
+  message typed right after an Esc waits for another Enter.
+
+The provider counts in the docs were wrong too: Pi 0.84.2 ships **40**
+builtin providers (the plan said 51) and nini implements **9** (the plan said
+5). Both READMEs and `docs/GOALS.md` now carry the measured numbers.
+
 ## v0.10.7 — the ASCII stand-in had to cover the whole box-drawing block (2026-10-23)
 
 1550 tests, all green. v0.10.6 fixed the frame width; this completes it.

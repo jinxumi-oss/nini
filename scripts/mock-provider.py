@@ -161,8 +161,14 @@ async def completions(request: web.Request) -> web.StreamResponse:
         },
     }
 
+    # v0.10.8: the request's **start** is stamped, not just its arrival.
+    # "Two requests overlapped" is the only machine-checkable signature of a
+    # second agent spawned while the first was still streaming (A1) — and
+    # overlap needs both ends of both intervals, so the end is stamped too.
+    started = time.time()
     print(
-        f"[mock] request #{idx} turns={len(body.get('messages') or [])}msgs "
+        f"[mock] request #{idx} START {time.strftime('%H:%M:%S', time.localtime(started))}."
+        f"{int((started % 1) * 1000):03d} turns={len(body.get('messages') or [])}msgs "
         f"tools={len(body.get('tools') or [])} → {turn.get('type')}",
         flush=True,
     )
@@ -172,24 +178,49 @@ async def completions(request: web.Request) -> web.StreamResponse:
         headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
     )
     await resp.prepare(request)
-    if app["split_bytes"]:
-        # 真实网络在**任意字节边界**切断一个 TCP 流，包括多字节字符
-        # （中文 3 字节）的中间。mock 之前把整段一次写完，所以它验证不了
-        # 任何与"字符被切断"有关的东西 —— 而那正是用户在真实 provider 上
-        # 遇到的失败：解析器把每个 chunk 单独解码，切断的字符直接让整个
-        # 回合以 "invalid utf-8" 死掉。
-        raw = payload.encode()
-        for i in range(0, len(raw), app["split_bytes"]):
-            await resp.write(raw[i : i + app["split_bytes"]])
-            await asyncio.sleep(0.002)
-    else:
-        await resp.write(payload.encode())
+    try:
+        if app["split_bytes"]:
+            # 真实网络在**任意字节边界**切断一个 TCP 流，包括多字节字符
+            # （中文 3 字节）的中间。mock 之前把整段一次写完，所以它验证不了
+            # 任何与"字符被切断"有关的东西 —— 而那正是用户在真实 provider 上
+            # 遇到的失败：解析器把每个 chunk 单独解码，切断的字符直接让整个
+            # 回合以 "invalid utf-8" 死掉。
+            raw = payload.encode()
+            for i in range(0, len(raw), app["split_bytes"]):
+                await resp.write(raw[i : i + app["split_bytes"]])
+                await asyncio.sleep(app["chunk_delay"])
+        else:
+            await resp.write(payload.encode())
+            if app["chunk_delay"] > 0:
+                # Even a single write takes time to be *read* by a slow client;
+                # sleeping here is what makes "the turn is still streaming" a
+                # real window instead of a race.
+                await asyncio.sleep(app["chunk_delay"])
+    except (ConnectionResetError, asyncio.CancelledError, RuntimeError) as e:
+        # v0.10.8: the client hung up — that is what an interrupt looks like
+        # from the server's side. Without this line the request has **no
+        # end marker at all**, and a timeline with a hole in it cannot be
+        # used to decide "did two turns overlap?" — the hole has to be
+        # marked, or the judgement is guesswork.
+        cut = time.time()
+        print(
+            f"[mock] request #{idx} CUT   {time.strftime('%H:%M:%S', time.localtime(cut))}."
+            f"{int((cut % 1) * 1000):03d} dur={cut - started:.3f}s ({type(e).__name__})",
+            flush=True,
+        )
+        raise
     # usage 必须是一个完整 JSON 行。曾经按字节切片后逐片加 `data:` 前缀，
     # Pi 直接报 "Could not parse message into JSON"——SSE 的分片单位是
     # **一个完整事件**，不是任意字节边界。
     await resp.write(("data: " + json.dumps(usage, ensure_ascii=False) + "\n\n").encode())
     await resp.write(b"data: [DONE]\n\n")
     await resp.write_eof()
+    ended = time.time()
+    print(
+        f"[mock] request #{idx} END   {time.strftime('%H:%M:%S', time.localtime(ended))}."
+        f"{int((ended % 1) * 1000):03d} dur={ended - started:.3f}s",
+        flush=True,
+    )
     return resp
 
 
@@ -211,6 +242,14 @@ def main() -> int:
         help="write the stream in chunks of N bytes (0 = one write). A non-zero "
         "value cuts multi-byte characters in half, the way a real network does.",
     )
+    ap.add_argument(
+        "--chunk-delay",
+        type=float,
+        default=0.002,
+        help="seconds to sleep between chunks. This is what makes a turn "
+        "last long enough to be interrupted (the e2e interrupt test needs a "
+        "window of seconds, not milliseconds).",
+    )
     args = ap.parse_args()
 
     turns = json.loads(Path(args.script).read_text())["turns"]
@@ -221,6 +260,7 @@ def main() -> int:
     app["model"] = args.model
     app["counter"] = itertools.count()
     app["split_bytes"] = args.split_bytes
+    app["chunk_delay"] = args.chunk_delay
     app.router.add_post("/v1/chat/completions", completions)
     app.router.add_get("/v1/models", models)
 
