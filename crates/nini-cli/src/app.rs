@@ -571,7 +571,10 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
                         nini_tui::runtime::AgentEventLite::Error(message)
                     }
                     Ok(AgentEvent::PhaseChanged(phase)) => {
-                        nini_tui::runtime::AgentEventLite::PhaseChanged(phase.to_string())
+                        // v0.10.8 (A2)：传**稳定的机器标签**，而不是 Display。
+                        // TUI 用它判断「是否在压缩」；Display 是给人看的，
+                        // 格式一变就会静默失效（review finding）。
+                        nini_tui::runtime::AgentEventLite::PhaseChanged(phase.tag().to_string())
                     }
                     Ok(_) => continue,
                     Err(e) => {

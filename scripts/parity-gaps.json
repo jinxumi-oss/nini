@@ -23,14 +23,14 @@
       "id": "A2",
       "class": "A",
       "severity": "P0",
-      "title": "压缩期间没有语义：提交不会排队，Esc 也不认识压缩；nini 的压缩排队分支是不可达死代码",
+      "title": "压缩有了生命周期：两条溢出路径都发 Compacting 相位、置/清标志；压缩期间的提交进队列（此前是不可达死代码）",
       "pi_basis": "agent-session.js:807 `throw new Error(\"Cannot submit a prompt while compaction is in progress...\")`；agent-session.js:647 `get isCompacting()`；interactive-mode.js:2486/3283 `queueCompactionMessage(text,\"steer\"/\"followUp\")`，定义在 interactive-mode.js:3525",
-      "nini_state": "is_compacting 全仓库无赋值点（crates/nini-tui/src/state.rs:1625 初始化 false，crates/nini-tui/src/runtime.rs:2382 读取，crates/nini-tui/src/runtime.rs:2840 注释自承是死代码）",
-      "oracle": "none",
-      "status": "open",
+      "nini_state": "已修（2026-10-23）：agent 在**两条**溢出路径（可恢复的 length stop、provider 的 StreamEvent::Error——后者是生产主路径）上发 Compacting/Working 相位并置/清标志；sink 把相位映射成 run_state.is_compacting —— runtime.rs 里「压缩期间提交进队列」**从死代码变成活代码**；运行结束（Done/watchdog）复位标志。**未包含**：Esc 在压缩期间中止压缩（属 EscapeTarget 栈，见 A2b/A3）",
+      "oracle": "crates/nini-core/tests/compaction_lifecycle.rs（3 条：溢出压缩发出 Compacting 相位且在 Compacted 之前、结束回到 Working、标志落下；压缩**失败**也收尾；压缩期间排队的消息被交回）；crates/nini-tui/tests/compaction_queue.rs（2 条：收到 Compacting 相位后 is_compacting 立起来，压缩期间的提交**不另起一轮**而进队列；**运行结束必须复位**标志）",
+      "status": "fixed",
       "blocking_decision": null,
       "round": "W1-B",
-      "exit_criterion": "`grep -rn 'is_compacting = true' crates/nini-tui/src` 命中 ≥1 处赋值点，且 crates/nini-tui/tests/ 下存在 ≥1 条覆盖「压缩中提交」行为的 oracle 且通过",
+      "exit_criterion": "cargo test -p nini-core --test compaction_lifecycle 退出 0；cargo test -p nini-tui --test compaction_queue 退出 0",
       "machine_checkable": true,
       "layer": null
     },
@@ -408,6 +408,20 @@
       "exit_criterion": "cargo test -p nini-conformance --test session_parity_0_85_1 退出 0；且 CI 里重录一遍，条目类型与 role 序列必须与已提交的 fixture 一致",
       "machine_checkable": false,
       "layer": null
+    },
+    {
+      "id": "A2b",
+      "class": "A",
+      "severity": "P1",
+      "title": "Esc 在压缩期间不会中止压缩（Pi 有 autoCompactionEscapeHandler）",
+      "pi_basis": "Pi 在进入压缩/重试前会**替换** Esc 处理器（`autoCompactionEscapeHandler` / `retryEscapeHandler`，见 interactive-mode.ts 的 EscapeTarget）",
+      "nini_state": "nini 的 Esc 是一条 if-else 链（completion → search → pending_quit → Running → clear），压缩期间按 Esc 会走「中止回合」那条，而不是「中止压缩」——Pi 的两件事在 nini 里没有分开",
+      "oracle": "none",
+      "status": "open",
+      "blocking_decision": null,
+      "round": "W1-B",
+      "exit_criterion": "压缩期间按 Esc → 压缩被中止、回合继续（Pi 的语义）；有一条 oracle",
+      "machine_checkable": false
     }
   ]
 }

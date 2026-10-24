@@ -1,6 +1,6 @@
 ## v0.10.8 — the guard against a second agent was the editor's state (2026-10-23)
 
-1591 tests, all green. The defect was measured on v0.10.2 and had been sitting
+1596 tests, all green. The defect was measured on v0.10.2 and had been sitting
 in the plan as a P0 with a written exit criterion that nobody had executed.
 
 ### Esc could start a second agent, and the session file kept the receipts
@@ -222,6 +222,41 @@ writes the **session** (Pi's own JSONL format, first line the session
 header); any other extension is refused **out loud** — *"use .html or
 .jsonl"* — instead of quietly writing somewhere else. With no argument the
 behaviour is unchanged (HTML into the exports directory).
+
+### Context compaction has a lifecycle now — and the code that was dead is alive
+
+nini detected a context overflow, compacted, and carried on — **silently**.
+There was no phase, no flag, nothing. Which meant that
+`runtime.rs`'s branch *"if compaction is in progress, queue the message
+instead of spawning an agent"* was **unreachable dead code**: the flag it
+tests (`run_state.is_compacting`) was never set by anything. Pi has an
+explicit meaning there (`agent-session.ts#queueCompactionMessage`); nini had
+a comment describing one.
+
+The agent now emits a `Compacting` phase around the compaction and clears it
+afterwards, on **both** overflow paths — the recoverable length stop *and*
+the provider's `StreamEvent::Error`, which is the one that arrives in
+production (providers map HTTP 400 to it). The TUI turns that phase into
+`run_state.is_compacting`, so the queueing branch is live: a message typed
+during compaction is queued and delivered with the next turn instead of
+starting a second agent.
+
+The phase is carried as a **stable machine tag** (`AgentPhase::tag()`), not
+as the `Display` string. The TUI used to decide "are we compacting?" by
+`starts_with("compacting")` — a display format that, if it ever changed,
+would have silently disabled the whole mechanism with nothing going red.
+
+An independent review of this change found three critical problems in it —
+a queue that was dropped while the comment claimed it was handed back, a
+`None` branch that never ended the lifecycle (the flag would have stayed
+true forever, and the TUI would have queued every later message and run
+none of them), and a missing reset when a run ended. All three are fixed,
+each with an oracle and a mutation check.
+
+What is **not** fixed yet: pressing Esc *during* a compaction should cancel
+the compaction and let the turn continue — Pi swaps its Esc handler per
+context. nini's Esc is still one if-else chain, so that is tracked
+separately (gap **A2b**, part of the EscapeTarget work).
 
 ### A message you typed during an interrupt no longer disappears
 

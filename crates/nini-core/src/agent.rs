@@ -46,6 +46,26 @@ pub enum AgentPhase {
     BranchSummary,
 }
 
+impl AgentPhase {
+    /// **稳定的机器标签**（v0.10.8 / A2，review finding）。
+    ///
+    /// TUI 需要知道「现在是不是在压缩」，而 `Display` 是**给人看的**：
+    /// 它的格式一变（`compacting:overflow` → 别的写法），靠
+    /// `starts_with("compacting")` 判断的地方就会**静默失效**——没有测试会红，
+    /// 而 TUI 会以为没在压缩。
+    ///
+    /// 所以：标签单独给一份，与 Display **解耦**。
+    pub fn tag(&self) -> &'static str {
+        match self {
+            AgentPhase::Idle => "idle",
+            AgentPhase::Working => "working",
+            AgentPhase::Compacting { .. } => "compacting",
+            AgentPhase::Retrying { .. } => "retrying",
+            AgentPhase::BranchSummary => "branch_summary",
+        }
+    }
+}
+
 impl std::fmt::Display for AgentPhase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1325,12 +1345,45 @@ impl Agent {
                                     ) {
                                         self.messages.pop();
                                     }
+                                    // v0.10.8 (A2)：压缩**有生命周期**。
+                                    //
+                                    // 此前压缩是「偷偷」进行的：没有相位、没有标志，
+                                    // 于是 TUI 永远不知道正在压缩，`is_compacting`
+                                    // 永远是 false —— runtime.rs 里那个「压缩期间
+                                    // 提交进队列」的分支是**不可达死代码**，
+                                    // 而 Pi 在压缩期间是有明确语义的。
+                                    //
+                                    // Pi：`agent-session.ts#_checkCompaction` →
+                                    // 压缩期间 `prompt()` 走 queueCompactionMessage
+                                    // （另一条路径直接抛错）—— Pi 的两种路径都要照做，
+                                    // 这里先接上「排队」那条（nini 的压缩是本地的，
+                                    // 窗口短，但语义必须存在）。
+                                    self.begin_auto_compaction();
+                                    self.set_phase(AgentPhase::Compacting {
+                                        reason: "overflow".to_string(),
+                                        progress: None,
+                                    });
+                                    yield AgentEvent::PhaseChanged(AgentPhase::Compacting {
+                                        reason: "overflow".to_string(),
+                                        progress: None,
+                                    });
                                     match self.compact_history_via_hook() {
                                         Some(r) => {
+                                            // 压缩结束：标志落下。
+                                            //
+                                            // 注意：**队列不在这里**。产品里排队的是
+                                            // TUI 的 `run_state.pending_next_turn_messages`
+                                            // （用户在压缩期间提交的消息），agent 这一份
+                                            // 队列（`pending_next_turn_messages`）在产品里
+                                            // 一直是空的——`end_auto_compaction()` 只是把
+                                            // 标志和中止句柄复位。
+                                            self.end_auto_compaction();
                                             yield AgentEvent::Compacted {
                                                 summary: r.summary.clone(),
                                                 tokens_before: r.tokens_before,
                                             };
+                                            self.set_phase(AgentPhase::Working);
+                                            yield AgentEvent::PhaseChanged(AgentPhase::Working);
                                             retry_after_compaction = true;
                                             break 'outer;
                                         }
@@ -1350,6 +1403,12 @@ impl Agent {
                                             yield AgentEvent::Error {
                                                 message: msg.to_string(),
                                             };
+                                            // v0.10.8 (A2, review finding)：**收尾**。
+                                            // 压缩没成功也是「压缩结束了」——
+                                            // 标志必须落下，否则它会**永久**为真，
+                                            // 而 TUI 会把之后每一次提交都收进队列
+                                            // 且永不执行。
+                                            self.end_auto_compaction();
                                             self.set_phase(AgentPhase::Idle);
                                             yield AgentEvent::PhaseChanged(AgentPhase::Idle);
                                             return;
@@ -1392,12 +1451,28 @@ impl Agent {
                                         return;
                                     }
                                     self.overflow_recovery_attempted = true;
+                                    // v0.10.8 (A2)：这条路径是**生产主路径**
+                                    // （provider 把 HTTP 400 报成 StreamEvent::Error），
+                                    // 它也必须有压缩的生命周期——否则「压缩期间
+                                    // 提交进队列」只在另一条路径上成立。
+                                    self.begin_auto_compaction();
+                                    self.set_phase(AgentPhase::Compacting {
+                                        reason: "overflow".to_string(),
+                                        progress: None,
+                                    });
+                                    yield AgentEvent::PhaseChanged(AgentPhase::Compacting {
+                                        reason: "overflow".to_string(),
+                                        progress: None,
+                                    });
                                     match self.compact_history_via_hook() {
                                         Some(r) => {
                                             yield AgentEvent::Compacted {
                                                 summary: r.summary.clone(),
                                                 tokens_before: r.tokens_before,
                                             };
+                                            self.end_auto_compaction();
+                                            self.set_phase(AgentPhase::Working);
+                                            yield AgentEvent::PhaseChanged(AgentPhase::Working);
                                             retry_after_compaction = true;
                                             break 'outer;
                                         }
@@ -1408,6 +1483,8 @@ impl Agent {
                                                      to compact: {message}"
                                                 ),
                                             };
+                                            // 收尾：标志必须落下（review finding）。
+                                            self.end_auto_compaction();
                                             self.set_phase(AgentPhase::Idle);
                                             yield AgentEvent::PhaseChanged(AgentPhase::Idle);
                                             return;

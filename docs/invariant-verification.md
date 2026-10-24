@@ -179,3 +179,15 @@ CLI 与测试共用**同一份实现**。改完再注入 → 三条全红。
 | 判据 | 注入的 bug | 变红的断言 |
 |---|---|---|
 | `crates/nini-tui/tests/export_path.rs` | 让 `/export` **又变成忽略路径**（`let requested = "";`） | 三条全红：`an_html_path_is_honoured`、`a_jsonl_path_is_honoured_and_holds_the_session`、`an_unsupported_extension_is_refused_out_loud` |
+
+
+---
+
+## 压缩的生命周期（A2，2026-10-23）
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-core/tests/compaction_lifecycle.rs` | agent **不发** Compacting 相位 | `an_overflow_compaction_has_a_phase_and_ends_it` |
+| `crates/nini-core/tests/compaction_lifecycle.rs` | 压缩**失败**（钩子返回 None）时**不收尾** | `a_failed_compaction_also_ends_the_lifecycle` |
+| `crates/nini-tui/tests/compaction_queue.rs` | sink **不**把相位映射成 `is_compacting` | `a_submit_during_compaction_is_queued_not_spawned` |
+| `crates/nini-tui/tests/compaction_queue.rs` | 运行结束（Done）**不复位**压缩标志 | `the_end_of_a_run_resets_the_compaction_flag` |

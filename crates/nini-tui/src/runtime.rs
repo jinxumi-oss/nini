@@ -265,6 +265,13 @@ impl AgentSink {
         };
         if let Ok(mut s) = self.state.lock() {
             if let Some(phase) = phase_status {
+                // v0.10.8 (A2)：压缩的相位要变成**状态**。
+                //
+                // `run_state.is_compacting` 此前**永远**是 false，所以
+                // runtime.rs 里「压缩期间提交进队列」的分支是不可达死代码。
+                // 现在压缩一开始，这个标志就立起来；压缩结束（相位离开
+                // compacting）就落下。Pi 在压缩期间是有明确语义的。
+                s.run_state.is_compacting = phase == "compacting";
                 s.run_state.status = phase;
             }
             match ev {
@@ -433,6 +440,11 @@ impl AgentSink {
                     };
                     if is_current {
                         s.run_state.agent_alive = false;
+                        // v0.10.8 (A2, review finding)：**运行结束就复位**。
+                        // 之前若这一轮死在 Compacting 相位之后，标志会**永久**为真，
+                        // 于是之后每次 Enter 都被收进队列、再也不执行——
+                        // 症状是「按了 Enter，什么也没发生」。
+                        s.run_state.is_compacting = false;
                         s.run_state.mode = RunMode::Editing;
                         s.run_state.status = "ready".to_string();
                         s.run_state.abort_signal = None; // clear stale abort signal
@@ -2721,6 +2733,8 @@ fn submit_user_input_inner(
                     return;
                 }
                 g.run_state.agent_alive = false;
+                // v0.10.8 (A2, review finding)：同样要复位压缩标志。
+                g.run_state.is_compacting = false;
                 // v0.10.8 (A6): 同 `Done` —— 收尾时队列里还有消息就该投递。
                 if !g.run_state.pending_next_turn_messages.is_empty() {
                     g.run_state.auto_turn_pending = true;
