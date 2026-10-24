@@ -1,6 +1,7 @@
 # 工具对标计划（WF-BUILTIN）——把八个内置工具对齐到 Pi 0.85.1
 
-> 建立：2026-10-23 · 状态：**active** · 上级：`docs/plans/parity-with-pi.md` §2.1 的 **WF-BUILTIN**
+> 建立：2026-10-23 · 状态：**done（T1–T4 全部完成，看板 5/5，已升级为 CI 硬门禁）**
+> · 上级：`docs/plans/parity-with-pi.md` §2.1 的 **WF-BUILTIN**
 > 锚点：**Pi 0.85.1（冻结中）**，唯一来源 `references/TARGET.json`
 > 看板：`python3 scripts/tool-parity-check.py`
 
@@ -241,7 +242,11 @@ python3 scripts/tool-parity-check.py --quick   # 只跑不编译的两条
 | T1 | `pi-tool-contracts.py --compare`：7 个工具逐条一致 | ✗ 7/7 不一致 |
 | T2 | `nini-tools` 有 `ls` 且已注册 | ✗ 不存在 |
 | T3 | `cargo test -p nini-core --test prompt_tool_linkage` | ✗ 测试不存在 |
-| T4 | `cargo test -p nini-tools --test truncation_parity` | ✗ 测试不存在 |
+| T4 | `cargo test -p nini-tools --test truncation_parity` | ✓ |
+
+> **执行结果（2026-10-23）**：四项全部达成（`scripts/tool-parity-check.py` → 5/5，退出 0），
+> 并已从 CI 的**报告**升级为**硬门禁**。审查提出的 5 个漏洞与它们各自的处置记在
+> §3.5 与 `docs/reviews/tool-parity-review.md`。
 
 **看板要进 CI**：它把"这一批做完没有"变成一次运行的结果，而不是一句"我觉得好了"。
 （与 `pi-target-lock.py` 一样：门禁必须能红才有意义。）
