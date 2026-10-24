@@ -272,6 +272,16 @@ impl AgentSink {
                 // 现在压缩一开始，这个标志就立起来；压缩结束（相位离开
                 // compacting）就落下。Pi 在压缩期间是有明确语义的。
                 s.run_state.is_compacting = phase == "compacting";
+                // v0.10.8 (A3)：相位同时决定 **Esc 的语义**。
+                // Pi 在进入压缩/重试/分支摘要前会替换 Esc 处理器；nini 用一个
+                // 显式的 target 来表达同一件事。
+                s.run_state.escape_target = match phase.as_str() {
+                    "compacting" => crate::state::EscapeTarget::Compacting,
+                    "retrying" => crate::state::EscapeTarget::Retrying,
+                    "branch_summary" => crate::state::EscapeTarget::BranchSummary,
+                    "working" => crate::state::EscapeTarget::Agent,
+                    _ => crate::state::EscapeTarget::Idle,
+                };
                 s.run_state.status = phase;
             }
             match ev {
@@ -1968,18 +1978,21 @@ fn handle_key(
                 submit_user_input(shared, agent_driver, done, event_tx.clone());
             }
         }
-        KeyAction::Abort => {
-            if state.ui_state.completion.is_some() {
+        KeyAction::Abort => match escape_action(&state) {
+            EscapeAction::CloseCompletion => {
                 state.ui_state.completion = None;
-            } else if state.ui_state.search.is_some() {
+            }
+            EscapeAction::EndSearch => {
                 // Esc exits transcript search (F019).
                 state.end_search();
                 state.run_state.status = "ready".to_string();
-            } else if state.run_state.pending_quit.is_some() {
+            }
+            EscapeAction::CancelQuit => {
                 // Esc cancels the pending Ctrl+D quit confirmation.
                 state.run_state.pending_quit = None;
                 state.run_state.status = "ready".to_string();
-            } else if state.run_state.mode == RunMode::Running {
+            }
+            EscapeAction::AbortTurn => {
                 // Signal the agent to abort, then hand the editor back.
                 //
                 // v0.10.1 (M1): the queue goes back to the editor FIRST —
@@ -2010,10 +2023,9 @@ fn handle_key(
                 // that the turn was cut short.
                 state.run_state.mode = RunMode::Editing;
                 state.run_state.status = "aborted".to_string();
-            } else {
-                state.input.clear();
             }
-        }
+            EscapeAction::ClearInput => state.input.clear(),
+        },
         KeyAction::Quit => {
             // v0.6: Ctrl+D requires double-tap to actually quit. The
             // first press sets a pending flag + a status message; the
@@ -2785,6 +2797,56 @@ fn submit_user_input_inner(
     }
 }
 
+/// Esc 在当前状态下该做什么（v0.10.8 / A3）。
+///
+/// **两个 dispatch 点（运行时的按键处理与 `apply_action`）共用这一份判定。**
+/// 它们此前是两份独立的 if-else 链 —— 两个 dispatch 点行为不同，正是这个
+/// 项目在键位表上已经付过学费的那类失真。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscapeAction {
+    /// 关闭补全弹窗。
+    CloseCompletion,
+    /// 退出 transcript 搜索。
+    EndSearch,
+    /// 取消待确认的退出。
+    CancelQuit,
+    /// 中止当前这一轮（并把队列还回编辑器）。
+    AbortTurn,
+    /// 清空输入框（Idle 上下文）。
+    ClearInput,
+}
+
+/// 按当前状态判定 Esc 的动作。
+///
+/// 顺序与 Pi 的 EscapeTarget 一致：上下文优先（补全/搜索/退出确认），
+/// 然后按 **EscapeTarget** 分派，最后才是 Idle 的「清空输入」。
+pub fn escape_action(state: &AppState) -> EscapeAction {
+    if state.ui_state.completion.is_some() {
+        return EscapeAction::CloseCompletion;
+    }
+    if state.ui_state.search.is_some() {
+        return EscapeAction::EndSearch;
+    }
+    if state.run_state.pending_quit.is_some() {
+        return EscapeAction::CancelQuit;
+    }
+    // v0.10.8 (A3)：target 优先于 mode —— 压缩/重试/分支摘要的上下文里，
+    // Esc 是「中止这一轮」，而 Idle 里才是「清空输入」。
+    match state.run_state.escape_target {
+        crate::state::EscapeTarget::Compacting
+        | crate::state::EscapeTarget::Retrying
+        | crate::state::EscapeTarget::BranchSummary
+        | crate::state::EscapeTarget::Agent => EscapeAction::AbortTurn,
+        crate::state::EscapeTarget::Idle => {
+            if state.run_state.mode == RunMode::Running {
+                EscapeAction::AbortTurn
+            } else {
+                EscapeAction::ClearInput
+            }
+        }
+    }
+}
+
 /// Apply a `KeyAction` to a state without spawning anything. Used by tests
 /// and the no-agent mode.
 /// The prompt's inner width, as published by `render_prompt`.
@@ -3109,20 +3171,28 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                 }
             }
         }
-        KeyAction::Abort => {
-            if state.ui_state.completion.is_some() {
+        KeyAction::Abort => match escape_action(state) {
+            EscapeAction::CloseCompletion => {
                 // Cancel popup without changing input.
                 state.ui_state.completion = None;
-            } else if state.run_state.mode == RunMode::Running {
-                // v0.10.1: same as the runtime path — the queue returns to
-                // the editor, then the turn is interrupted.
+            }
+            EscapeAction::EndSearch => {
+                state.end_search();
+                state.run_state.status = "ready".to_string();
+            }
+            EscapeAction::CancelQuit => {
+                state.run_state.pending_quit = None;
+                state.run_state.status = "ready".to_string();
+            }
+            EscapeAction::AbortTurn => {
+                // v0.10.1: the queue returns to the editor, then the turn is
+                // interrupted.
                 return_queue_to_editor(state);
                 state.run_state.mode = RunMode::Editing;
                 state.run_state.status = "aborted".to_string();
-            } else {
-                state.input.clear();
             }
-        }
+            EscapeAction::ClearInput => state.input.clear(),
+        },
         KeyAction::Quit => state.run_state.mode = RunMode::Quitting,
         KeyAction::SwitchModel | KeyAction::ShowHelp => {}
         // v0.10.2: these used to be no-ops here. See the comment on

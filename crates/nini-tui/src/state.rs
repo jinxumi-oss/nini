@@ -905,6 +905,30 @@ fn prev_word_boundary(s: &str, pos: usize) -> usize {
 }
 
 /// What the TUI is currently doing.
+/// **Esc 在当前上下文里该做什么**（v0.10.8 / A3）。
+///
+/// Pi 不是一个 if-else 链：它在进入压缩/重试/分支摘要之前**替换掉** Esc
+/// 处理器（`autoCompactionEscapeHandler` / `retryEscapeHandler`，
+/// 见 `interactive-mode.ts` 的 EscapeTarget），离开那个上下文再换回来。
+///
+/// nini 此前是一条 if-else 链（completion → search → pending_quit → Running →
+/// clear），于是「压缩期间的 Esc」与「重试期间的 Esc」没有独立的语义——
+/// 它们落进 Running 那条，碰巧接近，但不是**被设计**的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EscapeTarget {
+    /// 没有回合在跑：Esc 清空输入（Pi 的 Idle）。
+    #[default]
+    Idle,
+    /// 一个回合在跑：Esc 中止这一轮（Pi 的 Agent）。
+    Agent,
+    /// 正在压缩上下文：Esc 中止**压缩**（Pi 的 Compaction）。
+    Compacting,
+    /// 正在重试一次失败的请求：Esc 中止重试（Pi 的 Retry）。
+    Retrying,
+    /// 正在生成分支摘要：Esc 中止它（Pi 的 BranchSummary）。
+    BranchSummary,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
     /// User is editing the prompt; nothing is running.
@@ -1325,6 +1349,8 @@ pub struct RunState {
     /// missed reset is the worse failure of the two: it silences every
     /// later submission for the life of the process.
     pub agent_alive: bool,
+    /// Esc 在当前上下文里该做什么（v0.10.8 / A3）。
+    pub escape_target: EscapeTarget,
     /// **有一条消息在排队，而回合已经结束了**（v0.10.8 / A6）。
     ///
     /// 排队消息的正常归宿有两个：回合还活着时，agent 循环每轮会
@@ -1641,6 +1667,7 @@ impl Clone for RunState {
         Self {
             mode: self.mode,
             agent_alive: self.agent_alive,
+            escape_target: self.escape_target,
             auto_turn_pending: self.auto_turn_pending,
             auto_turn_count: self.auto_turn_count,
             run_seq: self.run_seq,
@@ -1664,6 +1691,7 @@ impl Default for RunState {
         Self {
             mode: RunMode::Editing,
             agent_alive: false,
+            escape_target: EscapeTarget::Idle,
             auto_turn_pending: false,
             auto_turn_count: 0,
             run_seq: 0,

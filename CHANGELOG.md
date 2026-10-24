@@ -1,6 +1,6 @@
 ## v0.10.8 — the guard against a second agent was the editor's state (2026-10-23)
 
-1596 tests, all green. The defect was measured on v0.10.2 and had been sitting
+1600 tests, all green. The defect was measured on v0.10.2 and had been sitting
 in the plan as a P0 with a written exit criterion that nobody had executed.
 
 ### Esc could start a second agent, and the session file kept the receipts
@@ -222,6 +222,32 @@ writes the **session** (Pi's own JSONL format, first line the session
 header); any other extension is refused **out loud** — *"use .html or
 .jsonl"* — instead of quietly writing somewhere else. With no argument the
 behaviour is unchanged (HTML into the exports directory).
+
+### Esc finally means something different in different contexts
+
+Pi does not have one Esc handler: it **replaces** the handler before entering
+compaction, a retry or a branch summary (`autoCompactionEscapeHandler`,
+`retryEscapeHandler` — see the EscapeTarget in `interactive-mode.ts`), and
+puts the old one back when it leaves that context.
+
+nini had one if-else chain (completion → search → pending quit → running →
+clear), so "Esc during compaction" had no meaning of its own — it happened to
+land in the "running" arm, which is close, but it was not *designed*.
+
+There is now an explicit `EscapeTarget { Idle, Agent, Compacting, Retrying,
+BranchSummary }`, derived from the agent's phase, and Esc dispatches on it:
+Idle clears the input, while Compacting/Retrying/BranchSummary interrupt the
+turn — so the text you are typing is never thrown away by an Esc in the
+middle of a compaction.
+
+The two dispatch points (the runtime's key handler and `apply_action`) used
+to be **two independent if-else chains** — the same "one truth, several
+copies" defect this project already paid for in its keymap. They now share
+one decision function, `escape_action()`.
+
+One difference from Pi remains: Pi cancels *only* the compaction and lets
+the turn continue; nini interrupts the whole turn (its compaction is local
+and takes milliseconds). Tracked as gap **A2b**.
 
 ### Context compaction has a lifecycle now — and the code that was dead is alive
 

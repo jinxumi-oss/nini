@@ -191,3 +191,13 @@ CLI 与测试共用**同一份实现**。改完再注入 → 三条全红。
 | `crates/nini-core/tests/compaction_lifecycle.rs` | 压缩**失败**（钩子返回 None）时**不收尾** | `a_failed_compaction_also_ends_the_lifecycle` |
 | `crates/nini-tui/tests/compaction_queue.rs` | sink **不**把相位映射成 `is_compacting` | `a_submit_during_compaction_is_queued_not_spawned` |
 | `crates/nini-tui/tests/compaction_queue.rs` | 运行结束（Done）**不复位**压缩标志 | `the_end_of_a_run_resets_the_compaction_flag` |
+
+
+---
+
+## Esc 的上下文语义（A3，2026-10-23）
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-tui/tests/escape_target.rs` | 相位**不再**映射成 `EscapeTarget` | `the_phase_decides_the_escape_target` |
+| `crates/nini-tui/tests/escape_target.rs` | Compacting 上下文的 Esc 改成「清空输入」 | `esc_in_the_compacting_context_does_not_clear_the_input` |
