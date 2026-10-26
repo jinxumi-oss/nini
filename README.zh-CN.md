@@ -7,9 +7,9 @@
 
 [English](README.md) | **简体中文**
 
-[![Status](https://img.shields.io/badge/status-v0.10.7-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.10.9-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1600%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1629%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
@@ -50,7 +50,7 @@ nini 也不做。
 
 - **单个 6.4 MiB 可执行文件**（压缩后 2.4 MB），取代一整套 Node.js 工具链
 - **无授权附加条款**——纯 MIT，不像某些带着 OpenAI/Anthropic 再分发限制的分支
-- **1600 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
+- **1629 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
   HTTP 服务器的端到端线格式测试
 - **内置工具可扩展**——bash、read、write、edit、grep、find
 - **流式 TUI**，带斜杠命令自动补全
@@ -60,7 +60,7 @@ nini 也不做。
 | 领域 | 已实现 |
 |---|---|
 | **Provider** | Anthropic、OpenAI（Chat + Responses）、OpenAI-compatible（任何 `/v1/chat/completions`）、fixture（离线测试） |
-| **默认模型** | `MiniMax-M3.1-Flash-Preview`——用 `--model` 或 `/model` 覆盖 |
+| **默认模型** | `MiniMax-M2.7-highspeed`——用 `--model` 或 `/model` 覆盖 |
 | **工具** | `bash`（进程树 kill、超时、SIGTERM→SIGKILL）、`read`、`write`（原子写）、`edit`（精确匹配）、`grep`（正则 + .gitignore）、`find`（glob + .gitignore） |
 | **TUI** | ratatui + crossterm，readline 式编辑、kill ring、历史回溯、斜杠命令补全下拉、命令面板（Ctrl+Shift+K）、transcript 搜索（Ctrl+F）、外部编辑器（Ctrl+G） |
 | **斜杠命令** | Pi 全部 23 条内建命令（`/model`、`/export`、`/new`、`/quit`……），外加 5 条 nini 独有（`/help`、`/status`、`/prompt`、`/debug`、`/editor`） |
@@ -227,6 +227,11 @@ session JSONL。
   尚未实现
 - Pi 0.84.2 内置的 40 个 provider 里，nini 原生实现了 9 个（7 个品牌）；
   其余用 `models.json` 配置
+- **你在 `models.json` 里声明的模型现在能被读懂了**（用 Pi 的拼写：
+  `contextWindow`、`maxTokens`、`reasoning`），它们会出现在 `/model` 与
+  `--list-models` 里，context window 用的就是你写下的那个数字。
+  但**价格不随之而来**：`models.json` 不写费率，nini 也不会编一个——
+  没有已知价格的模型不显示费用标签，读起来是「未知」，绝不是「免费」
 - **内置工具集与 Pi 0.85.1 一致**——`read` / `write` / `edit` / `bash` / `grep` /
   `find` / `ls`，连**工具描述、参数 schema、prompt 贡献**都逐条对齐
   （对照物是 Pi 自己的工具定义在**运行时**的转储，见

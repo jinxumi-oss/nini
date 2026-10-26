@@ -145,7 +145,7 @@ Pi 的三个工厂函数把边界写死：`createCodingTools()` = [read, bash, e
 
 | 工作流 | 范围 | 退出判据 |
 |---|---|---|
-| **WF-BUILTIN** | 八个内置工具的**契约**（描述 + 参数 schema，按 0.85.1 重捕获）与**语义**（截断、超时、并发、变更队列） | **执行细则在 [`plans/tool-parity.md`](tool-parity.md)**（T1–T4；判据看板 `scripts/tool-parity-check.py`） |
+| **WF-BUILTIN** | 八个内置工具的**契约**（描述 + 参数 schema，按 0.85.1 重捕获）与**语义**（截断、超时、并发、变更队列） | **执行细则在 [`plans/tool-parity.md`](tool-parity.md)**（T1–T4；判据看板 `scripts/tool-parity-check.py`）。已闭：**B11**（`ls` 与工具集→prompt 联动）、**B13**（契约按 0.85.1 重捕获）、**B12**（截断语义统一为 50 KiB head/tail） |
 | **WF-EXTENSION** | 扩展运行时：渲染钩子、流式更新、signal、受限采样 | 每项能力各有 1 条 oracle；在此之前 **README 明确声明「扩展工具不在 parity 范围内」** |
 
 **WF-BUILTIN 是「高效、准确完成任务」的载体；WF-EXTENSION 是「生态」，成本高一个数量级。**
@@ -192,6 +192,7 @@ v2 的自我审查又证明了手工读会出错（§9）。v3 的 W0 已经有�
 | `scripts/pi-line-refs.py` | 全量行号引用清单（数量以 `scripts/pi-line-refs.py --json` 的输出为准） | `python3 scripts/pi-line-refs.py --json` |
 | `references/pi-0.85.1/` + `SNAPSHOT.lock` | Pi 0.85.1 行为层源码快照（411 文件 sha256） | `python3 scripts/pi-oracle-lock.py --check` |
 | `scripts/pi-oracle-lock.py` | 快照校验 + 引用逐条解析 | `python3 scripts/pi-oracle-lock.py --verify-refs` |
+| `crates/nini-conformance/fixtures/pi-0.85.1-session.jsonl` | **真 Pi 0.85.1 录制**的会话对照物（只洗路径，父子链原样）——**C5** 的对照物，取代 0.84.2 的旧录制 | `cargo test -p nini-conformance --test session_parity_0_85_1` |
 
 **未交付（W0 剩余，退出判据如下）**
 

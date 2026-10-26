@@ -95,20 +95,20 @@ v0.9.2 一整版都在清这个。
 
 ---
 
-## 2. 当前状态（2026-10-23，v0.10.7）
+## 2. 当前状态（2026-10-26，v0.10.9）
 
 > 数字以脚本/实测为准，来源写在「证据」列。**手工数字会过期**——本表在每次改动后重算。
 
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
-| 版本 | **v0.10.7** | tag `v0.10.7` 已推送；HEAD 比 tag 多 2 个提交 | 见下方“发布链” |
-| 测试 | **1554 通过 / 0 ignored / 0 失败** | 本机全量 `cargo test --workspace --all-targets`（2026-10-23） | A1 修复后 probe 的 5 条不再 ignored |
+| 版本 | **v0.10.9** | `Cargo.toml` version = 0.10.9；`nini --version` 自报同一数字 | tag 尚未推送（见下方“发布链”） |
+| 测试 | **1629 通过 / 0 ignored / 0 失败** | 本机全量 `cargo test --workspace`（2026-10-26） | 无 |
 | 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 仍是 stub —— **「名字齐」不等于「语义齐」**，已登记为 B10 |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
-| 行为 oracle | **66 条**（v0.10 记的 45 已旧），其中 agent loop 12 条直接引 Pi 行号 | `crates/nini-conformance` | **无可执行的 Pi 侧对照物**：全是“注释引行号 + 断言 nini”。v3 已把行为层源码快照锁进 `references/pi-0.84.2/`（sha256），行号漂移从此可机器检出 |
-| 行号引用 | 以脚本输出为准（`.js` 与 `.ts` 都要数） | `python3 scripts/pi-line-refs.py --json` | v2 文档写 31（只数了 `.js`）；另有 1 条已被检出越界（`agent-loop.js:582` 实为 `.ts` 行号） |
-| Provider | **9 个原生实现（7 个品牌）+ `models.json` 其余** | `provider_factory.rs`；Pi 侧实测 `pi-ai/dist/providers/all.js` 的 `builtinProviders()` | **Pi 0.84.2 内置 40 个**（旧文档写 51，是错的）—— **R5 待 owner 决策**，实现者不自行扩范围 |
-| 差距台账 | **19 条**（A 4 / B 11 / C 3 / D 1），open 16、blocked-owner 3 | `python3 scripts/parity-gap.py --json` | 差距表不再手工维护 |
+| 行为 oracle | **符号引用 111 条，全部可解析（drift=0）**；行为层 **Pi 侧可执行对照物 ≥1**（真 Pi 0.85.1 录制的会话） | `python3 scripts/pi-oracle-lock.py --verify-refs`；`crates/nini-tui/tests/behavior_parity.rs` | 其余 oracle 仍只断言 nini 侧（依据已是机器可解析的符号引用，不再依赖行号）——**C1 已闭**，剩下的覆盖度是另一件事 |
+| 行号引用 | 过渡引用保留，且必须仍能解析到代码行 | `python3 scripts/pi-line-refs.py --json` | 无（0.84.2 → 0.85.1 的漂移结论见 `docs/pi-version-delta-0.84.2-to-0.85.1.md`） |
+| Provider | **9 个原生实现（7 个品牌）+ `models.json` 其余**（用户声明的模型现在**能被 nini 读懂**：见 v0.10.9） | `provider_factory.rs`；Pi 侧实测 `pi-ai/dist/providers/all.js` 的 `builtinProviders()` | **Pi 0.84.2 内置 40 个**（旧文档写 51，是错的）—— **R5 待 owner 决策**，实现者不自行扩范围 |
+| 差距台账 | **28 条**（A 7 / B 14 / C 5 / D 2），open 10、fixed 14、blocked-owner 4 | `python3 scripts/parity-gap.py --json` | 差距表不再手工维护 |
 | 能力面投入 | — | 自 10-05 起：`nini-tui` +11861 行、`nini-ai` +1295 行；但 `nini-ai` **最后一次提交停在 10-12** | 单侧化，见 §3 |
 
 ---

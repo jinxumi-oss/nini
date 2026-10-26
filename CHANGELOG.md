@@ -1,3 +1,157 @@
+## v0.10.9 — the default model is one the operator actually has (2026-10-26)
+
+1629 tests, all green. Three things that were quietly wrong, and one that
+was asked for.
+
+### The default model is `MiniMax-M2.7-highspeed`
+
+It was `MiniMax-M3.1-Flash-Preview`. The new one is the model the
+operator's own `models.json` declares under the gateway provider that
+serves it, so the default is a model that exists on the other side of the
+connection instead of one nini has to hope for.
+
+The id is sent to the provider **as it is**: nini does not qualify it with
+a provider prefix, because the provider is chosen separately
+(`--provider` / `NINI_PROVIDER`) and a prefix would make the id a
+*different* id to every server that is not the one it was written for.
+
+The promise is pinned in three places that cannot drift apart silently:
+the constant in the source, the `--help` text the binary prints, and
+`--list-models` (`crates/nini-cli/tests/default_model.rs`). A default
+model is a promise made to a user who types nothing; the previous default
+(`test-model`) was replaced for exactly this reason — it named a model no
+server had heard of, and the failure surfaced as a 404 at the first turn.
+
+### nini can finally read the models a user's `models.json` declares
+
+Pi writes `contextWindow`, `maxTokens` and `reasoning`. nini's
+`ModelConfig` had `context_window` and nothing else, so serde **ignored
+every key Pi had written** — a user's `models.json` parsed into an empty
+model list. The symptom was silent and total: every model the user had
+declared was invisible to nini, and the context window nini used was the
+200 000 fallback rather than the number written in the file.
+
+Three consequences, all now fixed:
+
+1. **The models are known.** A model the user declares becomes a
+   `ModelSpec` — with their id, their window and their output ceiling.
+   The price is **not** carried over: `models.json` states no rates, and
+   inventing them is the defect this project removed when it stopped
+   fabricating costs. A user model therefore has a zero cost, and the
+   status bar hides a zero-cost pill — "unknown" reads as absent, not as
+   free.
+2. **The `/model` selector offers them.** A catalogue that hides the
+   models this installation can reach is a catalogue that lies about what
+   is available.
+3. **The context window is theirs.** `refresh_context_window` consults
+   the catalog, then the user's declaration, then the settings fallback —
+   in that order, because the catalog's numbers are measured, the user's
+   are their own fact about their setup, and the settings value is a
+   default nobody has adjusted for this model.
+
+The dead `BUILTIN_CATALOG` — thirteen hand-written model ids with a
+comment claiming they were the fallback for `--list-models`, read by
+nothing — is **gone**. A second, hand-written list of models next to the
+generated one is how two answers to one question get written down.
+
+### `/model` searches the way Pi searches (B6)
+
+Pi does not filter the model selector on the model id. It filters on
+`getModelSelectorSearchText` (`model-search.js`) —
+
+```text
+`${provider} ${provider}/${id} ${provider} ${id}${name}`
+```
+
+— and ranks the survivors by `fuzzyFilter` (`fuzzy.js`) from
+`@earendil-works/pi-tui`.
+
+nini filtered on the **label** with a generic substring-then-fuzzy rule
+and never saw the provider at all. The consequence was not a cosmetic
+ordering difference: typing `openai/gpt-5` found
+`openrouter/openai/gpt-5` — the proxy whose id merely *contains* the
+query — and could not find `openai/gpt-5` at all, because that id was not
+a prefix of the proxy's id. Pi's provider-first search text is precisely
+the rule that puts the model the user meant on top.
+
+The filter is now the selector's own (`SelectorState::state_filter`),
+with nini's generic rule kept as the default for every other selector.
+
+**The port was checked against Pi's own function, score for score**, and
+that check found three defects:
+
+| defect | symptom |
+|---|---|
+| the first matched character did not earn Pi's first `-5` (Pi starts `lastMatchIndex` at `-1`, so it *is* consecutive) | every score was too high by 5–30 points; the order could change |
+| only one of Pi's two alphanumeric-swap patterns was implemented | `5gpt` found nothing where Pi finds `gpt5` |
+| the catalogue handed Pi's template a **qualified** id (`openai/gpt-5`) where Pi's `item.id` is **bare** (`gpt-5`) | the search text was `openai openai/openai/gpt-5 …` — a text Pi never builds, and one whose scores are not Pi's |
+
+The expectations in `crates/nini-tui/tests/pi_fuzzy_oracle.rs` are **Pi's
+output**, produced by running `fuzzy.js` from `pi-tui` 0.85.1 and pinned
+verbatim. A port that is 90 % faithful is a port whose remaining 10 % is
+invisible, and the score is what decides the order.
+
+### `/trust` without an argument asks a question
+
+nini had a complete `TrustSelector` — and **nothing ever called it**. The
+command layer answered the no-argument case by falling back to
+`sub = "trusted"`: typing `/trust` *marked the working directory
+trusted*, silently, with no question asked and no list shown.
+
+Pi answers a bare `/trust` with `showTrustSelector()`
+(`interactive-mode.ts#showTrustSelector`). So does nini now. The
+argument forms (`/trust ask`, `/trust distrust`, `/trust list`,
+`/trust clear`) are nini's own and keep working.
+
+The oracle asserts the thing the runtime actually watches —
+`AppState::run_state.status` becoming `open_selector:trust` — and, just
+as importantly, that a bare `/trust` writes **no** decision.
+
+### The session shape gets its first executable oracle (C1, first brick)
+
+C1 says the behaviour layer had no executable Pi-side comparison: every
+oracle was "a comment citing a line number, plus an assertion about
+nini". The tool contracts and the truncation rules got their Pi-side
+oracles in v0.10.8; this release adds the third — the **shape** of a
+session.
+
+The comparison is `crates/nini-conformance/fixtures/pi-0.85.1-session.jsonl`,
+written by **real Pi 0.85.1** (recorded by `scripts/pi-session-record.sh`
+against a mock provider, paths washed out). What is asserted is the
+shape — entry types, roles, content-block types — and not the words: the
+words are the mock's, and pinning them would pin the mock.
+
+The shape matters because the shape *is* the context the model reads. An
+assistant `toolCall` and its `toolResult` are two messages in Pi's
+convention; if nini wrote them as one, the model would be reading a
+different conversation on the next turn.
+
+### Four citations that pointed at nothing, and two files the lock did not know about
+
+The behaviour layer's citations are **symbols** (`file#symbol`), and
+`scripts/pi-oracle-lock.py --verify-refs` resolves every one of them
+inside the 0.85.1 snapshot — a symbol that disappears turns the run red.
+Running it found **four** that did not resolve, and all four were wrong:
+
+| citation | reality in 0.85.1 |
+|---|---|
+| `agent-session.ts#queueCompactionMessage` (×2) | the method lives in `interactive-mode.ts` |
+| `interactive-mode.ts#handleSlashCommand` (×2) | there is no such method; the dispatch is inside `setupEditorSubmitHandler` |
+
+A citation that points at a symbol which is not there is worse than a
+line number that drifted: it looks like evidence and resolves to nothing.
+All four are fixed, and the run now resolves **111 citations with
+`drift=0` and `missing=0`**.
+
+The snapshot check (`--check`) was red for a different reason: two files
+sat in the snapshot directory that `SNAPSHOT.lock` did not describe —
+`tool-contracts.json` and `truncate-oracle.json`, both dumps of Pi's own
+runtime. A lock that does not describe everything in the directory cannot
+detect tampering with it, so both are now recorded in the lock (with
+their hashes), and the check reports **413 files, all matching**.
+
+---
+
 ## v0.10.8 — the guard against a second agent was the editor's state (2026-10-23)
 
 1600 tests, all green. The defect was measured on v0.10.2 and had been sitting

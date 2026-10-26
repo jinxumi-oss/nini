@@ -7,9 +7,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-[![Status](https://img.shields.io/badge/status-v0.10.7-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.10.9-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1600%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1629%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -63,7 +63,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **1600 unit + integration tests**, including property-based SSE fuzz and
+- **1629 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -73,7 +73,7 @@ What that means in practice, and nothing more:
 | Area | What works |
 |---|---|
 | **Providers** | Anthropic, OpenAI (Chat + Responses), OpenAI-compatible (any `/v1/chat/completions`), fixture (offline test) |
-| **Default model** | `MiniMax-M3.1-Flash-Preview` — override with `--model` or `/model` |
+| **Default model** | `MiniMax-M2.7-highspeed` — override with `--model` or `/model` |
 | **Tools** | `bash` (process-tree kill, timeout, SIGTERM→SIGKILL), `read`, `write` (atomic), `edit` (exact-match), `grep` (regex + .gitignore), `find` (glob + .gitignore) |
 | **TUI** | ratatui + crossterm, readline-style editing, kill ring, history recall, slash-command autocomplete dropdown, command palette (Ctrl+Shift+K), transcript search (Ctrl+F), external editor (Ctrl+G) |
 | **Slash commands** | All 23 Pi builtin commands (`/model`, `/export`, `/new`, `/quit`, …), plus 5 nini-only ones (`/help`, `/status`, `/prompt`, `/debug`, `/editor`) |
@@ -247,6 +247,12 @@ trying to be; this section is the user-facing summary of it.
 - 9 native provider implementations (7 brands: `anthropic`, `openai` (incl.
   `openai-responses` / `openai-compat`), `google`, `deepseek`, `groq`, `mistral`,
   `cohere`) out of the 40 Pi 0.84.2 ships; configure the rest via `models.json`
+- **Models declared in your `models.json` are now read** (Pi's spelling:
+  `contextWindow`, `maxTokens`, `reasoning`), they appear in `/model` and in
+  `--list-models`, and their context window is the one you wrote down.
+  Their **price is not**: `models.json` states no rates, and nini does not
+  invent any — a model with no known price shows no cost pill, which reads
+  as "unknown", never as "free"
 - **The built-in tool set matches Pi 0.85.1's** — `read`, `write`, `edit`,
   `bash`, `grep`, `find`, `ls` — down to the tool descriptions, parameter
   schemas and prompt contributions, checked against a runtime dump of Pi's own
