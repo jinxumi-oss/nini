@@ -43,7 +43,8 @@ from pathlib import Path
 # 2026-10-23 实测：0.84.2 → 0.85.1 之间，90 处行号引用只有 3 处还指向
 # 同一行。所以目标统一到单一版本之后，**行号引用必须能被机器复核**。
 REF_RE = re.compile(
-    r"(agent-loop|interactive-mode|agent-session|keybindings|agent-model|tui-alt-screen)\.(js|ts)"
+    r"(agent-loop|interactive-mode|agent-session|keybindings|agent-model|tui-alt-screen"
+    r"|fuzzy|model-search)\.(js|ts)"
     r"(?::(\d+)|#([A-Za-z_$][A-Za-z0-9_$]*))"
 )
 

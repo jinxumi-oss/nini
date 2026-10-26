@@ -201,3 +201,33 @@ CLI 与测试共用**同一份实现**。改完再注入 → 三条全红。
 |---|---|---|
 | `crates/nini-tui/tests/escape_target.rs` | 相位**不再**映射成 `EscapeTarget` | `the_phase_decides_the_escape_target` |
 | `crates/nini-tui/tests/escape_target.rs` | Compacting 上下文的 Esc 改成「清空输入」 | `esc_in_the_compacting_context_does_not_clear_the_input` |
+
+
+---
+
+## 引用必须能在快照里解析（23c4340b，2026-10-26）
+
+四条引用**解析不到任何东西**：两条把 `queueCompactionMessage` 挂在
+`agent-session.ts` 上（它住在 `interactive-mode.ts`），两条引用了 0.85.1 里
+根本不存在的 `handleSlashCommand`（slash 命令的分发在
+`setupEditorSubmitHandler` 里）。解析不到的引用比漂掉的行号更糟——它**看着
+像证据**。
+
+判据是 `crates/nini-conformance/tests/citations_resolve.rs`：用 Rust 把
+「符号引用必须在钉住的快照里解析」这条规则**再写一遍**（Python 那边是
+`scripts/pi-oracle-lock.py --verify-refs`，它同时还查哈希）。
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-conformance/tests/citations_resolve.rs` | 把 `queueCompactionMessage` 的引用改回 `agent-session.ts` | `every_citation_resolves_inside_the_pinned_snapshot`（`scripts/pi-oracle-lock.py --verify-refs` 同时报 `DRIFT`，resolved 125 / drift 1） |
+| `crates/nini-conformance/tests/citations_resolve.rs` | 把 `setupEditorSubmitHandler` 改回 `handleSlashCommand` | 同上（报 `interactive-mode.ts#handleSlashCommand — the symbol is not in that document`） |
+
+两条注入都实测过：断言变红，Python 门禁同时变红，然后逐字还原。
+
+顺带把**对照物**补进了快照：Pi 0.85.1 的 `pi-tui/dist/fuzzy.js`（B6 的
+评分真相）与 `dist/modes/interactive/model-search.js`（`/model` 的搜索
+文本）此前**不在仓库里**，所以 `fuzzy.js#fuzzyFilter` 这类引用**无法被
+机器复核**——不能被复核的引用不是引用。六个文件（dist / map / 还原出的
+.ts）已按既有布局进 `references/pi-0.85.1/` 并记入 `SNAPSHOT.lock`
+（419 文件），`scripts/pi-line-refs.py` 的文档名列表也扩了这两个，于是
+引用总数从 111 变成 **126，drift=0，missing=0**。

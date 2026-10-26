@@ -2483,6 +2483,42 @@
       "bytes": 17041,
       "origin": "scripts/truncate-oracle.mjs（对 Pi 0.85.1 截断语义的转储）",
       "group": "tools-t2"
+    },
+    "dist/tui/fuzzy.js": {
+      "sha256": "4e8de99d7a73e192b1215d5e37c1cbd687be1c8917edfd0ceb7636f44352cbc8",
+      "bytes": 3808,
+      "origin": "node_modules/@earendil-works/pi-tui/dist/fuzzy.js",
+      "group": "tui"
+    },
+    "maps/tui/fuzzy.js.map": {
+      "sha256": "114e81a08385f084aae1dd82d42a15d5037cdb6e4589c09165ca871d53d9e636",
+      "bytes": 7289,
+      "origin": "node_modules/@earendil-works/pi-tui/dist/fuzzy.js.map",
+      "group": "tui"
+    },
+    "src/tui/fuzzy.ts": {
+      "sha256": "8286a6feb16672e52114df5300369d20f48e27c9e87da2dc87294ea3b1223b8e",
+      "bytes": 3276,
+      "origin": "node_modules/@earendil-works/pi-tui/dist/fuzzy.js.map:sourceContent",
+      "group": "tui"
+    },
+    "dist/ui/model-search.js": {
+      "sha256": "5fbe3c08cc30c21fe38bfb3a86bb790b020b8c4a2fec8e14e57419560f790a92",
+      "bytes": 650,
+      "origin": "dist/modes/interactive/model-search.js",
+      "group": "ui"
+    },
+    "maps/ui/model-search.js.map": {
+      "sha256": "1e5ada2b3cbc656c05d42b36794620621029d3378d98661dab6aae4b641ec58e",
+      "bytes": 1510,
+      "origin": "dist/modes/interactive/model-search.js.map",
+      "group": "ui"
+    },
+    "src/ui/model-search.ts": {
+      "sha256": "9be620174c0f25516b0c537dcd4ef9be7c9c9a145e6489e186cc6c4787b25412",
+      "bytes": 729,
+      "origin": "dist/modes/interactive/model-search.js.map:sourceContent",
+      "group": "ui"
     }
   }
 }
