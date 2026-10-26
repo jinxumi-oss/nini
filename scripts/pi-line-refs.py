@@ -44,7 +44,7 @@ from pathlib import Path
 # 同一行。所以目标统一到单一版本之后，**行号引用必须能被机器复核**。
 REF_RE = re.compile(
     r"(agent-loop|interactive-mode|agent-session|keybindings|agent-model|tui-alt-screen"
-    r"|fuzzy|model-search)\.(js|ts)"
+    r"|fuzzy|model-search|settings-manager)\.(js|ts)"
     r"(?::(\d+)|#([A-Za-z_$][A-Za-z0-9_$]*))"
 )
 

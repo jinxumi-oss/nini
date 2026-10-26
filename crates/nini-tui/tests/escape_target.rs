@@ -10,8 +10,13 @@
 //! 判据：
 //! 1. 相位 → EscapeTarget 的映射是对的；
 //! 2. Idle 上下文的 Esc 清空输入（Pi 的 Idle）；
-//! 3. Compacting 上下文的 Esc **不清空输入**——它中止这一轮
-//!    （Pi 是只取消压缩、让回合继续；差别记在差距 A2b）；
+//! 3. Compacting 上下文的 Esc **不清空输入**，也**不中止这一轮**——
+//!    它只取消压缩（Pi 的 `autoCompactionEscapeHandler`）。
+//!    **这一条在 v0.11 变了**（差距 A2b 关闭）：此前 nini 把压缩期的 Esc
+//!    当成「中止整轮」，而本文件当时就写着「Pi 是只取消压缩、让回合继续；
+//!    差别记在差距 A2b」。旧断言把**当时的行为**当成了正确——
+//!    按 GOALS 的纪律（对齐后既有测试变红，先判断它是不是把旧行为当成了
+//!    正确：是就改测试并记录理由），这里改测试，理由记在下面。
 //! 4. 运行时那条与 `apply_action` 那条**行为一致**（两个 dispatch 点
 //!    行为不同，正是这个项目反复吃亏的那类失真）。
 
@@ -77,12 +82,17 @@ fn esc_in_the_compacting_context_does_not_clear_the_input() {
 
     assert_eq!(
         state.input.text, "draft text",
-        "压缩期间的 Esc 中止这一轮，**不是**清空输入——用户正在写的东西不能消失"
+        "压缩期间的 Esc 只取消压缩，**不是**清空输入——用户正在写的东西不能消失"
     );
+    // v0.11 (A2b)：这一轮**继续**（Pi 只取消压缩），所以运行态不变。
+    //
+    // 旧断言写的是 `RunMode::Editing`——那是「中止整轮」之后的状态，
+    // 而中止整轮正是 A2b 要关掉的错误行为：用户想取消一次压缩，
+    // 丢掉的却���整轮工作。
     assert_eq!(
         state.run_state.mode,
-        RunMode::Editing,
-        "中止之后编辑器要立刻可用（v0.10.1 的行为）"
+        RunMode::Running,
+        "取消压缩不等于中止这一轮（Pi：只取消压缩，回合继续）"
     );
 }
 
@@ -99,8 +109,8 @@ fn the_decision_is_shared_by_both_dispatch_points() {
     s.run_state.mode = RunMode::Running;
     assert_eq!(
         escape_action(&s),
-        EscapeAction::AbortTurn,
-        "压缩上下文的 Esc 必须是「中止这一轮」"
+        EscapeAction::AbortCompaction,
+        "压缩上下文的 Esc 必须只「取消压缩」（Pi 的 autoCompactionEscapeHandler）"
     );
 
     s.run_state.escape_target = EscapeTarget::Idle;

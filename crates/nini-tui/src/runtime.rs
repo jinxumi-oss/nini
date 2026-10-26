@@ -1974,12 +1974,10 @@ fn handle_key(
             if state.ui_state.completion.is_some() {
                 state.apply_completion();
             } else {
-                // Install an abort signal for the upcoming agent turn. The
-                // agent driver (CLI / wiring code) doesn't have direct
-                // access to AppState today; the CLI would need to set this
-                // before spawning the driver. v1 stores the signal here so
-                // that any future driver-side wiring can read it.
-                state.run_state.abort_signal = Some(Arc::new(tokio::sync::Notify::new()));
+                // v0.11 (N5)：中止信号**不再**在这里创建——它在
+                // `submit_user_input_inner` 里创建（每一轮的唯一入口），
+                // 否则自动投递那条路径（轮后把队列里的消息送出去）就没有
+                // 信号可用。
                 drop(state);
                 submit_user_input(shared, agent_driver, done, event_tx.clone());
             }
@@ -2009,7 +2007,9 @@ fn handle_key(
                 // something the user wrote and had queued.
                 let restored = return_queue_to_editor(&mut state);
                 if let Some(sig) = state.run_state.abort_signal.as_ref() {
-                    sig.notify_waiters();
+                    // v0.11 (N5)：`trigger()` 而不是 `notify_waiters()`——
+                    // 后者不留存许可，先触发后等待的一方永远等不到。
+                    sig.trigger();
                 }
                 if restored > 0 {
                     state.run_state.status =
@@ -2029,6 +2029,20 @@ fn handle_key(
                 // that the turn was cut short.
                 state.run_state.mode = RunMode::Editing;
                 state.run_state.status = "aborted".to_string();
+            }
+            EscapeAction::AbortCompaction => {
+                // v0.11 (A2b)：**只**取消压缩。
+                //
+                // Pi：压缩期间 Esc → `session.abortCompaction()`；这一轮
+                // **继续**（Pi 自己决定后续：压缩没成功 → 那一轮结束，
+                // 队列被冲刷）。nini 此前把压缩期的 Esc 当成「中止整轮」，
+                // 于是用户想取消一次压缩，丢掉的却是整轮工作。
+                //
+                // 这里**不动** `abort_signal`：整轮不该被中止。
+                if let Some(sig) = state.run_state.abort_compaction_signal.as_ref() {
+                    sig.trigger();
+                }
+                state.run_state.status = "compaction cancelled".to_string();
             }
             EscapeAction::ClearInput => state.input.clear(),
         },
@@ -2696,6 +2710,20 @@ fn submit_user_input_inner(
         g.session_context_messages()
     };
 
+    // v0.11 (N5)：**每一轮**的中止信号在这里创建——单一位置。
+    //
+    // 此前信号是在键处理里创建的（只覆盖「用户按键提交」这一条路径），
+    // 而且是 `Arc<Notify>`：`notify_waiters()` 不留存许可，先触发后等待
+    // 的一方永远等不到；更糟的是产品里**根本没有人在等它**。
+    // 现在：两个信号（整轮 / 只压缩）都是 `AbortSignal`，标志先落、
+    // 通知后发，驱动那一侧会在 `select!` 里等它们。
+    {
+        let mut g = lock_state(&shared);
+        g.run_state.abort_signal = Some(Arc::new(nini_core::abort_signal::AbortSignal::new()));
+        g.run_state.abort_compaction_signal =
+            Some(Arc::new(nini_core::abort_signal::AbortSignal::new()));
+    }
+
     // Spawn the agent task with its own sink.
     let sink = AgentSink::with_seq(shared.clone(), event_tx.clone(), seq);
     let handle = (agent_driver)(text, seed, sink, done.clone());
@@ -2818,6 +2846,13 @@ pub enum EscapeAction {
     CancelQuit,
     /// 中止当前这一轮（并把队列还回编辑器）。
     AbortTurn,
+    /// v0.11 (A2b)：**只**取消正在进行的压缩，这一轮继续。
+    ///
+    /// Pi 在压缩期间把编辑器的 Esc 处理器换成 `session.abortCompaction()`
+    /// （`interactive-mode.ts#autoCompactionEscapeHandler`），压缩结束时
+    /// 再换回来。nini 此前把压缩期的 Esc 也归到 `AbortTurn`——那会连
+    /// **整轮**工作一起丢掉，而用户只想取消这次压缩。
+    AbortCompaction,
     /// 清空输入框（Idle 上下文）。
     ClearInput,
 }
@@ -2839,8 +2874,10 @@ pub fn escape_action(state: &AppState) -> EscapeAction {
     // v0.10.8 (A3)：target 优先于 mode —— 压缩/重试/分支摘要的上下文里，
     // Esc 是「中止这一轮」，而 Idle 里才是「清空输入」。
     match state.run_state.escape_target {
-        crate::state::EscapeTarget::Compacting
-        | crate::state::EscapeTarget::Retrying
+        // v0.11 (A2b)：压缩期的 Esc **只**取消压缩（Pi 的
+        // `autoCompactionEscapeHandler`），其余上下文仍然是中止整轮。
+        crate::state::EscapeTarget::Compacting => EscapeAction::AbortCompaction,
+        crate::state::EscapeTarget::Retrying
         | crate::state::EscapeTarget::BranchSummary
         | crate::state::EscapeTarget::Agent => EscapeAction::AbortTurn,
         crate::state::EscapeTarget::Idle => {
@@ -3194,8 +3231,21 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                 // v0.10.1: the queue returns to the editor, then the turn is
                 // interrupted.
                 return_queue_to_editor(state);
+                // v0.11 (N5)：中止信号也要在这里触发——两个派发点
+                // （`handle_key` 与 `apply_action`）做的是**同一件事**，
+                // 信号是这件事的一部分。
+                if let Some(sig) = state.run_state.abort_signal.as_ref() {
+                    sig.trigger();
+                }
                 state.run_state.mode = RunMode::Editing;
                 state.run_state.status = "aborted".to_string();
+            }
+            EscapeAction::AbortCompaction => {
+                // v0.11 (A2b)：见 `handle_key` 里的同名分支。
+                if let Some(sig) = state.run_state.abort_compaction_signal.as_ref() {
+                    sig.trigger();
+                }
+                state.run_state.status = "compaction cancelled".to_string();
             }
             EscapeAction::ClearInput => state.input.clear(),
         },

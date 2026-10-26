@@ -573,6 +573,9 @@ pub struct Agent {
     /// Messages queued while auto-compacting. Drained into the
     /// transcript by `end_auto_compaction()`.
     pending_next_turn_messages: Vec<String>,
+    /// v0.11 (A2b)：本次压缩是被**取消**的（用户按了 Esc），而不是「没什么可压缩」。
+    /// 两者后果不同，报告也不同，详见 [`Agent::compaction_was_aborted`]。
+    compaction_aborted: bool,
     /// Current phase. Updated by the run loop and emitted via
     /// `AgentEvent::PhaseChanged`.
     phase: AgentPhase,
@@ -613,6 +616,13 @@ impl Agent {
             config,
             last_usage: None,
             is_auto_compacting: false,
+            // v0.11 (A2b)：这次压缩是**被取消**的，而不是「没什么可压缩的」。
+            //
+            // 两件事的后果不同：后者是死路（同样的历史会再溢出一次），
+            // 前者是用户按了 Esc（Pi：`session.abortCompaction()`）。
+            // 少了这个事实，取消压缩会走「溢出且无法压缩」的分支，
+            // 报出一条与事实不符的错误。
+            compaction_aborted: false,
             pending_next_turn_messages: Vec::new(),
             phase: AgentPhase::Idle,
             retry_attempt: 0,
@@ -654,6 +664,17 @@ impl Agent {
     /// Get the branch-summary abort handle.
     pub fn branch_summary_abort_handle(&self) -> AbortHandle {
         self.branch_summary_abort.clone()
+    }
+
+    /// True when the last auto-compaction was **cancelled** by the user
+    /// (Esc) rather than failing to find anything to compact.
+    ///
+    /// Pi: `session.abortCompaction()` → the compaction ends with
+    /// `aborted: true` (`interactive-mode.ts#compaction_end`), and the UI
+    /// says *"Auto-compaction cancelled"* — it does **not** say the context
+    /// overflowed.
+    pub fn compaction_was_aborted(&self) -> bool {
+        self.compaction_aborted
     }
 
     /// Reset ALL abort controllers. Call between compaction runs so a
@@ -819,6 +840,16 @@ impl Agent {
     /// [`Agent::estimated_tokens`] report the old, larger number forever,
     /// which is precisely what drives an unbounded compact-retry loop.
     fn compact_history_via_hook(&mut self) -> Option<CompactionResult> {
+        // v0.11 (A2b)：压缩之前先问一句「用户是不是已经取消了」。
+        //
+        // Pi: 压缩期间 Esc → `session.abortCompaction()`，压缩**取消**，
+        // 这一轮继续（Pi 自己决定后续）。nini 此前没有这个观察点：Esc
+        // 在压缩期间会中止**整轮**（而且那个中止信号当时还没有消费者），
+        // 于是「取消压缩」这件事根本没有发生。
+        if self.auto_compaction_abort.is_aborted() {
+            self.compaction_aborted = true;
+            return None;
+        }
         let tokens_before = self.estimated_tokens();
         let result = match &self.config.compact {
             Some(hook) => {
@@ -1388,6 +1419,24 @@ impl Agent {
                                             break 'outer;
                                         }
                                         None => {
+                                            // v0.11 (A2b)：压缩被**取消**与「没什么可压缩」
+                                            // 是两件事，报告也必须不同。
+                                            //
+                                            // Pi：用户按了 Esc → `abortCompaction()`
+                                            // → 压缩以 `aborted: true` 结束，UI 说
+                                            // 「Auto-compaction cancelled」，然后冲刷队列。
+                                            // nini 此前只有「溢出且无法压缩」这一条路，
+                                            // 报的是一条与事实不符的错误。
+                                            if self.compaction_aborted {
+                                                self.end_auto_compaction();
+                                                self.set_phase(AgentPhase::Idle);
+                                                yield AgentEvent::PhaseChanged(AgentPhase::Idle);
+                                                yield AgentEvent::TurnEnd {
+                                                    stop_reason: "compaction cancelled".to_string(),
+                                                    usage: Usage::default(),
+                                                };
+                                                return;
+                                            }
                                             // Nothing could be compacted, so
                                             // a retry would send the same
                                             // oversized history and overflow

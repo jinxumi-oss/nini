@@ -2519,6 +2519,24 @@
       "bytes": 729,
       "origin": "dist/modes/interactive/model-search.js.map:sourceContent",
       "group": "ui"
+    },
+    "dist/core/settings-manager.js": {
+      "sha256": "ee4f52d1dd4f1c18d5d814be4ba260ddf7fe40b7b70c2f0732a30a8b287111ad",
+      "bytes": 37512,
+      "origin": "dist/core/settings-manager.js",
+      "group": "core"
+    },
+    "maps/core/settings-manager.js.map": {
+      "sha256": "74019f26b3a6e620cd4657a9c52541c35f14bb484151d924ca1ff571efcc675e",
+      "bytes": 83258,
+      "origin": "dist/core/settings-manager.js.map",
+      "group": "core"
+    },
+    "src/core/settings-manager.ts": {
+      "sha256": "962d3fb1b585bac171c3553bf09113033182d0b9a6ca2e8c01e3b778048a6850",
+      "bytes": 44154,
+      "origin": "dist/core/settings-manager.js.map:sourceContent",
+      "group": "core"
     }
   }
 }

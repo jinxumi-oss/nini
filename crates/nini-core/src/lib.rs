@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod abort_signal;
 pub mod agent;
 pub mod agent_hooks;
 pub use agent_hooks::{AgentLoopHooks, NoopHooks, TurnUpdate};

@@ -1383,11 +1383,27 @@ pub struct RunState {
     /// the actual suspend/resume work needs `&mut Terminal`,
     /// which only the run loop holds.
     pub pending_external_editor: bool,
-    /// Abort signal: notify_waiters() aborts the currently running agent.
-    /// Set by the AgentDriver when starting a turn, cleared on completion.
-    /// v1: This is a coarse-grained abort (kills the agent task). For
-    /// tool-level abort, use the AbortHandle from `nini_core::agent`.
-    pub abort_signal: Option<Arc<tokio::sync::Notify>>,
+    /// Abort signal: `trigger()` aborts the currently running agent.
+    ///
+    /// v0.11 (N5)：此前它是一个 `Arc<Notify>`，**没有任何消费者**——
+    /// Esc 调了 `notify_waiters()`，而驱动那一侧根本没人读它，于是
+    /// 「aborted」只是一个状态字符串，模型继续往下写。
+    /// 而且 `Notify::notify_waiters()` **不留存许可**：先触发后等待的
+    /// 那一侧会永远等不到。
+    ///
+    /// 现在它是 [`nini_core::abort_signal::AbortSignal`]：标志先落，通知后发；
+    /// 等待方先注册再看标志。两个顺序都不会丢。
+    ///
+    /// 由 [`crate::runtime::run`] 在**每一轮开始时**创建（单一位置），
+    /// 轮结束时清掉。
+    pub abort_signal: Option<Arc<nini_core::abort_signal::AbortSignal>>,
+    /// 压缩专用的中止信号（Pi 的 `_autoCompactionAbortController`）。
+    ///
+    /// v0.11 (A2b)：压缩期间的 Esc **只**取消压缩，不中止这一轮——
+    /// 这是 Pi 的 `autoCompactionEscapeHandler` 做的事。
+    /// 与 `abort_signal` 分开，是因为两者的后果不同：
+    /// 一个终止整个回合，一个只终止压缩。
+    pub abort_compaction_signal: Option<Arc<nini_core::abort_signal::AbortSignal>>,
     /// True while a manual compaction is in progress. When true,
     /// /model /model/<arg> still works but the next prompt gets queued.
     pub is_compacting: bool,
@@ -1688,6 +1704,7 @@ impl Clone for RunState {
             pending_quit: self.pending_quit,
             pending_external_editor: self.pending_external_editor,
             abort_signal: self.abort_signal.clone(),
+            abort_compaction_signal: self.abort_compaction_signal.clone(),
             is_compacting: self.is_compacting,
             is_auto_compacting: self.is_auto_compacting,
             pending_next_turn_messages: self.pending_next_turn_messages.clone(),
@@ -1712,6 +1729,7 @@ impl Default for RunState {
             pending_quit: None,
             pending_external_editor: false,
             abort_signal: None,
+            abort_compaction_signal: None,
             is_compacting: false,
             is_auto_compacting: false,
             pending_next_turn_messages: Vec::new(),

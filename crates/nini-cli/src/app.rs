@@ -304,6 +304,17 @@ pub(crate) fn init_logging(verbose: bool) {
     }
 }
 
+/// Wait for an abort signal; never returns if there is none.
+///
+/// v0.11 (N5)：没有信号时必须**永远等下去**（而不是立刻返回），
+/// 否则 `tokio::select!` 会在每一轮事件上无谓地醒一次。
+async fn wait_signal(signal: Option<&nini_core::abort_signal::AbortSignal>) {
+    match signal {
+        Some(sig) => sig.wait().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Build the provider, or fall back to the scripted fixture — and say
 /// so.
 ///
@@ -505,95 +516,152 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
             })
         });
         tokio::spawn(async move {
+            // v0.11 (N5)：这一轮的中止信号。
+            //
+            // 此前**没有人读它**：Esc 在 TUI 里 `notify_waiters()`，而驱动
+            // 这一侧根本不看，于是「aborted」只是一个状态字符串，模型继续
+            // 往下写。现在驱动在这里等它，收到就中止 agent。
+            let abort_signal = {
+                let shared = sink.state();
+                let g = shared.lock().unwrap_or_else(|e| e.into_inner());
+                g.run_state.abort_signal.clone()
+            };
+            let compaction_signal = {
+                let shared = sink.state();
+                let g = shared.lock().unwrap_or_else(|e| e.into_inner());
+                g.run_state.abort_compaction_signal.clone()
+            };
+            // 句柄在 stream 之前取：`agent.run()` 借用了 agent，而
+            // `abort_handle()` 是独立的一份拷贝。
+            let abort_handle = agent.abort_handle();
+            let compaction_abort_handle = agent.auto_compaction_abort_handle();
             let mut stream = Box::pin(agent.run(nini_core::AgentMessage::user(user_msg.clone())));
-            while let Some(ev) = stream.next().await {
-                let lite = match ev {
-                    Ok(AgentEvent::TextDelta { text }) => {
-                        nini_tui::runtime::AgentEventLite::TextDelta(text)
-                    }
-                    Ok(AgentEvent::ThinkingDelta { text }) => {
-                        nini_tui::runtime::AgentEventLite::ThinkingDelta(text)
-                    }
-                    Ok(AgentEvent::ToolCallStart { id, name }) => {
-                        nini_tui::runtime::AgentEventLite::ToolCallStart { id, name }
-                    }
-                    Ok(AgentEvent::ToolCallStop { id, input_json }) => {
-                        nini_tui::runtime::AgentEventLite::ToolCallStop {
-                            id,
-                            args: input_json.to_string(),
+            let mut aborted = false;
+            loop {
+                let ev = if aborted {
+                    // 已经中止：只把 agent 剩下的收尾事件读完。
+                    stream.next().await
+                } else {
+                    tokio::select! {
+                        ev = stream.next() => ev,
+                        _ = wait_signal(abort_signal.as_deref()) => {
+                            // v0.11 (N5)：整轮中止。
+                            abort_handle.abort();
+                            aborted = true;
+                            continue;
                         }
-                    }
-                    Ok(AgentEvent::ToolResult { id, name, output }) => {
-                        nini_tui::runtime::AgentEventLite::ToolResult {
-                            id,
-                            name,
-                            ok: !output.is_error,
-                            content: output.content,
-                            details: None,
-                            duration_ms: output.duration_ms,
+                        _ = wait_signal(compaction_signal.as_deref()) => {
+                            // v0.11 (A2b)：**只**取消压缩，整轮继续。
+                            //
+                            // Pi：压缩期间的 Esc → `session.abortCompaction()`。
+                            compaction_abort_handle.abort();
+                            continue;
                         }
-                    }
-                    Ok(AgentEvent::TurnEnd { stop_reason, usage }) => {
-                        // v0.10 (R2e): tokens only. The cost used to be
-                        // computed here and sent as a third field, which
-                        // made it a constant nobody could check; the TUI
-                        // prices it against the selected model instead.
-                        sink.push(nini_tui::runtime::AgentEventLite::Usage(
-                            usage.input_tokens,
-                            usage.output_tokens,
-                            usage.cache_read_tokens,
-                            usage.cache_write_tokens,
-                        ));
-                        // v0.8.4 (ux-001, pi-parity): surface non-success
-                        // stop reasons at the end of the assistant turn.
-                        // Pi's `AssistantMessageComponent` shows "Response
-                        // was truncated before completion." / "Operation
-                        // aborted" / "Error: …" — same idea, one-line
-                        // notice rendered in `error` colour so the user
-                        // immediately sees the turn did not complete
-                        // normally. `end_turn` / `tool_use` are the happy
-                        // path so we don't emit anything.
-                        match stop_reason.as_str() {
-                            "length" => sink.push(nini_tui::runtime::AgentEventLite::StopReason(
-                                "Response was truncated before completion.".to_string(),
-                            )),
-                            "aborted" => sink.push(nini_tui::runtime::AgentEventLite::StopReason(
-                                "Operation aborted.".to_string(),
-                            )),
-                            "error" => sink.push(nini_tui::runtime::AgentEventLite::StopReason(
-                                "Error during generation.".to_string(),
-                            )),
-                            _ => {}
-                        }
-                        nini_tui::runtime::AgentEventLite::TurnEnd
-                    }
-                    Ok(AgentEvent::Error { message }) => {
-                        nini_tui::runtime::AgentEventLite::Error(message)
-                    }
-                    Ok(AgentEvent::PhaseChanged(phase)) => {
-                        // v0.10.8 (A2)：传**稳定的机器标签**，而不是 Display。
-                        // TUI 用它判断「是否在压缩」；Display 是给人看的，
-                        // 格式一变就会静默失效（review finding）。
-                        nini_tui::runtime::AgentEventLite::PhaseChanged(phase.tag().to_string())
-                    }
-                    Ok(_) => continue,
-                    Err(e) => {
-                        // v0.8.4 (bugfix): a provider error was
-                        // previously swallowed by `Err(_) => continue`,
-                        // which left the transcript stuck in
-                        // Running with no visible feedback. Most often
-                        // this is an upstream rate limit (HTTP 429)
-                        // or a transport error during stream; either
-                        // way the user needs to see *something*. Push
-                        // the error to the sink so it lands in the
-                        // transcript, then fall through so the loop
-                        // exits after this single error (no point
-                        // polling a stream that's already errored).
-                        eprintln!("[nini] agent stream error: {e}");
-                        nini_tui::runtime::AgentEventLite::Error(e.to_string())
                     }
                 };
-                sink.push(lite);
+                let Some(ev) = ev else { break };
+                {
+                    let lite = match ev {
+                        Ok(AgentEvent::TextDelta { text }) => {
+                            nini_tui::runtime::AgentEventLite::TextDelta(text)
+                        }
+                        Ok(AgentEvent::ThinkingDelta { text }) => {
+                            nini_tui::runtime::AgentEventLite::ThinkingDelta(text)
+                        }
+                        Ok(AgentEvent::ToolCallStart { id, name }) => {
+                            nini_tui::runtime::AgentEventLite::ToolCallStart { id, name }
+                        }
+                        Ok(AgentEvent::ToolCallStop { id, input_json }) => {
+                            nini_tui::runtime::AgentEventLite::ToolCallStop {
+                                id,
+                                args: input_json.to_string(),
+                            }
+                        }
+                        Ok(AgentEvent::ToolResult { id, name, output }) => {
+                            nini_tui::runtime::AgentEventLite::ToolResult {
+                                id,
+                                name,
+                                ok: !output.is_error,
+                                content: output.content,
+                                details: None,
+                                duration_ms: output.duration_ms,
+                            }
+                        }
+                        Ok(AgentEvent::TurnEnd { stop_reason, usage }) => {
+                            // v0.10 (R2e): tokens only. The cost used to be
+                            // computed here and sent as a third field, which
+                            // made it a constant nobody could check; the TUI
+                            // prices it against the selected model instead.
+                            sink.push(nini_tui::runtime::AgentEventLite::Usage(
+                                usage.input_tokens,
+                                usage.output_tokens,
+                                usage.cache_read_tokens,
+                                usage.cache_write_tokens,
+                            ));
+                            // v0.8.4 (ux-001, pi-parity): surface non-success
+                            // stop reasons at the end of the assistant turn.
+                            // Pi's `AssistantMessageComponent` shows "Response
+                            // was truncated before completion." / "Operation
+                            // aborted" / "Error: …" — same idea, one-line
+                            // notice rendered in `error` colour so the user
+                            // immediately sees the turn did not complete
+                            // normally. `end_turn` / `tool_use` are the happy
+                            // path so we don't emit anything.
+                            match stop_reason.as_str() {
+                                "length" => {
+                                    sink.push(nini_tui::runtime::AgentEventLite::StopReason(
+                                        "Response was truncated before completion.".to_string(),
+                                    ))
+                                }
+                                "aborted" => {
+                                    sink.push(nini_tui::runtime::AgentEventLite::StopReason(
+                                        "Operation aborted.".to_string(),
+                                    ))
+                                }
+                                // v0.11 (A2b)：Pi 的原文是「Auto-compaction cancelled」
+                                // （`interactive-mode.ts#compaction_end`）。
+                                "compaction cancelled" => {
+                                    sink.push(nini_tui::runtime::AgentEventLite::StopReason(
+                                        "Auto-compaction cancelled.".to_string(),
+                                    ))
+                                }
+                                "error" => {
+                                    sink.push(nini_tui::runtime::AgentEventLite::StopReason(
+                                        "Error during generation.".to_string(),
+                                    ))
+                                }
+                                _ => {}
+                            }
+                            nini_tui::runtime::AgentEventLite::TurnEnd
+                        }
+                        Ok(AgentEvent::Error { message }) => {
+                            nini_tui::runtime::AgentEventLite::Error(message)
+                        }
+                        Ok(AgentEvent::PhaseChanged(phase)) => {
+                            // v0.10.8 (A2)：传**稳定的机器标签**，而不是 Display。
+                            // TUI 用它判断「是否在压缩」；Display 是给人看的，
+                            // 格式一变就会静默失效（review finding）。
+                            nini_tui::runtime::AgentEventLite::PhaseChanged(phase.tag().to_string())
+                        }
+                        Ok(_) => continue,
+                        Err(e) => {
+                            // v0.8.4 (bugfix): a provider error was
+                            // previously swallowed by `Err(_) => continue`,
+                            // which left the transcript stuck in
+                            // Running with no visible feedback. Most often
+                            // this is an upstream rate limit (HTTP 429)
+                            // or a transport error during stream; either
+                            // way the user needs to see *something*. Push
+                            // the error to the sink so it lands in the
+                            // transcript, then fall through so the loop
+                            // exits after this single error (no point
+                            // polling a stream that's already errored).
+                            eprintln!("[nini] agent stream error: {e}");
+                            nini_tui::runtime::AgentEventLite::Error(e.to_string())
+                        }
+                    };
+                    sink.push(lite);
+                }
             }
             sink.push(nini_tui::runtime::AgentEventLite::Done);
             done.notify_waiters();
