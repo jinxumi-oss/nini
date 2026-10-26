@@ -1533,6 +1533,27 @@ fn cmd_reload(state: &mut AppState, _settings: &mut SettingsManager, _args: &str
             state.run_state.context_window
         ));
     }
+
+    // v0.11 (B3)：**键位**与**模型目录**也重新读一遍。
+    //
+    // Pi 的 `/reload` 重载的是 settings + 资源装载器（skills / prompts /
+    // themes / AGENTS.md）+ 键位（`interactive-mode.ts#handleReloadCommand`
+    // → `keybindings.reload()`）。nini 能诚实重载的是前两类里不需要重建
+    // 会话的部分：settings（已有）、键位、模型目录。
+    //
+    // 键位此前是**进程级缓存**（`OnceLock`），所以 `/reload` 根本改不了它——
+    // 这正是差距 B3 说的「范围远小于 Pi」。
+    let keybindings = crate::runtime::reload_user_overrides();
+    out.push(format!(
+        "keybindings: {keybindings} user override(s) in effect"
+    ));
+
+    // 模型目录：用户自己的 `models.json` 声明的模型（v0.10.9 起可见）。
+    let cwd_path = cwd.clone().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let models_json = nini_core::settings::load_models_json(&cwd_path);
+    let user_models = nini_core::model_runtime::user_model_specs(&models_json);
+    out.push(format!("models: {} from models.json", user_models.len()));
+    state.model_state.user_models = user_models;
     // The model is deliberately *not* switched here. `RunConfig` is cloned
     // once per run, so changing it mid-session would leave the status bar
     // and the provider disagreeing until the next prompt — the same class
@@ -1543,8 +1564,11 @@ fn cmd_reload(state: &mut AppState, _settings: &mut SettingsManager, _args: &str
         .as_deref()
         .map(|c| nini_core::skills::load_skills(c).skills.len())
         .unwrap_or(0);
+    // v0.11 (B3)：说得**更准**——Pi 的 `/reload` 会重建运行时，所以 skills
+    // 在 Pi 里**能**热重载；nini 不能，因为系统提示词在会话开始时就固定了。
+    // 「不能」要说成「不能」，写成「已重载」就是谎报（GOALS T4）。
     out.push(format!(
-        "skills: {on_disk} on disk (the system prompt is fixed for this          session — restart nini to pick them up)"
+        "skills: {on_disk} on disk (not reloaded — nini's system prompt is fixed for this session; Pi can reload it because it rebuilds the runtime; restart nini to pick them up)"
     ));
 
     if out.len() == 1 {

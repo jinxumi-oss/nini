@@ -47,6 +47,16 @@ pub struct Settings {
     /// verbatim (the rest gets summarized).
     #[serde(default = "default_keep_recent_tokens")]
     pub keep_recent_tokens: u32,
+    /// What a **double** Esc (two presses within 500 ms, with an empty
+    /// editor) does.
+    ///
+    /// Pi: `settings-manager.ts#getDoubleEscapeAction` — `"none"`,
+    /// `"tree"` or `"fork"`, default `"tree"`. nini supports `"tree"`
+    /// (it has Pi's tree selector) and `"none"`; `"fork"` is accepted
+    /// and says out loud that nini has no message picker — Pi's
+    /// `showUserMessageSelector()` has no counterpart here yet.
+    #[serde(default = "default_double_escape_action")]
+    pub double_escape_action: String,
 }
 
 fn default_context_window() -> u32 {
@@ -58,6 +68,9 @@ fn default_reserve_tokens() -> u32 {
 fn default_keep_recent_tokens() -> u32 {
     DEFAULT_KEEP_RECENT_TOKENS
 }
+fn default_double_escape_action() -> String {
+    "tree".to_string()
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -68,6 +81,7 @@ impl Default for Settings {
             context_window: DEFAULT_CONTEXT_WINDOW,
             reserve_tokens: DEFAULT_RESERVE_TOKENS,
             keep_recent_tokens: DEFAULT_KEEP_RECENT_TOKENS,
+            double_escape_action: default_double_escape_action(),
         }
     }
 }

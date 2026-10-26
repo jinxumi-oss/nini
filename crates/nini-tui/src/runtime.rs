@@ -2044,7 +2044,30 @@ fn handle_key(
                 }
                 state.run_state.status = "compaction cancelled".to_string();
             }
-            EscapeAction::ClearInput => state.input.clear(),
+            EscapeAction::ClearInput => {
+                // v0.11 (B5)：编辑器**为空**时，这一次 Esc 参与 double-Escape
+                // 判定（Pi 的规则）；否则就是清空输入。
+                //
+                // Pi: `interactive-mode.ts#setupKeyHandlers` — 空编辑器时
+                // 走 double-Escape 分支，非空时走它自己的编辑逻辑。
+                if state.input.text.trim().is_empty() {
+                    match double_escape_action(&mut state, now_ms()) {
+                        DoubleEscapeOutcome::Tree => {
+                            state.push_assistant("(opening tree selector...)".to_string());
+                            state.push_divider();
+                        }
+                        DoubleEscapeOutcome::ForkUnsupported => {
+                            state.push_assistant(
+                                "(nini has no message picker yet — use /fork)".to_string(),
+                            );
+                            state.push_divider();
+                        }
+                        DoubleEscapeOutcome::None => {}
+                    }
+                } else {
+                    state.input.clear();
+                }
+            }
         },
         KeyAction::Quit => {
             // v0.6: Ctrl+D requires double-tap to actually quit. The
@@ -2857,6 +2880,75 @@ pub enum EscapeAction {
     ClearInput,
 }
 
+/// Pi 的 double-ESC 窗口：两次 Esc 相隔不超过 500 ms。
+///
+/// Pi: `interactive-mode.ts#lastEscapeTime` — `now - this.lastEscapeTime < 500`。
+pub const DOUBLE_ESCAPE_WINDOW_MS: u64 = 500;
+
+/// The wall clock, in milliseconds since the epoch.
+///
+/// The double-Escape window is a **wall-clock** window (Pi uses
+/// `Date.now()`), but the *decision* takes the timestamp as an argument —
+/// so a test can say "two presses 100 ms apart" without sleeping, and
+/// without a flaky 500 ms sleep in CI.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// What a double-Escape did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoubleEscapeOutcome {
+    /// Nothing: the action is `"none"`, or the window has not elapsed.
+    None,
+    /// The tree selector was opened.
+    Tree,
+    /// The fork selector was requested — nini has no message picker yet,
+    /// so the caller says so out loud instead of pretending.
+    ForkUnsupported,
+}
+
+/// Handle one Esc press in the Idle context with an **empty** editor.
+///
+/// Pi's rule (`interactive-mode.ts#setupKeyHandlers`): with an empty
+/// editor, two Escs within 500 ms open the tree selector, the message
+/// picker, or nothing, depending on `getDoubleEscapeAction()`.
+///
+/// Returns what happened so the caller can report it. The first press
+/// only records the timestamp.
+pub fn double_escape_action(state: &mut AppState, now_ms: u64) -> DoubleEscapeOutcome {
+    let action = state
+        .model_state
+        .settings_snapshot
+        .double_escape_action
+        .clone();
+    if action == "none" {
+        return DoubleEscapeOutcome::None;
+    }
+    let within_window = match state.run_state.last_escape_ms {
+        Some(prev) => now_ms.saturating_sub(prev) < DOUBLE_ESCAPE_WINDOW_MS,
+        None => false,
+    };
+    if !within_window {
+        // First press (or the window has elapsed): remember it.
+        state.run_state.last_escape_ms = Some(now_ms);
+        return DoubleEscapeOutcome::None;
+    }
+    // The window elapsed: fire, and reset so a third press starts over.
+    state.run_state.last_escape_ms = None;
+    match action.as_str() {
+        "fork" => DoubleEscapeOutcome::ForkUnsupported,
+        // "tree" and anything else nini does not know: the tree is the
+        // one Pi action nini actually has.
+        _ => {
+            state.run_state.status = "open_selector:tree".to_string();
+            DoubleEscapeOutcome::Tree
+        }
+    }
+}
+
 /// 按当前状态判定 Esc 的动作。
 ///
 /// 顺序与 Pi 的 EscapeTarget 一致：上下文优先（补全/搜索/退出确认），
@@ -3247,7 +3339,26 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                 }
                 state.run_state.status = "compaction cancelled".to_string();
             }
-            EscapeAction::ClearInput => state.input.clear(),
+            EscapeAction::ClearInput => {
+                // v0.11 (B5)：见 `handle_key` 里的同名分支。
+                if state.input.text.trim().is_empty() {
+                    match double_escape_action(state, now_ms()) {
+                        DoubleEscapeOutcome::Tree => {
+                            state.push_assistant("(opening tree selector...)".to_string());
+                            state.push_divider();
+                        }
+                        DoubleEscapeOutcome::ForkUnsupported => {
+                            state.push_assistant(
+                                "(nini has no message picker yet — use /fork)".to_string(),
+                            );
+                            state.push_divider();
+                        }
+                        DoubleEscapeOutcome::None => {}
+                    }
+                } else {
+                    state.input.clear();
+                }
+            }
         },
         KeyAction::Quit => state.run_state.mode = RunMode::Quitting,
         KeyAction::SwitchModel | KeyAction::ShowHelp => {}
@@ -3345,20 +3456,43 @@ pub fn return_queue_to_editor(state: &mut AppState) -> usize {
 }
 
 /// Resolve a key against the built-in keymap plus any user overrides
-/// from `~/.nini/agent/keybindings.json`. The override file is loaded
-/// once on first use and cached for the process lifetime.
+/// from `~/.nini/agent/keybindings.json`.
+///
+/// The overrides are cached — but the cache is **reloadable** since
+/// v0.11 (B3): Pi's `/reload` re-reads the keybindings
+/// (`interactive-mode.ts#handleReloadCommand` → `keybindings.reload()`),
+/// and a cache that can never be refreshed makes that impossible.
 pub fn resolve_with_user_overrides(key: Key) -> KeyAction {
     use crate::keybindings_manager::load_user_overrides;
     use std::sync::OnceLock;
 
-    static OVERRIDES: OnceLock<Vec<(KeyAction, Key)>> = OnceLock::new();
-    let overrides = OVERRIDES.get_or_init(load_user_overrides);
+    static OVERRIDES: OnceLock<std::sync::RwLock<Vec<(KeyAction, Key)>>> = OnceLock::new();
+    let overrides = OVERRIDES.get_or_init(|| std::sync::RwLock::new(load_user_overrides()));
 
     // User overrides take priority over built-ins.
-    for (action, k) in overrides {
-        if *k == key {
-            return *action;
+    let snapshot: Vec<(KeyAction, Key)> =
+        overrides.read().unwrap_or_else(|e| e.into_inner()).clone();
+    for (action, k) in snapshot {
+        if k == key {
+            return action;
         }
     }
     resolve(&crate::keys::default_keymap(), key)
+}
+
+/// Re-read the user's keybindings file and replace the cached overrides.
+///
+/// Returns the number of overrides now in effect. v0.11 (B3): Pi's
+/// `/reload` re-reads the keybindings, and a `/reload` that cannot
+/// change them is a `/reload` that lies about its scope.
+pub fn reload_user_overrides() -> usize {
+    use crate::keybindings_manager::load_user_overrides;
+    use std::sync::OnceLock;
+
+    static OVERRIDES: OnceLock<std::sync::RwLock<Vec<(KeyAction, Key)>>> = OnceLock::new();
+    let overrides = OVERRIDES.get_or_init(|| std::sync::RwLock::new(Vec::new()));
+    let fresh = load_user_overrides();
+    let mut guard = overrides.write().unwrap_or_else(|e| e.into_inner());
+    *guard = fresh.clone();
+    fresh.len()
 }

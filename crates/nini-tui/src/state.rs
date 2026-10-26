@@ -1404,6 +1404,11 @@ pub struct RunState {
     /// 与 `abort_signal` 分开，是因为两者的后果不同：
     /// 一个终止整个回合，一个只终止压缩。
     pub abort_compaction_signal: Option<Arc<nini_core::abort_signal::AbortSignal>>,
+    /// v0.11 (B5)：上一次「计入 double-Escape」的 Esc 的时间戳（毫秒）。
+    ///
+    /// Pi: `interactive-mode.ts#lastEscapeTime`。**只在编辑器为空时**
+    /// 记录（Pi 的规则），窗口是 500 ms 的**挂钟**窗口。
+    pub last_escape_ms: Option<u64>,
     /// True while a manual compaction is in progress. When true,
     /// /model /model/<arg> still works but the next prompt gets queued.
     pub is_compacting: bool,
@@ -1705,6 +1710,7 @@ impl Clone for RunState {
             pending_external_editor: self.pending_external_editor,
             abort_signal: self.abort_signal.clone(),
             abort_compaction_signal: self.abort_compaction_signal.clone(),
+            last_escape_ms: self.last_escape_ms,
             is_compacting: self.is_compacting,
             is_auto_compacting: self.is_auto_compacting,
             pending_next_turn_messages: self.pending_next_turn_messages.clone(),
@@ -1730,6 +1736,7 @@ impl Default for RunState {
             pending_external_editor: false,
             abort_signal: None,
             abort_compaction_signal: None,
+            last_escape_ms: None,
             is_compacting: false,
             is_auto_compacting: false,
             pending_next_turn_messages: Vec::new(),
