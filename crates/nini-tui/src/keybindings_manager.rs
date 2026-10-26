@@ -108,6 +108,16 @@ impl KeybindingsManager {
         &self.sources
     }
 
+    /// The parsed overrides: (action, key) pairs, user bindings first.
+    ///
+    /// v0.11 (B3)：运行时用的 `load_user_overrides` 此前**另写了一个
+    /// 解析器**，而且它认的文件格式与本模块（以及文档）**相反**——
+    /// 于是按文档写的键位文件在产品里**一行也不生效**。
+    /// 现在只有一个解析器（本模块），两个地方都走它。
+    pub fn overrides(&self) -> &[(KeyAction, Key)] {
+        &self.overrides
+    }
+
     /// Number of overrides loaded.
     pub fn len(&self) -> usize {
         self.overrides.len()
@@ -164,15 +174,14 @@ impl KeybindingsManager {
     }
 }
 
-/// Default path: `~/.nini/agent/keybindings.json`.
+/// Default path: `<agent dir>/keybindings.json`.
+///
+/// v0.11 (B3)：此前这个函数**自己**拼 `$HOME/.nini/agent/keybindings.json`，
+/// 于是它绕过了 `NINI_AGENT_DIR`——agent 目录在别处（测试沙箱、用户改过
+/// 目录）时，键位文件读的是**另一个**目录里的那一份。
+/// 现在它走 `paths::agent_file()`：整个 agent 目录只有**一个**来源。
 pub fn user_keybindings_path() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    Some(
-        PathBuf::from(home)
-            .join(".nini")
-            .join("agent")
-            .join("keybindings.json"),
-    )
+    nini_core::paths::agent_file("keybindings.json")
 }
 
 /// Parse `"Ctrl+L"`, `"Shift+Tab"`, `"F1"`, etc. into a `Key`.
@@ -260,6 +269,49 @@ mod tests {
         let m = KeybindingsManager::new();
         assert!(m.is_empty());
         assert_eq!(m.len(), 0);
+    }
+
+    /// v0.11 (B3)：**产品里读键位文件的那个函数**必须认文档里的格式。
+    ///
+    /// 此前 `load_user_overrides()` 自己写了一个解析器，把 JSON 的**键**当
+    /// 按键规格、**值**当动作名——而文档与 `KeybindingsManager::load_file`
+    /// 都是「动作名 → 按键规格」。于是按文档写的键位文件在产品里**一行也
+    /// 不生效**：用户改了键位，什么都没变。
+    #[test]
+    fn the_runtime_reader_understands_the_documented_format() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("keybindings.json");
+        std::fs::write(
+            &path,
+            r#"{"bindings": {"Quit": "Ctrl+Q", "SwitchModel": "Ctrl+M"}}"#,
+        )
+        .unwrap();
+
+        // The manager's own reader (the documented format).
+        let mut mgr = KeybindingsManager::new();
+        mgr.load_file(&path).expect("load_file");
+        assert_eq!(mgr.len(), 2, "the documented format: {mgr:?}");
+
+        // The runtime's reader must agree with it — one parser, one format.
+        let saved = std::env::var("NINI_AGENT_DIR").ok();
+        unsafe {
+            std::env::set_var("NINI_AGENT_DIR", tmp.path());
+        }
+        let overrides = load_user_overrides();
+        if let Some(v) = saved {
+            unsafe {
+                std::env::set_var("NINI_AGENT_DIR", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("NINI_AGENT_DIR");
+            }
+        }
+        assert_eq!(
+            overrides.len(),
+            2,
+            "the runtime reader must read the same file the same way: {overrides:?}"
+        );
     }
 
     #[test]
@@ -373,30 +425,12 @@ mod tests {
 /// Read and parse the user keybindings.json file.
 /// Returns a vector of (KeyAction, Key) overrides.
 /// Silently returns an empty Vec if the file doesn't exist or is malformed.
+///
+/// v0.11 (B3)：此前这个函数**自己**解析文件，而且认的格式与本模块相反
+/// （它把 JSON 的**键**当按键规格、**值**当动作名，而文档与
+/// `KeybindingsManager::load_file` 都是「动作名 → 按键规格」），
+/// 于是按文档写的键位文件在产品里**一行也不生效**。
+/// 现在它**复用** `KeybindingsManager`——只有一个解析器。
 pub fn load_user_overrides() -> Vec<(KeyAction, Key)> {
-    use std::collections::HashMap;
-
-    let path = match user_keybindings_path() {
-        Some(p) => p,
-        None => return Vec::new(),
-    };
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-    let map: HashMap<String, String> = match serde_json::from_str(&raw) {
-        Ok(m) => m,
-        Err(_) => return Vec::new(),
-    };
-    let mut out = Vec::new();
-    for (key_spec, action_name) in &map {
-        let Some(key) = parse_key_spec(key_spec) else {
-            continue;
-        };
-        let Some(action) = parse_action(action_name) else {
-            continue;
-        };
-        out.push((action, key));
-    }
-    out
+    KeybindingsManager::load(None).overrides().to_vec()
 }
