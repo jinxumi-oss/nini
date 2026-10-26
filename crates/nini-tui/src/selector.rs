@@ -200,10 +200,49 @@ pub trait SelectorState: Any + Send + std::fmt::Debug {
     }
     /// Optional: set the fuzzy-filter query. Default no-op.
     fn state_set_query(&mut self, _q: String) {}
+    /// How this selector filters its items for a query.
+    ///
+    /// The default is nini's generic filter — an exact substring hit on
+    /// the label wins outright, otherwise the per-character fuzzy match
+    /// runs (`fuzzy_filter`).
+    ///
+    /// A selector overrides this when its *own* search rule is not the
+    /// generic one. The model selector does: Pi's `/model` selector
+    /// searches `provider provider/id provider id name` and ranks by
+    /// fuzzy score (`model-search.js#getModelSelectorSearchText`,
+    /// `fuzzy.js#fuzzyFilter`), which the generic filter cannot
+    /// reproduce — it never sees the provider.
+    ///
+    /// The returned indices point into [`SelectorState::state_items`].
+    fn state_filter(&self, query: &str) -> Vec<usize> {
+        default_filter(query, &self.state_items())
+    }
     /// Back-compat alias used by the runtime layer's downcast helper.
     fn state_as_any_mut(&mut self) -> &mut dyn Any {
         self.as_any_mut()
     }
+}
+
+/// nini's generic selector filter: an exact substring hit on the label
+/// wins outright, otherwise the per-character fuzzy match runs.
+///
+/// This is the behaviour the runtime had before selectors could override
+/// it, kept as the default so that overriding it is opt-in.
+pub fn default_filter(query: &str, items: &[SelectorItem]) -> Vec<usize> {
+    if query.is_empty() {
+        return (0..items.len()).collect();
+    }
+    let q = query.to_lowercase();
+    let exact: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.label.to_lowercase().contains(&q))
+        .map(|(i, _)| i)
+        .collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    fuzzy_filter(query, items)
 }
 
 /// Cheap substring match first; fall back to a per-character fuzzy match

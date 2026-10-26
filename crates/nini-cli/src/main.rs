@@ -90,7 +90,8 @@ struct Args {
     /// v0.9.0: was `test-model`, a placeholder that only makes sense
     /// for the fixture provider — so `nini --provider openai-compat`
     /// without `--model` sent a model id no server has heard of and got
-    /// a 404. The default is now a real model.
+    /// a 404. The default is now a real model:
+    /// `MiniMax-M2.7-highspeed`.
     #[arg(long, default_value = DEFAULT_MODEL)]
     model: String,
 
@@ -251,30 +252,29 @@ enum Cmd {
 /// explicit `--model` sent a model id no server has ever heard of and
 /// came back 404.
 ///
-/// MiniMax-M3.1-Flash-Preview is a real, fast, cheap model; it is the
-/// one you want as a default because an agent's first token matters
-/// more than its fifth. Override with `--model` or `/model`.
-pub const DEFAULT_MODEL: &str = "MiniMax-M3.1-Flash-Preview";
+/// v0.10.9: `MiniMax-M2.7-highspeed`. It is a real, fast model — and,
+/// more to the point, it is the model the operator's `models.json`
+/// declares (under the gateway provider that serves it), so the default
+/// is a model that actually exists on the other side of the connection
+/// instead of one nini has to hope for.
+///
+/// The id is sent to the provider as-is: nini does not qualify it with a
+/// provider prefix, because the provider is chosen separately
+/// (`--provider` / `NINI_PROVIDER`) and a prefix would make the id a
+/// *different* id to every server that is not the one it was written for.
+///
+/// Override with `--model` or `/model`.
+pub const DEFAULT_MODEL: &str = "MiniMax-M2.7-highspeed";
 
-/// Built-in model catalog for `nini --list-models` (fallback when
-/// models.json is missing).
-#[allow(dead_code)]
-const BUILTIN_CATALOG: &[(&str, &str)] = &[
-    ("anthropic/claude-opus-4-7", "Anthropic Claude Opus 4.7"),
-    ("anthropic/claude-sonnet-4-5", "Anthropic Claude Sonnet 4.5"),
-    ("anthropic/claude-haiku-4-5", "Anthropic Claude Haiku 4.5"),
-    ("openai/gpt-5", "OpenAI GPT-5"),
-    ("openai/gpt-4o", "OpenAI GPT-4o"),
-    ("openai/o1", "OpenAI o1"),
-    ("google/gemini-2.5-pro", "Google Gemini 2.5 Pro"),
-    ("deepseek/deepseek-chat", "DeepSeek Chat"),
-    ("groq/llama-3.3-70b", "Groq Llama 3.3 70B"),
-    ("mistral/mistral-large-latest", "Mistral Large"),
-    ("mistral/codestral-latest", "Mistral Codestral"),
-    ("cohere/command-r-plus", "Cohere Command R+"),
-    ("cohere/command-r", "Cohere Command R"),
-    ("minimax/MiniMax-M3", "MiniMax M3"),
-];
+/// The built-in model catalogue for `nini --list-models` is **gone**.
+///
+/// It was dead code with a promise attached: the comment said it was the
+/// fallback for `--list-models`, and nothing read it. The shipped catalog
+/// (`nini-core`) is the real catalogue; the user's `models.json` adds to
+/// it. Keeping a second, hand-written list of models next to the
+/// generated one is how two answers to one question get written down —
+/// so `--list-models` now prints what the installation can actually
+/// reach, and only that.
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -516,6 +516,13 @@ async fn main() -> Result<()> {
             // is configuration and only overrides what it actually states.
             let mut runtime = nini_core::model_runtime::ModelRuntime::with_defaults();
             nini_core::model_runtime::merge_user_overrides(&mut runtime, &mj);
+            // The models the user's `models.json` declares that the
+            // shipped catalog does not have. They are models this
+            // installation can reach, so a list of what can be reached
+            // that omits them is not that list.
+            for spec in nini_core::model_runtime::user_model_specs(&mj) {
+                runtime.add(spec);
+            }
             let filter = list_models.as_deref().unwrap_or("");
             for m in nini_core::model_runtime::resolve_pattern(&runtime, filter) {
                 println!("{}", m.id);

@@ -1449,6 +1449,19 @@ pub struct ModelState {
     /// Settings are loaded from `~/.nini/agent/settings.json` if present;
     /// otherwise we use `Settings::default()`.
     pub settings_snapshot: crate::settings::Settings,
+    /// Models the user's `models.json` declares that the shipped catalog
+    /// does not have.
+    ///
+    /// They are a **fact about the user's setup** — a model reached through
+    /// their own gateway, with the context window they wrote down — so
+    /// nini uses their window for compaction instead of the 200 000
+    /// fallback, and offers them in the `/model` selector.
+    ///
+    /// Empty by default: the field is filled by the CLI at startup from
+    /// `models.json`, never read from the environment behind the app's
+    /// back. A test that constructs an `AppState` therefore sees exactly
+    /// what it declared.
+    pub user_models: Vec<nini_core::model_runtime::ModelSpec>,
 }
 
 // =================================================================
@@ -1720,6 +1733,7 @@ impl Clone for ModelState {
             models_cycle_idx: self.models_cycle_idx,
             settings_path: self.settings_path.clone(),
             settings_snapshot: self.settings_snapshot.clone(),
+            user_models: self.user_models.clone(),
         }
     }
 }
@@ -1734,6 +1748,7 @@ impl Default for ModelState {
             models_cycle_idx: None,
             settings_path: None,
             settings_snapshot: crate::settings::Settings::default(),
+            user_models: Vec::new(),
         }
     }
 }
@@ -2683,9 +2698,26 @@ impl AppState {
         // Settings remain the fallback for a model the catalog does not
         // have, and for the case where nobody has said anything at all.
         let from_catalog = nini_core::model_lookup::context_window_for(&self.model_state.model);
+        // A model the user's own `models.json` declares (a gateway model, a
+        // self-hosted endpoint) is not in the shipped catalog — but the
+        // user wrote its window down, and that number beats the 200 000
+        // fallback. It is the user's fact about their setup, not a guess.
+        let from_user = self
+            .model_state
+            .user_models
+            .iter()
+            .find(|m| {
+                m.id == self.model_state.model
+                    || m.id.ends_with(&format!("/{}", self.model_state.model))
+            })
+            .map(|m| m.context_window)
+            .filter(|w| *w > 0);
         self.run_state.context_window = match from_catalog {
             Some(w) => w,
-            None => self.model_state.settings_snapshot.context_window,
+            None => match from_user {
+                Some(w) => w,
+                None => self.model_state.settings_snapshot.context_window,
+            },
         };
     }
 

@@ -895,7 +895,13 @@ fn scoped_models_add_and_list() {
 }
 
 #[test]
-fn trust_command_marks_cwd_default() {
+fn trust_command_without_arguments_opens_the_selector() {
+    // v0.10.9 (P2/B2): a bare `/trust` used to fall back to `trusted`
+    // and write a trust decision for the cwd without asking. Pi opens the
+    // trust selector instead (`interactive-mode.ts#showTrustSelector`).
+    // The argument forms keep their old behaviour — covered by
+    // `trust_command_distrust_and_ask` below and by
+    // `tests/trust_selector.rs`.
     let mut state = AppState::new("test-model");
     let mut settings = SettingsManager::default();
     let r = dispatch(&mut state, &mut settings, CommandId::Trust, "");
@@ -903,12 +909,13 @@ fn trust_command_marks_cwd_default() {
         CommandOutcome::Output(lines) => {
             let joined = lines.join("\n");
             assert!(
-                joined.contains("cwd:") || joined.contains("decision:"),
-                "expected trust output with cwd and decision, got: {joined}"
+                joined.contains("trust selector"),
+                "expected the trust selector to be announced, got: {joined}"
             );
         }
         _ => panic!("expected Output"),
     }
+    assert_eq!(state.run_state.status, "open_selector:trust");
 }
 
 #[test]

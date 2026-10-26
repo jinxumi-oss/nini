@@ -202,6 +202,18 @@ impl ModelRuntime {
         self.models.iter().find(|m| m.id == id).cloned()
     }
 
+    /// Add a model to the catalogue.
+    ///
+    /// Used for the models a user's `models.json` declares: they are not
+    /// in the shipped catalog, but they are models this installation can
+    /// talk to, and a catalogue that hides them is a catalogue that lies
+    /// about what is available.
+    pub fn add(&mut self, spec: ModelSpec) {
+        if !self.models.iter().any(|m| m.id == spec.id) {
+            self.models.push(spec);
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.models.len()
     }
@@ -257,6 +269,62 @@ pub fn merge_user_overrides(runtime: &mut ModelRuntime, cfg: &crate::settings::M
             }
         }
     }
+}
+
+/// The models a user's `models.json` declares that the shipped catalog
+/// does not have.
+///
+/// The shipped catalog covers the providers nini implements natively. A
+/// user who routes a model through their own gateway — a proxy, a
+/// self-hosted endpoint — declares it in `models.json`, and that
+/// declaration is a **fact about their setup**: the id, the context
+/// window, the output ceiling. nini used to be able to see none of it,
+/// because `merge_user_overrides` only ever *patched* catalog entries and
+/// a model absent from the catalog was therefore invisible.
+///
+/// What is NOT carried over is the price: `models.json` states no rates,
+/// and inventing them is exactly the defect this project removed when it
+/// stopped fabricating costs for models it had no numbers for. A user
+/// model therefore has a zero cost, and the status bar hides a zero-cost
+/// pill — "unknown" reads as absent, not as free.
+pub fn user_model_specs(cfg: &crate::settings::ModelsJson) -> Vec<ModelSpec> {
+    let catalog = ModelRuntime::with_defaults();
+    let mut out: Vec<ModelSpec> = Vec::new();
+    for (provider, pc) in &cfg.providers {
+        for m in &pc.models {
+            let Some(id) = m.id.clone() else { continue };
+            let full = if id.contains('/') {
+                id.clone()
+            } else {
+                format!("{provider}/{id}")
+            };
+            if catalog.find_by_id(&full).is_some() {
+                continue;
+            }
+            out.push(ModelSpec {
+                id: full.clone(),
+                // Pi shows the model's own name; a `models.json` entry
+                // carries none, so the id is the honest label.
+                name: full.clone(),
+                // The provider's declared wire format. It is carried for
+                // display only — nothing in nini branches on it.
+                api: pc
+                    .api
+                    .clone()
+                    .unwrap_or_else(|| "openai-completions".to_string()),
+                provider: provider.clone(),
+                reasoning: m.reasoning.unwrap_or(false),
+                input: m.input.clone().unwrap_or_else(|| vec!["text".to_string()]),
+                context_window: m.context_window.unwrap_or(0),
+                max_tokens: m.max_tokens.unwrap_or(0),
+                cost: ModelCost::default(),
+                supports_temperature: true,
+                cost_tiers: Vec::new(),
+                thinking_levels: Vec::new(),
+            });
+        }
+    }
+    out
 }
 
 pub fn resolve_pattern(runtime: &ModelRuntime, pattern: &str) -> Vec<ModelSpec> {

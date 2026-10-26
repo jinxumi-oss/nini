@@ -893,6 +893,23 @@ fn cmd_trust(state: &mut AppState, _settings: &mut SettingsManager, args: &str) 
     // /trust [trusted|distrust|ask|list|clear]
     // Persists a TrustDecision for the current working directory
     // in `~/.nini/agent/trust.json` (Pi-compatible).
+    //
+    // **Without an argument, `/trust` opens the trust selector** — the
+    // same shape Pi has (`interactive-mode.ts#showTrustSelector`, wired
+    // at `interactive-mode.ts#setupEditorSubmitHandler`'s `text === "/trust"`
+    // arm). `selectors/trust.rs` already existed but nothing ever called
+    // it: the command layer answered the no-argument case by *silently
+    // marking the cwd trusted* (`sub = "trusted"` was the fallback), so a
+    // user who typed `/trust` to look at their trust level got a
+    // decision written instead of a question asked.
+    //
+    // The argument forms keep working exactly as before.
+    if args.trim().is_empty() {
+        state.push_assistant("(opening trust selector...)".to_string());
+        state.push_divider();
+        state.run_state.status = "open_selector:trust".to_string();
+        return CommandResult::output(vec!["(opening trust selector...)".to_string()]);
+    }
     use nini_core::project_trust::{ProjectTrustStore, TrustDecision};
     let parts: Vec<&str> = args.split_whitespace().collect();
     let sub = parts.first().copied().unwrap_or("trusted");

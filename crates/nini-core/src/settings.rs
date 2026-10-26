@@ -157,8 +157,25 @@ pub struct ProviderConfig {
 pub struct ModelConfig {
     #[serde(default)]
     pub id: Option<String>,
-    #[serde(default)]
+    /// The context window, in nini's spelling.
+    ///
+    /// Pi writes `contextWindow` (its `ModelMetadataSchema`), and that is
+    /// the spelling every real `models.json` on disk uses. The alias is not
+    /// a convenience: without it nini parsed Pi's file and got **nothing**
+    /// — `context_window` stayed `None`, so every model the user declared
+    /// was silently ignored, and the window nini used was the 200 000
+    /// fallback rather than the number the user had written down.
+    #[serde(default, alias = "contextWindow")]
     pub context_window: Option<u32>,
+    /// Output-token ceiling, in Pi's spelling.
+    #[serde(default, alias = "maxTokens")]
+    pub max_tokens: Option<u32>,
+    /// Whether the model does extended thinking.
+    #[serde(default, alias = "reasoning")]
+    pub reasoning: Option<bool>,
+    /// Input modalities ("text", "image").
+    #[serde(default)]
+    pub input: Option<Vec<String>>,
 }
 
 #[cfg(test)]

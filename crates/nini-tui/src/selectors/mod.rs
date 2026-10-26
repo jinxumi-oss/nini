@@ -1,5 +1,6 @@
 //! Selector types — one per screen that the runtime can open.
 pub mod model;
+pub mod pi_fuzzy;
 pub mod session;
 pub mod settings;
 pub mod thinking;

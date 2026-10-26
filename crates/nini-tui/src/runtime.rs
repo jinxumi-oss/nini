@@ -861,11 +861,15 @@ async fn run_loop(
         }
         // Compute selector visible indices (for rendering).
         if let Some(sel) = active_selector.as_ref() {
-            let items = sel.state_items();
             if selector_query.is_empty() {
-                selector_visible = (0..items.len()).collect();
+                selector_visible = (0..sel.state_items().len()).collect();
             } else {
-                selector_visible = crate::selector::fuzzy_filter(&selector_query, &items);
+                // The selector's own filter, not nini's generic one: the
+                // model selector searches Pi's search text
+                // (`model-search.js#getModelSelectorSearchText`) and ranks
+                // by fuzzy score, which the generic filter cannot
+                // reproduce.
+                selector_visible = sel.state_filter(&selector_query);
             }
         }
         let selector_title = active_selector
@@ -933,8 +937,20 @@ async fn run_loop(
                 let current_model = lock_state(&shared).model_state.model.clone();
                 match kind {
                     "model" => {
-                        let sel =
-                            Box::new(crate::selectors::ModelSelector::new(Some(&current_model)));
+                        // The catalogue is the shipped catalog **plus** the
+                        // models the user's own `models.json` declares.
+                        // Without the second half, a model reached through
+                        // the user's gateway — the one nini is pointed at by
+                        // default — was not in the list at all, and the
+                        // selector could not show the model actually in
+                        // use.
+                        let mut specs =
+                            nini_core::model_runtime::ModelRuntime::with_defaults().list();
+                        specs.extend(lock_state(&shared).model_state.user_models.clone());
+                        let sel = Box::new(crate::selectors::ModelSelector::from_specs(
+                            specs,
+                            Some(&current_model),
+                        ));
                         active_selector = Some(sel);
                         selector_query.clear();
                     }
@@ -1193,7 +1209,7 @@ fn handle_selector_key(
         }
         crossterm::event::KeyCode::Backspace => {
             query.pop();
-            *visible = compute_visible(query, &selector.state_items());
+            *visible = compute_visible(query, selector.as_ref());
             // After filter change, keep selection valid (clamp to first
             // visible item) so Enter picks what the user actually sees.
             if let Some(&first) = visible.first() {
@@ -1231,7 +1247,7 @@ fn handle_selector_key(
         }
         crossterm::event::KeyCode::Char(c) => {
             query.push(c);
-            *visible = compute_visible(query, &selector.state_items());
+            *visible = compute_visible(query, selector.as_ref());
             // Reset selection to first visible item so Enter picks the
             // top match (matches the prior "always pick what I see" UX).
             if let Some(&first) = visible.first() {
@@ -1242,22 +1258,12 @@ fn handle_selector_key(
     }
 }
 
-fn compute_visible(query: &str, items: &[crate::selector::SelectorItem]) -> Vec<usize> {
+fn compute_visible(query: &str, selector: &dyn crate::selector::SelectorState) -> Vec<usize> {
     if query.is_empty() {
-        return (0..items.len()).collect();
+        return (0..selector.state_items().len()).collect();
     }
-    // Cheap substring match first; fall back to fuzzy.
-    let q = query.to_lowercase();
-    let mut exact: Vec<usize> = Vec::new();
-    for (i, item) in items.iter().enumerate() {
-        if item.label.to_lowercase().contains(&q) {
-            exact.push(i);
-        }
-    }
-    if !exact.is_empty() {
-        return exact;
-    }
-    crate::selector::fuzzy_filter(query, items)
+    // The selector's own filter — see `SelectorState::state_filter`.
+    selector.state_filter(query)
 }
 
 /// Helper for early-return in `submit_user_input`: drop state lock and

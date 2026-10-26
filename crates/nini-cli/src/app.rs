@@ -652,6 +652,15 @@ async fn run_tui_bootstrap(
             let dir = cwd.clone();
             state.set_status_bar_metadata(Some(dir.clone()), nini_core::git::git_branch(&dir));
             state.start_session(&cwd);
+            // The models the user's own `models.json` declares. They are
+            // not in the shipped catalog (which covers the providers nini
+            // implements natively), but they are real — the model nini is
+            // pointed at by default usually arrives this way — so their
+            // context window is the user's own number and the `/model`
+            // selector has to offer them.
+            let models_json = nini_core::settings::load_models_json(&cwd);
+            state.model_state.user_models =
+                nini_core::model_runtime::user_model_specs(&models_json);
             // v0.8.1: surface the provider name in the status bar
             // (Pi-style `(provider) model`). Helps users tell which
             // backend is active.
