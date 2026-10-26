@@ -1,6 +1,6 @@
 ## v0.10.9 — the default model is one the operator actually has (2026-10-26)
 
-1629 tests, all green. Three things that were quietly wrong, and one that
+1633 tests, all green. Three things that were quietly wrong, and one that
 was asked for.
 
 ### The default model is `MiniMax-M2.7-highspeed`
