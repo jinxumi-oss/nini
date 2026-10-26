@@ -3,7 +3,7 @@
 //! 此前 `run_state.is_compacting` **永远**是 false，所以下面这个分支
 //! （runtime.rs：「if compaction is in progress, queue the message instead
 //! of spawning an agent」）是**不可达死代码**——Pi 的
-//! `agent-session.ts#queueCompactionMessage` 有明确语义，nini 没有。
+//! `interactive-mode.ts#queueCompactionMessage` 有明确语义，nini 没有。
 //!
 //! 判据：
 //! 1. sink 收到 `PhaseChanged("compacting:overflow")` → `is_compacting` 立起来；

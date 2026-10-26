@@ -2471,6 +2471,18 @@
       "bytes": 61896,
       "origin": "node_modules/@earendil-works/pi-tui/dist/tui-alt-screen.js.map:sourceContent",
       "group": "tui"
+    },
+    "tool-contracts.json": {
+      "sha256": "1e7927ba32d0e163b7d6722029b5fa45eb035b622d8277846d69b7789857ae44",
+      "bytes": 11450,
+      "origin": "scripts/pi-tool-dump.mjs（对 Pi 0.85.1 运行时的工具契约转储）",
+      "group": "ext"
+    },
+    "truncate-oracle.json": {
+      "sha256": "e47d6d2b8d0e45403523cb64a0bf98ba23bafc73b6b5827276d04b4c02e34cff",
+      "bytes": 17041,
+      "origin": "scripts/truncate-oracle.mjs（对 Pi 0.85.1 截断语义的转储）",
+      "group": "tools-t2"
     }
   }
 }

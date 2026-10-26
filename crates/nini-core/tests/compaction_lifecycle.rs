@@ -126,7 +126,7 @@ fn an_overflow_compaction_has_a_phase_and_ends_it() {
 #[test]
 fn messages_queued_during_compaction_are_handed_back() {
     // Pi: 压缩期间提交的消息进 `_pendingNextTurnMessages`，压缩结束后
-    // 交给下一轮（`agent-session.ts#queueCompactionMessage`）。
+    // 交给下一轮（`interactive-mode.ts#queueCompactionMessage`）。
     let mut agent = Agent::new(
         length_stop_provider(),
         ToolRegistry::new(),
