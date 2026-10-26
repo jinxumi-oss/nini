@@ -231,3 +231,23 @@ CLI 与测试共用**同一份实现**。改完再注入 → 三条全红。
 .ts）已按既有布局进 `references/pi-0.85.1/` 并记入 `SNAPSHOT.lock`
 （419 文件），`scripts/pi-line-refs.py` 的文档名列表也扩了这两个，于是
 引用总数从 111 变成 **126，drift=0，missing=0**。
+
+
+---
+
+## 声明的模块必须存在，源码必须被 git 跟踪（b479ef5d，2026-10-26）
+
+2026-09-21 的一次 `git reset` 把几个模块从 git 里弄丢了，而跟踪着的代码
+仍然声明着它们（`lib.rs` 写着 `mod entries;`，而 `entries.rs` 既没被跟踪
+也不存在）——工作区编译不了，修复是补回一堆最小 stub。
+
+判据是 `crates/nini-core/tests/workspace_modules.rs`：从**外面**看这棵树，
+问 git 它认为自己跟踪了什么。
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-core/tests/workspace_modules.rs` | 在 `crates/nini-core/src/` 放一个**没被 git 跟踪**的 `.rs` | `every_source_file_is_tracked_by_git`（报出 `crates/nini-core/src/mutation_probe.rs`）；注入后已删除 |
+| `crates/nini-core/tests/workspace_modules.rs` | 把 `lib.rs` 里的 `pub mod agent_hooks;` 改成 `pub mod agent_hooks_typo;` | **不是这条测试变红，而是工作区编译不了**——悬空声明本来就是编译错误。这条断言是编译器的检查用 nini 的话再说一遍：它报出「声明了却没有文件」，而不是一个 rustc 错误码。已还原 |
+
+实测记录：第一条注入让断言变红（文件已删除、lib.rs 已还原）；第二条注入
+让 `cargo test` 在编译阶段失败——这正是 2026-09-21 那次故障的形态。
