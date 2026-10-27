@@ -5,6 +5,7 @@
 //! the rendered frame reflects the result.
 
 //! invariant: a87797f1
+//! invariant: 02333721 —— `/hotkeys` 必须真的列出键位表（它曾是 stub）。
 use nini_tui::commands::{complete, dispatch, parse, CommandId, CommandOutcome, REGISTRY};
 // Mutex serializing tests that mutate the HOME environment variable to
 // avoid cross-test interference when cargo runs tests in parallel.

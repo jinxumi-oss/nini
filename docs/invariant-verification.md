@@ -251,3 +251,47 @@ CLI 与测试共用**同一份实现**。改完再注入 → 三条全红。
 
 实测记录：第一条注入让断言变红（文件已删除、lib.rs 已还原）；第二条注入
 让 `cargo test` 在编译阶段失败——这正是 2026-09-21 那次故障的形态。
+
+
+---
+
+## `/hotkeys` 必须真的列出键位表（02333721，2026-10-27）
+
+2026-09-28 的修复把 v0.8 重构时塌成 stub 的 `/hotkeys` 恢复了回来（它本来
+只说「按 F1」）。这条不变量此前一直靠**词法巧合**被认成「有保护」——
+本轮新增的两个测试文件让那个词元的文档频率越过了阈值，扫描器就不再
+认它了。词法猜测是猜测；这里是断言。
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-tui/tests/slash_command_e2e.rs` | `/hotkeys` 退回 stub（只说「按 F1」） | `hotkeys_labels_every_binding_it_lists`（该文件的 `slash_hotkeys_via_submit_user_input` 同组断言） |
+
+注入已实测：断言变红，`dispatch.rs` 已逐字还原。
+
+
+---
+
+## Esc 真的要中止这一轮，压缩期只取消压缩（4a96da2，2026-10-27）
+
+两个不变量在同一次修复里：**A7**（中止信号有消费者）与 **A2b**
+（压缩期的 Esc 只取消压缩）。判据是
+`crates/nini-tui/tests/compaction_escape.rs`（9 条）与
+`crates/nini-core/src/abort_signal.rs` 的 3 条单元测试。
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-tui/tests/compaction_escape.rs` | 压缩上下文的 Esc 改回「中止整轮」 | `esc_during_compaction_cancels_the_compaction_not_the_turn` + `the_key_handler_triggers_only_the_compaction_signal_while_compacting` |
+| `crates/nini-tui/tests/compaction_escape.rs` | 压缩期的 Esc 误触发**整轮**信号 | `the_key_handler_triggers_only_the_compaction_signal_while_compacting` |
+| `crates/nini-core/src/abort_signal.rs` | `trigger()` 不落标志（只通知） | `the_key_handler_triggers_the_turn_abort_signal` + `the_key_handler_triggers_only_the_compaction_signal_while_compacting` + `the_two_abort_signals_are_independent` |
+
+三条注入都实测过，断言变红，源码已逐字还原。
+
+---
+
+## 键位文件按文档的格式必须真的生效（d8f6057，2026-10-27）
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-tui/src/keybindings_manager.rs` | 把运行时的读取器换回**旧的**解析器（方向相反的那个） | `the_runtime_reader_understands_the_documented_format` |
+
+注入已实测：断言变红（12 条仍绿），源码已逐字还原。

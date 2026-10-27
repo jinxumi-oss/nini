@@ -231,9 +231,18 @@ v2 的自我审查又证明了手工读会出错（§9）。v3 的 W0 已经有�
   3. 现有 compaction 测试零改动通过；
   4. `python3 scripts/parity-gap.py --json` 中 A2/A3 的 `status` 变为 `fixed`。
 
+> **v0.11 补记（2026-10-26）**：**A2b**（压缩期的 Esc 只取消压缩）在 v0.11 关掉，
+> 做法见 [`plans/next-parity.md`](next-parity.md) §2 N1；同时**发现并关掉**了 **A7**
+> ——Esc 的中止信号**没有任何消费者**（详见 next-parity.md §4 的自审第 16 条）。
+
 ### W1-C —— A4：双队列拆分（P2）
 
 依赖 A2。退出判据：`clearAllQueues` 的两个队列各有 1 条 oracle，ESC 还回时两者顺序与 Pi 一致。
+
+> **v0.11 顺延（2026-10-26）**：A4 **本轮没做**——它要拆的是队列管道
+> （steering 钩子 / 轮后自动投递 / Esc 退回三处消费点），而 v0.11 先关掉的是
+> 更靠前的 A2b 与 A7（Esc 的语义）。理由与下一轮的入口写在
+> [`plans/next-parity.md`](next-parity.md) §8。
 
 ### W2 —— B 类命令语义与交互形态（P1–P2）
 
@@ -244,10 +253,18 @@ B1 `/clone`、B1b `/export`、B2 `/trust`、B3 `/reload`、B6 模型搜索排序
   3. `argument_hint` 与 `references/spec-v0.85.1/slash-commands/builtin.json` 逐条一致
      （可脚本复算，纳入 CI）。
 
+> **v0.11 补记（2026-10-26）**：W2 里的 **B2**（`/trust` 弹选择器）、**B3**（`/reload` 的范围）、
+> **B6**（模型搜索排序）已关；**B1**（`/clone`）仍被 owner 决策 **R10** 阻塞；
+> **B10**（`/share`）与 D 类小项仍未做。
+
 ### W3 —— B4 bash mode + B5 double-ESC（P2）
 
 动手前必须先确认 Pi 的 `isBashMode` 语义（**不要把它当成 `!cmd`**）。
 退出判据：两条 oracle；且 `!cmd` 的既有行为不被改动。
+
+> **v0.11 补记（2026-10-26）**：**B5**（double-ESC）已在 v0.11 关掉——
+> 做法见 [`plans/next-parity.md`](next-parity.md) §2 N3。**B4**（bash mode）仍未做：
+> 它是 Pi 的**独立交互形态**，必须先录 Pi 的行为再设计 nini 的形态。
 
 ### W4 —— B7 语法高亮 + B8 mermaid（P3，先决策再动手）
 

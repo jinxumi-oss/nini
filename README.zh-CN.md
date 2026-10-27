@@ -7,9 +7,9 @@
 
 [English](README.md) | **简体中文**
 
-[![Status](https://img.shields.io/badge/status-v0.10.9-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.11.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1633%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1657%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
@@ -50,7 +50,7 @@ nini 也不做。
 
 - **单个 6.4 MiB 可执行文件**（压缩后 2.4 MB），取代一整套 Node.js 工具链
 - **无授权附加条款**——纯 MIT，不像某些带着 OpenAI/Anthropic 再分发限制的分支
-- **1633 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
+- **1657 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
   HTTP 服务器的端到端线格式测试
 - **内置工具可扩展**——bash、read、write、edit、grep、find
 - **流式 TUI**，带斜杠命令自动补全
@@ -237,6 +237,13 @@ session JSONL。
   （对照物是 Pi 自己的工具定义在**运行时**的转储，见
   `references/pi-0.85.1/tool-contracts.json`）。唯一的例外是 **`powershell`**
   （Pi 里是 Windows 专用），nini 不提供；POSIX 下由 `bash` 覆盖同样的场景
+- **连按两次 Esc 会打开 tree 选择器**（`settings.json` 里的
+  `double_escape_action`：`"tree"` 或 `"none"`）。Pi 的第三种取值 `"fork"`
+  打开的是「历史用户消息选择器」——nini 没有对应物，所以它**出声说**
+  没有，而不是打开 tree 冒充
+- `/reload` 会重读 settings、主题、**键位**与**模型目录**；但它**不能**重读
+  **skills**——nini 的系统提示词在会话一生里固定（Pi 能，因为它重建运行时）。
+  命令会把这句实话说出来，而不是声称「已重载」
 - 不支持 OAuth / device-flow 授权——只用环境变量里的 API key
 - 没有扩展运行时。这是**刻意**移出范围的：它当初被规定为 Rust cdylib，
   而 Pi 加载的是 TypeScript，两者没有共同的执行模型。见

@@ -1,3 +1,84 @@
+## v0.11.0 — Esc 说谎了这么久（2026-10-27）
+
+1657 tests, all green. 一个计划（`docs/plans/next-parity.md`）、四条差距、
+一个计划外发现的缺陷。
+
+### 「aborted」只是一句没有兑现的话
+
+`run_state.abort_signal` 是一个 `Arc<Notify>`：TUI 在 Esc 时
+`notify_waiters()`，而**驱动那一侧根本没人读它**。
+
+于是「Esc 中止了这一轮」是一句**没有兑现的话**——状态栏写着 `aborted`，
+编辑器立刻可用（v0.10.1 的行为），而模型**继续往下写**，transcript 继续长。
+用户按 Esc 是为了停下一次跑飞的回合；nini 只是把「aborted」写在了状态栏上。
+
+两处让它更糟：
+
+* `Notify::notify_waiters()` **不留存许可**：先触发后等待的一方永远等不到；
+* 信号是在**键处理**里创建的，所以「轮后自动投递」那条路径**根本没有信号**。
+
+现在：
+
+* 信号是 `nini_core::abort_signal::AbortSignal`——**标志先落、通知后发**；
+  等待方**先注册再看标志**。两个顺序都不会丢。
+* 它在 `submit_user_input_inner`（每一轮的唯一入口）创建。
+* 驱动在 `select!` 里等它，收到就 `agent.abort_handle().abort()`
+  （agent 的循环本来就在观察这个句柄）。
+* 两个派发点（`handle_key` 与 `apply_action`）都触发它——它们做的是**同一件事**。
+
+差距台账新增 **A7**（P1），已闭。
+
+### 压缩期间的 Esc 只取消压缩（A2b）
+
+Pi 在压缩期间**替换**编辑器的 Esc 处理器为 `session.abortCompaction()`
+（`interactive-mode.ts#autoCompactionEscapeHandler`），压缩结束时换回来。
+nini 把 `EscapeTarget::Compacting` 归到 `AbortTurn`——于是用户想取消一次
+压缩，丢掉的是**整轮**工作。
+
+现在有两个信号：`abort_signal`（整轮）与 `abort_compaction_signal`（只压缩），
+压缩期的 Esc 只触发后者，agent 侧对应 `auto_compaction_abort_handle()`。
+agent 也区分「压缩被取消」与「没什么可压缩」：前者以
+*"Auto-compaction cancelled"* 结束这一轮（Pi 的原话），后者仍报溢出。
+
+### double-ESC：两次 Esc 打开 tree 选择器（B5）
+
+Pi 的 Esc 处理器有一条 nini 没有的分支：**编辑器为空**时，500 ms 内第二次
+Esc 打开 tree 选择器 / 消息选择器 / 什么都不做，取决于
+`settings-manager.ts#getDoubleEscapeAction`（`"none" | "tree" | "fork"`，
+默认 `"tree"`）。
+
+nini 现在有同样的规则、同样的三个条件，设置项用 Pi 的拼写
+`double_escape_action`。判定函数**把时间戳当参数**——测试说「两次相隔
+100 ms」而不必 sleep，CI 也不会有那种 flaky 的 500 ms 等待。
+
+`"fork"` 被接受，并**出声说**没有实现：Pi 的 fork 打开的是「历史用户消息
+选择器」，nini 没有对应物——打开 tree 冒充是不行的。
+
+### `/reload` 的范围（B3）
+
+Pi 的 `/reload` 重载 settings、资源装载器（skills / prompts / themes /
+`AGENTS.md`）、**键位**，并重建运行时与聊天。nini 此前只重载 settings，
+而且**键位根本不可能重载**（用户覆盖缓存在 `OnceLock` 里，进程一生只读一次）。
+
+现在键位与**模型目录**都会重读（用户新加的模型不用重启就出现），而且
+skills 那行改成了实话：nini **不能**重载 skills（系统提示词在会话开始时
+固定），**并且写明 Pi 能**（因为它重建运行时）。说「已重载」是谎报。
+
+### 顺带修掉的两处真缺陷
+
+1. **键位文件按文档的格式写，一行也不生效**：运行时用的是**另一个**解析器，
+   而且方向相反（把 JSON 的键当按键规格、值当动作名）。现在只有一个解析器。
+2. **键位路径绕过了 `NINI_AGENT_DIR`**：它自己拼 `$HOME/.nini/agent/…`，
+   于是 agent 目录在别处时，键位读的是**另一个**目录里的那一份。
+
+### 计划与它的自审
+
+`docs/plans/next-parity.md` 是这一轮的执行细则（含 18 条自审漏洞与修法）。
+看板：`python3 scripts/next-parity-check.py`（7/7 绿；**A4 双队列顺延**
+到下一轮，理由写在 §8）。
+
+---
+
 ## v0.10.9 — the default model is one the operator actually has (2026-10-26)
 
 1633 tests, all green. Three things that were quietly wrong, and one that

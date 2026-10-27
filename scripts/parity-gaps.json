@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-26",
+  "updated": "2026-10-27",
   "authority": "docs/GOALS.md",
   "detail": "docs/plans/parity-with-pi.md",
   "gaps": [
@@ -115,12 +115,12 @@
       "severity": "P2",
       "title": "/reload 范围远小于 Pi：只重载 settings/theme/context_window",
       "pi_basis": "interactive-mode.js:4809 / 4859 「Reloading keybindings, extensions, skills, prompts, themes, and context files...」",
-      "nini_state": "crates/nini-tui/src/commands/dispatch.rs:1419 `fn cmd_reload(..., _args: &str)` 只重载 settings、重新解析 theme、刷新 context_window，输出里明确说 skills 需重启；keybindings/themes/prompts 均未重载",
-      "oracle": "none",
-      "status": "open",
+      "nini_state": "已修（2026-10-26，v0.11）：Pi 的 `/reload` 重载 settings + 资源装载器（skills / prompts / themes / AGENTS.md）+ **键位**（`keybindings.reload()`）+ 重建运行时与聊天。nini 此前只重载 settings（+ 主题 + 重算窗口），而且**键位根本不可能重载**（用户覆盖缓存在 `OnceLock` 里，进程一生只读一次）。现在：① 键位缓存可重载（`reload_user_overrides()`），`/reload` 报告生效的覆盖条数；② **模型目录**也重读一遍，用户新加的模型不用重启就出现；③ skills 那行改成实话：nini **不能**重载 skills（系统提示词在会话开始时固定），并且写明 Pi 能（因为它重建运行时）。顺带修掉两处真缺陷：键位文件按文档的格式写**一行也不生效**（运行时用的是另一个解析器，方向相反），以及键位路径绕过了 `NINI_AGENT_DIR`。",
+      "oracle": "crates/nini-tui/tests/reload_scope.rs 4 条（键位被重读 / models.json 的模型被重读 / 报告**不**声称重载了不能重载的 skills / settings 仍然重载）；crates/nini-tui/src/keybindings_manager.rs 的 `the_runtime_reader_understands_the_documented_format`",
+      "status": "fixed",
       "blocking_decision": null,
       "round": "W2",
-      "exit_criterion": "crates/nini-tui/tests/ 下有 1 条 oracle：改 keybindings/themes 后执行 /reload，运行中的会话即生效（不需要新 session）",
+      "exit_criterion": "cargo test -p nini-tui --test reload_scope 退出 0（4 条）",
       "machine_checkable": true,
       "layer": null
     },
@@ -145,12 +145,12 @@
       "severity": "P2",
       "title": "没有 double-ESC（Pi 用它切到 tree / fork 视图）",
       "pi_basis": "interactive-mode.js:262 `lastEscapeTime = 0`；interactive-mode.js:2233 `getDoubleEscapeAction()`；interactive-mode.js:2236 500ms 窗口判定",
-      "nini_state": "crates 下 grep `double_escape` / `last_escape` 零命中：crates/nini-tui/src/runtime.rs:1881 的 Abort 分支只有单次 Esc 语义，没有时间窗与二次 Esc 的动作分派",
-      "oracle": "none",
-      "status": "open",
+      "nini_state": "已修（2026-10-26，v0.11）：Pi 的 Esc 处理器在**编辑器为空**时走 `getDoubleEscapeAction()`（`\"none\" | \"tree\" | \"fork\"`，默认 `\"tree\"`），500 ms 内第二次 Esc 打开 tree 选择器 / 消息选择器 / 什么都不做。nini 此前没有这条分支。现在：`double_escape_action` 设置项（Pi 的拼写）、`RunState::last_escape_ms` 时间戳、500 ms 的挂钟窗口；判定函数**把时间戳当参数**，所以测试不需要 sleep。nini 支持 `\"tree\"` 与 `\"none\"`；Pi 的 `\"fork\"` 打开的是「历史用户消息选择器」，nini 没有对应物——设置项被接受，并**出声说**没有，而不是打开 tree 冒充。",
+      "oracle": "crates/nini-tui/tests/double_escape.rs 7 条（窗口内两次 Esc 打开 tree / 窗口是 500 ms（499 内开、500 不开）/ 过期后重新计时 / \"none\" 什么都不做 / \"fork\" 明确说没实现 / 编辑器非空时不触发 / 走真实 dispatch 点也能打开）",
+      "status": "fixed",
       "blocking_decision": null,
       "round": "W3",
-      "exit_criterion": "crates/nini-tui/tests/ 下有 1 条 oracle：500ms 内连按两次 Esc 触发的动作与 Pi 的 getDoubleEscapeAction() 一致（tree/fork/none）",
+      "exit_criterion": "cargo test -p nini-tui --test double_escape 退出 0（7 条）",
       "machine_checkable": true,
       "layer": null
     },
@@ -320,6 +320,21 @@
       "layer": null
     },
     {
+      "id": "A7",
+      "class": "A",
+      "severity": "P1",
+      "title": "Esc 通知了中止信号，但**没有任何消费者**——这一轮其实没有中止，模型继续写",
+      "pi_basis": "interactive-mode.ts#setupKeyHandlers → `restoreQueuedMessagesToEditor({ abort: true })` → `this.agent.abort()`；agent-session.ts#abort → `_isAgentRunActive = false`（Pi 的中止是真的落到 agent 上的）",
+      "nini_state": "已修（2026-10-26，v0.11）：`run_state.abort_signal` 此前是 `Arc<Notify>`，TUI 在 Esc 时 `notify_waiters()`，而**驱动那一侧根本没人读它**——「aborted」只是一个状态字符串，模型继续往下写，用户按 Esc 停不下来。而且 `Notify::notify_waiters()` **不留存许可**：先触发后等待的一方永远等不到。现在它是 `nini_core::abort_signal::AbortSignal`（标志先落、通知后发；等待方先注册再看标志），在 `submit_user_input_inner`（每一轮的唯一入口）创建，驱动在 `select!` 里等它并调用 `agent.abort_handle().abort()`（agent 的循环本来就观察这个句柄）。",
+      "oracle": "crates/nini-tui/tests/compaction_escape.rs 9 条（含「两个信号互不触发」「先触发后等待不丢」「后等待也能看到」「键处理触发的是哪一个信号」）；crates/nini-core/src/abort_signal.rs 的 3 条单元测试（迟到的等待者、先触发后等待、重复触发）",
+      "status": "fixed",
+      "blocking_decision": null,
+      "round": "v0.11",
+      "exit_criterion": "cargo test -p nini-tui --test compaction_escape 退出 0（9 条）；cargo test -p nini-core abort_signal 退出 0（3 条）；变异注入：让 trigger() 不落标志 → 4 条断言变红",
+      "machine_checkable": true,
+      "layer": null
+    },
+    {
       "id": "D2",
       "class": "D",
       "severity": "P3",
@@ -415,12 +430,12 @@
       "severity": "P1",
       "title": "Esc 在压缩期间不会中止压缩（Pi 有 autoCompactionEscapeHandler）",
       "pi_basis": "Pi 在进入压缩/重试前会**替换** Esc 处理器（`autoCompactionEscapeHandler` / `retryEscapeHandler`，见 interactive-mode.ts 的 EscapeTarget）",
-      "nini_state": "部分达成（随 A3 一起修）：压缩期间的 Esc 现在**不**清空输入、而是中止这一轮（nini 的压缩是本地的，毫秒级；重试与分支摘要都发生在这一轮之内）。**与 Pi 的差别**：Pi 只取消**压缩**、让回合继续（`autoCompactionEscapeHandler`），nini 中止的是整轮",
-      "oracle": "none",
-      "status": "open",
+      "nini_state": "已修（2026-10-26，v0.11）：Pi 在压缩期间**替换**编辑器的 Esc 处理器为 `session.abortCompaction()`（`interactive-mode.ts#autoCompactionEscapeHandler`），压缩结束时换回来；nini 把 `EscapeTarget::Compacting` 归到 `AbortTurn`，于是用户想取消一次压缩，丢掉的是**整轮**工作。现在有两个信号：`abort_signal`（整轮）与 `abort_compaction_signal`（只压缩）；压缩期的 Esc 只触发后者，agent 侧对应 `auto_compaction_abort_handle()`。agent 也区分「压缩被取消」与「没什么可压缩」：前者以 *\"Auto-compaction cancelled\"* 结束这一轮（Pi 的原话），后者仍报溢出。",
+      "oracle": "crates/nini-tui/tests/compaction_escape.rs 9 条（压缩期的 Esc 是 AbortCompaction 而非 AbortTurn / 其余上下文仍是 AbortTurn / Idle 仍清空输入 / 两个信号互不触发 / 先触发后等待不丢 / 后等待也能看到 / 键处理触发的是哪一个信号）；crates/nini-tui/tests/escape_target.rs（压缩上下文的判定改为 AbortCompaction——旧断言把「中止整轮」当成了正确，理由记在该文件头部）",
+      "status": "fixed",
       "blocking_decision": null,
       "round": "W1-B",
-      "exit_criterion": "压缩期间按 Esc → 压缩被中止、回合继续（Pi 的语义）；有一条 oracle",
+      "exit_criterion": "cargo test -p nini-tui --test compaction_escape 退出 0（9 条）；cargo test -p nini-tui --test escape_target 退出 0；两条变异注入分别验证断言会红（压缩分支改回 AbortTurn / 压缩期误触发整轮信号）",
       "machine_checkable": false
     }
   ]

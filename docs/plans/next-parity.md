@@ -7,6 +7,11 @@
 > （`文件#符号`），且必须能在 `references/pi-0.85.1/` 里解析——**解析不到的引用不是引用**
 > 台账：`scripts/parity-gaps.json` 是差距的唯一数据源；本文件不手写计数
 
+> **执行结果（2026-10-27）**：N0、N1、**N5**、N3、N4 已完成（详见 §6）；
+> **N2（A4 双队列）顺延到下一轮**（理由见 §8）。
+> 执行过程中**发现并关掉了一条计划外的新差距 A7**（Esc 的中止信号没有消费者）——
+> 它比 A4 更靠前，也更严重：它意味着「Esc 中止了这一轮」是一句**没有兑现的话**。
+
 ---
 
 ## 0. 为什么是这四条
@@ -83,14 +88,14 @@
 - 变异注入：把 `escape_action()` 的 `Compacting` 分支改回 `AbortTurn` → 第 1 条红；
   取消压缩后**不清** `is_compacting` → 第 3 条红。
 
-### N2 —— A4：steering 与 followUp 两个队列
+### N2 —— A4：steering 与 followUp 两个队列（本轮**顺延**，见 §8）
 
 - Pi：Enter（流式中）→ **steer**（进当前轮）；Alt+Enter → **followUp**（下一轮）；
   压缩期间同样两分。`clearQueue()` 一次清空两者。
 - nini 现状：**只有一条** `pending_next_turn_messages`，同时被三个用途争抢：
   steering 钩子（`nini-cli` 的 `LiveConfigHooks::get_steering_messages`）、轮后自动投递、
   Esc 的 `return_queue_to_editor`。谁先谁拿 → **语义不确定**。
-- 改法：
+- 改法（**下一轮**）：
   1. `RunState` 拆成 `pending_steer_messages` 与 `pending_followup_messages`；
   2. 路由按 Pi：流式中的 Enter → steer；**新增 `Alt+Enter` 键位**（Pi 的
      `app.message.followUp`，默认键 `alt+enter`）→ followUp；压缩期间同样两分；
@@ -104,6 +109,27 @@
   5. steering 钩子取走的是 **steer** 队列（`nini-cli` 侧），followUp 队列**不被**它取走。
 - 退出判据：`cargo test -p nini-tui --test queue_routing` 退出 0。
 - 变异注入：把路由改回「都进 steer」→ 第 2 条红；让 steering 钩子改取 followUp 队列 → 第 5 条红。
+
+### N5 —— A7：中止信号必须真的有消费者（执行本轮时发现，计划外）
+
+- Pi：Esc → `restoreQueuedMessagesToEditor({ abort: true })` → `this.agent.abort()`，
+  中止**真的落到 agent 上**（`agent-session.ts#abort` → `_isAgentRunActive = false`）。
+- nini 现状（发现于本轮执行）：`run_state.abort_signal` 是一个 `Arc<Notify>`，
+  TUI 在 Esc 时 `notify_waiters()`，而**驱动那一侧根本没人读它**。
+  「aborted」只是一个状态字符串，**模型继续往下写**。而且
+  `Notify::notify_waiters()` **不留存许可**，先触发后等待的一方永远等不到；
+  信号又是在**键处理**里创建的，所以「轮后自动投递」那条路径根本没有信号。
+- 改法：
+  1. 新类型 `nini_core::abort_signal::AbortSignal`：**标志先落、通知后发**；
+     等待方**先注册再看标志**——两个顺序都不丢；
+  2. 信号在 `submit_user_input_inner`（每一轮的唯一入口）创建；
+  3. 驱动在 `select!` 里等它，收到就 `agent.abort_handle().abort()`；
+  4. 两个派发点（`handle_key` / `apply_action`）都触发它。
+- oracle：`crates/nini-tui/tests/compaction_escape.rs`（信号相关断言）
+  + `crates/nini-core/src/abort_signal.rs` 的 3 条单元测试。
+- 退出判据：`cargo test -p nini-tui --test compaction_escape` 退出 0；
+  `cargo test -p nini-core abort_signal` 退出 0。
+- 变异注入：`trigger()` 不落标志 → 4 条断言变红（实测）。
 
 ### N3 —— B5：double-ESC 切到 tree / fork
 
@@ -180,6 +206,9 @@ $ python3 scripts/next-parity-check.py --json   # 机读
 | 13 | Pi 升级后引用漂移 | 语义悄悄变 | 引用符号化 + 快照锁 + `citations_resolve`（Rust 侧的第二实现） |
 | 14 | 一轮里塞 4 个差距 | 中途卡住 → 半成品 | 每项**独立可验证**：做完一项就提交；卡住就停在已完成的那一项 |
 | 15 | 动到 print 模式 / 无 TTY 横幅 | 回归到别的路径 | 四项全部只在 TUI 层；`cargo test --workspace` 全量绿为准 |
+| 16 | **执行时才发���的缺陷**（自审漏了） | 「Esc 中止了这一轮」是一句**没有兑现的话**：中止信号**没有任何消费者**，模型继续写 | 执行中当场发现、当场关掉（新增差距 **A7**），并给它自己的 oracle（`compaction_escape.rs` 里的信号断言）——**计划漏掉的东西，执行时看见就得记进台账** |
+| 17 | 既有测试变红时直接改测试 | 把旧行为又当成「正确」写死 | 按纪律先判断：这是「把旧行为当成了正确」吗？是则改测试**并写下理由**（`escape_target.rs` 的头部记着 A2b 的旧差与新理由） |
+| 18 | 键位文件按文档写却不生效 | 用户改键位**毫无反应**，且无从判断 | 查到最后发现是**两个解析器**方向相反；统一成一个，并把「运行时读的格式 == 文档的格式」写成 oracle |
 
 **自审的结论**：本计划**没有**需要停下来问 owner 的地方（不涉及范围扩张、不改判定逻辑、
 不动 spec、不碰快照内容——只**增加**快照文件并记锁）。4 条差距里没有一条被 owner 决策阻塞
@@ -227,3 +256,25 @@ $ python3 scripts/next-parity-check.py --json   # 机读
 | **C4** 扩展层 | 已被 GOALS §4 记为「需要 owner 决策」。 |
 | **D1** 终端/诊断小项 | 6 个独立小项（`updateTerminalTitle` 等），适合**一批一次**做完；本轮不塞。 |
 | **B1** `/clone` | 被 **R10** 阻塞（owner 决策）：改成「切到新分支」会改变用户现有行为。 |
+
+---
+
+## 9. 执行结果（2026-10-27）
+
+| 工作项 | 结果 | 凭据 |
+|---|---|---|
+| **N0** 对照物进快照 | ✅ | `settings-manager.{js,map,ts}` 已进 `references/pi-0.85.1/`（422 文件）；引用 138 条全部可解析（drift=0） |
+| **N1** A2b：压缩期 Esc 只取消压缩 | ✅ | `crates/nini-tui/tests/compaction_escape.rs` 9 条；agent 区分「取消」与「无物可压」 |
+| **N5**（计划外）A7：中止信号真的有消费者 | ✅ | `AbortSignal`（标志先落、通知后发）；驱动在 `select!` 里等它并 `agent.abort_handle().abort()` |
+| **N3** B5：double-ESC | ✅ | `crates/nini-tui/tests/double_escape.rs` 7 条；`"fork"` 明确说没实现 |
+| **N4** B3：`/reload` 的范围 | ✅ | `crates/nini-tui/tests/reload_scope.rs` 4 条；键位与 models.json 会重读；skills 说得更准 |
+| **N2** A4：双队列 | ❌ **顺延** | 队列管道要拆三个消费点；下一轮单独做（§8） |
+
+**顺带修掉的两处真缺陷**（都在 N4 触及的代码里）：
+
+1. **键位文件按文档的格式写，一行也不生效**——运行时用的是另一个解析器，
+   而且方向相反（把 JSON 的键当按键规格、值当动作名）。现在只有一个解析器。
+2. **键位路径绕过了 `NINI_AGENT_DIR`**——它自己拼 `$HOME/.nini/agent/…`，
+   于是 agent 目录在别处时，键位读的是**另一个**目录里的那一份。
+
+看板：`python3 scripts/next-parity-check.py`。
