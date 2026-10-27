@@ -148,6 +148,12 @@ pub enum KeyAction {
     Submit,
     /// Insert a newline (Shift+Enter).
     Newline,
+    /// Queue a follow-up message (Pi's `app.message.followUp`).
+    ///
+    /// Pi: `interactive-mode.ts#handleFollowUp` —— Alt+Enter 提交的消息
+    /// 进 **followUp** 队列，等这一轮结束再做；而 Enter 进 **steer** 队列，
+    /// 插进当前这一轮（`interactive-mode.ts#setupEditorSubmitHandler`）。
+    FollowUp,
     /// Abort / cancel current operation.
     Abort,
     /// Quit the TUI.
@@ -229,6 +235,13 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         KeyBinding {
             key: Key::enter().with_modifiers(KeyModifiers::SHIFT),
             action: Newline,
+        },
+        // Alt+Enter → follow-up queue. Pi: `keybindings.ts` 里
+        // `app.message.followUp` 的默认键是 `alt+enter`（Windows 上是
+        // `ctrl+q`），走 `interactive-mode.ts#handleFollowUp`。
+        KeyBinding {
+            key: Key::enter().with_modifiers(KeyModifiers::ALT),
+            action: FollowUp,
         },
         // Abort / quit
         KeyBinding {

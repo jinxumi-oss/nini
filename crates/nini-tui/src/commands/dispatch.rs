@@ -1741,6 +1741,7 @@ fn cmd_hotkeys(
         match a {
             Submit => "send input",
             Newline => "insert newline",
+            FollowUp => "queue a follow-up message",
             Abort => "abort the run / dismiss overlay",
             Quit => "quit (press twice)",
             MoveLeft => "cursor left",

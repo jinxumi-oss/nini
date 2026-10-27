@@ -16,6 +16,10 @@
 //! ```
 //!
 //! Valid action names map to the variants of `KeyAction` (camelCase).
+//!
+//! 动作名既可以是 nini 的 camelCase（`FollowUp`），也可以是 Pi 的
+//! 带点名（`app.message.followUp`）——Pi 自己的键位文件就是用后者写的，
+//! 用户照抄一份 Pi 的 `keybindings.json` 到 nini 也不该一行都不生效。
 
 use std::fs;
 use std::io;
@@ -246,6 +250,9 @@ pub fn parse_action(name: &str) -> Option<KeyAction> {
         "KillWordBackward" => KillWordBackward,
         "Submit" => Submit,
         "Newline" => Newline,
+        // 三个名字都认：nini 的 camelCase、Pi 的 camelCase 变体、以及
+        // Pi 键位文件里的带点名（`app.message.followUp`）。
+        "FollowUp" | "followUp" | "app.message.followUp" => FollowUp,
         "Abort" => Abort,
         "Quit" => Quit,
         "SwitchModel" => SwitchModel,

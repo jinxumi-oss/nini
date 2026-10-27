@@ -14,7 +14,7 @@
 //!
 //! # Why this file names nothing new
 //!
-//! It writes only `RunState::pending_next_turn_messages`, `input.text`,
+//! It writes only `RunState::pending_steer_messages`, `input.text`,
 //! `transcript_state.lines` and `RunMode` — all of which exist today. An
 //! earlier version of this file reached for a `pending_steering_messages`
 //! field that the fix would introduce, and therefore **failed to compile**
@@ -22,11 +22,19 @@
 //! was written against an API the fix would add, after the same mistake in
 //! §33 and §34. A test that cannot build is not an oracle.
 //!
-//! It is also why M1 reuses `pending_next_turn_messages` rather than
-//! splitting the queue the way Pi does into `steering` and `followUp`:
-//! one queue is what the current struct can express, and a test that can
-//! only be written against fields that already exist is worth more than a
-//! prettier queue.
+//! v0.11 (A4) split the old single queue into **two**, the way Pi does
+//! (`agent-session.ts#_steeringMessages` / `agent-session.ts#_followUpMessages`):
+//! `pending_steer_messages` and `pending_followup_messages`. This file
+//! used to name the queue `pending_next_turn_messages`. The field was
+//! **renamed** to `pending_steer_messages` — the semantics did not change:
+//! the assertions here are about "a message submitted while a turn is
+//! running goes into the **steer** queue" (Pi: `interactive-mode.ts#setupEditorSubmitHandler`
+//! → `prompt(text, { streamingBehavior: "steer" })`), which is exactly what
+//! the old field meant once the queue was split. Keeping the old name would
+//! keep asserting a concept that no longer exists in the product.
+//!
+//! The file therefore writes only fields that exist today — now *two*
+//! queues instead of one, but still nothing new.
 
 use nini_tui::keys::Key;
 use nini_tui::runtime::apply_action;
@@ -81,7 +89,7 @@ fn submitting_while_running_queues_the_message() {
     type_text(&mut state, "second question");
     apply_action(&mut state, Key::enter());
 
-    let queued = state.run_state.pending_next_turn_messages.join(" ");
+    let queued = state.run_state.pending_steer_messages.join(" ");
     assert!(
         queued.contains("second question"),
         "a message submitted during a turn must be queued, not dropped: {queued:?}"
@@ -113,11 +121,11 @@ fn an_interrupt_returns_queued_text_to_the_editor() {
     let mut state = state_in(RunMode::Editing);
     state
         .run_state
-        .pending_next_turn_messages
+        .pending_steer_messages
         .push("first queued".into());
     state
         .run_state
-        .pending_next_turn_messages
+        .pending_steer_messages
         .push("second queued".into());
     state.input.text.push_str("being typed");
 
@@ -134,9 +142,9 @@ fn an_interrupt_returns_queued_text_to_the_editor() {
         "and it discarded what was half-typed in the editor: {restored:?}"
     );
     assert!(
-        state.run_state.pending_next_turn_messages.is_empty(),
+        state.run_state.pending_steer_messages.is_empty(),
         "the queue is drained when it is handed back: {:?}",
-        state.run_state.pending_next_turn_messages
+        state.run_state.pending_steer_messages
     );
 }
 
@@ -152,5 +160,5 @@ fn an_interrupt_with_an_empty_queue_keeps_the_draft() {
         state.input.text, "draft",
         "Esc during a turn aborts the turn; it is not a clear"
     );
-    assert!(state.run_state.pending_next_turn_messages.is_empty());
+    assert!(state.run_state.pending_steer_messages.is_empty());
 }

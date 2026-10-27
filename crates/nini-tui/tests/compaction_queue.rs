@@ -1,5 +1,12 @@
 //! Oracle: 压缩期间提交的消息**进队列**，不另起一轮（v0.10.8 / A2）。
 //!
+//! v0.11 (A4)：字段 `RunState::pending_next_turn_messages` 改名为
+//! `RunState::pending_steer_messages`。队列按 Pi 的做法
+//! （`agent-session.ts#_steeringMessages` / `agent-session.ts#_followUpMessages`）
+//! 拆成了 steer 与 followUp 两条；压缩期的提交走的是 **Enter**，即 **steer**
+//! 语义（Pi：`interactive-mode.ts#setupEditorSubmitHandler` → `prompt(text,
+//! { streamingBehavior: "steer" })`）。**语义不变，只改名**。
+//!
 //! 此前 `run_state.is_compacting` **永远**是 false，所以下面这个分支
 //! （runtime.rs：「if compaction is in progress, queue the message instead
 //! of spawning an agent」）是**不可达死代码**——Pi 的
@@ -90,11 +97,11 @@ async fn a_submit_during_compaction_is_queued_not_spawned() {
         let g = shared.lock().unwrap();
         assert!(
             g.run_state
-                .pending_next_turn_messages
+                .pending_steer_messages
                 .iter()
                 .any(|m| m.contains("typed during compaction")),
             "消息必须进队列：{:?}",
-            g.run_state.pending_next_turn_messages
+            g.run_state.pending_steer_messages
         );
     }
 

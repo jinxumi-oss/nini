@@ -95,11 +95,11 @@ pub trait AgentLoopHooks: Send + Sync {
     /// Inject messages **at agent wrap-up**, after the model has
     /// emitted its final assistant turn with no further tool calls.
     ///
-    /// Pi contract: called once per `Agent::run` call, after the loop
-    /// has decided to exit (no more tool calls). The returned messages
-    /// are appended to the log so they appear in the transcript /
-    /// session file, but they do NOT trigger another model call (the
-    /// agent is already done).
+    /// Pi contract: called once per loop iteration when the agent is
+    /// about to stop (no more tool calls). The returned messages are
+    /// appended to the log **and the loop continues**: they DO trigger
+    /// another model call, in the same run (Pi: `agent-loop.ts#runAgentLoop`
+    /// takes the follow-up in its outer loop).
     ///
     /// Use case: the user hits Alt+Enter to schedule "after you're
     /// done with the current task, also run `cargo test`".

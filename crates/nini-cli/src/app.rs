@@ -351,6 +351,86 @@ fn build_provider_or_fallback(
     }
 }
 
+/// v0.10 (R1e) / v0.11 (A4): the hook implementation the product ships.
+///
+/// It lives at **module scope** (it used to be defined inside
+/// `run_tui`) so that it can be unit-tested without standing up the
+/// whole TUI bootstrap.
+///
+/// The sink is handed to the driver per run, so the hook reads the
+/// current selection on each completed turn.
+pub(crate) struct LiveConfigHooks {
+    sink: nini_tui::runtime::AgentSink,
+}
+
+impl LiveConfigHooks {
+    pub(crate) fn new(sink: nini_tui::runtime::AgentSink) -> Self {
+        Self { sink }
+    }
+}
+
+impl nini_core::agent_hooks::AgentLoopHooks for LiveConfigHooks {
+    /// v0.10.1 (M1) / v0.11 (A4): hand the agent whatever the user typed
+    /// while a turn was running.
+    ///
+    /// v0.10's R1 work built the consumer — `agent.rs` polls this at the
+    /// top of every iteration and injects what it returns before the next
+    /// model call (`agent-loop.ts#runAgentLoop`) — and never built a producer.
+    /// `LiveConfigHooks` was the only hook implementation in the product
+    /// and implemented only `prepare_next_turn`, so the poll always came
+    /// back empty: a message submitted mid-run had nowhere to go.
+    ///
+    /// v0.11 (A4) splits that single queue into two (Pi:
+    /// `agent-session.ts#_steeringMessages` / `agent-session.ts#_followUpMessages`).
+    /// The **steer** queue is the one Enter feeds: the message is injected
+    /// before the next model call of the *current* run. Pi:
+    /// `interactive-mode.ts#setupEditorSubmitHandler` → `prompt(text,
+    /// { streamingBehavior: "steer" })`.
+    ///
+    /// The drain itself lives in the TUI (`nini_tui::runtime::take_steer_messages`),
+    /// because the delivery writes the **session** (the transcript already
+    /// showed the message when it was queued) — the same write the rest of
+    /// the runtime does.
+    fn get_steering_messages(
+        &self,
+        _recent: &[nini_core::provider::Message],
+    ) -> Vec<nini_core::provider::Message> {
+        let shared = self.sink.state();
+        let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
+        nini_tui::runtime::take_steer_messages(&mut g)
+    }
+
+    /// v0.11 (A4): the **followUp** producer.
+    ///
+    /// `nini-core`'s `AgentLoopHooks` has had `get_followup_messages` since
+    /// v0.7 (`crates/nini-core/src/agent_hooks.rs`), and `agent.rs` polls it
+    /// when the agent is about to stop — but nini-cli **never implemented
+    /// it**, so the poll always came back empty and nini had no followUp
+    /// semantics at all: Alt+Enter queued a message that nobody ever ran.
+    ///
+    /// Pi: `interactive-mode.ts#handleFollowUp` → `prompt(text,
+    /// { streamingBehavior: "followUp" })`; the loop takes it at wrap-up and
+    /// **continues in the same run** (`agent-loop.ts#runAgentLoop`).
+    /// `agent.rs`'s `max_follow_up_rounds` is the brake.
+    fn get_followup_messages(
+        &self,
+        _all: &[nini_core::provider::Message],
+    ) -> Vec<nini_core::provider::Message> {
+        let shared = self.sink.state();
+        let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
+        nini_tui::runtime::take_followup_messages(&mut g)
+    }
+
+    fn prepare_next_turn(
+        &self,
+        _messages: &[nini_core::provider::Message],
+    ) -> nini_core::agent_hooks::TurnUpdate {
+        nini_core::agent_hooks::TurnUpdate {
+            model: self.sink.current_model(),
+        }
+    }
+}
+
 pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
     use nini_tui::runtime::AgentDriver;
 
@@ -421,54 +501,6 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
     // nini needed the same bridge because `RunConfig` is cloned once at
     // `run()` entry: the TUI updated `model_state.model` and the status bar
     // showed the new model, while every request kept going to the old one.
-    // The sink is handed to the driver per run, so the hook reads the
-    // current selection on each completed turn.
-    struct LiveConfigHooks {
-        sink: nini_tui::runtime::AgentSink,
-    }
-
-    impl nini_core::agent_hooks::AgentLoopHooks for LiveConfigHooks {
-        /// v0.10.1 (M1): hand the agent whatever the user typed while a turn
-        /// was running.
-        ///
-        /// v0.10's R1 work built the consumer — `agent.rs` polls this at the
-        /// top of every iteration and injects what it returns before the next
-        /// model call (`agent-loop.js:112-103`) — and never built a producer.
-        /// `LiveConfigHooks` was the only hook implementation in the product
-        /// and implemented only `prepare_next_turn`, so the poll always came
-        /// back empty: a message submitted mid-run had nowhere to go.
-        ///
-        /// Pi: `await this.session.prompt(text, { streamingBehavior: "steer" })`
-        /// (`interactive-mode.ts#streamingBehavior`).
-        fn get_steering_messages(
-            &self,
-            _recent: &[nini_core::provider::Message],
-        ) -> Vec<nini_core::provider::Message> {
-            let shared = self.sink.state();
-            let queued = {
-                let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
-                std::mem::take(&mut g.run_state.pending_next_turn_messages)
-            };
-            queued
-                .into_iter()
-                .map(|text| nini_core::provider::Message {
-                    role: nini_core::provider::Role::User,
-                    content: vec![nini_core::provider::ContentBlock::Text { text }],
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                })
-                .collect()
-        }
-
-        fn prepare_next_turn(
-            &self,
-            _messages: &[nini_core::provider::Message],
-        ) -> nini_core::agent_hooks::TurnUpdate {
-            nini_core::agent_hooks::TurnUpdate {
-                model: self.sink.current_model(),
-            }
-        }
-    }
-
     let agent_driver: AgentDriver = Arc::new(move |user_msg, seed, sink, done| {
         let provider = shared_provider.clone();
         let tools = shared_tools.clone();
@@ -479,7 +511,7 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
             provider,
             tools,
             cfg,
-            std::sync::Arc::new(LiveConfigHooks { sink: sink.clone() }),
+            std::sync::Arc::new(LiveConfigHooks::new(sink.clone())),
         );
         // v0.10 (R2a/A3): start from the session's live context rather than
         // from nothing. The Agent is built fresh per run, so without this

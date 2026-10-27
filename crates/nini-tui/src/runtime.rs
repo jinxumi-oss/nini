@@ -35,6 +35,35 @@ pub fn shared_state(state: AppState) -> SharedState {
     Arc::new(Mutex::new(state))
 }
 
+/// Which of Pi's two queues a message goes into.
+///
+/// Pi: `agent-session.ts#_steeringMessages` (steer) 与
+/// `agent-session.ts#_followUpMessages` (followUp)。
+/// 差别在**什么时候被消费**：steer 在下一轮模型调用前就插进当前这一轮；
+/// followUp 等 agent 本来要停下时才取。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueKind {
+    /// Pi's steering queue — the message joins the turn that is running
+    /// right now.
+    Steer,
+    /// Pi's follow-up queue — the message waits until this turn is over.
+    FollowUp,
+}
+
+impl QueueKind {
+    /// The word the status line uses for this queue.
+    ///
+    /// Pi lists the two queues **separately** ("Steering:" / "Follow-up:",
+    /// `interactive-mode.ts#updatePendingMessagesDisplay`), so nini's
+    /// status line says which queue a message went into.
+    fn label(self) -> &'static str {
+        match self {
+            QueueKind::Steer => "steer",
+            QueueKind::FollowUp => "follow-up",
+        }
+    }
+}
+
 /// v0.9.1: acquire the shared state **without inheriting a poisoned
 /// lock**.
 ///
@@ -463,7 +492,11 @@ impl AgentSink {
                                                          // 一条）。agent 循环已经结束，不会再去捞它们——
                                                          // 消息会永远躺在队列里。标记出来，运行循环会把它
                                                          // 作为**新的一轮**送出去。
-                        if !s.run_state.pending_next_turn_messages.is_empty() {
+                                                         // v0.11 (A4)：**任一**队列非空都要投递——steer 与
+                                                         // followUp 都是「用户说了话、等下一轮」。
+                        if !s.run_state.pending_steer_messages.is_empty()
+                            || !s.run_state.pending_followup_messages.is_empty()
+                        {
                             s.run_state.auto_turn_pending = true;
                         }
                     } else {
@@ -1390,9 +1423,10 @@ fn apply_selector_result(
     if let Some(tree_sel) = selector.state_as_any_mut().downcast_mut::<TreeSelector>() {
         // Compute branch summary for the picked branch and:
         // (a) surface a preview in the transcript,
-        // (b) queue the full summary into pending_next_turn_messages so
+        // (b) record the full summary into the session so
         //     the next user turn has it as context (Pi parity — mirrors
-        //     _pendingNextTurnMessages).
+        //     the session's live-message table). v0.11 (A4/Q1): it does
+        //     **not** go into a user-message queue any more.
         let session_arc = lock_state(&shared).session_state.session.clone();
         let prev_status = lock_state(&shared).run_state.status.clone();
         lock_state(&shared).run_state.status = "branch summary: computing…".into();
@@ -1418,10 +1452,17 @@ fn apply_selector_result(
                     let mut g = lock_state(&shared);
                     g.push_assistant(format!("(branch summary: {len} chars)\n{truncated}",));
                     g.push_divider();
-                    // (b) Queue full summary for next turn.
-                    g.run_state
-                        .pending_next_turn_messages
-                        .push(format!("[BRANCH SUMMARY]\n\n{}", s,));
+                    // (b) Record the full summary into the session.
+                    //
+                    // v0.11 (A4/Q1)：分支摘要**不再**进用户消息队列。
+                    // 队列里只该有**用户说的话**；分支摘要是 nini 自己
+                    // 产生的上下文，不是用户指令。Pi 的做法是把它记进
+                    // session（`agent-session.ts#recordBashResult` 记 bash
+                    // 结果，同理），而不是当成一条用户消息排队。
+                    //
+                    // **session 内容不变**：今天这条摘要也是以一条 User
+                    // 消息被冲刷进 session 的，只是时机提前了。
+                    g.deliver_queued_user(format!("[BRANCH SUMMARY]\n\n{}", s,));
                 }
                 lock_state(&shared).run_state.status = prev_status;
             }
@@ -1726,6 +1767,63 @@ fn cycle_thinking(state: &mut crate::state::AppState, direction: i32) {
     state.run_state.status = format!("thinking: {new_level}");
 }
 
+/// The completion-popup part of the Enter path (runtime dispatch point).
+///
+/// Returns `true` when the submit should go on, `false` when the popup
+/// consumed the keypress (the completion was inserted instead of the text
+/// being submitted).
+///
+/// v0.11 (A4)：抽出来是为了让 **Enter** 与 **Alt+Enter** 走**同一份**弹窗
+/// 判定（Pi 的 `interactive-mode.ts#handleFollowUp`：空闲时 Alt+Enter ≡
+/// Enter）——复制两份就会迟早分叉。
+fn submit_popup_gate(state: &mut AppState) -> bool {
+    // v0.6: smarter Enter behavior when the completion popup is
+    // open. v0.5 always just inserted the highlighted completion
+    // into the buffer, requiring a second Enter to actually
+    // submit. Now we:
+    //   * If exactly one item matches (or the typed prefix is
+    //     already exact): submit immediately.
+    //   * If multiple candidates AND the highlighted item carries
+    //     an `argument_hint`: insert the full command + space
+    //     and leave the cursor for arguments (don't submit yet).
+    //   * If multiple candidates AND no hint: insert + submit in
+    //     one shot.
+    //
+    // Tab still does the pure "accept" path, so power users can
+    // always preview before submitting.
+    if let Some(popup) = state.ui_state.completion.as_ref() {
+        let items = &popup.items;
+        let unique = items.len() == 1;
+        let exact = state
+            .input
+            .text
+            .trim_start()
+            .trim_start_matches('/')
+            .split_whitespace()
+            .next()
+            .map(|cmd| items.iter().any(|i| i.name == cmd))
+            .unwrap_or(false);
+        if unique || exact {
+            // Fall through to submit below — but clear the popup
+            // first so submit_user_input sees Editing without
+            // completion.
+            state.ui_state.completion = None;
+        } else if popup.selected_item_has_argument_hint() {
+            state.apply_completion();
+            return false;
+        } else {
+            state.apply_completion();
+            // Don't return — let submit proceed.
+            state.ui_state.completion = None;
+        }
+    }
+    if state.ui_state.completion.is_some() {
+        state.apply_completion();
+        return false;
+    }
+    true
+}
+
 fn handle_key(
     k: KeyEvent,
     shared: &SharedState,
@@ -1926,61 +2024,53 @@ fn handle_key(
                 } else {
                     let text = state.input.submit();
                     if !text.trim().is_empty() {
-                        queue_while_running(&mut state, &text);
+                        queue_while_running(&mut state, &text, QueueKind::Steer);
                     }
                 }
                 return;
             }
             // v0.6: smarter Enter behavior when the completion popup is
-            // open. v0.5 always just inserted the highlighted completion
-            // into the buffer, requiring a second Enter to actually
-            // submit. Now we:
-            //   * If exactly one item matches (or the typed prefix is
-            //     already exact): submit immediately.
-            //   * If multiple candidates AND the highlighted item carries
-            //     an `argument_hint`: insert the full command + space
-            //     and leave the cursor for arguments (don't submit yet).
-            //   * If multiple candidates AND no hint: insert + submit in
-            //     one shot.
+            // open — 见 `submit_popup_gate`（Enter 与 Alt+Enter 共用）。
+            if !submit_popup_gate(&mut state) {
+                return;
+            }
+            // v0.11 (N5)：中止信号**不再**在这里创建——它在
+            // `submit_user_input_inner` 里创建（每一轮的唯一入口），
+            // 否则自动投递那条路径（轮后把队列里的消息送出去）就没有
+            // 信号可用。
+            drop(state);
+            submit_user_input(shared, agent_driver, done, event_tx.clone());
+        }
+        KeyAction::FollowUp => {
+            // v0.11 (A4)：Alt+Enter —— Pi 的 **followUp** 队列。
             //
-            // Tab still does the pure "accept" path, so power users can
-            // always preview before submitting.
-            if let Some(popup) = state.ui_state.completion.as_ref() {
-                let items = &popup.items;
-                let unique = items.len() == 1;
-                let exact = state
-                    .input
-                    .text
-                    .trim_start()
-                    .trim_start_matches('/')
-                    .split_whitespace()
-                    .next()
-                    .map(|cmd| items.iter().any(|i| i.name == cmd))
-                    .unwrap_or(false);
-                if unique || exact {
-                    // Fall through to submit below — but clear the popup
-                    // first so submit_user_input sees Editing without
-                    // completion.
-                    state.ui_state.completion = None;
-                } else if popup.selected_item_has_argument_hint() {
+            // Pi: `interactive-mode.ts#handleFollowUp` —— 流式中
+            // `prompt(text,{streamingBehavior:"followUp"})` 进
+            // `agent-session.ts#_followUpMessages`；**空闲时 Alt+Enter
+            // ≡ Enter**（走 `editor.onSubmit`，即一次普通提交）。
+            if state.run_state.mode == RunMode::Running {
+                if state.ui_state.completion.is_some() {
                     state.apply_completion();
-                    return;
                 } else {
-                    state.apply_completion();
-                    // Don't return — let submit proceed.
-                    state.ui_state.completion = None;
+                    let text = state.input.submit();
+                    if !text.trim().is_empty() {
+                        queue_while_running(&mut state, &text, QueueKind::FollowUp);
+                    }
                 }
+                return;
             }
-            if state.ui_state.completion.is_some() {
-                state.apply_completion();
-            } else {
-                // v0.11 (N5)：中止信号**不再**在这里创建——它在
-                // `submit_user_input_inner` 里创建（每一轮的唯一入口），
-                // 否则自动投递那条路径（轮后把队列里的消息送出去）就没有
-                // 信号可用。
-                drop(state);
-                submit_user_input(shared, agent_driver, done, event_tx.clone());
+            // 空闲：与 Enter 同路（同一个弹窗处理 helper）。
+            if !submit_popup_gate(&mut state) {
+                return;
             }
+            drop(state);
+            submit_user_input_with_kind(
+                shared,
+                agent_driver,
+                done,
+                event_tx.clone(),
+                QueueKind::FollowUp,
+            );
         }
         KeyAction::Abort => match escape_action(&state) {
             EscapeAction::CloseCompletion => {
@@ -2329,7 +2419,34 @@ pub fn submit_user_input(
     // the same loop subscription. Replaces v0.7.4's per-call fresh
     // `Arc::new(Notify::new())` that was never connected to the
     // runtime's select!.
-    submit_user_input_inner(shared, agent_driver, done, event_tx, None)
+    //
+    // v0.11 (A4)：Enter 的默认队列是 **steer**
+    // （`interactive-mode.ts#setupEditorSubmitHandler` → `prompt(text,
+    // {streamingBehavior:"steer"})`）。Alt+Enter 走
+    // `submit_user_input_with_kind(..., QueueKind::FollowUp)`。
+    submit_user_input_inner(shared, agent_driver, done, event_tx, None, QueueKind::Steer)
+}
+
+/// The same submit path, but with an explicit queue kind.
+///
+/// v0.11 (A4)：Pi 的两个队列（`agent-session.ts#_steeringMessages` /
+/// `#_followUpMessages`）的区别只在**消息落在哪儿**：
+///
+/// * `QueueKind::Steer` —— Enter 提交（流式中也一样）
+///   （`interactive-mode.ts#setupEditorSubmitHandler`）。
+/// * `QueueKind::FollowUp` —— Alt+Enter 提交
+///   （`interactive-mode.ts#handleFollowUp`）。
+///
+/// 消息若当场能开始一轮，两条路都一样；只有当它**不能**开始一轮时
+/// （回合在跑、压缩在跑），队列才显出区别。
+pub fn submit_user_input_with_kind(
+    shared: &SharedState,
+    agent_driver: &AgentDriver,
+    done: Arc<Notify>,
+    event_tx: tokio::sync::watch::Sender<bool>,
+    kind: QueueKind,
+) {
+    submit_user_input_inner(shared, agent_driver, done, event_tx, None, kind)
 }
 
 /// v0.10.8 (A6)：把**排队中的**消息作为新的一轮送出去。
@@ -2347,6 +2464,18 @@ pub fn submit_user_input(
 ///
 /// 已经在 transcript 里显示过的消息（排队时就显示了）这一轮**不再显示一遍**，
 /// 只写 session。
+///
+/// ── 它与 Pi 的 followUp **不是同一件事** ──────────────────────────
+///
+/// Pi 的 followUp 在**同一个 run 内**续跑：`agent-loop.ts#runAgentLoop` 在
+/// 外层循环里取它，agent「本该停下时」又跑一轮，整个 run 并没有结束
+/// （Pi 的 `agent-session.ts#followUp` 只是入队）。
+///
+/// nini 的这个函数是**另起一轮**：它提交一条消息、生成一个新 run。
+/// 所以它是**竞态兜底**，不是 followUp 的实现——正常情况下 steer 会被
+/// steering 钩子在当前这一轮里捞走（Pi 的 `agent-session.ts#steer`），
+/// followUp 会被 agent 循环在自己的 run 里续跑；只有当这两条路都错过
+/// 了（消息是在回合**收尾之后**排进来的），才轮到这里把它作为新一轮发出去。
 pub fn submit_queued_turn(
     shared: &SharedState,
     agent_driver: &AgentDriver,
@@ -2366,14 +2495,25 @@ pub fn submit_queued_turn(
             tracing::warn!("auto-delivery stopped after {MAX_AUTO_TURNS} turns");
             return false;
         }
-        let mut queue = std::mem::take(&mut g.run_state.pending_next_turn_messages);
-        if queue.is_empty() {
+        // v0.11 (A4)：**先**取 steer 的第一条；steer 空则取 followUp 的第一条。
+        // 其余的放回**原**队列（不换队列）——顺序不乱。
+        //
+        // 取的是**一条**，不是整个队列：一次一轮，其余的等这一轮结束后再送。
+        let mut steer = std::mem::take(&mut g.run_state.pending_steer_messages);
+        let mut followup = std::mem::take(&mut g.run_state.pending_followup_messages);
+        let first = if !steer.is_empty() {
+            steer.remove(0)
+        } else if !followup.is_empty() {
+            followup.remove(0)
+        } else {
+            g.run_state.pending_steer_messages = steer;
+            g.run_state.pending_followup_messages = followup;
             return false;
-        }
+        };
         g.run_state.auto_turn_count += 1;
-        let first = queue.remove(0);
         // 其余的留在队列里：这一轮结束后会再投递（顺序不乱）
-        g.run_state.pending_next_turn_messages = queue;
+        g.run_state.pending_steer_messages = steer;
+        g.run_state.pending_followup_messages = followup;
         g.run_state.mode = RunMode::Editing;
         first
     };
@@ -2381,7 +2521,14 @@ pub fn submit_queued_turn(
     if text.trim().is_empty() {
         return false;
     }
-    submit_user_input_inner(shared, agent_driver, done, event_tx, Some(text));
+    submit_user_input_inner(
+        shared,
+        agent_driver,
+        done,
+        event_tx,
+        Some(text),
+        QueueKind::Steer,
+    );
     true
 }
 
@@ -2394,6 +2541,7 @@ fn submit_user_input_inner(
     done: Arc<Notify>,
     event_tx: tokio::sync::watch::Sender<bool>,
     explicit_text: Option<String>,
+    kind: QueueKind,
 ) {
     let (text, seq) = {
         let mut g = lock_state(&shared);
@@ -2427,7 +2575,7 @@ fn submit_user_input_inner(
             if g.run_state.mode != RunMode::Quitting {
                 let steered = g.input.submit();
                 if !steered.trim().is_empty() {
-                    queue_while_running(&mut g, &steered);
+                    queue_while_running(&mut g, &steered, kind);
                 }
             }
             return;
@@ -2522,7 +2670,18 @@ fn submit_user_input_inner(
                 // privacy marker tells us NOT to do that — the LLM will
                 // never learn the contents of this command.
                 if !private {
-                    g.run_state.pending_next_turn_messages.push(format!(
+                    // v0.11 (A4/Q1)：bash 输出**不再**进用户消息队列。
+                    //
+                    // 队列里只该有**用户说的话**。Pi 把 bash 结果记进
+                    // session 的活消息表（`agent-session.ts#recordBashResult`），
+                    // **不是**当用户指令。排队的后果有三个：Esc 会把它塞回
+                    // 输入框、steering 钩子会把它当成用户的话插进当前这一轮、
+                    // 而它本来根本不是用户说的。
+                    //
+                    // **session 内容不变**：今天这段输出也是以一条 User 消息
+                    // 被冲刷进 session 的（`deliver_queued_user`），这里只是
+                    // 当场写、时机提前。
+                    g.deliver_queued_user(format!(
                         "[bash $ {}]\n{}",
                         cmd,
                         if result.stderr.is_empty() {
@@ -2625,16 +2784,27 @@ fn submit_user_input_inner(
 
         // ── Regular user message: push to transcript and spawn agent ───────
         // Pi parity: if compaction is in progress, queue the message
-        // instead of spawning an agent. The queued messages are injected
-        // as context alongside the next user prompt (mirrors Pi's
-        // _pendingNextTurnMessages).
+        // instead of spawning an agent.
+        //
+        // Pi: `interactive-mode.ts#queueCompactionMessage` — Enter puts
+        // the message in the **steer** bucket, Alt+Enter in the
+        // **followUp** bucket. Two buckets, two queues.
         if g.run_state.is_compacting {
-            let n = g.run_state.pending_next_turn_messages.len() + 1;
-            g.run_state.pending_next_turn_messages.push(text.clone());
+            let n = match kind {
+                QueueKind::Steer => {
+                    g.run_state.pending_steer_messages.push(text.clone());
+                    g.run_state.pending_steer_messages.len()
+                }
+                QueueKind::FollowUp => {
+                    g.run_state.pending_followup_messages.push(text.clone());
+                    g.run_state.pending_followup_messages.len()
+                }
+            };
             // Use explicit let-bindings to avoid `format!` holding
             // simultaneous borrows on `g`.
             let msg = format!(
-                "(queued: {} message{} pending; will run after compaction)",
+                "(queued [{}]: {} message{} pending; will run after compaction)",
+                kind.label(),
                 n,
                 if n == 1 { "" } else { "s" }
             );
@@ -2650,7 +2820,11 @@ fn submit_user_input_inner(
         // 队列由投递链自己管（一次送一条，其余留下轮后送），在这里冲刷会把
         // 它们写成 aside，下一轮又当消息送一遍 → 同一句话出现两次。
         if !is_auto_delivery {
-            let queued = std::mem::take(&mut g.run_state.pending_next_turn_messages);
+            // v0.11 (A4)：**只**冲刷 steer 队列（维持今天的 aside 语义）。
+            //
+            // steer 的消息是「插进当前这一轮」的上下文——它要的就是在下一轮
+            // 模型调用前出现在上下文里，作为 aside 写进 session 是对的。
+            let queued = std::mem::take(&mut g.run_state.pending_steer_messages);
             for aside in &queued {
                 // v0.10.8 (P2/A1): delivery writes to the **session**; the
                 // transcript already showed the message when it was queued, so
@@ -2660,6 +2834,15 @@ fn submit_user_input_inner(
                 // `push_user_queued` no longer makes.
                 g.deliver_queued_user(aside.clone());
                 g.push_divider();
+            }
+            // followUp 队列是「**要做的事**」，不是上下文：它不能被冲刷成
+            // aside（那样模型只会把它当背景），而要作为**新的一轮**送出去。
+            //
+            // Pi 的 followUp 就是 agent 本该停下时再跑一轮
+            // （`agent-loop.ts#runAgentLoop` 在外层循环里取它），nini 的
+            // 等价物是运行循环的自动投递（`submit_queued_turn`）。
+            if !g.run_state.pending_followup_messages.is_empty() {
+                g.run_state.auto_turn_pending = true;
             }
         }
 
@@ -2805,7 +2988,10 @@ fn submit_user_input_inner(
                 // v0.10.8 (A2, review finding)：同样要复位压缩标志。
                 g.run_state.is_compacting = false;
                 // v0.10.8 (A6): 同 `Done` —— 收尾时队列里还有消息就该投递。
-                if !g.run_state.pending_next_turn_messages.is_empty() {
+                // v0.11 (A4)：**任一**队列（steer 或 followUp）非空。
+                if !g.run_state.pending_steer_messages.is_empty()
+                    || !g.run_state.pending_followup_messages.is_empty()
+                {
                     g.run_state.auto_turn_pending = true;
                 }
                 // Same reasoning as `Done`, applied to the editor half of
@@ -3095,6 +3281,53 @@ fn prompt_width(state: &AppState) -> usize {
         .load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The Editing-mode submit of the headless dispatch point.
+///
+/// v0.11 (A4)：Enter 与 Alt+Enter 共用这一份——Pi 空闲时 Alt+Enter ≡ Enter
+/// （`interactive-mode.ts#handleFollowUp`）。两份实现迟早分叉，所以只写一份。
+fn apply_action_submit(state: &mut AppState) {
+    // If completion popup is showing, accept the selected item
+    // instead of submitting.
+    if state.ui_state.completion.is_some() {
+        state.apply_completion();
+        return;
+    }
+    let text = state.input.submit();
+    if text.trim().is_empty() {
+        return;
+    }
+    // Slash command interception
+    if let Some((cmd_id, args)) = crate::commands::parse(&text) {
+        use crate::commands::dispatch;
+        let mut settings = crate::settings::SettingsManager::default();
+        let result = dispatch(state, &mut settings, cmd_id, &args);
+        if let Some(err) = result.error {
+            state.push_assistant(format!("[command error] {err}"));
+            state.push_divider();
+            return;
+        }
+        match result.outcome {
+            crate::commands::CommandOutcome::Output(lines) => {
+                for line in lines {
+                    state.push_assistant(line);
+                }
+                state.push_divider();
+            }
+            crate::commands::CommandOutcome::Quit => {
+                state.run_state.mode = RunMode::Quitting;
+            }
+            crate::commands::CommandOutcome::PromptArgument { .. } => {
+                // v1: prompt-argument flow not implemented; show fallback.
+                state.push_assistant("(prompt argument — not yet wired)".to_string());
+                state.push_divider();
+            }
+        }
+    } else {
+        state.push_user(text);
+        state.push_divider();
+    }
+}
+
 pub fn apply_action(state: &mut AppState, key: Key) {
     let action = resolve_with_user_overrides(key);
     match action {
@@ -3251,59 +3484,40 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::Submit => {
             // v0.10.1 (M1): a turn in flight no longer swallows the
             // message. Pi steers it into the running turn
-            // (`interactive-mode.ts#streamingBehavior`); the queue is where nini keeps
-            // pending messages.
+            // (`interactive-mode.ts#setupEditorSubmitHandler`); the queue is
+            // where nini keeps pending messages.
             if state.run_state.mode == RunMode::Running {
                 if state.ui_state.completion.is_some() {
                     state.apply_completion();
                 } else {
                     let text = state.input.submit();
                     if !text.trim().is_empty() {
-                        queue_while_running(state, &text);
+                        queue_while_running(state, &text, QueueKind::Steer);
                     }
                 }
             } else if state.run_state.mode == RunMode::Editing {
-                // If completion popup is showing, accept the selected item
-                // instead of submitting.
+                apply_action_submit(state);
+            }
+        }
+        KeyAction::FollowUp => {
+            // v0.11 (A4)：Alt+Enter —— Pi 的 **followUp** 队列。
+            //
+            // Pi: `interactive-mode.ts#handleFollowUp` —— 流式中
+            // `prompt(text,{streamingBehavior:"followUp"})` 进
+            // `agent-session.ts#_followUpMessages`；**空闲时 Alt+Enter ≡
+            // Enter**（走 `editor.onSubmit`，即一次普通提交）。
+            if state.run_state.mode == RunMode::Running {
                 if state.ui_state.completion.is_some() {
                     state.apply_completion();
-                    return;
-                }
-                let text = state.input.submit();
-                if !text.trim().is_empty() {
-                    // Slash command interception
-                    if let Some((cmd_id, args)) = crate::commands::parse(&text) {
-                        use crate::commands::dispatch;
-                        let mut settings = crate::settings::SettingsManager::default();
-                        let result = dispatch(state, &mut settings, cmd_id, &args);
-                        if let Some(err) = result.error {
-                            state.push_assistant(format!("[command error] {err}"));
-                            state.push_divider();
-                            return;
-                        }
-                        match result.outcome {
-                            crate::commands::CommandOutcome::Output(lines) => {
-                                for line in lines {
-                                    state.push_assistant(line);
-                                }
-                                state.push_divider();
-                            }
-                            crate::commands::CommandOutcome::Quit => {
-                                state.run_state.mode = RunMode::Quitting;
-                            }
-                            crate::commands::CommandOutcome::PromptArgument { .. } => {
-                                // v1: prompt-argument flow not implemented; show fallback.
-                                state.push_assistant(
-                                    "(prompt argument — not yet wired)".to_string(),
-                                );
-                                state.push_divider();
-                            }
-                        }
-                    } else {
-                        state.push_user(text);
-                        state.push_divider();
+                } else {
+                    let text = state.input.submit();
+                    if !text.trim().is_empty() {
+                        queue_while_running(state, &text, QueueKind::FollowUp);
                     }
                 }
+            } else if state.run_state.mode == RunMode::Editing {
+                // 空闲：与 Enter 同路（同一个 helper）。
+                apply_action_submit(state);
             }
         }
         KeyAction::Abort => match escape_action(state) {
@@ -3393,25 +3607,41 @@ fn _typecheck_handle_is_used() {
 ///
 /// v0.10.1 (M1). Pi: `await this.session.prompt(text, { streamingBehavior:
 /// "steer" })` followed by `updatePendingMessagesDisplay()`
-/// (`interactive-mode.ts#streamingBehavior` and `:2500`) — the message goes to the
-/// running turn, and the user is told it is pending.
+/// (`interactive-mode.ts#setupEditorSubmitHandler` and
+/// `agent-session.ts#steer`) — the message goes to the running turn, and the
+/// user is told it is pending.
 ///
-/// nini had one queue already, `pending_next_turn_messages`, written only by
-/// a compaction branch that can never run (§ `is_compacting` is never set).
-/// Rather than add a second field for Pi's steering/follow-up split, the
-/// existing queue is used: one queue is what the struct can express, and a
-/// field the fix introduces cannot be named by a test that has to compile
-/// against the parent commit.
+/// v0.11 (A4)：Pi 有**两个**队列，Enter 与 Alt+Enter 各进一个：
+///
+/// * `QueueKind::Steer` —— `agent-session.ts#_steeringMessages`
+///   （`prompt(text,{streamingBehavior:"steer"})`）：插进**当前这一轮**。
+/// * `QueueKind::FollowUp` —— `agent-session.ts#_followUpMessages`
+///   （`prompt(text,{streamingBehavior:"followUp"})`）：等**这一轮结束**。
+///
+/// Pi 把两者**分列显示**（"Steering:" / "Follow-up:"，
+/// `interactive-mode.ts#updatePendingMessagesDisplay`），所以 nini 的状态行
+/// 也说清楚是哪一个队列。
 ///
 /// The transcript line is the "pending" display. It is pushed as a user
 /// message so the agent sees it in context, exactly like the compaction
 /// queue does today.
-pub fn queue_while_running(state: &mut AppState, text: &str) {
-    let n = state.run_state.pending_next_turn_messages.len() + 1;
-    state
-        .run_state
-        .pending_next_turn_messages
-        .push(text.to_string());
+pub fn queue_while_running(state: &mut AppState, text: &str, kind: QueueKind) {
+    let n = match kind {
+        QueueKind::Steer => {
+            state
+                .run_state
+                .pending_steer_messages
+                .push(text.to_string());
+            state.run_state.pending_steer_messages.len()
+        }
+        QueueKind::FollowUp => {
+            state
+                .run_state
+                .pending_followup_messages
+                .push(text.to_string());
+            state.run_state.pending_followup_messages.len()
+        }
+    };
     // The transcript gets the message verbatim. An earlier version appended
     // "(queued: N pending…)" to it, and `push_user` writes the same string
     // to the session — so the model would have been handed the marker as
@@ -3426,22 +3656,88 @@ pub fn queue_while_running(state: &mut AppState, text: &str) {
     // write belongs to the delivery, not to the queueing.
     state.push_user_queued(text);
     state.push_divider();
-    state.run_state.status = format!("queued: {n} pending");
+    state.run_state.status = format!("queued ({}): {n} pending", kind.label());
     state.mark_scroll_activity();
+}
+
+/// Take the **steer** queue and turn it into provider messages.
+///
+/// Pi: `agent-session.ts#_steeringMessages` —— 用户在流式期间输入的消息，
+/// 在**下一次模型调用之前**插进当前这一轮
+/// （`interactive-mode.ts#setupEditorSubmitHandler` → `prompt(text,
+/// {streamingBehavior:"steer"})`）。
+///
+/// The session write is part of the **delivery**, not of the queueing:
+/// `deliver_queued_user` writes the session and **not** the transcript
+/// (the transcript already showed the message when it was queued), so the
+/// user does not see their own sentence twice.
+///
+/// Before v0.11 the steering hook took the queue and converted it to
+/// messages **without any session write** — the message the agent acted on
+/// never made it into the session file (an existing defect).
+pub fn take_steer_messages(state: &mut AppState) -> Vec<nini_core::provider::Message> {
+    take_queue_messages(state, QueueKind::Steer)
+}
+
+/// Take the **followUp** queue and turn it into provider messages.
+///
+/// Pi: `agent-session.ts#_followUpMessages` —— 用户用 Alt+Enter 提交的消息，
+/// 等 agent **本该停下时**才被取走，在**同一个 run 内**续跑
+/// （`interactive-mode.ts#handleFollowUp` → `prompt(text,
+/// {streamingBehavior:"followUp"})`；`agent-loop.ts#runAgentLoop` 取它）。
+///
+/// Session semantics are the same as the steer queue's: the write happens on
+/// delivery (`deliver_queued_user`), not on queueing.
+pub fn take_followup_messages(state: &mut AppState) -> Vec<nini_core::provider::Message> {
+    take_queue_messages(state, QueueKind::FollowUp)
+}
+
+/// Drain one queue into provider messages, writing the session on the way.
+///
+/// `deliver_queued_user` writes the **session** and not the transcript, so a
+/// queued message is shown to the user once (at queue time) and reaches the
+/// model once (at delivery time).
+fn take_queue_messages(state: &mut AppState, kind: QueueKind) -> Vec<nini_core::provider::Message> {
+    let queued = match kind {
+        QueueKind::Steer => std::mem::take(&mut state.run_state.pending_steer_messages),
+        QueueKind::FollowUp => std::mem::take(&mut state.run_state.pending_followup_messages),
+    };
+    queued
+        .into_iter()
+        .map(|text| {
+            state.deliver_queued_user(text.clone());
+            nini_core::provider::Message {
+                role: nini_core::provider::Role::User,
+                content: vec![nini_core::provider::ContentBlock::Text { text }],
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            }
+        })
+        .collect()
 }
 
 /// Hand the queue back to the editor, then abort.
 ///
 /// Pi: `restoreQueuedMessagesToEditor({ abort: true })`
-/// (`interactive-mode.js:3615`) — queues are drained, merged with whatever
-/// is in the editor, and put back so nothing the user typed is lost when a
-/// turn is interrupted.
+/// (`interactive-mode.ts#restoreQueuedMessagesToEditor`) — queues are
+/// drained, merged with whatever is in the editor, and put back so nothing
+/// the user typed is lost when a turn is interrupted.
+///
+/// v0.11 (A4)：Pi 一次清**两个**队列（`agent-session.ts#clearQueue`，
+/// `interactive-mode.ts#clearAllQueues`），并且顺序是 **steering 在前、
+/// followUp 在后**（`[...steering, ...followUp]`），用 `"\n\n"` 连接。
 pub fn return_queue_to_editor(state: &mut AppState) -> usize {
-    let queued = std::mem::take(&mut state.run_state.pending_next_turn_messages);
-    if queued.is_empty() {
+    let steering = std::mem::take(&mut state.run_state.pending_steer_messages);
+    let followup = std::mem::take(&mut state.run_state.pending_followup_messages);
+    let count = steering.len() + followup.len();
+    if count == 0 {
         return 0;
     }
-    let queued_text = queued.join("\n\n");
+    let queued_text = steering
+        .iter()
+        .chain(followup.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n\n");
     let combined = [queued_text, state.input.text.clone()]
         .into_iter()
         .filter(|t| !t.trim().is_empty())
@@ -3452,7 +3748,7 @@ pub fn return_queue_to_editor(state: &mut AppState) -> usize {
     // edits what comes back.
     state.input.cursor = state.input.text.len();
     state.refresh_completion();
-    queued.len()
+    count
 }
 
 /// Resolve a key against the built-in keymap plus any user overrides

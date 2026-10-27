@@ -1361,6 +1361,8 @@ pub struct RunState {
     /// 这个标记就是「该投递了」的信号：运行循环看到它就把队列里的消息
     /// 作为**新的一轮**送出去（Pi 在 session 层做的事，nini 的等价物是
     /// 这个运行循环）。
+    ///
+    /// v0.11 (A4)：**任一**队列（steer 或 followUp）非空都置起它。
     pub auto_turn_pending: bool,
     /// 自动投递的次数上限（防止「投递 → 用户又排队 → 再投递」无限循环）。
     pub auto_turn_count: usize,
@@ -1415,10 +1417,29 @@ pub struct RunState {
     /// True while auto-compaction is in progress. When true,
     /// /model /model/<arg> still works but the next prompt gets queued.
     pub is_auto_compacting: bool,
-    /// Messages queued for the next turn (Pi "nextTurn" parity).
-    /// These are user inputs received during compaction that should be
-    /// injected as context alongside the next user prompt.
-    pub pending_next_turn_messages: Vec<String>,
+    /// **steer 队列**：回合在跑时提交、要插进**当前这一轮**的消息
+    /// （Pi 的 steering）。
+    ///
+    /// Pi: `agent-session.ts#_steeringMessages`。流式中的 Enter 走这里
+    /// （`interactive-mode.ts#setupEditorSubmitHandler` →
+    /// `prompt(text,{streamingBehavior:"steer"})`）；压缩期间的 Enter
+    /// 也走这里（`interactive-mode.ts#queueCompactionMessage` 的
+    /// `"steer"` 分支）。
+    ///
+    /// **只有用户说的话**进这个队列。工具输出、bash 结果、分支摘要
+    /// 都不进（Pi 把 bash 结果记进 session 的活消息表，不当成用户指令）。
+    pub pending_steer_messages: Vec<String>,
+    /// **followUp 队列**：回合在跑时用 Alt+Enter 提交、要等**这一轮结束
+    /// 之后**再执行的消息（Pi 的 followUp）。
+    ///
+    /// Pi: `agent-session.ts#_followUpMessages`。Alt+Enter 走这里
+    /// （`interactive-mode.ts#handleFollowUp` → `prompt(text,
+    /// {streamingBehavior:"followUp"})`）；压缩期间的 Alt+Enter 也走这里
+    /// （`interactive-mode.ts#queueCompactionMessage` 的 `"followUp"`
+    /// 分支）。
+    ///
+    /// **只有用户说的话**进这个队列（同上）。
+    pub pending_followup_messages: Vec<String>,
     /// Provider's context-window size (tokens). Used to compute
     /// `context_percent` shown in the status bar. Mirrors Pi's
     /// `getContextUsage()` percent.
@@ -1713,7 +1734,8 @@ impl Clone for RunState {
             last_escape_ms: self.last_escape_ms,
             is_compacting: self.is_compacting,
             is_auto_compacting: self.is_auto_compacting,
-            pending_next_turn_messages: self.pending_next_turn_messages.clone(),
+            pending_steer_messages: self.pending_steer_messages.clone(),
+            pending_followup_messages: self.pending_followup_messages.clone(),
             context_window: self.context_window,
             context_used: self.context_used,
             cost_usd: self.cost_usd,
@@ -1739,7 +1761,8 @@ impl Default for RunState {
             last_escape_ms: None,
             is_compacting: false,
             is_auto_compacting: false,
-            pending_next_turn_messages: Vec::new(),
+            pending_steer_messages: Vec::new(),
+            pending_followup_messages: Vec::new(),
             context_window: 0,
             context_used: 0,
             cost_usd: 0.0,

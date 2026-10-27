@@ -1,5 +1,12 @@
 //! Oracle: 回合结束后，**排队里的消息必须自动被送出去**（v0.10.8 / A6）。
 //!
+//! v0.11 (A4)：字段 `RunState::pending_next_turn_messages` 改名为
+//! `RunState::pending_steer_messages`。队列按 Pi 的做法
+//! （`agent-session.ts#_steeringMessages` / `agent-session.ts#_followUpMessages`）
+//! 拆成了 steer 与 followUp 两条；这里断言的是「回合还在跑时提交的消息」，
+//! 即 **steer** 语义（Pi：`interactive-mode.ts#setupEditorSubmitHandler`
+//! → `prompt(text, { streamingBehavior: "steer" })`）。**语义不变，只改名**。
+//!
 //! 排队消息的正常归宿：回合还活着时，agent 循环每轮 `get_steering_messages`
 //! 会把它捞进当前 turn（Pi 的 steer）。可如果它是在**回合收尾之后**排进来的
 //! ——典型场景是用户按了 Esc、又在 agent 还在收尾时提交了一条——就没有人再捞它了：
@@ -104,11 +111,11 @@ async fn a_message_queued_after_the_turn_ended_is_delivered_without_another_ente
         let g = shared.lock().unwrap();
         assert!(
             g.run_state
-                .pending_next_turn_messages
+                .pending_steer_messages
                 .iter()
                 .any(|m| m.contains("second prompt")),
             "第二条应该进了队列：{:?}",
-            g.run_state.pending_next_turn_messages
+            g.run_state.pending_steer_messages
         );
     }
 

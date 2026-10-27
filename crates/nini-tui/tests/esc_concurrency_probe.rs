@@ -1,6 +1,15 @@
 //! P2/A1 — can a second agent be spawned while the first is still winding
 //! down?
 //!
+//! v0.11 (A4): the field `RunState::pending_next_turn_messages` was renamed
+//! to `RunState::pending_steer_messages`. The queue was split into **steer**
+//! and **followUp** the way Pi does
+//! (`agent-session.ts#_steeringMessages` / `agent-session.ts#_followUpMessages`);
+//! the assertions below are about a message submitted during a running turn,
+//! which is **steer** semantics (Pi:
+//! `interactive-mode.ts#setupEditorSubmitHandler` → `prompt(text,
+//! { streamingBehavior: "steer" })`). Semantics unchanged, name changed.
+//!
 //! This file began as a probe of a *confirmed* defect (v0.10.2, measured
 //! `spawns=2 live=2`) and is now the regression test for the fix. It is no
 //! longer `#[ignore]`d: a defect that is fixed and then re-introduced has
@@ -175,7 +184,7 @@ async fn submitting_soon_after_an_esc_never_starts_a_second_agent() {
     // …and the message the user typed was not thrown away: Pi steers a
     // submit during streaming into the running turn.
     let g = shared.lock().unwrap();
-    let queued = g.run_state.pending_next_turn_messages.join(" | ");
+    let queued = g.run_state.pending_steer_messages.join(" | ");
     assert!(
         queued.contains("second prompt"),
         "the submit was refused instead of steered; the user's text is \
@@ -390,7 +399,7 @@ async fn a_queued_message_is_written_to_the_session_once() {
         // turn (mode == Running) was silently dropped — the text stayed in
         // the input buffer and came out as part of the next message.
         let g = shared.lock().unwrap();
-        let queued = g.run_state.pending_next_turn_messages.join(" | ");
+        let queued = g.run_state.pending_steer_messages.join(" | ");
         assert!(
             queued.contains("queued prompt"),
             "a submit during a running turn must be queued, not dropped: \
@@ -415,9 +424,9 @@ async fn a_queued_message_is_written_to_the_session_once() {
     {
         let g = shared.lock().unwrap();
         assert!(
-            g.run_state.pending_next_turn_messages.is_empty(),
+            g.run_state.pending_steer_messages.is_empty(),
             "the queue is drained when the message is delivered: {:?}",
-            g.run_state.pending_next_turn_messages
+            g.run_state.pending_steer_messages
         );
     }
     let raw = std::fs::read_to_string(&session_file).unwrap_or_default();
