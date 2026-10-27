@@ -1974,6 +1974,29 @@ impl AppState {
         s
     }
 
+    /// v0.11 (B4): **bash mode** — the editor holds a shell command.
+    ///
+    /// Pi: `interactive-mode.ts:2907` —
+    /// `this.isBashMode = text.trimStart().startsWith("!")`.
+    ///
+    /// The state is **derived**, not a flag: Pi keeps a boolean only
+    /// because it has to know when to repaint the border, and nini derives
+    /// the same answer from the same text — so there is no way for the two
+    /// to disagree. (Pi's `isBashMode` is cleared explicitly on Esc and
+    /// after a bash submit; in nini both of those clear the text, and
+    /// empty text is not bash mode.)
+    ///
+    /// Note the deliberate asymmetry with the **submit** path: bash mode
+    /// is detected on the *trimmed* text, but a command only *runs* when
+    /// the text starts with `!` (`runtime.rs`: `text.strip_prefix('!')`).
+    /// That is Pi's asymmetry too (`interactive-mode.ts:3105` uses
+    /// `text.startsWith("!")` for execution), so a leading space means
+    /// "this looks like a command" in the border and "this is a message"
+    /// on Enter.
+    pub fn is_bash_mode(&self) -> bool {
+        self.input.text.trim_start().starts_with('!')
+    }
+
     /// Construct with an explicit context-window size. The runtime
     /// passes the value loaded from `~/.nini/agent/settings.json`; tests
     /// (and the no-config path) use the default constructor above.

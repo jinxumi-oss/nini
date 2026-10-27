@@ -2134,6 +2134,19 @@ fn handle_key(
                 }
                 state.run_state.status = "compaction cancelled".to_string();
             }
+            EscapeAction::ExitBashMode => {
+                // v0.11 (B4)：清空输入框 → 退出 bash mode。
+                //
+                // Pi: `interactive-mode.ts:2857-2861` —
+                // `this.editor.setText(""); this.isBashMode = false;`
+                //
+                // **不中止任何东西**：不碰 `abort_signal`、不碰 `mode`、
+                // 不动队列。nini 的 bash mode 是派生的
+                // （`AppState::is_bash_mode`），所以清空输入框就是退出
+                // bash mode，边框色下一帧自己回去。
+                state.input.clear();
+                state.run_state.status = "exited bash mode".to_string();
+            }
             EscapeAction::ClearInput => {
                 // v0.11 (B5)：编辑器**为空**时，这一次 Esc 参与 double-Escape
                 // 判定（Pi 的规则）；否则就是清空输入。
@@ -2641,8 +2654,10 @@ pub fn submit_user_input_inner(
 
         // ── Bash passthrough (!cmd, !!cmd) ──────────────────────────────────
         // `!cmd` executes locally and pushes a BashExecution transcript line.
-        // `!!cmd` does the same but does NOT also inject the output into the
-        // session context for the agent.
+        // `!!cmd` does the same, and marks the command as private.
+        //
+        // v0.11 (B4)：**两者的输出都不进模型上下文**——Pi 的 bash mode 是
+        // 本地逃逸，输出只给用户看。详见下面那段注释。
         //
         // v0.11 (A4 审查发现)：**自动投递的文本不重新解释**。
         //
@@ -2662,6 +2677,10 @@ pub fn submit_user_input_inner(
                 // it into the agent's session context. Useful for sensitive
                 // commands (`!!cat ~/.aws/credentials`) where the user
                 // wants the LLM to never see the bytes.
+                //
+                // v0.11 (B4)：`!cmd` 现在**同样不注入**（Pi 语义）。`!!`
+                // 保留的是**标记**语义：transcript 里显示 `!!cmd`，状态栏
+                // 显示 `executed (private)`。
                 let (private, cmd) = match rest.strip_prefix('!') {
                     Some(c) => (true, c.trim()),
                     None => (false, rest.trim()),
@@ -2716,22 +2735,26 @@ pub fn submit_user_input_inner(
                     );
                     g.session_flush();
                     g.push_divider();
-                    // For `!cmd`, also inject the output as a user message so
-                    // the agent sees it on the next turn. For `!!cmd` the
-                    // privacy marker tells us NOT to do that — the LLM will
-                    // never learn the contents of this command.
+                    // v0.11 (B4)：**`!cmd` 的输出进模型上下文，`!!cmd` 不进**。
+                    //
+                    // Pi 的分界线写在自己的注释里
+                    // （`agent-session.ts:2979`）：
+                    // 「If true, command output won't be sent to LLM (**!!**
+                    // prefix)」——也就是说 `!cmd` 的输出**是**发给 LLM 的，
+                    // 只有 `!!cmd` 才排除。分界由 `interactive-mode.ts:3109`
+                    // 的 `isExcluded = text.startsWith("!!")` 决定，一路传到
+                    // `recordBashResult(command, result, { excludeFromContext })`。
+                    //
+                    // nini 的会话转换会**丢掉** `bashExecution` 角色的条目
+                    // （`crates/nini-core/src/conversion.rs:172`——
+                    // `PiMsg::BashExecution(_) => None`），所以 nini 要让模型
+                    // 看见这段输出，只能把它写成一条 **User** 消息。这就是
+                    // `!cmd` 的做法；`!!cmd` 则**不写**——模型永远学不到
+                    // 命令的内容，这正是 `!!` 的**隐私标记**语义。
+                    //
+                    // （A4/Q1 把输出从**用户消息队列**里挪走、改成当场写
+                    // session；B4 把 `!!` 的边界写明。）
                     if !private {
-                        // v0.11 (A4/Q1)：bash 输出**不再**进用户消息队列。
-                        //
-                        // 队列里只该有**用户说的话**。Pi 把 bash 结果记进
-                        // session 的活消息表（`agent-session.ts#recordBashResult`），
-                        // **不是**当用户指令。排队的后果有三个：Esc 会把它塞回
-                        // 输入框、steering 钩子会把它当成用户的话插进当前这一轮、
-                        // 而它本来根本不是用户说的。
-                        //
-                        // **session 内容不变**：今天这段输出也是以一条 User 消息
-                        // 被冲刷进 session 的（`deliver_queued_user`），这里只是
-                        // 当场写、时机提前。
                         g.deliver_queued_user(format!(
                             "[bash $ {}]\n{}",
                             cmd,
@@ -3118,6 +3141,21 @@ pub enum EscapeAction {
     AbortCompaction,
     /// 清空输入框（Idle 上下文）。
     ClearInput,
+    /// v0.11 (B4)：**退出 bash mode** —— 清空输入框里的命令。
+    ///
+    /// Pi: `interactive-mode.ts:2857-2861` —
+    /// ```text
+    /// } else if (this.isBashMode) {
+    ///     this.editor.setText("");
+    ///     this.isBashMode = false;
+    ///     this.updateEditorBorderColor();
+    /// }
+    /// ```
+    ///
+    /// 它**不**中止任何东西：不是回合，也不是别的什么。nini 的 bash mode
+    /// 是**派生**的（`AppState::is_bash_mode`），所以清空输入框就等于
+    /// 退出 bash mode，边框色随之回去——没有第二个状态需要维护。
+    ExitBashMode,
 }
 
 /// Pi 的 double-ESC 窗口：两次 Esc 相隔不超过 500 ms。
@@ -3215,6 +3253,19 @@ pub fn escape_action(state: &AppState) -> EscapeAction {
         crate::state::EscapeTarget::Idle => {
             if state.run_state.mode == RunMode::Running {
                 EscapeAction::AbortTurn
+            } else if state.is_bash_mode() {
+                // v0.11 (B4)：bash mode 优先于「清空输入」。
+                //
+                // Pi 的顺序是：streaming → abort、bashRunning → abortBash、
+                // isBashMode → 清空并退出 bash mode、空编辑器 → double-Escape。
+                // nini 的「回合在跑」就是 Pi 的 streaming（上面的
+                // `mode == Running` 与 `EscapeTarget::Agent` 两条都归到
+                // `AbortTurn`），所以这里就是 Pi 的第三档。
+                //
+                // 与 `ClearInput` 的区别只有**语义**（两者都清空输入框）：
+                // 这一档不走 double-Escape——Pi 的 bash mode 分支在
+                // double-Escape 之前就返回了。
+                EscapeAction::ExitBashMode
             } else {
                 EscapeAction::ClearInput
             }
@@ -3606,6 +3657,11 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                     sig.trigger();
                 }
                 state.run_state.status = "compaction cancelled".to_string();
+            }
+            EscapeAction::ExitBashMode => {
+                // v0.11 (B4)：见 `handle_key` 里的同名分支。
+                state.input.clear();
+                state.run_state.status = "exited bash mode".to_string();
             }
             EscapeAction::ClearInput => {
                 // v0.11 (B5)：见 `handle_key` 里的同名分支。

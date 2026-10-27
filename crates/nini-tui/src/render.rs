@@ -1504,7 +1504,19 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     // matters — was pushed out. Below 3 rows, drop the frame and draw
     // the text bare: an unframed prompt you can type into beats a
     // handsome empty box.
-    let border_style = theme.fg_style("borderMuted");
+    // v0.11 (B4): bash mode gets its own border colour.
+    //
+    // Pi: `interactive-mode.ts:4167-4171` —
+    // `if (this.isBashMode) this.editor.borderColor = theme.getBashModeBorderColor();`
+    //
+    // The slot is Pi's own (`bashMode`), already in nini's palette
+    // (`theme.rs`: `"bashMode"`), so this is not an nini extension —
+    // it is the one Pi theme slot nini had and never used.
+    let border_style = theme.fg_style(if state.is_bash_mode() {
+        "bashMode"
+    } else {
+        "borderMuted"
+    });
     if area.height >= 3 {
         // The frame is drawn by hand, not by ratatui's `Block`.
         //

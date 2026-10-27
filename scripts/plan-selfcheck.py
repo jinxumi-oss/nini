@@ -21,6 +21,7 @@
     S8  文档里不得出现已作废的数字（51 个 provider / 5 原生），
         除非它出现在「已被推翻」的历史表里
     S9  计划文档不得手写台账计数（计数归脚本所有）
+    S14  台账新鲜度（fixed 的 oracle 文件都还在、open 条目要么有 oracle 要么明说人工）
 """
 
 import argparse
@@ -205,6 +206,23 @@ def main() -> int:
     r = run([sys.executable, "scripts/pi-target-lock.py"])
     check(results, "S11 对标目标版本唯一且冻结（pi-target-lock）", r.returncode == 0,
           r.stdout.strip()[-400:] if r.returncode != 0 else "")
+
+    # S14 台账新鲜度：台账自己说真话
+    #
+    # S5/S7 只看字段非不非空，看不见「标成 fixed 的那条差距，它的 oracle 文件
+    # 现在还在不在、里面还有没有测试」。台账会过期（B2 就是台账落后于代码的
+    # 例子），所以这一项把台账的 oracle 拉回磁盘上核对一遍；同时跑一遍
+    # --self-test，证明这个判据抓得到错（抓不到东西的判据是装饰）。
+    r = run([sys.executable, "scripts/ledger-freshness.py"])
+    st = run([sys.executable, "scripts/ledger-freshness.py", "--self-test"])
+    s14_ok = r.returncode == 0 and st.returncode == 0
+    s14_detail = ""
+    if r.returncode != 0:
+        s14_detail = (r.stdout + r.stderr).strip()[-600:]
+    elif st.returncode != 0:
+        s14_detail = (st.stdout + st.stderr).strip()[-600:]
+    check(results, "S14 台账新鲜度：fixed 条目的 oracle 文件都在且带测试、"
+                   "open 条目要么有 oracle 要么明说人工", s14_ok, s14_detail)
 
     ok = all(x["ok"] for x in results)
     if args.json:
