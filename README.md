@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.11.1-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1676%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1670%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -63,7 +63,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **1676 unit + integration tests**, including property-based SSE fuzz and
+- **1670 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -253,6 +253,12 @@ trying to be; this section is the user-facing summary of it.
   Their **price is not**: `models.json` states no rates, and nini does not
   invent any — a model with no known price shows no cost pill, which reads
   as "unknown", never as "free"
+- **URLs in the transcript are shown as plain text, not as clickable links.**
+  Pi emits OSC 8 hyperlinks itself (it writes bytes to the terminal); nini
+  draws through ratatui's cell buffer, which has no hyperlink support — and
+  injecting the escape sequence there makes it *literal cell text*, so the
+  terminal draws the URL as visible words and the row grows past the screen
+  edge (the frame breaks). Tracked as gap **D3**.
 - **The built-in tool set matches Pi 0.85.1's** — `read`, `write`, `edit`,
   `bash`, `grep`, `find`, `ls` — down to the tool descriptions, parameter
   schemas and prompt contributions, checked against a runtime dump of Pi's own

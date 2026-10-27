@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-27",
+  "updated": "2026-10-23",
   "authority": "docs/GOALS.md",
   "detail": "docs/plans/parity-with-pi.md",
   "gaps": [
@@ -437,6 +437,20 @@
       "round": "W1-B",
       "exit_criterion": "cargo test -p nini-tui --test compaction_escape 退出 0（9 条）；cargo test -p nini-tui --test escape_target 退出 0；两条变异注入分别验证断言会红（压缩分支改回 AbortTurn / 压缩期误触发整轮信号）",
       "machine_checkable": false
+    },
+    {
+      "id": "D3",
+      "class": "D",
+      "severity": "P3",
+      "title": "Pi 的可点击链接（OSC 8）在 nini 上无法复刻：ratatui 0.29 没有 hyperlink 支持",
+      "pi_basis": "Pi 自己往终端写字节，能正确发出 `ESC ]8;;<url> ESC \\`（pi-tui 的 hyperlink() helper）；nini 的 transcript 经 **ratatui 的 cell 缓冲区**绘制，没有等价的出口",
+      "nini_state": "已修（2026-10-23）：hyperlink::auto_link **不再注入 OSC 8** —— 注入后那段转义会变成**字面的 cell 文本**，终端把 URL 当可见文字画出来，那一行比屏幕宽，**框破了**；且宽度计算把零宽转义算成可见字符，行被提前截断（实测吃掉 139 格）。现在 URL 以纯文本呈现（与 Pi 在不支持 OSC 8 的终端上相同），并且 width::str_width 会**忽略转义序列**",
+      "oracle": "crates/nini-tui/tests/hyperlink_frame_fit.rs（3 条：cell 里不能有 ESC 字节；长 URL 不破框；宽度计算忽略转义）",
+      "status": "open",
+      "blocking_decision": null,
+      "round": "—",
+      "exit_criterion": "要么 ratatui 支持 hyperlink（届时恢复注入并保持宽度计算正确），要么在 README 的 known limitations 里明说「链接不可点击」",
+      "machine_checkable": true
     }
   ]
 }

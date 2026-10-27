@@ -259,10 +259,22 @@ pub fn char_width(c: char) -> usize {
 #[inline]
 pub fn str_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
-    if ambiguous_width_is_wide() {
-        UnicodeWidthStr::width_cjk(s)
+    // v0.10.8 (TUI bug)：**转义序列是零宽的**，不能算进显示宽度。
+    //
+    // `unicode-width` 不认识 ANSI/OSC：它会把 `ESC ]8;;<url> ESC \` 里的
+    // URL 当**可见文字**算进去。于是含转义的行被算得远宽于实际 → 渲染器
+    // 提前截断（实测吃掉 139 格），内容凭空消失。
+    //
+    // 快路径：绝大多数文本没有 ESC，先判一次再决定要不要清洗。
+    let clean: &str = if s.contains('\x1b') {
+        &crate::ansi::strip_ansi(s)
     } else {
-        UnicodeWidthStr::width(s)
+        s
+    };
+    if ambiguous_width_is_wide() {
+        UnicodeWidthStr::width_cjk(clean)
+    } else {
+        UnicodeWidthStr::width(clean)
     }
 }
 

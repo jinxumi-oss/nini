@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.11.1-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1676%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1670%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
@@ -50,7 +50,7 @@ nini 也不做。
 
 - **单个 6.4 MiB 可执行文件**（压缩后 2.4 MB），取代一整套 Node.js 工具链
 - **无授权附加条款**——纯 MIT，不像某些带着 OpenAI/Anthropic 再分发限制的分支
-- **1676 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
+- **1670 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
   HTTP 服务器的端到端线格式测试
 - **内置工具可扩展**——bash、read、write、edit、grep、find
 - **流式 TUI**，带斜杠命令自动补全
@@ -232,6 +232,10 @@ session JSONL。
   `--list-models` 里，context window 用的就是你写下的那个数字。
   但**价格不随之而来**：`models.json` 不写费率，nini 也不会编一个——
   没有已知价格的模型不显示费用标签，读起来是「未知」，绝不是「免费」
+- **transcript 里的 URL 以纯文本呈现，不可点击。** Pi 自己往终端写字节，能发出
+  OSC 8 超链接；nini 经 ratatui 的 cell 缓冲区绘制，没有 hyperlink 支持 ——
+  把那段转义序列塞进去，它会变成**字面 cell 文本**，终端把 URL 当可见文字画出来，
+  那一行比屏幕还宽，**框就破了**（对应差距 **D3**）。
 - **内置工具集与 Pi 0.85.1 一致**——`read` / `write` / `edit` / `bash` / `grep` /
   `find` / `ls`，连**工具描述、参数 schema、prompt 贡献**都逐条对齐
   （对照物是 Pi 自己的工具定义在**运行时**的转储，见

@@ -70,144 +70,47 @@ pub fn wrap(text: &str, url: &str) -> String {
 /// Supports http(s)://, ftp://, file://. Does not touch URLs already
 /// inside markdown link syntax `[label](url)` \u2014 that's handled by the
 /// Markdown renderer separately.
-pub fn auto_link(s: &str) -> String {
-    if !supports_osc8() {
-        return s.to_string();
-    }
-    // Conservative URL pattern: scheme:// then non-whitespace, non-`()[]{}<>"`
-    // (stops at common markdown / shell delimiters).
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    let bytes = s.as_bytes();
-    while i < bytes.len() {
-        // Look for a URL start: "scheme://"
-        if let Some(start) = find_url_start(&s[i..]) {
-            let url_start = i + start;
-            let url_end_rel = scan_url_end(&s[url_start..]);
-            let url_end = url_start + url_end_rel;
-            // Copy the pre-URL substring verbatim.
-            out.push_str(&s[i..url_start]);
-            let url = &s[url_start..url_end];
-            // OSC 8 link with URL == display text (no markdown label).
-            out.push_str(&wrap(url, url));
-            i = url_end;
-        } else {
-            out.push(s[i..].chars().next().unwrap());
-            i += s[i..].chars().next().unwrap().len_utf8();
-        }
-    }
-    out
-}
-
-/// Try to find a URL start within `s` from offset 0. Returns the byte
-/// offset of the scheme prefix, or None.
-fn find_url_start(s: &str) -> Option<usize> {
-    // Walk the string; for each position, check if "scheme://" starts here.
-    // Limit schemes to http, https, ftp, file to avoid false positives.
-    let schemes = ["https://", "http://", "ftp://", "file://"];
-    for (idx, _) in s.char_indices() {
-        for scheme in &schemes {
-            if s[idx..].starts_with(scheme) {
-                return Some(idx);
-            }
-        }
-        // Bail out once we've scanned past a reasonable window.
-        if idx > 64 {
-            return None;
-        }
-        // Stop at newline \u2014 don't cross line boundaries.
-        if s.as_bytes()[idx] == b'\n' {
-            return None;
-        }
-    }
-    None
-}
-
-/// Scan the URL forward from start, returning the byte length of the URL.
-/// Stops at whitespace, line break, or markdown / shell delimiters.
-/// Trailing punctuation (.,;,:,!?) is trimmed when followed by stop chars
-/// or end of input.
-fn scan_url_end(s: &str) -> usize {
-    let mut end = 0;
-    for (idx, ch) in s.char_indices() {
-        if ch.is_whitespace() || matches!(ch, ')' | ']' | '}' | '<' | '>' | '"' | '`') {
-            break;
-        }
-        end = idx + ch.len_utf8();
-    }
-    // Trim a single trailing punctuation char (.,;,:,!?) if present.
-    if end > 0 {
-        let bytes = s.as_bytes();
-        if matches!(bytes[end - 1], b'.' | b',' | b';' | b':' | b'!' | b'?') {
-            end -= 1;
-        }
-    }
-    end
+pub fn auto_link(text: &str) -> String {
+    // v0.10.8 (TUI bug)：**不再注入 OSC 8**。
+    //
+    // 之前这里把裸 URL 包成 `ESC ]8;;<url> ESC \` —— 那是 Pi 的做法（Pi 自己
+    // 往终端写字节，能正确地发出这个序列）。
+    //
+    // 但 nini 的 transcript 是通过 **ratatui 的 cell 缓冲区**画的：
+    // ratatui 0.29 **没有** hyperlink 支持（没有 `Modifier::HYPERLINK`），
+    // 于是那段转义序列会变成**字面的 cell 文本**——终端收到 `ESC ]8;;` 后
+    // 把它当 OSC 开始，把后面的 URL 当**可见文字**画出来：那一行比屏幕宽，
+    // **框破了**；而且宽度计算把零宽的转义算成了可见字符，行被**提前截断**
+    // （实测吃掉 139 格）。
+    //
+    // 所以这里只能**明说不做**：URL 以纯文本呈现（Pi 在不支持 OSC 8 的终端上
+    // 同样是纯文本）。这是能力差距，记在台账里（差距 D3）。
+    let _ = detect_osc8_support();
+    text.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// v0.10.8 (TUI bug)：`auto_link` **不再注入 OSC 8**。
+    ///
+    /// 注入的那段转义会变成字面的 cell 文本 —— 终端把 URL 当可见文字画出来，
+    /// 那一行比屏幕宽，**框破了**；而且宽度计算把零宽转义算成可见字符，
+    /// 行被提前截断（实测吃掉 139 格）。
     #[test]
-    fn auto_link_returns_text_when_unsupported() {
-        // We can't easily flip the OnceLock; this just ensures the function
-        // is safe to call and returns valid text.
-        let out = auto_link("see https://example.com here");
-        // Either wrapped or pass-through; both are valid.
-        assert!(out.contains("example.com"));
-    }
-
-    #[test]
-    fn wrap_emits_osc8_when_enabled() {
-        // Force "supported" path by calling wrap directly \u2014 it consults
-        // the env-based detection, so we just assert it doesn't panic.
-        let out = wrap("link", "https://example.com");
-        assert!(out.contains("link"));
-    }
-
-    #[test]
-    fn find_url_start_detects_https() {
-        let s = "hello https://example.com world";
-        let pos = find_url_start(s).unwrap();
-        assert_eq!(&s[pos..pos + 8], "https://");
-    }
-
-    #[test]
-    fn find_url_start_returns_none_for_plain_text() {
-        assert!(find_url_start("no url here").is_none());
-    }
-
-    #[test]
-    fn scan_url_end_trims_trailing_punctuation() {
-        // Trailing dot should be stripped from the URL.
-        let url = scan_url_end("https://example.com.");
-        assert_eq!(url, "https://example.com".len());
-
-        let url = scan_url_end("https://example.com/page,");
-        assert_eq!(url, "https://example.com/page".len());
-    }
-
-    #[test]
-    fn scan_url_end_stops_at_whitespace() {
-        let url = scan_url_end("https://example.com/path here");
-        assert_eq!(url, "https://example.com/path".len());
-    }
-
-    #[test]
-    fn auto_link_handles_multiple_urls() {
-        // Sanity: no panics, both URLs preserved.
-        let s = "https://a.com and https://b.com/x";
-        let out = auto_link(s);
-        assert!(out.contains("a.com"));
-        assert!(out.contains("b.com"));
-    }
-
-    #[test]
-    fn auto_link_does_not_cross_newlines() {
-        let s = "first https://a.com\nno url";
-        let out = auto_link(s);
-        // The newline + "no url" should pass through untouched.
-        assert!(out.contains("no url"));
+    fn auto_link_never_injects_escape_sequences() {
+        for text in [
+            "see https://example.com/page for details",
+            "https://example.com",
+            "no url here",
+        ] {
+            let out = auto_link(text);
+            assert!(
+                !out.contains('\u{1b}'),
+                "auto_link 绝不能注入转义序列：{out:?}"
+            );
+            assert_eq!(out, text, "auto_link 现在是恒等变换");
+        }
     }
 }

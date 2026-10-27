@@ -1,6 +1,35 @@
+## v0.11.2 — 一行超长的 file:// 路径把框撑破了（2026-10-27）
+
+1670 tests, all green. 一条真实的 agent 会话里，transcript 出现 JS 堆栈，
+每一行形如 `    at processSessionCache.connect (file:///…/run.js:277:37):` ——
+屏幕上那一行**比终端还宽**，后面的行整体错位。
+
+**根因不是宽度算错，是转义序列变成了 cell 文本。** nini 会把裸 URL 自动包成
+OSC 8 超链接（`hyperlink::auto_link`）——那是 Pi 的做法：Pi 自己往终端写字节，
+能正确发出这个序列。而 nini 的 transcript 经 **ratatui 的 cell 缓冲区**绘制，
+ratatui 0.29 **没有** hyperlink 支持（没有 `Modifier::HYPERLINK`）。于是那段
+`ESC ]8;;<url> ESC \` 变成**字面的 cell 文本**：终端把它当 OSC 开始，把后面的
+URL 当**可见文字**画出来——那一行比屏幕宽，**框破了**。
+
+而且宽度计算把零宽的转义当成了可见字符，于是行被**提前截断**：实测吃掉
+139 格，内容凭空消失（用户看到的是「路径被砍掉一半」）。
+
+两处修复：
+
+* `hyperlink::auto_link` **不再注入 OSC 8**。URL 以纯文本呈现——这与 Pi 在
+  不支持 OSC 8 的终端上的行为一致。代价是链接不可点击（记为差距 **D3**：
+  ratatui 0.29 没有出口，要复刻得等 ratatui 支持）。
+* `width::str_width` **忽略转义序列**：它们是零宽的，不该算进显示宽度。
+  这条是通用修复——任何仍带转义的内容（模型原样输出、工具结果）都不该
+  再被误判为超宽。
+
+Oracle：`crates/nini-tui/tests/hyperlink_frame_fit.rs`（3 条：cell 里不能有 ESC
+字节；长 URL 不破框且内容不被吃掉；宽度计算忽略转义）。两条变异注入均验证会红
+（把 OSC 8 注入放回去 / 让宽度不再清洗）。
+
 ## v0.11.1 — 排队的话不许被吞掉，也不许被重新解释（2026-10-27）
 
-1676 tests, all green. A4（Pi 的 steering / followUp 两个队列）落地，
+1670 tests, all green. A4（Pi 的 steering / followUp 两个队列）落地，
 而**审查比实现更值钱**：它在 A4 的改动里挖出了三条真缺陷，其中一条是
 **我自己上一轮引入**的。
 
