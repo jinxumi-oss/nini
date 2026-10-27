@@ -1488,3 +1488,105 @@ mod provider_fallback_tests {
         );
     }
 }
+
+/// v0.11 (A4)：钩子**各取各的队列**。
+///
+/// Pi: `agent-session.ts#_steeringMessages` 与
+/// `agent-session.ts#_followUpMessages` 是**两个**队列，
+/// `agent-loop.ts#runAgentLoop` 在循环里分别取它们。
+///
+/// 这两条断言守着**生产代码里最容易错的一处**：`LiveConfigHooks` 有两个
+/// 消费者（`get_steering_messages` / `get_followup_messages`），它们各自
+/// 排空自己的队列。一旦两个实现写反了——比如两个都取 steer——那么
+/// Alt+Enter 排进去的消息**永远没人取**：用户按了 Alt+Enter，agent 做完
+/// 当前的活就停了，那条「做完这个再做那个」从来没有发生过，而且**没有
+/// 任何报错**。
+///
+/// 另一头（队列的**生产**侧）在 `crates/nini-tui/tests/queue_routing.rs`。
+#[cfg(test)]
+mod queue_hook_tests {
+    use super::*;
+    use nini_core::agent_hooks::AgentLoopHooks;
+    use nini_tui::runtime::{shared_state, AgentSink, SharedState};
+    use nini_tui::state::AppState;
+
+    /// 一个两条队列里各有一条消息的钩子。
+    fn hooks_with_both_queues() -> (LiveConfigHooks, SharedState) {
+        let mut g = AppState::new("test-model");
+        g.run_state
+            .pending_steer_messages
+            .push("steer me".to_string());
+        g.run_state
+            .pending_followup_messages
+            .push("later".to_string());
+        let shared = shared_state(g);
+        let (tx, _rx) = tokio::sync::watch::channel(false);
+        let hooks = LiveConfigHooks::new(AgentSink::new(shared.clone(), tx));
+        (hooks, shared)
+    }
+
+    fn text_of(msg: &nini_core::provider::Message) -> String {
+        msg.content
+            .iter()
+            .filter_map(|b| match b {
+                nini_core::provider::ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    /// steering 钩子只取 steer 队列。
+    ///
+    /// Pi: `agent-session.ts#_steeringMessages`。
+    #[test]
+    fn the_steering_hook_takes_the_steer_queue_only() {
+        let (hooks, shared) = hooks_with_both_queues();
+
+        let messages = hooks.get_steering_messages(&[]);
+        assert_eq!(messages.len(), 1, "steer 队列里有一条");
+        assert!(
+            text_of(&messages[0]).contains("steer me"),
+            "取出来的必须是 steer 那条：{:?}",
+            text_of(&messages[0])
+        );
+
+        let g = shared.lock().unwrap();
+        assert!(
+            g.run_state.pending_steer_messages.is_empty(),
+            "取完的 steer 队列必须空"
+        );
+        assert_eq!(
+            g.run_state.pending_followup_messages,
+            vec!["later".to_string()],
+            "steering 钩子不得取走 followUp 队列——那是 followUp 钩子的活"
+        );
+    }
+
+    /// followUp 钩子只取 followUp 队列。
+    ///
+    /// Pi: `agent-session.ts#_followUpMessages`。
+    #[test]
+    fn the_followup_hook_takes_the_followup_queue_only() {
+        let (hooks, shared) = hooks_with_both_queues();
+
+        let messages = hooks.get_followup_messages(&[]);
+        assert_eq!(messages.len(), 1, "followUp 队列里有一条");
+        assert!(
+            text_of(&messages[0]).contains("later"),
+            "取出来的必须是 followUp 那条：{:?}",
+            text_of(&messages[0])
+        );
+
+        let g = shared.lock().unwrap();
+        assert!(
+            g.run_state.pending_followup_messages.is_empty(),
+            "取完的 followUp 队列必须空"
+        );
+        assert_eq!(
+            g.run_state.pending_steer_messages,
+            vec!["steer me".to_string()],
+            "followUp 钩子不得取走 steer 队列——那是 steering 钩子的活"
+        );
+    }
+}

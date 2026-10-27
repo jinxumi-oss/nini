@@ -34,12 +34,8 @@ REPO = Path(__file__).resolve().parent.parent
 
 # 本轮**顺延**的工作项：它们不算「未达成」，但也不能假装不存在。
 #
-# N2（A4：steering / followUp 两个队列）要拆的是队列管道——steering 钩子、
-# 轮后自动投递、Esc 退回三处消费点——而本轮先关掉的是更靠前的 A2b 与 A7
-# （Esc 的语义）。理由写在 `docs/plans/next-parity.md` §8。
-DEFERRED: list[tuple[str, str]] = [
-    ("N2", "A4 双队列（steering / followUp）——顺延到下一轮，见 next-parity.md §8"),
-]
+# （v0.11 的 A4 双队列已在 2026-10-27 做完，顺延清单因此清空。）
+DEFERRED: list[tuple[str, str]] = []
 
 
 def sh(cmd: list[str], timeout: int = 2400) -> tuple[int, str]:
@@ -99,6 +95,10 @@ def main() -> int:
         add("N1", "cargo test -p nini-tui --test compaction_escape", ok, detail)
         add("N5", "cargo test -p nini-tui --test compaction_escape（含 A7 的信号断言）", ok, detail)
 
+        # N2 —— A4：steering / followUp 两个队列
+        ok, detail = cargo_test("nini-tui", "queue_routing")
+        add("N2", "cargo test -p nini-tui --test queue_routing", ok, detail)
+
         # N3 —— B5：double-ESC
         ok, detail = cargo_test("nini-tui", "double_escape")
         add("N3", "cargo test -p nini-tui --test double_escape", ok, detail)
@@ -110,6 +110,7 @@ def main() -> int:
         for item, crit in (
             ("N1", "cargo test -p nini-tui --test compaction_escape"),
             ("N5", "cargo test -p nini-tui --test compaction_escape"),
+            ("N2", "cargo test -p nini-tui --test queue_routing"),
             ("N3", "cargo test -p nini-tui --test double_escape"),
             ("N4", "cargo test -p nini-tui --test reload_scope"),
         ):

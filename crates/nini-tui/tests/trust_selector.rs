@@ -13,7 +13,6 @@
 use nini_tui::commands::dispatch::dispatch;
 use nini_tui::commands::registry::CommandId;
 use nini_tui::state::AppState;
-use std::sync::Arc;
 
 fn state() -> AppState {
     AppState::new("test-model")

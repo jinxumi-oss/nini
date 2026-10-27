@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-10-23",
+  "updated": "2026-10-27",
   "authority": "docs/GOALS.md",
   "detail": "docs/plans/parity-with-pi.md",
   "gaps": [
@@ -55,12 +55,12 @@
       "severity": "P2",
       "title": "只有一条 pending 队列，Pi 分 steering 与 followUp 两队列",
       "pi_basis": "interactive-mode.js:3506 `const { steering, followUp } = this.clearAllQueues();`；interactive-mode.js:3505 `restoreQueuedMessagesToEditor(options)`",
-      "nini_state": "crates/nini-tui/src/state.rs:1333 `pub pending_next_turn_messages: Vec<String>` 是唯一队列；crates/nini-tui/src/runtime.rs:2276 单点 push，runtime.rs:2400 `mem::take` 整体取走，没有 steering/followUp 的分列",
-      "oracle": "none",
-      "status": "open",
+      "nini_state": "已修（2026-10-27）：nini 此前只有一条 `pending_next_turn_messages`，同时被**三个**用途争抢（steering 钩子 / 轮后自动投递 / Esc 退回编辑器），谁先谁拿 → 语义不确定。现在拆成两条：`RunState::pending_steer_messages` 与 `RunState::pending_followup_messages`（`crates/nini-tui/src/state.rs`），并按 Pi 路由：流式中 Enter → steer、**Alt+Enter** → followUp、压缩期同样两分（`runtime.rs` 的 `QueueKind` + `queue_while_running` + `submit_user_input_with_kind`）。四个消费点各归其位：steering 钩子取 steer 队列（`nini-cli` 的 `LiveConfigHooks::get_steering_messages`）、**新实现的** `get_followup_messages` 取 followUp 队列（此前 `nini-core` 早有这个钩子、agent 也在轮询它，但**没人实现** → nini 的 followUp 语义此前根本不存在）、轮后投递降级为竞态兜底、Esc 把**两个队列**一起退回编辑器且 **steering 在前**（Pi 的 `restoreQueuedMessagesToEditor`）。另：`!cmd` 的 bash 输出与分支摘要**不再进用户消息队列**（Pi 的 bash 结果走 `recordBashResult` 记进 session），改为当场写 session。",
+      "oracle": "crates/nini-tui/tests/queue_routing.rs 7 条（流式中 Enter→steer / Alt+Enter→followUp / 压缩期两分且不另起一轮 / Esc 两队列退回且 steering 在前、条数=2 / 两个 take 函数互不越界 / bash 输出不进队列但进 session / followUp 动作三个名字都认且 Alt+Enter 已绑）；crates/nini-cli/src/app.rs 的 `queue_hook_tests` 2 条（两个钩子各取各的队列，互不越界）；**审查后补的三条**：`crates/nini-tui/tests/auto_delivery_no_loss.rs`（自动投递**不能吞掉**它刚取出的消息 / 被拒时不许把运行态写成 Editing / 排队的 `!cmd` **不被重新解释**）；`crates/nini-tui/tests/keybinding_reload_effect.rs` 4 条（`/reload` 之后按键解析**真的变了** / 没 reload 时解析不变 / 报告的条数与实际生效一致 / **Pi 的扁平键位文件**也能用）",
+      "status": "fixed",
       "blocking_decision": null,
       "round": "W1-C",
-      "exit_criterion": "crates/nini-tui/src/state.rs 出现 steering 与 followUp 两个独立队列字段，且 crates/nini-tui/tests/ 下两个队列各有 ≥1 条 oracle 断言 ESC 还回时的顺序与 Pi 一致",
+      "exit_criterion": "cargo test -p nini-tui --test queue_routing 退出 0（7 条）；cargo test -p nini-tui --test auto_delivery_no_loss 退出 0（3 条）；cargo test -p nini-tui --test keybinding_reload_effect 退出 0（4 条）；cargo test -p nini-cli 退出 0；cargo test --workspace --all-targets 退出 0（既有测试除字段改名外零改动通过）；**五条变异注入实测记录**：路由改回「都进 steer」→ queue_routing 第 2 条红；take_steer_messages 改取 followUp → queue_routing 第 5 条红；agent_alive 分支改回「只读输入框」→ auto_delivery 第 1 条红；自动投递重新解释 `!cmd` → auto_delivery 第 3 条红；键位缓存改回两份 → keybinding_reload_effect 3 条红",
       "machine_checkable": true,
       "layer": null
     },

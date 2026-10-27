@@ -295,3 +295,53 @@ CLI 与测试共用**同一份实现**。改完再注入 → 三条全红。
 | `crates/nini-tui/src/keybindings_manager.rs` | 把运行时的读取器换回**旧的**解析器（方向相反的那个） | `the_runtime_reader_understands_the_documented_format` |
 
 注入已实测：断言变红（12 条仍绿），源码已逐字还原。
+
+
+---
+
+## 自动投递不能吞掉它刚取出的消息（v0.11 · A4 审查，2026-10-27）
+
+A4 的审查发现一条**老路被本轮放大**的缺陷：`submit_queued_turn` 从队列里
+`mem::take` 出**一条**消息、把它当 `explicit_text` 交给
+`submit_user_input_inner`，而那个函数的**第一件事**是检查 `agent_alive`，
+撞上就 `return`——`explicit_text` 被**无视**，消息**既不在队列里、也没被
+提交、也没有任何报错**：它消失了。
+
+触发路径真实存在：`Done` 把 `auto_turn_pending` 置真、运行循环随即取消息；
+而同一时刻用户按 Enter 会起**新一轮**（`agent_alive = true`），`select!` 在
+事件与按键之间随机挑一个。A4 把 followUp 接上真实生产者后，这条路被放大。
+
+判据是 `crates/nini-tui/tests/auto_delivery_no_loss.rs`（3 条）。
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-tui/tests/auto_delivery_no_loss.rs` | `agent_alive` 分支改回「只读输入框、无视 explicit_text」 | `a_message_taken_for_auto_delivery_is_not_lost` |
+| `crates/nini-tui/tests/auto_delivery_no_loss.rs` | `submit_queued_turn` 提前写 `mode = Editing` | `a_refused_auto_delivery_does_not_pretend_the_agent_is_idle` |
+| `crates/nini-tui/tests/auto_delivery_no_loss.rs` | 自动投递重新解释 `!cmd`（`is_user_submit` 恒为 true） | `a_queued_bang_command_is_not_executed_when_delivered` |
+
+三条注入都实测过，断言变红，源码已逐字还原。
+
+---
+
+## `/reload` 之后按键解析必须真的变（v0.11 · B3 修复，2026-10-27）
+
+A4 的审查还挖出**我自己上一轮引入**的缺陷：v0.11 (B3) 把用户键位覆盖做成
+「可重载的缓存」，却写成了**两份**——`resolve_with_user_overrides()` 读
+缓存 A，`reload_user_overrides()` 写缓存 B。于是 `/reload` 说的话
+（「N user override(s) in effect」）是**关于它并没有做到的事**，而键位从头
+到尾没有变过。
+
+判据是 `crates/nini-tui/tests/keybinding_reload_effect.rs`（4 条）。
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `crates/nini-tui/tests/keybinding_reload_effect.rs` | 键位缓存改回**两份**（reload 写 A、resolve 读 B） | 3 条红（`a_reload_changes_what_the_key_resolves_to` / `the_reported_count_matches_the_overrides_in_effect` / `without_a_reload_the_resolution_does_not_change`） |
+
+注入已实测：断言变红，源码已逐字还原。
+
+顺带修掉同一处的一个**假承诺**：`keybindings_manager.rs` 的模块文档当时
+写着「用户照抄一份 Pi 的 `keybindings.json` 到 nini 也不该一行都不生效」，
+而**Pi 的用户文件是扁平的**（`references/pi-0.85.1/src/ui/keybindings.ts`
+的 `toKeybindingsConfig`），nini 却只认 `{"bindings": {...}}` —— 照抄过来
+serde 直接解析失败，覆盖数为 0。现在**两种形状都收**（Pi 的扁平形状由
+`pis_flat_keybindings_file_works_too` 钉住）。

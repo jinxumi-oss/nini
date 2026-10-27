@@ -239,10 +239,13 @@ v2 的自我审查又证明了手工读会出错（§9）。v3 的 W0 已经有�
 
 依赖 A2。退出判据：`clearAllQueues` 的两个队列各有 1 条 oracle，ESC 还回时两者顺序与 Pi 一致。
 
-> **v0.11 顺延（2026-10-26）**：A4 **本轮没做**——它要拆的是队列管道
-> （steering 钩子 / 轮后自动投递 / Esc 退回三处消费点），而 v0.11 先关掉的是
-> 更靠前的 A2b 与 A7（Esc 的语义）。理由与下一轮的入口写在
-> [`plans/next-parity.md`](next-parity.md) §8。
+> **v0.11 补记（2026-10-27）**：A4 **已关**。nini 此前只有一条
+> `pending_next_turn_messages`，同时被三个用途争抢（steering 钩子 / 轮后自动投递 /
+> Esc 退回编辑器），谁先谁拿 → 语义不确定。现在拆成
+> `pending_steer_messages` 与 `pending_followup_messages`，按 Pi 路由
+> （流式中 Enter→steer、**Alt+Enter**→followUp、压缩期同样两分），
+> 四个消费点各归其位，Esc 把两个队列一起退回且 **steering 在前**。
+> 做法与变异注入记录见 [`plans/next-parity.md`](next-parity.md) §2 N2。
 
 ### W2 —— B 类命令语义与交互形态（P1–P2）
 

@@ -30,6 +30,17 @@ use serde::{Deserialize, Serialize};
 use crate::keys::{Key, KeyAction, KeyModifiers};
 
 /// Raw user-supplied override file format.
+///
+/// **两种形状都收**：
+///
+/// 1. nini 自己的：`{"bindings": {"<action>": "<key spec>"}}`；
+/// 2. **Pi 的**：`{"<action>": "<key spec>"}`（扁平）。
+///
+/// Pi 的用户文件就是扁平的（`references/pi-0.85.1/src/ui/keybindings.ts` 的
+/// `toKeybindingsConfig`：它把 `Object.entries(value)` 原样当作
+/// 动作名 → 键位规格）。此前 nini 只认第一种，于是**照抄一份 Pi 的
+/// `keybindings.json` 到 nini，一行也不生效**——而本模块的文档当时正好
+/// 宣称「不该一行都不生效」。一句与事实相反的话，比没有这句话更糟。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserKeybindings {
     /// Map of action names → key spec strings, e.g. `"Ctrl+L"`.
@@ -79,10 +90,13 @@ impl KeybindingsManager {
     }
 
     /// Load overrides from a single file.
+    ///
+    /// 两种文件形状都收：nini 的 `{"bindings": {...}}` 与 **Pi 的扁平**
+    /// `{"<action>": "<key spec>"}`（见 [`UserKeybindings`]）。
     pub fn load_file(&mut self, path: &Path) -> io::Result<()> {
         let raw = fs::read_to_string(path)?;
-        let user: UserKeybindings = serde_json::from_str(&raw)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let user =
+            parse_user_bindings(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         for (action_name, key_spec) in user.bindings {
             if let Some(action) = parse_action(&action_name) {
                 if let Some(key) = parse_key_spec(&key_spec) {
@@ -429,6 +443,46 @@ mod tests {
         let _ = state.model_state.model; // suppress unused warning
     }
 }
+/// Parse a keybindings file, accepting **both** shapes.
+///
+/// * nini's: `{"bindings": {"<action>": "<key spec>"}}`
+/// * Pi's (flat): `{"<action>": "<key spec>"}`
+///
+/// Pi 的用户文件是扁平的（`references/pi-0.85.1/src/ui/keybindings.ts`
+/// 的 `toKeybindingsConfig`），所以「照抄一份 Pi 的 keybindings.json」
+/// 必须是**能用**的——否则用户改了半天键位却毫无反应，而且没有任何提示。
+///
+/// 区分办法：顶层如果有 `bindings` 这个键且它的值是对象，就按 nini 的形状
+/// 解析；否则整个顶层对象就是「动作名 → 键位规格」。
+fn parse_user_bindings(raw: &str) -> Result<UserKeybindings, serde_json::Error> {
+    let value: serde_json::Value = serde_json::from_str(raw)?;
+    if let Some(obj) = value.as_object() {
+        if let Some(inner) = obj.get("bindings") {
+            if inner.is_object() {
+                return Ok(UserKeybindings {
+                    bindings: inner
+                        .as_object()
+                        .map(|m| {
+                            m.iter()
+                                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                });
+            }
+        }
+        // Pi 的扁平形状：整个对象就是「动作名 → 键位规格」。
+        return Ok(UserKeybindings {
+            bindings: obj
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect(),
+        });
+    }
+    // 不是对象：交给 serde 报错（形状不对要说实话）。
+    Ok(serde_json::from_value(value)?)
+}
+
 /// Read and parse the user keybindings.json file.
 /// Returns a vector of (KeyAction, Key) overrides.
 /// Silently returns an empty Vec if the file doesn't exist or is malformed.

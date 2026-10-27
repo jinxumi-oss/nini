@@ -1,3 +1,78 @@
+## v0.11.1 — 排队的话不许被吞掉，也不许被重新解释（2026-10-27）
+
+1676 tests, all green. A4（Pi 的 steering / followUp 两个队列）落地，
+而**审查比实现更值钱**：它在 A4 的改动里挖出了三条真缺陷，其中一条是
+**我自己上一轮引入**的。
+
+### 自动投递会把刚取出的消息吞掉
+
+`submit_queued_turn` 从队列里 `mem::take` 出**一条**消息，把它当
+`explicit_text` 交给 `submit_user_input_inner`——而那个函数的**第一件事**
+是检查 `agent_alive`，撞上就 `return`：`explicit_text` 被**无视**，
+消息**既不在队列里、也没被提交、也没有任何报错**。它消失了。
+
+触发路径真实存在：`Done` 把 `auto_turn_pending` 置真、运行循环随即取消息；
+同一时刻用户按 Enter 会起**新一轮**（`agent_alive = true`），`select!` 在
+事件与按键之间随机挑一个。
+
+A4 把 followUp 接上真实生产者后，这条老路被放大：Alt+Enter 的消息本来
+多半会被 agent 的 followUp 钩子取走，取不到才落到这里。
+
+现在：**有显式文本就用它**，撞上 `agent_alive` 时它回到**原来的队列**
+（且不重复上屏——它在排队时已经显示过了）。
+
+### 排队的 `!cmd` 会在投递时被真的执行
+
+自动投递走的是同一条 `submit_user_input_inner` 路径，于是用户排队的
+`!cargo test` 会在**投递时真的执行**，`/clear` 会被**真的派发**。
+从「排队一句话」变成「执行一条命令」。
+
+Pi 把排队的消息**原样**送出（`agent-session.ts#steer` / `#followUp` 的入参
+就是用户文本），从不重新解释。现在**只有用户亲手敲的提交**才解释 `!` 与 `/`。
+
+### `/reload` 改键位，改了个寂寞（我自己上一轮引入的）
+
+v0.11 (B3) 把用户键位覆盖做成「可重载的缓存」，却写成了**两份**：
+`resolve_with_user_overrides()` 读缓存 A，`reload_user_overrides()` 写
+缓存 B。于是键位**从头到尾没有变过**，而 `/reload` 说的话
+（「N user override(s) in effect」）是**关于它并没有做到的事**。
+
+现在只有一份缓存，读写都走它。
+
+顺带修掉同一处的一个**假承诺**：`keybindings_manager.rs` 的模块文档写着
+「用户照抄一份 Pi 的 `keybindings.json` 到 nini 也不该一行都不生效」——
+而 **Pi 的用户文件是扁平的**（`references/pi-0.85.1/src/ui/keybindings.ts`
+的 `toKeybindingsConfig`），nini 却只认 `{"bindings": {...}}`，照抄过来
+serde 直接解析失败。现在**两种形状都收**。
+
+### A4：Pi 的 steering / followUp 两个队列
+
+nini 此前只有一条 `pending_next_turn_messages`，同时被**三个**用途争抢
+（steering 钩子 / 轮后自动投递 / Esc 退回编辑器），谁先谁拿 → 语义不确定。
+
+现在拆成 `pending_steer_messages` 与 `pending_followup_messages`，按 Pi
+路由：流式中 Enter → steer、**Alt+Enter** → followUp、压缩期同样两分。
+四个消费点各归其位：steering 钩子取 steer；**新实现的**
+`get_followup_messages` 取 followUp（此前 `nini-core` 早有这个钩子、agent
+也在轮询它，但**没人实现** → nini 的 followUp 语义此前根本不存在）；
+轮后投递降级为竞态兜底；Esc 把**两个队列**一起退回编辑器且 **steering 在前**。
+
+另：`!cmd` 的 bash 输出与分支摘要**不再进用户消息队列**（Pi 的 bash 结果走
+`recordBashResult` 记进 session，不是用户指令），改为当场写 session。
+
+### 审查
+
+A4 由三个子代理接力完成：侦察（40 个读写点 + Pi 语义）→ 计划（**纠正了
+原 N2 的三处错误**：followUp 的消费者是钩子不是轮后投递、Esc 退回的顺序
+硬约束、工具输出不该进队列）→ 执行（拆成四块派发）→ **审查**。
+
+审查找出 2 条 Critical + 6 条 Warning + 6 条 Suggestion。**两条 Critical
+都是我自己核实后确认的真缺陷**（不是误报），已修并各有 oracle 与变异注入
+记录。判据：`crates/nini-tui/tests/queue_routing.rs`（7 条）、
+`auto_delivery_no_loss.rs`（3 条）、`keybinding_reload_effect.rs`（4 条）。
+
+---
+
 ## v0.11.0 — Esc 说谎了这么久（2026-10-27）
 
 1657 tests, all green. 一个计划（`docs/plans/next-parity.md`）、四条差距、

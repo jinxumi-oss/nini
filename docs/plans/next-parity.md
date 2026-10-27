@@ -8,7 +8,7 @@
 > 台账：`scripts/parity-gaps.json` 是差距的唯一数据源；本文件不手写计数
 
 > **执行结果（2026-10-27）**：N0、N1、**N5**、N3、N4 已完成（详见 §6）；
-> **N2（A4 双队列）顺延到下一轮**（理由见 §8）。
+> **N2（A4 双队列）在本轮做完**（oracle、变异注入实测与逐条依据见 §2 的 N2 与 §9）。
 > 执行过程中**发现并关掉了一条计划外的新差距 A7**（Esc 的中止信号没有消费者）——
 > 它比 A4 更靠前，也更严重：它意味着「Esc 中止了这一轮」是一句**没有兑现的话**。
 
@@ -88,27 +88,62 @@
 - 变异注入：把 `escape_action()` 的 `Compacting` 分支改回 `AbortTurn` → 第 1 条红；
   取消压缩后**不清** `is_compacting` → 第 3 条红。
 
-### N2 —— A4：steering 与 followUp 两个队列（本轮**顺延**，见 §8）
+### N2 —— A4：steering 与 followUp 两个队列（**本轮已做**）
 
-- Pi：Enter（流式中）→ **steer**（进当前轮）；Alt+Enter → **followUp**（下一轮）；
-  压缩期间同样两分。`clearQueue()` 一次清空两者。
-- nini 现状：**只有一条** `pending_next_turn_messages`，同时被三个用途争抢：
+- Pi：Enter（流式中）→ **steer**（进当前轮）；Alt+Enter → **followUp**（agent 本该停下时续跑）；
+  压缩期间同样两分（`interactive-mode.ts#queueCompactionMessage`）。
+  `agent-session.ts#clearQueue` 一次清空两者。
+- nini 此前：**只有一条** `pending_next_turn_messages`，同时被三个用途争抢：
   steering 钩子（`nini-cli` 的 `LiveConfigHooks::get_steering_messages`）、轮后自动投递、
   Esc 的 `return_queue_to_editor`。谁先谁拿 → **语义不确定**。
-- 改法（**下一轮**）：
+- 改法（**本轮已做**）：
   1. `RunState` 拆成 `pending_steer_messages` 与 `pending_followup_messages`；
   2. 路由按 Pi：流式中的 Enter → steer；**新增 `Alt+Enter` 键位**（Pi 的
      `app.message.followUp`，默认键 `alt+enter`）→ followUp；压缩期间同样两分；
-  3. 消费各归其位：steer 队列由 steering 钩子取（进当前轮），followUp 队列由轮后自动投递取；
-  4. `return_queue_to_editor`（Esc / Pi 的 `clearAllQueues`）**两个队列一起**退回编辑器。
-- oracle：`crates/nini-tui/tests/queue_routing.rs`
+  3. **消费各归其位**（逐条见下面的「消费点归位」）；
+  4. `return_queue_to_editor`（Esc / Pi 的 `interactive-mode.ts#clearAllQueues`）
+     **两个队列一起**退回编辑器，且 **steer 在前**。
+- **队列里只装「用户说的话」**（写点归属）：
+  - bash 输出（`!cmd` 的结果）**不进队列**——Pi 把它记进 session 的活消息表
+    （`agent-session.ts#recordBashResult`），**不是**当用户指令。进了队列的后果有三个：
+    Esc 会把它塞回输入框、steering 钩子会把它当用户的话插进当前这一轮、
+    而它本来根本不是用户说的。**session 内容不变**：那段输出仍然以一条 User 消息进 session。
+  - 分支摘要同理：它是**上下文**，不是用户指令，**不进队列**。
+- **Alt+Enter 的四处改动面**（少改一处，键位就在某个路径上不生效）：
+  | # | 位置 | 改什么 |
+  |---|---|---|
+  | 1 | `crates/nini-tui/src/keys.rs` | `KeyAction::FollowUp` 变体 + `default_keymap()` 里 Alt+Enter 的绑定 |
+  | 2 | `crates/nini-tui/src/keybindings_manager.rs` | `parse_action` 认 `FollowUp` / `followUp` / `app.message.followUp`（用户照抄 Pi 的键位文件要生效） |
+  | 3 | `crates/nini-tui/src/runtime.rs` 的 `handle_key` | 真实按键路径：Running 时入 followUp 队列，Editing 时与 Enter 同路 |
+  | 4 | `crates/nini-tui/src/runtime.rs` 的 `apply_action` | 无头派发点：同上（**两个派发点必须一致**） |
+- **消费点归位**（每条队列的每个消费者，写清楚在哪儿、什么时候取）：
+  | 队列 | 消费者 | 位置 | 何时取 |
+  |---|---|---|---|
+  | steer | **steering 钩子** | `nini-cli/src/app.rs` 的 `LiveConfigHooks::get_steering_messages` → `nini_tui::runtime::take_steer_messages` | 当前这一轮的**下一次模型调用前**（Pi：`agent-session.ts#steer`） |
+  | followUp | **agent 的 followUp 钩子**（不是轮后投递） | `LiveConfigHooks::get_followup_messages` → `take_followup_messages` | agent **本该停下时**，在**同一个 run 内**续跑（Pi：`agent-loop.ts#runAgentLoop`） |
+  | 两者 | 轮后自动投递 —— **竞态兜底，不是 followUp 的消费者** | `nini_tui::runtime::submit_queued_turn` | 只接住「回合**收尾之后**才排进来」的消息：先 steer 后 followUp，各取**一条**，作为新一轮发出去 |
+  | 两者 | Esc 退回 | `nini_tui::runtime::return_queue_to_editor`（Pi：`interactive-mode.ts#restoreQueuedMessagesToEditor` + `interactive-mode.ts#clearAllQueues`） | Esc：两个队列一起退回编辑器，**steer 在前**（Pi 拼的是 `[...steering, ...followUp]`） |
+  | 两者 | 压缩期入队 | `submit_user_input_inner` 的压缩分支（Pi：`interactive-mode.ts#queueCompactionMessage`） | 压缩期间提交：Enter → steer 桶，Alt+Enter → followUp 桶，**不另起一轮** |
+- oracle：`crates/nini-tui/tests/queue_routing.rs`（7 条）
   1. 流式中的 Enter → 进 **steer** 队列，不进 followUp；
   2. Alt+Enter → 进 **followUp** 队列，不进 steer；
-  3. 压缩期间的 Enter → steer；压缩期间的 Alt+Enter → followUp；
-  4. Esc（`return_queue_to_editor`）→ **两个队列**的消息都回到编辑器，且队列清空；
-  5. steering 钩子取走的是 **steer** 队列（`nini-cli` 侧），followUp 队列**不被**它取走。
-- 退出判据：`cargo test -p nini-tui --test queue_routing` 退出 0。
-- 变异注入：把路由改回「都进 steer」→ 第 2 条红；让 steering 钩子改取 followUp 队列 → 第 5 条红。
+  3. 压缩期间的 Enter → steer；压缩期间的 followUp 入口 → followUp；**都不另起一轮**；
+  4. Esc → **两个队列**的消息都回到编辑器，**steer 在前**、队列清空，**退回条数 = 2**；
+  5. `take_steer_messages` / `take_followup_messages` **互不越界**；
+  6. `!cmd` 的输出**不进队列**，但**进 session**（一条 User 消息）；
+  7. `app.message.followUp` / `FollowUp` → `KeyAction::FollowUp`；默认键 Alt+Enter → followUp，
+     而 Enter 仍然是 Submit（两个键不互相吞）。
+  另：`crates/nini-cli/src/app.rs` 的 `queue_hook_tests`（2 条）——**钩子各取各的队列**：
+  steering 钩子只取 steer（不碰 followUp 队列），followUp 钩子只取 followUp（不碰 steer 队列）。
+- 退出判据：`cargo test -p nini-tui --test queue_routing` 退出 0；
+  `cargo test -p nini-cli` 退出 0；**既有测试零改动通过**——本轮**没有改动任何既有测试**
+  （拆队列不改变任何既有语义，只有新行为被钉住），`cargo test --workspace --all-targets` 退出 0。
+- 变异注入（**实测**，每次注入后按字节还原、`git diff` 干净）：
+  1. **路由改回「两种 kind 都进 steer 队列」**（要改**两处**：`queue_while_running` 的
+     FollowUp 臂 + 压缩分支的 FollowUp 臂；只改一处就只钉住一半）→ **第 2 条红**
+     （followUp 队列空、steer 队列多一条）**且第 3 条红**（压缩期的 followUp 桶落进了 steer 桶）；
+  2. **`take_steer_messages` 改取 followUp 队列** → **第 5 条红**（取出来的是 "F1" 而不是 "S1"），
+     且 `nini-cli` 的 steering 钩子断言**同时红**。
 
 ### N5 —— A7：中止信号必须真的有消费者（执行本轮时发现，计划外）
 
@@ -268,7 +303,7 @@ $ python3 scripts/next-parity-check.py --json   # 机读
 | **N5**（计划外）A7：中止信号真的有消费者 | ✅ | `AbortSignal`（标志先落、通知后发）；驱动在 `select!` 里等它并 `agent.abort_handle().abort()` |
 | **N3** B5：double-ESC | ✅ | `crates/nini-tui/tests/double_escape.rs` 7 条；`"fork"` 明确说没实现 |
 | **N4** B3：`/reload` 的范围 | ✅ | `crates/nini-tui/tests/reload_scope.rs` 4 条；键位与 models.json 会重读；skills 说得更准 |
-| **N2** A4：双队列 | ❌ **顺延** | 队列管道要拆三个消费点；下一轮单独做（§8） |
+| **N2** A4：双队列 | ✅ | `crates/nini-tui/tests/queue_routing.rs` 7 条 + `crates/nini-cli/src/app.rs` 的 `queue_hook_tests` 2 条；路由按 Pi 分 steer / followUp（含压缩期两分、Esc 退回 steer 在前、bash 输出不进队列）；变异注入实测：路由改回「都进 steer」→ 第 2、3 条红；`take_steer_messages` 改取 followUp 队列 → 第 5 条红（`nini-cli` 的 steering 钩子断言同时红） |
 
 **顺带修掉的两处真缺陷**（都在 N4 触及的代码里）：
 

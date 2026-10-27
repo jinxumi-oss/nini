@@ -2514,7 +2514,13 @@ pub fn submit_queued_turn(
         // 其余的留在队列里：这一轮结束后会再投递（顺序不乱）
         g.run_state.pending_steer_messages = steer;
         g.run_state.pending_followup_messages = followup;
-        g.run_state.mode = RunMode::Editing;
+        // v0.11 (A4 审查发现)：**不要**在这里写 `mode = Editing`。
+        //
+        // 此前写在这里，是因为 `submit_user_input_inner` 会用
+        // `mode != Editing` 拒绝提交；而如果提交随后被拒（agent 还活着），
+        // `mode` 就停在 `Editing`——状态栏显示空闲，而 agent 还在跑。
+        // 现在那条检查只管**用户发起的**提交（见 `submit_user_input_inner`），
+        // 自动投递不受它约束，所以这里不需要（也不该）改运行态。
         first
     };
 
@@ -2535,7 +2541,7 @@ pub fn submit_queued_turn(
 /// Internal helper for `submit_user_input` — takes an additional
 /// `event_tx` arg that is passed to the agent sink so the runtime
 /// can wake on each event arrival.
-fn submit_user_input_inner(
+pub fn submit_user_input_inner(
     shared: &SharedState,
     agent_driver: &AgentDriver,
     done: Arc<Notify>,
@@ -2572,15 +2578,47 @@ fn submit_user_input_inner(
             // in both states, so queue it in both.
             //
             // `Quitting` is the one state where nothing may be queued.
+            //
+            // v0.11 (A4 审查发现)：**显式文本优先**。
+            //
+            // 此前这个分支只读 `g.input.submit()`（输入框），把
+            // `explicit_text` **无视**了。而自动投递（`submit_queued_turn`）
+            // 恰恰是**从队列里取出**一条消息、把它当 `explicit_text` 传进来
+            // 的——输入框此时是空的。于是那条消息**既不在队列里、也没被提交、
+            // 也没有任何报错**：它消失了。
+            //
+            // 触发路径真实存在：`Done` 把 `auto_turn_pending` 置真，运行
+            // 循环随即取消息；而同一时刻用户按 Enter 会起**新一轮**
+            // （`agent_alive = true`），`select!` 在事件与按键之间随机挑一个。
+            //
+            // 所以：**有显式文本就用它**，没有才读输入框；两者都没有就
+            // 什么都不做。
             if g.run_state.mode != RunMode::Quitting {
-                let steered = g.input.submit();
-                if !steered.trim().is_empty() {
-                    queue_while_running(&mut g, &steered, kind);
+                match explicit_text.clone() {
+                    Some(t) => {
+                        // 显式文本（自动投递）已经**在排队时上屏过**，
+                        // 所以回队列时**不能再上屏一次**——否则用户会看到
+                        // 自己那句话出现两遍。
+                        requeue_shown_message(&mut g, &t, kind);
+                    }
+                    None => {
+                        let steered = g.input.submit();
+                        if !steered.trim().is_empty() {
+                            queue_while_running(&mut g, &steered, kind);
+                        }
+                    }
                 }
             }
             return;
         }
-        if g.run_state.mode != RunMode::Editing {
+        // v0.11 (A4 审查发现)：`mode` 的检查只约束**用户发起的**提交。
+        //
+        // 自动投递（`explicit_text`）是内部路径：它不经过编辑器，不受
+        // 「用户此刻在不在编辑」影响。此前 `submit_queued_turn` 为了绕过
+        // 这条检查，**提前**把 `mode` 写成 `Editing`——而如果提交随后
+        // 被拒（agent 还活着），`mode` 就停在 `Editing`，于是状态栏显示
+        // 空闲、而 agent 还在跑。
+        if explicit_text.is_none() && g.run_state.mode != RunMode::Editing {
             return;
         }
         // v0.10.8 (A6)：**显式文本**的提交路径。
@@ -2605,181 +2643,197 @@ fn submit_user_input_inner(
         // `!cmd` executes locally and pushes a BashExecution transcript line.
         // `!!cmd` does the same but does NOT also inject the output into the
         // session context for the agent.
-        if let Some(rest) = text.strip_prefix('!') {
-            // v0.6: `!!cmd` is a privacy marker — runs the command and
-            // shows the output in the transcript, but does NOT inject
-            // it into the agent's session context. Useful for sensitive
-            // commands (`!!cat ~/.aws/credentials`) where the user
-            // wants the LLM to never see the bytes.
-            let (private, cmd) = match rest.strip_prefix('!') {
-                Some(c) => (true, c.trim()),
-                None => (false, rest.trim()),
-            };
-            if !cmd.is_empty() {
-                let mut cx = nini_tools::bash_runner::BashRunner::new();
-                let result = cx.run_blocking(cmd, &std::env::current_dir().unwrap_or_default());
-                use crate::state::TranscriptLine;
-                let id = format!("bash-{}", g.transcript_len());
-                // Strip ANSI codes + truncate so the transcript stays clean.
-                let cleaned_out = crate::ansi::strip_ansi(&result.output);
-                let (output, _truncated, _ob, _ol) =
-                    crate::ansi::truncate(&cleaned_out, 16 * 1024, 200);
-                // For timeout, append a clear suffix so users know output
-                // may be incomplete.
-                let output = if result.timed_out {
-                    format!("{output}\n…(timed out after {} ms)", result.duration_ms)
-                } else {
-                    output
+        //
+        // v0.11 (A4 审查发现)：**自动投递的文本不重新解释**。
+        //
+        // 排队的消息在 Pi 那里是**原样**送出的（`agent-session.ts#steer` /
+        // `#followUp` 的入参就是用户文本），Pi 从不把排队的消息重新当成命令
+        // 或斜杠命令。而 nini 的自动投递走的是同一条 `submit_user_input_inner`
+        // 路径——于是用户排队的 `!cargo test` 会在**投递时真的执行**，
+        // `/clear` 会被**真的派发**。从「排队一句话」变成「执行一条命令」，
+        // 这是审查指出的最危险的一条。
+        //
+        // 所以：**只有用户亲手敲的提交**才解释 `!` 与 `/`。
+        let is_user_submit = !is_auto_delivery;
+        if is_user_submit {
+            if let Some(rest) = text.strip_prefix('!') {
+                // v0.6: `!!cmd` is a privacy marker — runs the command and
+                // shows the output in the transcript, but does NOT inject
+                // it into the agent's session context. Useful for sensitive
+                // commands (`!!cat ~/.aws/credentials`) where the user
+                // wants the LLM to never see the bytes.
+                let (private, cmd) = match rest.strip_prefix('!') {
+                    Some(c) => (true, c.trim()),
+                    None => (false, rest.trim()),
                 };
-                // Show `!!cmd` in the transcript so the user can see what was
-                // actually executed (the privacy marker is for the agent,
-                // not for the user).
-                let cmd_display = if private {
-                    format!("!!{cmd}")
-                } else {
-                    cmd.to_string()
-                };
-                Arc::make_mut(&mut g.transcript_state)
-                    .lines
-                    .push(TranscriptLine::BashExecution {
-                        id,
-                        cmd: cmd_display,
-                        output: output.clone(),
-                        stderr: crate::ansi::strip_ansi(&result.stderr),
-                        ok: result.ok,
-                        exit_code: result.exit_code,
-                        duration_ms: result.duration_ms,
-                        collapsed: false,
-                    });
-                // v0.10 (R2f): record it too. The transcript line above is
-                // display only - without a session entry the command is gone
-                // on `/resume`, and `render_context_entries` rebuilds from
-                // the session rather than from what is on screen.
-                g.session_append_bash_execution(
-                    &cmd,
-                    &output,
-                    &crate::ansi::strip_ansi(&result.stderr),
-                    result.ok,
-                    result.exit_code,
-                    result.duration_ms,
-                );
-                g.session_flush();
-                g.push_divider();
-                // For `!cmd`, also inject the output as a user message so
-                // the agent sees it on the next turn. For `!!cmd` the
-                // privacy marker tells us NOT to do that — the LLM will
-                // never learn the contents of this command.
-                if !private {
-                    // v0.11 (A4/Q1)：bash 输出**不再**进用户消息队列。
-                    //
-                    // 队列里只该有**用户说的话**。Pi 把 bash 结果记进
-                    // session 的活消息表（`agent-session.ts#recordBashResult`），
-                    // **不是**当用户指令。排队的后果有三个：Esc 会把它塞回
-                    // 输入框、steering 钩子会把它当成用户的话插进当前这一轮、
-                    // 而它本来根本不是用户说的。
-                    //
-                    // **session 内容不变**：今天这段输出也是以一条 User 消息
-                    // 被冲刷进 session 的（`deliver_queued_user`），这里只是
-                    // 当场写、时机提前。
-                    g.deliver_queued_user(format!(
-                        "[bash $ {}]\n{}",
-                        cmd,
-                        if result.stderr.is_empty() {
-                            output.clone()
-                        } else {
-                            format!("{output}\n[stderr]\n{}", result.stderr)
-                        }
-                    ));
+                if !cmd.is_empty() {
+                    let mut cx = nini_tools::bash_runner::BashRunner::new();
+                    let result = cx.run_blocking(cmd, &std::env::current_dir().unwrap_or_default());
+                    use crate::state::TranscriptLine;
+                    let id = format!("bash-{}", g.transcript_len());
+                    // Strip ANSI codes + truncate so the transcript stays clean.
+                    let cleaned_out = crate::ansi::strip_ansi(&result.output);
+                    let (output, _truncated, _ob, _ol) =
+                        crate::ansi::truncate(&cleaned_out, 16 * 1024, 200);
+                    // For timeout, append a clear suffix so users know output
+                    // may be incomplete.
+                    let output = if result.timed_out {
+                        format!("{output}\n…(timed out after {} ms)", result.duration_ms)
+                    } else {
+                        output
+                    };
+                    // Show `!!cmd` in the transcript so the user can see what was
+                    // actually executed (the privacy marker is for the agent,
+                    // not for the user).
+                    let cmd_display = if private {
+                        format!("!!{cmd}")
+                    } else {
+                        cmd.to_string()
+                    };
+                    Arc::make_mut(&mut g.transcript_state).lines.push(
+                        TranscriptLine::BashExecution {
+                            id,
+                            cmd: cmd_display,
+                            output: output.clone(),
+                            stderr: crate::ansi::strip_ansi(&result.stderr),
+                            ok: result.ok,
+                            exit_code: result.exit_code,
+                            duration_ms: result.duration_ms,
+                            collapsed: false,
+                        },
+                    );
+                    // v0.10 (R2f): record it too. The transcript line above is
+                    // display only - without a session entry the command is gone
+                    // on `/resume`, and `render_context_entries` rebuilds from
+                    // the session rather than from what is on screen.
+                    g.session_append_bash_execution(
+                        &cmd,
+                        &output,
+                        &crate::ansi::strip_ansi(&result.stderr),
+                        result.ok,
+                        result.exit_code,
+                        result.duration_ms,
+                    );
+                    g.session_flush();
+                    g.push_divider();
+                    // For `!cmd`, also inject the output as a user message so
+                    // the agent sees it on the next turn. For `!!cmd` the
+                    // privacy marker tells us NOT to do that — the LLM will
+                    // never learn the contents of this command.
+                    if !private {
+                        // v0.11 (A4/Q1)：bash 输出**不再**进用户消息队列。
+                        //
+                        // 队列里只该有**用户说的话**。Pi 把 bash 结果记进
+                        // session 的活消息表（`agent-session.ts#recordBashResult`），
+                        // **不是**当用户指令。排队的后果有三个：Esc 会把它塞回
+                        // 输入框、steering 钩子会把它当成用户的话插进当前这一轮、
+                        // 而它本来根本不是用户说的。
+                        //
+                        // **session 内容不变**：今天这段输出也是以一条 User 消息
+                        // 被冲刷进 session 的（`deliver_queued_user`），这里只是
+                        // 当场写、时机提前。
+                        g.deliver_queued_user(format!(
+                            "[bash $ {}]\n{}",
+                            cmd,
+                            if result.stderr.is_empty() {
+                                output.clone()
+                            } else {
+                                format!("{output}\n[stderr]\n{}", result.stderr)
+                            }
+                        ));
+                    }
+                    // Brief status bar hint so users can confirm the privacy
+                    // marker actually fired.
+                    if private {
+                        g.run_state.status = "executed (private)".to_string();
+                    }
+                    return;
                 }
-                // Brief status bar hint so users can confirm the privacy
-                // marker actually fired.
-                if private {
-                    g.run_state.status = "executed (private)".to_string();
-                }
-                return;
             }
         }
 
         // ── Slash-command interception ──────────────────────────────────────
         // Mirror the same dispatch logic as apply_action (tests) so the live
         // TUI and tests share one code path.
-        if let Some((cmd_id, args)) = crate::commands::parse(&text) {
-            // Special-case: /model, /thinking, /session, /tree, /trust open
-            // interactive selectors when invoked WITHOUT arguments.
-            use crate::commands::CommandId;
-            match cmd_id {
-                CommandId::Model if args.trim().is_empty() => {
-                    g.push_assistant("(opening model selector...)".to_string());
-                    g.push_divider();
-                    g.run_state.status = "open_selector:model".to_string();
-                    let text_for_agent = text.clone();
-                    return drop_and_signal(text_for_agent, done);
-                }
-                CommandId::Thinking if args.trim().is_empty() => {
-                    g.push_assistant("(opening thinking selector...)".to_string());
-                    g.push_divider();
-                    g.run_state.status = "open_selector:thinking".to_string();
-                    let text_for_agent = text.clone();
-                    return drop_and_signal(text_for_agent, done);
-                }
-                CommandId::Session if args.trim().is_empty() => {
-                    g.push_assistant("(opening session selector...)".to_string());
-                    g.push_divider();
-                    g.run_state.status = "open_selector:session".to_string();
-                    let text_for_agent = text.clone();
-                    return drop_and_signal(text_for_agent, done);
-                }
-                CommandId::Tree if args.trim().is_empty() => {
-                    g.push_assistant("(opening tree selector...)".to_string());
-                    g.push_divider();
-                    g.run_state.status = "open_selector:tree".to_string();
-                    let text_for_agent = text.clone();
-                    return drop_and_signal(text_for_agent, done);
-                }
-                CommandId::Trust if args.trim().is_empty() => {
-                    g.push_assistant("(opening trust selector...)".to_string());
-                    g.push_divider();
-                    g.run_state.status = "open_selector:trust".to_string();
-                    let text_for_agent = text.clone();
-                    return drop_and_signal(text_for_agent, done);
-                }
-                CommandId::Settings if args.trim().is_empty() => {
-                    g.push_assistant("(opening settings selector...)".to_string());
-                    g.push_divider();
-                    g.run_state.status = "open_selector:settings".to_string();
-                    let text_for_agent = text.clone();
-                    return drop_and_signal(text_for_agent, done);
-                }
-                _ => {}
-            }
-            // SettingsManager is created per-call so concurrent turns don't share state.
-            let mut settings = crate::settings::SettingsManager::default();
-            // Dispatch locally; slash commands are synchronous — no Running mode.
-            let result = crate::commands::dispatch(&mut g, &mut settings, cmd_id, &args);
-            // Error from dispatch: show error in transcript and stop (do NOT fall
-            // through to agent). Matches pi's try/catch per-command pattern.
-            if let Some(err) = result.error {
-                g.push_assistant(format!("[command error] {err}"));
-                g.push_divider();
-                return;
-            }
-            match result.outcome {
-                crate::commands::CommandOutcome::Output(lines) => {
-                    for line in lines {
-                        g.push_assistant(line);
+        if is_user_submit {
+            if let Some((cmd_id, args)) = crate::commands::parse(&text) {
+                // Special-case: /model, /thinking, /session, /tree, /trust open
+                // interactive selectors when invoked WITHOUT arguments.
+                use crate::commands::CommandId;
+                match cmd_id {
+                    CommandId::Model if args.trim().is_empty() => {
+                        g.push_assistant("(opening model selector...)".to_string());
+                        g.push_divider();
+                        g.run_state.status = "open_selector:model".to_string();
+                        let text_for_agent = text.clone();
+                        return drop_and_signal(text_for_agent, done);
                     }
+                    CommandId::Thinking if args.trim().is_empty() => {
+                        g.push_assistant("(opening thinking selector...)".to_string());
+                        g.push_divider();
+                        g.run_state.status = "open_selector:thinking".to_string();
+                        let text_for_agent = text.clone();
+                        return drop_and_signal(text_for_agent, done);
+                    }
+                    CommandId::Session if args.trim().is_empty() => {
+                        g.push_assistant("(opening session selector...)".to_string());
+                        g.push_divider();
+                        g.run_state.status = "open_selector:session".to_string();
+                        let text_for_agent = text.clone();
+                        return drop_and_signal(text_for_agent, done);
+                    }
+                    CommandId::Tree if args.trim().is_empty() => {
+                        g.push_assistant("(opening tree selector...)".to_string());
+                        g.push_divider();
+                        g.run_state.status = "open_selector:tree".to_string();
+                        let text_for_agent = text.clone();
+                        return drop_and_signal(text_for_agent, done);
+                    }
+                    CommandId::Trust if args.trim().is_empty() => {
+                        g.push_assistant("(opening trust selector...)".to_string());
+                        g.push_divider();
+                        g.run_state.status = "open_selector:trust".to_string();
+                        let text_for_agent = text.clone();
+                        return drop_and_signal(text_for_agent, done);
+                    }
+                    CommandId::Settings if args.trim().is_empty() => {
+                        g.push_assistant("(opening settings selector...)".to_string());
+                        g.push_divider();
+                        g.run_state.status = "open_selector:settings".to_string();
+                        let text_for_agent = text.clone();
+                        return drop_and_signal(text_for_agent, done);
+                    }
+                    _ => {}
+                }
+                // SettingsManager is created per-call so concurrent turns don't share state.
+                let mut settings = crate::settings::SettingsManager::default();
+                // Dispatch locally; slash commands are synchronous — no Running mode.
+                let result = crate::commands::dispatch(&mut g, &mut settings, cmd_id, &args);
+                // Error from dispatch: show error in transcript and stop (do NOT fall
+                // through to agent). Matches pi's try/catch per-command pattern.
+                if let Some(err) = result.error {
+                    g.push_assistant(format!("[command error] {err}"));
                     g.push_divider();
+                    return;
                 }
-                crate::commands::CommandOutcome::Quit => {
-                    g.run_state.mode = RunMode::Quitting;
+                match result.outcome {
+                    crate::commands::CommandOutcome::Output(lines) => {
+                        for line in lines {
+                            g.push_assistant(line);
+                        }
+                        g.push_divider();
+                    }
+                    crate::commands::CommandOutcome::Quit => {
+                        g.run_state.mode = RunMode::Quitting;
+                    }
+                    crate::commands::CommandOutcome::PromptArgument { prompt, next: _ } => {
+                        // v1: prompt-argument flow not wired; show fallback.
+                        g.push_assistant(format!("(prompt: {prompt})"));
+                        g.push_divider();
+                    }
                 }
-                crate::commands::CommandOutcome::PromptArgument { prompt, next: _ } => {
-                    // v1: prompt-argument flow not wired; show fallback.
-                    g.push_assistant(format!("(prompt: {prompt})"));
-                    g.push_divider();
-                }
+                return; // Slash commands are fully handled — do NOT spawn agent.
             }
-            return; // Slash commands are fully handled — do NOT spawn agent.
         }
 
         // ── Regular user message: push to transcript and spawn agent ───────
@@ -3625,6 +3679,28 @@ fn _typecheck_handle_is_used() {
 /// The transcript line is the "pending" display. It is pushed as a user
 /// message so the agent sees it in context, exactly like the compaction
 /// queue does today.
+/// Put an already-shown message back into its queue, **without** showing
+/// it a second time.
+///
+/// v0.11 (A4 审查发现)：自动投递撞上「agent 还活着」时，消息必须回到
+/// 队列（否则它就消失了），但它在**排队时已经上屏过**——再上屏一次，
+/// 用户会看到自己那句话出现两遍。
+///
+/// 与 [`queue_while_running`] 的差别只有这一点：那个函数是「新消息进来，
+/// 顺便上屏」，这个是「消息回来，它已经在了」。
+pub fn requeue_shown_message(state: &mut AppState, text: &str, kind: QueueKind) {
+    match kind {
+        QueueKind::Steer => state
+            .run_state
+            .pending_steer_messages
+            .push(text.to_string()),
+        QueueKind::FollowUp => state
+            .run_state
+            .pending_followup_messages
+            .push(text.to_string()),
+    }
+}
+
 pub fn queue_while_running(state: &mut AppState, text: &str, kind: QueueKind) {
     let n = match kind {
         QueueKind::Steer => {
@@ -3751,6 +3827,22 @@ pub fn return_queue_to_editor(state: &mut AppState) -> usize {
     count
 }
 
+/// The one cache of user keybinding overrides.
+///
+/// v0.11 (B3 修复)：此前 `resolve_with_user_overrides()` 与
+/// `reload_user_overrides()` **各自**有一个 `static OVERRIDES`——两份
+/// 互不相干的缓存。于是 `/reload` 把自己读到的那份写进缓存 A，而按键解析
+/// 读的是缓存 B：**键位从头到尾没有变过**。而 `/reload` 的输出会说
+/// 「N user override(s) in effect」——一句关于它并没有做到的事的话。
+///
+/// 现在**只有一份缓存**，读写都走它。
+fn user_overrides_cache() -> &'static std::sync::RwLock<Vec<(KeyAction, Key)>> {
+    use std::sync::OnceLock;
+    static OVERRIDES: OnceLock<std::sync::RwLock<Vec<(KeyAction, Key)>>> = OnceLock::new();
+    OVERRIDES
+        .get_or_init(|| std::sync::RwLock::new(crate::keybindings_manager::load_user_overrides()))
+}
+
 /// Resolve a key against the built-in keymap plus any user overrides
 /// from `~/.nini/agent/keybindings.json`.
 ///
@@ -3759,15 +3851,11 @@ pub fn return_queue_to_editor(state: &mut AppState) -> usize {
 /// (`interactive-mode.ts#handleReloadCommand` → `keybindings.reload()`),
 /// and a cache that can never be refreshed makes that impossible.
 pub fn resolve_with_user_overrides(key: Key) -> KeyAction {
-    use crate::keybindings_manager::load_user_overrides;
-    use std::sync::OnceLock;
-
-    static OVERRIDES: OnceLock<std::sync::RwLock<Vec<(KeyAction, Key)>>> = OnceLock::new();
-    let overrides = OVERRIDES.get_or_init(|| std::sync::RwLock::new(load_user_overrides()));
-
     // User overrides take priority over built-ins.
-    let snapshot: Vec<(KeyAction, Key)> =
-        overrides.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let snapshot: Vec<(KeyAction, Key)> = user_overrides_cache()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     for (action, k) in snapshot {
         if k == key {
             return action;
@@ -3782,13 +3870,10 @@ pub fn resolve_with_user_overrides(key: Key) -> KeyAction {
 /// `/reload` re-reads the keybindings, and a `/reload` that cannot
 /// change them is a `/reload` that lies about its scope.
 pub fn reload_user_overrides() -> usize {
-    use crate::keybindings_manager::load_user_overrides;
-    use std::sync::OnceLock;
-
-    static OVERRIDES: OnceLock<std::sync::RwLock<Vec<(KeyAction, Key)>>> = OnceLock::new();
-    let overrides = OVERRIDES.get_or_init(|| std::sync::RwLock::new(Vec::new()));
-    let fresh = load_user_overrides();
-    let mut guard = overrides.write().unwrap_or_else(|e| e.into_inner());
+    let fresh = crate::keybindings_manager::load_user_overrides();
+    let mut guard = user_overrides_cache()
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     *guard = fresh.clone();
     fresh.len()
 }
