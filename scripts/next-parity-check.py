@@ -85,6 +85,13 @@ def main() -> int:
     )
     add("N0", "python3 scripts/pi-oracle-lock.py --verify-refs（drift=0）", ok, detail)
 
+    # C2 —— 台账的 nini_state 必须指向**真实存在**的代码符号。
+    # 行号会漂，符号不会：这一行判的是「文档没有在说一件不存在的事」。
+    ok, detail = script_ok(
+        ["python3", "scripts/ledger-anchors.py"], "ledger-anchors"
+    )
+    add("C2", "python3 scripts/ledger-anchors.py（每条 gap 的 nini_state 都能解析到代码符号）", ok, detail)
+
     if not args.quick:
         ok, detail = cargo_test("nini-conformance", "citations_resolve")
         add("N0", "cargo test -p nini-conformance --test citations_resolve", ok, detail)

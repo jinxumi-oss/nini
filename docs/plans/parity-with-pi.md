@@ -154,6 +154,15 @@ Pi 的三个工厂函数把边界写死：`createCodingTools()` = [read, bash, e
 **A5**（TUI 启动后不创建 session 文件，普通会话不落盘）、**A6**（中断后排队的消息
 不会被自动投递）、**D2**（无 TTY 时的横幅硬编码 `nini v0.4.0`）。详见台账。
 
+**D3**（Pi 的可点击链接 OSC 8）本轮**收尾**：它的退出判据有两个分支——① ratatui 支持
+hyperlink：**被上游证据排除**（ratatui 0.29 / 0.30.2、ratatui-core 0.1.2、
+crossterm 0.28 / 0.29 全部没有 hyperlink；且 cell 缓冲区会丢弃含控制字符的
+grapheme、差分重绘只重画变化的 cell，承载不了有状态的 OSC 8 转义对）；
+② README 的 known limitations 里明说「链接不可点击」：**已满足**
+（`README.md` / `README.zh-CN.md` 各一条，oracle:
+`crates/nini-tui/tests/hyperlink_limitation_documented.rs`）。一个分支走不通、
+一个已达成，故关闭。
+
 ---
 
 ## 3. 排序规则（与 GOALS 合并后的唯一版本）
@@ -278,6 +287,11 @@ B7 需 owner 决策（R9：体积 +2–5 MB vs nini 的单文件卖点）。
 ### W5 —— C2/C3 治理
 
 C2：任何计划文档的状态字段必须能在代码里指出对应符号。
+**已闭合（2026-10-28）**：台账的 `nini_state` 一律只写**符号**（行号会漂，符号不会），
+并由两处机器检查盯住——`scripts/ledger-anchors.py`（Python）与
+`crates/nini-core/tests/ledger_anchors.rs`（Rust 侧的第二实现）。判据：每条 gap 的
+`nini_state` 至少有一个能解析的锚点（文件存在 + 符号在该文件里 grep 得到），
+且两个实现都必须抓住「故意做坏」的样例。
 C3：provider/成本层是排期问题，记录在案，不在代码层解决。
 
 ---
@@ -300,6 +314,7 @@ C3：provider/成本层是排期问题，记录在案，不在代码层解决。
 |---|---|
 | 差距总数 / 按类 / 按状态 / 按批次 | `python3 scripts/parity-gap.py --json` |
 | 机器可判定判据占比 | 同上（`machine_checkable` / `not_machine_checkable`） |
+| 台账锚点（每条 gap 的 `nini_state` 是否指向真实存在的符号） | `python3 scripts/ledger-anchors.py`（Rust 侧同一套规则的第二实现：`cargo test -p nini-core --test ledger_anchors`） |
 | 行号引用总数与分布 | `python3 scripts/pi-line-refs.py --json` |
 | 快照一致性 + 行号解析 | `python3 scripts/pi-oracle-lock.py --check --verify-refs` |
 | 裸奔不变量数 | `python3 scripts/invariants.py --json` |
@@ -359,7 +374,7 @@ C3：provider/成本层是排期问题，记录在案，不在代码层解决。
 | 2 | 参数提示逐条一致，ARG 差异 0 处 | 6 处差异 |
 | 3 | A1 会损坏 session JSONL | `O_APPEND` 单行写入原子，真实后果是**顺序交错 + TokenStats 混算 + 事件乱序** |
 | 4 | Pi 有 51 个 provider、nini 有 5 个 | Pi 0.84.2 **40 个**、nini **9 个实现**；v3 已按实测写 |
-| 5 | nini 侧 `cmd_export` 在 291 行、`cmd_clone` 在 727 行 | 实为 **300 / 805**；文档行号会漂，必须能被机器查出 |
+| 5 | nini 侧 `cmd_export` 在 291 行、`cmd_clone` 在 727 行 | 实为 **300 / 863**（而且还会继续漂）；**C2 已闭合**：台账改为只写**符号**（`cmd_export` / `cmd_clone`），行号由 `scripts/ledger-anchors.py` 与 `crates/nini-core/tests/ledger_anchors.rs` 核对 |
 
 ### 9.2 仍未闭合（实现时必须验证，不得假设）
 

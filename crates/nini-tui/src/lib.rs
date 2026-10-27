@@ -43,8 +43,13 @@ pub mod settings;
 pub mod signals;
 pub mod state;
 pub mod terminal_guard;
+/// D1: the terminal title (Pi's `updateTerminalTitle`).
+pub mod terminal_title;
 pub mod theme;
 pub mod theme_watcher;
+/// D1: startup diagnostics — the tmux keyboard-setup check and the
+/// shrunk resource-diagnostics formatter (Pi's `formatDiagnostics`).
+pub mod tmux_setup;
 pub mod width;
 
 pub use commands::{

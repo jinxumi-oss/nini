@@ -1,3 +1,71 @@
+## v0.11.2 — 台账开始说真话（C2）、D1 的判定书、D3 的收尾（2026-10-28）
+
+1694 tests, all green. 三块治理类的工作，外加一条**审查发现我自己上一轮引入的**缺陷。
+
+### C2：台账的 `nini_state` 从此必须指向真实存在的代码符号
+
+差距 C2 说的是「计划文档与代码失真：文档里的状态字段不能指向代码符号」。实测：
+**30 条差距里 18 条的 `nini_state` 是纯散文**（没有 `file.rs:line`，也没有符号名），
+**4 条的行号已经漂了**（B1 的 `cmd_clone` 805→863、B4 的 bash passthrough 2207→2655、
+C2 自称的 805、以及 C3 那两个 git 计数）。
+
+而**没有任何一条自动检查能发现这件事**：`--check-plan` 只比 gap id 与计数（其中三项
+因计划文档结构变化而空转），S5/S7 只看字段非空，S14（F2/F3）只看 `oracle` 字段。
+
+现在：
+
+* **18 条补上锚点**（仓库路径 + 真实存在的符号名），**4 条漂移**改成符号或可复算口径
+  ——**行号会漂，符号不会**，凡是能用符号表达的，行号一律从台账里删掉；
+* **新** `scripts/ledger-anchors.py`：逐条检查路径存在、符号存在、每条 gap 至少有一个
+  可解析锚点（行号漂移只报 warning——行号本来就会漂）；
+* **新** `crates/nini-core/tests/ledger_anchors.rs`：**同一规则的 Rust 侧第二实现**，
+  两个实现互为对照（一个瞎了另一个还能抓住）。
+
+### D1：六个终端/诊断小项，逐条判定
+
+Pi 有、nini 无的 6 项，判定书在 `docs/plans/d1-decision.md`：
+
+* **做 3 项**：`updateTerminalTitle`（终端标题）、`checkTmuxKeyboardSetup`（tmux 的
+  extended-keys 检查——nini 的 A4 把 **Alt+Enter** 绑成 followUp，正是「modified Enter」，
+  tmux 下没开 extended-keys 就真的不灵）、`formatDiagnostics` 缩小版（只覆盖
+  skills/prompts，nini 无扩展运行时）；
+* **明确不做 3 项**：右键粘贴（**Pi 此项是 win32-only**，nini 只发 Linux/macOS）、
+  缓存未命中提示（nini 不发缓存标记，没有 miss 可报）、包更新检查（与「no updater /
+  no phone-home」的定位冲突，且要联网）。
+
+**符号已就位，但尚未接线进运行时**——所以 D1 **保持 `open`**，台账里写明剩下那一步。
+
+### D3：OSC 8 可点击链接，收尾
+
+判据的两个分支各走了一遍：① ratatui 支持 hyperlink —— **对 nini 当前锁定的 ratatui 0.29 /
+crossterm 0.28 排除**（`src/` 下 grep `hyperlink` 0 命中；`Buffer::set_stringn` 丢弃含控制
+字符的 grapheme、`Terminal::flush` 只重绘变化的 cell，承载不了有状态的 OSC 8 转义对）。
+**注意**：上游 main 已有 Hyperlink 类型，所以本条**不**声称「上游不支持」，只声称「本仓库
+锁定的版本不支持」——一条不可复算的证据，比没有证据更糟。② README 明说「链接不可点击」
+——**早已满足**。
+
+新 oracle 把这句话钉住（中英文各一条，断言的是**整句**，段落标题被改名即失败）。
+
+### 审查
+
+三个子代理接力：侦察（两份：C2/D1 的台账体检、B8/D3 的能力调研）→ 执行（三块并行，
+文件互不重叠）→ **审查**。
+
+审查找出 **2 条 Critical + 8 条 Warning**，我逐条核实后确认成立并修完：
+
+* **`cwd_basename("/")` 复刻错了 Node 的语义**——Node 的 `path.basename('/')` 是**空串**
+  （node 实测），而实现返回 `"/"`，**而且 oracle 把这个错误钉死了**。一个把错误写成断言的
+  测试比没有测试更糟：它让错误看起来像决定。
+* **C2 自己的锚点是「裸标识符」弱锚点**——把它改名后台禁照样绿。已把它改成反引号形式
+  （强锚点），实测改名后两侧都判死。
+* `run_with_timeout` 的**管道死锁**（子进程写满 64 KiB 管道就卡住，父进程却在它退出后才读）、
+  终端标题的 **OSC 2 未清洗控制字符**（目录名里的 ESC/BEL 能提前结束序列）、
+  一条**恒真断言**（`assert!(sink as usize != 0)` 对函数指针永远成立）、
+  本轮新增 Pi 引用差 1–2 行、B7/D1 的行号没按本轮自己的规则删掉、
+  `exit_criterion` 被改写成「执行日志」（判据一旦可以按「我做了什么」重写，它就不再是判据）。
+
+---
+
 ## v0.11.2 — 一行超长的 file:// 路径把框撑破了（2026-10-27）
 
 1670 tests, all green. 一条真实的 agent 会话里，transcript 出现 JS 堆栈，

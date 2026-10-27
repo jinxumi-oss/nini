@@ -313,3 +313,11 @@ $ python3 scripts/next-parity-check.py --json   # 机读
    于是 agent 目录在别处时，键位读的是**另一个**目录里的那一份。
 
 看板：`python3 scripts/next-parity-check.py`。
+
+**台账收尾一条（不属于 v0.11 的工作项）**：**D3**（Pi 的可点击链接 OSC 8）在本轮**关闭**。
+它的退出判据有两个分支：① ratatui 支持 hyperlink——**被上游证据排除**（ratatui 0.29 / 0.30.2、
+ratatui-core 0.1.2、crossterm 0.28 / 0.29 全部 0 命中；且 ratatui 的 cell 缓冲区会丢弃
+含控制字符的 grapheme、差分重绘只重画变化的 cell，承载不了有状态的 OSC 8 转义对）；
+② README 的 known limitations 里明说「链接不可点击」——**已满足**（`README.md` 与
+`README.zh-CN.md` 各一条）。oracle：`crates/nini-tui/tests/hyperlink_limitation_documented.rs`
+（4 条；措辞改掉即红，实测过）。
