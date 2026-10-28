@@ -345,3 +345,28 @@ A4 的审查还挖出**我自己上一轮引入**的缺陷：v0.11 (B3) 把用�
 的 `toKeybindingsConfig`），nini 却只认 `{"bindings": {...}}` —— 照抄过来
 serde 直接解析失败，覆盖数为 0。现在**两种形状都收**（Pi 的扁平形状由
 `pis_flat_keybindings_file_works_too` 钉住）。
+
+---
+
+## v0.11.3 那三条「改脚本/改 CI」的修复此前是裸奔的（2026-10-28 · v0.12 补账）
+
+`scripts/invariants.py` 的测试语料只有 Rust（`crates/*/tests/*.rs` + src 里的
+`#[cfg(test)]` 模块），所以 v0.11.3 那三条**改 shell 脚本与 CI 配置**的修复
+被判成 NONE——裸奔数从 1 涨到 4，门禁因此变红。
+
+它们的形状是确定的，可以被断言。判据是
+`crates/nini-core/tests/tooling_invariants.rs`（7 条）。
+
+| sha | 声明于 | 注入的 bug | 变红的断言 |
+|---|---|---|---|
+| `5195b587` | `tooling_invariants` | 把提示改回「run the bash tool then say TOOL_RESULT_SEEN」（即用户自己输入的那行就满足 `wait_for`） | `the_recording_prompt_never_contains_the_awaited_phrase` 变红（其余 6 条仍绿） |
+| `dcd75b80` | `tooling_invariants` | 去掉 `PI_OFFLINE=1`（Pi 于是会在冷 runner 上下载 fd/ripgrep 并吃掉第一条提示） | `the_recording_waits_for_pi_startup_before_pasting` 变红（其余 6 条仍绿） |
+| `dcd75b80` | `tooling_invariants` | 把「等 `Startup is still in progress` 消失」那一段挪到贴第一条提示**之后** | 同上变红（这一条是上一条之外的**第二个**触发面：即使 PI_OFFLINE 在，顺序错了照样被吃掉） |
+| `bca7e070` | `tooling_invariants` | 让近似版又写回快照路径（`out_path = SNAPSHOT_DIR / "tool-contracts.json"`） | `the_snapshot_tool_contracts_have_exactly_one_producer` 变红（其余 6 条仍绿） |
+| `bca7e070` | `tooling_invariants` | CI 改装别的 Pi 版本（`pi-coding-agent@0.84.2`） | `ci_installs_the_frozen_pi_and_passes_its_root` 与 `ci_installs_the_version_the_target_freezes` 两条同时变红（其余 5 条仍绿） |
+
+五条注入都实测过：断言变红，源码已逐字还原（`git diff` 为空）。
+
+**为什么断言是「形状」而不是「行为」**：这三条修的是脚本与工作流，它们没有
+Rust 的调用入口；能守住它们的只有「脚本必须长成什么样」。这比词法启发式
+（`invariants.py` 的 NONE 判定）**更强**：注入的正是当初那个缺陷本身。

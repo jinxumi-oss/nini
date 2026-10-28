@@ -18,8 +18,34 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Notify;
 
-/// Maximum tool-iteration count before forcing a stop (matches spec default).
-pub const MAX_TOOL_ITERATIONS: usize = 50;
+/// Turn cap for one `Agent::run`. `0` means **no cap**.
+///
+/// v0.11.4 (P0/Pi parity): this used to be 50. Pi 0.85.1 has **no** turn
+/// limit at all — `references/pi-0.85.1/src/loop/agent-loop.ts` runs one
+/// `loop` with no counter, and nothing under `references/pi-0.85.1/src/`
+/// counts turns (`maxIterations` / `max_turns` / `turnCount`: zero hits).
+///
+/// The 50-turn ceiling was therefore a ceiling Pi does not have, and it
+/// bit in the worst possible place: a 60-step task died with `too many
+/// tool iterations (50)` **before delivering anything**, while Pi
+/// finished the same task. A stop that lands between "still working" and
+/// "done" is not a safety net, it is a truncation.
+///
+/// The default is now "no cap" (Pi semantics). A user who wants a
+/// ceiling sets `max_iterations` — `--max-iterations N` or
+/// `maxIterations` in `settings.json`.
+pub const MAX_TOOL_ITERATIONS: usize = 0;
+
+/// Backstop for an uncapped run: turns after which the agent gives up
+/// even when the user asked for no cap.
+///
+/// nini-only; Pi has no equivalent — there, a model that keeps calling
+/// the same tool burns tokens until the user presses Esc. Without *some*
+/// bound, "no cap" would mean "no bound, ever", which is not what a
+/// default should promise. 1000 turns is two orders of magnitude above a
+/// real long task (a 60-step refactor is 60), so it is only reached when
+/// something is genuinely stuck.
+pub const RUNAWAY_TURN_BACKSTOP: usize = 1000;
 
 /// Agent event emitted to consumers (UI, logs, etc.).
 /// Phase indicator surfaced to the UI / extension host. Mirrors the five
@@ -158,7 +184,13 @@ pub enum AgentError {
     Tool { name: String, message: String },
     #[error("aborted")]
     Aborted,
-    #[error("too many tool iterations ({0})")]
+    /// The turn cap was reached. The run stops *here* — the history is
+    /// kept, so the user can continue with another message.
+    ///
+    /// The wording matters: the old text ("too many tool iterations")
+    /// said what the counter did and nothing about what the user can do
+    /// next, which is why a truncated task looked like a crash.
+    #[error("iteration limit reached ({0}); this turn is unfinished — the history is kept, so send another message to continue")]
     TooManyIterations(usize),
     #[error("invalid state: {0}")]
     InvalidState(String),
@@ -395,7 +427,18 @@ impl Default for RetrySettings {
 pub const DEFAULT_MAX_PARALLEL_TOOLS: usize = 8;
 
 /// v0.10 (R1): default bound on follow-up revivals of the turn loop.
-pub const DEFAULT_MAX_FOLLOW_UP_ROUNDS: usize = 16;
+///
+/// v0.11.4 (P0/Pi parity): the default is now **0 = no bound**. Pi's
+/// outer loop (`references/pi-0.85.1/src/loop/agent-loop.ts:264`) is
+/// `while (true)` and revives as long as the follow-up queue is
+/// non-empty — a 16-revival ceiling is another stop Pi does not have,
+/// and it lands in the same place this one did: a task that was still
+/// making progress when the counter ran out.
+///
+/// The runaway is still bounded: `RUNAWAY_TURN_BACKSTOP` counts *every*
+/// turn, revivals included, so a hook that always produces work is
+/// stopped rather than followed forever.
+pub const DEFAULT_MAX_FOLLOW_UP_ROUNDS: usize = 0;
 
 /// What a caller-supplied compaction did.
 ///
@@ -452,6 +495,11 @@ pub struct RunConfig {
     pub system: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// Turn cap for one run. `0` = no cap (the default, Pi semantics).
+    ///
+    /// v0.11.4: the default used to be 50 — a hard ceiling Pi 0.85.1
+    /// does not have, which truncated long tasks before they delivered.
+    /// See `MAX_TOOL_ITERATIONS`.
     pub max_iterations: usize,
     pub tool_context: ToolContext,
     /// Compaction settings (context window + reserve).
@@ -1066,7 +1114,15 @@ impl Agent {
                     // `max_iterations` bounds turns, not revivals. Without a
                     // separate bound, a follow-up hook that always yields work
                     // would keep the agent running indefinitely.
-                    if followup.is_empty() || follow_up_rounds >= config.max_follow_up_rounds {
+                    //
+                    // v0.11.4: `0` means "no bound" (Pi semantics — Pi's
+                    // outer loop is `while (true)`). A runaway is still
+                    // bounded by `RUNAWAY_TURN_BACKSTOP`, which counts every
+                    // turn, revivals included.
+                    if followup.is_empty()
+                        || (config.max_follow_up_rounds > 0
+                            && follow_up_rounds >= config.max_follow_up_rounds)
+                    {
                         self.set_phase(AgentPhase::Idle);
                         yield AgentEvent::PhaseChanged(AgentPhase::Idle);
                         return;
@@ -1102,8 +1158,21 @@ impl Agent {
                 // Hard safety net: ALWAYS preserved, regardless of
                 // whether the hook fires. A panicking hook that
                 // ignores max_iterations is still bounded by it.
-                if iteration > config.max_iterations {
-                    Err(AgentError::TooManyIterations(config.max_iterations))?;
+                //
+                // v0.11.4 (P0/Pi parity): `max_iterations == 0` means
+                // "no cap". The old check was `iteration >
+                // config.max_iterations` against a default of 50, and
+                // 50 turns of a real task is not "a lot" — it is
+                // "halfway". The cap that applies now is the one the
+                // user asked for, or the runaway backstop when they
+                // asked for none.
+                let turn_cap = if config.max_iterations > 0 {
+                    config.max_iterations
+                } else {
+                    RUNAWAY_TURN_BACKSTOP
+                };
+                if iteration > turn_cap {
+                    Err(AgentError::TooManyIterations(turn_cap))?;
                 }
 
                 // v0.10 (fix): the threshold check that A3 removed, restored
@@ -3973,7 +4042,15 @@ mod context_hook_tests {
         Agent::with_hooks(
             provider,
             ToolRegistry::new(),
-            RunConfig::new("test-model"),
+            // v0.11.4: the cap is no longer the default (it is 0 = no cap
+            // now, matching Pi 0.85.1), so a test that means to exercise
+            // the cap has to ask for it. Left unset, these tests would run
+            // to the runaway backstop (1000 turns) instead — same outcome,
+            // 20× the work, and no longer testing what they claim.
+            RunConfig {
+                max_iterations: 50,
+                ..RunConfig::new("test-model")
+            },
             hooks,
         )
     }

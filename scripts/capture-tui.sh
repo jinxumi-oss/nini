@@ -182,6 +182,9 @@ pathlib.Path('$HOME/.pi/agent/models.json').write_text(json.dumps({'providers':{
 else
   # nini 走 openai-compat，同一个上游；baseUrl 由 OPENAI_BASE_URL 指定
   [[ -x "$NINI_BIN" ]] || { echo "找不到 $NINI_BIN（先 cargo build）"; exit 1; }
+  # 必须是**绝对路径**：tmux 会话的工作目录不是仓库，相对路径在那边
+  # 解析不到二进制，于是录到一个空屏（我踩过）。
+  NINI_BIN="$(cd "$(dirname "$NINI_BIN")" && pwd)/$(basename "$NINI_BIN")"
   CMD=("$NINI_BIN" --provider openai-compat --model mock-tui-model)
   LAUNCH_ENV=(env NINI_AGENT_DIR="$HOME/.pi/agent" "OPENAI_BASE_URL=http://$LISTEN/v1" OPENAI_API_KEY=mock)
 fi
@@ -236,6 +239,22 @@ while IFS=$'\t' read -r id send expect literal; do
   echo "  录制 $id"
 done < "$OUT.steps"
 
+# 录屏必须证明「模型真的被叫过」。
+#
+# 我踩到过：一次运行里 mock 收到 **0 个请求**，屏幕上却出现了上一轮
+# 留下的 “TASK DELIVERED”——录屏看上去是「交付了」，实际上什么都没发生。
+# 屏幕只能说明「最后长什么样」，mock 的日志才能说明「它走到第几步」。
+# 没有请求的录屏是坏录屏，不是证据。
+if [[ -f "$OUT.mock.log" ]]; then
+  reqs="$(grep -c 'request #[0-9]* START' "$OUT.mock.log" || true)"
+  if [[ "$reqs" -eq 0 ]]; then
+    echo "!! mock 一次请求都没收到——这次录屏是空的，不算证据" >&2
+    tail -5 "$OUT.mock.log" >&2
+    exit 1
+  fi
+  echo "  mock 收到 $reqs 次请求"
+fi
+
 # 收集 /export 的产物。两侧都忽略 /export 的路径参数（nini 见
 # dispatch.rs `cmd_export(_args)`，Pi 侧导出到 cwd），所以只能从目录捞。
 mkdir -p "$OUT/exports"
@@ -243,6 +262,9 @@ for f in "$HOME"/*.html "$HOME"/.nini/agent/exports/*.html "$HOME"/.pi/agent/exp
   [[ -e "$f" ]] || continue
   cp "$f" "$OUT/exports/" 2>/dev/null || true
 done
-rm -f "$OUT.steps" "$OUT.mock.log"
+# KEEP_MOCK_LOG=1 时保留 mock provider 的日志——它是「模型到底被叫了几次」的
+# 唯一证据。复杂任务这类场景，屏幕只能告诉你「最后长什么样」，日志才能告诉你
+# 「它走到第几步才停」。
+[[ "${KEEP_MOCK_LOG:-0}" == "1" ]] || rm -f "$OUT.steps" "$OUT.mock.log"
 
 echo "完成 → $OUT"

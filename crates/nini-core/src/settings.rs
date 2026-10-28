@@ -47,6 +47,15 @@ pub struct Settings {
     /// `getFullscreenScrollbar()` (`settings-manager.ts:1151-1154`).
     #[serde(default, alias = "fullscreenScrollbar")]
     pub fullscreen_scrollbar: Option<String>,
+    /// Turn cap for one agent run. `0` / absent = no cap.
+    ///
+    /// v0.11.4 (P0/Pi parity): nini used to stop at 50 turns, a ceiling
+    /// Pi 0.85.1 does not have, and it truncated long tasks before they
+    /// delivered. The default is now "no cap"; this field is how a user
+    /// puts a ceiling back. `maxIterations` is accepted as an alias
+    /// because that is the camelCase spelling Pi's own settings use.
+    #[serde(default, alias = "maxIterations")]
+    pub max_iterations: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -104,6 +113,9 @@ pub fn load_settings(cwd: &Path) -> Settings {
     }
     if project_s.theme.is_some() {
         user_s.theme = project_s.theme;
+    }
+    if project_s.max_iterations.is_some() {
+        user_s.max_iterations = project_s.max_iterations;
     }
     user_s
 }

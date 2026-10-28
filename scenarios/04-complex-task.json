@@ -1,0 +1,19 @@
+{
+  "name": "04-complex-task",
+  "why": "复杂任务必须走完：60 步工具调用。Pi 0.85.1 的 agent loop 没有轮数上限；nini 曾经硬停在第 50 轮（too many tool iterations），任务没交付。",
+  "mock_script": "fixtures/tui/60-step-task.json",
+  "steps": [
+    {
+      "id": "01-task",
+      "send": "do the 60-step task and deliver",
+      "expect": "",
+      "literal": "1"
+    },
+    {
+      "id": "02-delivered",
+      "send": "",
+      "expect": "TASK DELIVERED",
+      "literal": "0"
+    }
+  ]
+}

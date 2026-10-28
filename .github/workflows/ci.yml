@@ -134,6 +134,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
       - uses: actions/setup-node@v4
         with:
           # Pi 0.85.1 的 package.json 要求 node >= 22.19.0（它的工具层用了
@@ -212,3 +220,13 @@ jobs:
           git diff --exit-code -- references/pi-0.85.1/tool-contracts.json \
                              references/pi-0.85.1/truncate-oracle.json \
             || (echo "Pi 侧黄金值与快照不一致——重新生成过？" && exit 1)
+      - name: A long task must reach its delivery (nini vs Pi 0.85.1)
+        # 这条门禁钉住的是「长任务不许在半路被截断」。
+        # nini 曾经给一次 run 设了 50 轮硬上限：60 步的任务会死在
+        # `too many tool iterations (50)` 上，transcript 里没有答案。
+        # Pi 0.85.1 没有这个上限——同一个剧本它会做完。
+        # 两边都跑，比的是**请求次数**：屏幕只能说明末态，mock 的日志
+        # 才能说明「模型到底被叫了几次」。
+        run: |
+          cargo build --release --locked
+          bash scripts/e2e-long-task.sh

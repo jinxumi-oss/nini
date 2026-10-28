@@ -186,6 +186,14 @@ struct Args {
     #[arg(long)]
     verbose: bool,
 
+    /// Turn cap for one agent run. 0 = no cap (default, Pi semantics).
+    ///
+    /// v0.11.4: nini used to stop at 50 turns and truncate long tasks
+    /// before they delivered. The default is now uncapped; this flag is
+    /// how a ceiling is put back.
+    #[arg(long, value_name = "N")]
+    max_iterations: Option<usize>,
+
     /// Not supported. nini renders the export from the TUI's transcript,
     /// which takes no path; `/export` always writes to the exports
     /// directory (see `--help` output of `/export`).
@@ -303,6 +311,7 @@ async fn main() -> Result<()> {
         system_prompt,
         append_system_prompt,
         thinking,
+        max_iterations,
         verbose,
         skill,
         offline,
@@ -501,6 +510,7 @@ async fn main() -> Result<()> {
                         .then(|| append_system_prompt.join("\n\n")),
                     skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
                     thinking: thinking.clone(),
+                    max_iterations,
                     verbose,
                     ..app::AppConfig::for_tool_selection()
                 },
@@ -547,6 +557,7 @@ async fn main() -> Result<()> {
                         .then(|| append_system_prompt.join("\n\n")),
                     skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
                     thinking: thinking.clone(),
+                    max_iterations,
                     verbose,
                     ..app::AppConfig::for_tool_selection()
                 },
@@ -576,6 +587,7 @@ async fn main() -> Result<()> {
                     .then(|| append_system_prompt.join("\n\n")),
                 skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
                 thinking: thinking.clone(),
+                max_iterations,
                 verbose,
             })
             .await

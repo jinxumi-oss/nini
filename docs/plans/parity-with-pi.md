@@ -163,6 +163,19 @@ grapheme、差分重绘只重画变化的 cell，承载不了有状态的 OSC 8 
 `crates/nini-tui/tests/hyperlink_limitation_documented.rs`）。一个分支走不通、
 一个已达成，故关闭。
 
+**A8**（长任务在半路被轮数上限截断）本轮**关掉**：nini 曾给一次 run 设 50 轮硬上限
+（`MAX_TOOL_ITERATIONS = 50`），撞上就抛 `TooManyIterations` **终止整轮**——60 步的
+任务死在第 50 步，transcript 里只有 49 条工具结果、**没有答案**（用户截图里的
+`too many tool iterations (50)`）。Pi 0.85.1 **没有任何轮数上限**：
+`references/pi-0.85.1/src/loop/agent-loop.ts` 的内外两层循环都没有计数器，
+`references/pi-0.85.1/src/` 全目录 grep `maxIterations|max_turns|maxTurns|turnCount|
+iterationCount` 零命中。现在默认**不限**（`max_iterations = 0`），上限改为可配置
+（`--max-iterations N` / `settings.json` 的 `maxIterations`），无上限时由 1000 轮的
+runaway 兜底防止真死循环；`max_follow_up_rounds` 同理（16 → 0 = 不限，Pi 的外层是
+`while (true)`）。oracle：`crates/nini-conformance/tests/long_task_delivery.rs`
+（3 条）+ `scripts/e2e-long-task.sh`（真二进制 + mock provider，nini 与真 Pi 0.85.1
+跑同一个 60 步剧本，断言两边都交付、请求次数都是 61 且相等）。
+
 ---
 
 ## 3. 排序规则（与 GOALS 合并后的唯一版本）

@@ -48,7 +48,10 @@ ROUNDS = ("W0", "W1-A", "W1-B", "W1-C", "W2", "W3", "W4", "W5", "—",
           "T1", "T2", "T3", "T4", "T2+T3",
           # v0.11 计划（docs/plans/next-parity.md）：本轮关掉的几条
           # 差距，以及本轮**执行中才发现**的那条（中止信号没有消费者）
-          "v0.11")
+          "v0.11",
+          # v0.12 计划（docs/plans/next-parity.md）：长任务的轮数上限
+          # （A8）——一条 nini 独有、Pi 完全没有的截断。
+          "v0.12")
 DECISIONS = ("R4", "R5", "R9", "R10", "R11")
 
 # Every field a gap record must carry, with the type it must have.

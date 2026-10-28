@@ -62,6 +62,13 @@ pub(crate) async fn run_demo(
     let config = RunConfig {
         model: model.to_string(),
         system: Some(system),
+        // v0.11.4 (P0/Pi parity): the same turn cap the TUI uses — a
+        // restriction that holds in the TUI and evaporates in `-p` is not
+        // a restriction. Default: no cap (Pi 0.85.1 has no turn limit).
+        max_iterations: tool_cfg
+            .max_iterations
+            .or(settings.max_iterations)
+            .unwrap_or(nini_core::agent::MAX_TOOL_ITERATIONS),
         ..RunConfig::new(model.to_string())
     };
     let mut agent = Agent::new(provider_impl, tools, config);
@@ -191,6 +198,13 @@ pub(crate) async fn run_print(
     let config = RunConfig {
         model: model.to_string(),
         system: Some(system),
+        // v0.11.4 (P0/Pi parity): the same turn cap the TUI uses — a
+        // restriction that holds in the TUI and evaporates in `-p` is not
+        // a restriction. Default: no cap (Pi 0.85.1 has no turn limit).
+        max_iterations: tool_cfg
+            .max_iterations
+            .or(settings.max_iterations)
+            .unwrap_or(nini_core::agent::MAX_TOOL_ITERATIONS),
         ..RunConfig::new(model.to_string())
     };
     let mut agent = Agent::new(provider_impl, tools, config);

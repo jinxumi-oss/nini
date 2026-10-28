@@ -1,3 +1,71 @@
+## v0.12.0 — 长任务不再在半路被截断（2026-10-28）
+
+1704 tests, all green. 这一版修的是一个 **Pi 没有、nini 独有的停止条件**：
+nini 曾给一次 run 设 **50 轮硬上限**，撞上就抛错终止整轮。
+
+### 一、50 轮不是「很多工作」，是「做了一半」
+
+用户截图里的那一行就是这个：
+
+```
+[error] too many tool iterations (50)
+⚠ [nini] agent stream error: too many tool iterations (50).
+```
+
+`crates/nini-core/src/agent.rs` 的 `MAX_TOOL_ITERATIONS = 50`，循环里
+`if iteration > config.max_iterations { Err(AgentError::TooManyIterations(50))? }`
+——是**抛错终止**，不是软停。于是：
+
+* transcript 里留下 49 条工具结果，**没有答案**（模型还没来得及说「做完了」）；
+* session 回到 idle，任务**没交付**；
+* 这个上限**用户改不了**（没有 CLI flag、没有 settings 项）。
+
+而 Pi 0.85.1 **没有这个上限**：`references/pi-0.85.1/src/loop/agent-loop.ts`
+的内外两层循环都没有计数器，`references/pi-0.85.1/src/` 全目录 grep
+`maxIterations|max_turns|maxTurns|turnCount|iterationCount` **零命中**。Pi 只在
+三种情况下停：模型自己停、用户 Esc、上下文溢出且压不动。
+
+同一个 mock provider、同一个 60 步剧本，实测：
+
+| | 模型被调用次数 | 终态 |
+|---|---|---|
+| Pi 0.85.1 | 61 | `TASK DELIVERED: all 60 steps done` ✅ |
+| nini（修复前） | 50 | `[error] too many tool iterations (50)` ❌ 没交付 |
+| nini（修复后） | 61 | `TASK DELIVERED: all 60 steps done` ✅ |
+
+**停在「还在干」和「干完了」之间的停止不是安全网，是截断。**
+
+### 二、改法：对齐 Pi 的语义，而不是放宽一个数字
+
+* `MAX_TOOL_ITERATIONS`：50 → **0 = 不限**（Pi 语义）；
+* 循环里的判定改为 `config.max_iterations > 0 && iteration > config.max_iterations`；
+* `DEFAULT_MAX_FOLLOW_UP_ROUNDS`：16 → **0 = 不限**（Pi 的外层是 `while (true)`，
+  16 轮复活上限是同一族的截断）；
+* 上限改为**可配置**：`--max-iterations N`、`settings.json` 的 `maxIterations`、
+  TUI 与 `-p` 两条路径一致；
+* 无上限时由 `RUNAWAY_TURN_BACKSTOP`（1000 轮，nini 独有）兜底——Pi 没有这个
+  兜底（那里是用户按 Esc），但「不设限」不能等于「永远不限」；
+* 撞上**用户自己设的**上限时，错误文案改成可操作：说明历史已保留、再发一条
+  消息即可继续，而不是只报一个计数器。
+
+### 三、门禁：这条不许再退化
+
+* `crates/nini-conformance/tests/long_task_delivery.rs`（3 条）：60 步任务必须
+  交付且 provider 恰好被叫 61 次；显式上限仍然生效且历史保留；`0` 表示不限
+  而不是「立刻停止」；
+* `scripts/e2e-long-task.sh`：**真二进制 + mock provider**，nini 与真 Pi 0.85.1
+  跑同一个 60 步剧本，断言两边都交付、请求次数都是 61 且相等。已进 CI
+  （parity-target job）。
+* 台账新增 **A8**（P0，fixed）。
+
+### 四、顺带补上 v0.11.3 欠下的三条裸奔不变量
+
+`scripts/invariants.py` 的测试语料只有 Rust，于是 v0.11.3 那三条改 **shell 脚本
+与 CI 配置** 的修复被判为「没有断言保护」，裸奔数从 1 涨到 4（门禁因此变红）。
+它们的形状是可断言的，现补上 `crates/nini-core/tests/tooling_invariants.rs`
+（7 条）：提示里不能出现要等的那个词、必须等启动流程结束再贴第一条提示、
+快照里的黄金值只能有一个生产者、CI 必须真的装上被冻结的那个 Pi。
+
 ## v0.11.3 — 门禁开始跑它自己（2026-10-28）
 
 1694 tests, all green. 这一版不含用户可见的行为变更：它修的是**门禁本身**——

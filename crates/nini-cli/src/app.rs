@@ -64,6 +64,12 @@ pub(crate) struct AppConfig {
     /// v0.10: `--thinking <level>`. Beats the settings file, as in Pi
     /// (`main.ts:487`: "Explicit --thinking still takes precedence").
     pub thinking: Option<String>,
+    /// v0.11.4: `--max-iterations <N>`. Turn cap for one run; `None`
+    /// means "take it from settings, else no cap".
+    ///
+    /// The cap used to be a hard-coded 50 that Pi 0.85.1 does not have,
+    /// and it truncated long tasks before they delivered.
+    pub max_iterations: Option<usize>,
     /// v0.10: `--verbose`. Consumed once by `init_logging` at the top of
     /// `main`, before any entry point runs; kept here so the flag that
     /// produced it and the config that carried it stay in one struct.
@@ -95,6 +101,7 @@ impl AppConfig {
             append_system_prompt: None,
             skill_paths: Vec::new(),
             thinking: None,
+            max_iterations: None,
             verbose: false,
         }
     }
@@ -216,6 +223,14 @@ pub(crate) fn build_tui_run_config(
                     .or(settings.thinking_level.as_deref())
                     .and_then(|l| l.parse::<nini_core::provider::ThinkingLevel>().ok())
             }),
+        // v0.11.4 (P0/Pi parity): the turn cap. The command line beats
+        // the settings file (it was typed for this invocation), and the
+        // fallback is "no cap" — Pi 0.85.1 has no turn limit, and nini's
+        // old default of 50 truncated long tasks before they delivered.
+        max_iterations: cfg
+            .max_iterations
+            .or(settings.max_iterations)
+            .unwrap_or(nini_core::agent::MAX_TOOL_ITERATIONS),
         ..RunConfig::new(cfg_model)
     };
     (config, skills_in_prompt)
@@ -886,6 +901,7 @@ mod p0_1_skills_tests {
             append_system_prompt: None,
             skill_paths: Vec::new(),
             thinking: None,
+            max_iterations: None,
             verbose: false,
         }
     }
@@ -1164,6 +1180,7 @@ mod trust_wiring_tests {
             append_system_prompt: None,
             skill_paths: Vec::new(),
             thinking: None,
+            max_iterations: None,
             verbose: false,
         }
     }
@@ -1452,6 +1469,7 @@ mod provider_fallback_tests {
             append_system_prompt: None,
             skill_paths: Vec::new(),
             thinking: None,
+            max_iterations: None,
             verbose: false,
         }
     }

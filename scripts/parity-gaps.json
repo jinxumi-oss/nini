@@ -451,6 +451,21 @@
       "round": "—",
       "exit_criterion": "要么 ratatui 支持 hyperlink（届时恢复注入并保持宽度计算正确），要么在 README 的 known limitations 里明说「链接不可点击」——**两个分支都已走完**：① ratatui 支持 hyperlink —— **对 nini 当前锁定的 ratatui 0.29 / crossterm 0.28 排除**（`src/` 下 grep `hyperlink` 0 命中；且 `Buffer::set_stringn` 丢弃含控制字符的 grapheme、`Terminal::flush` 只重绘变化的 cell，承载不了有状态的 OSC 8 转义对；**注意**：上游 main 已有 Hyperlink 类型，所以本条**不**声称「上游不支持」，只声称「本仓库锁定的版本不支持」）；② README 明说 —— 已满足（`README.md` 与 `README.zh-CN.md` 的 known limitations 段落）。机器判定：`cargo test -p nini-tui --test hyperlink_limitation_documented` 退出 0（断言的是整句原文，段落标题被改名/删掉即失败）。",
       "machine_checkable": true
+    },
+    {
+      "id": "A8",
+      "class": "A",
+      "severity": "P0",
+      "title": "长任务在半路被轮数上限截断：nini 给一次 run 设了 50 轮硬上限，撞上就抛错终止，**没有交付**；Pi 0.85.1 没有任何轮数上限",
+      "pi_basis": "references/pi-0.85.1/src/loop/agent-loop.ts:175 `while (hasMoreToolCalls || pendingMessages.length > 0)`、:264 `while (true)`：外层与内层都没有计数器；`references/pi-0.85.1/src/` 全目录 grep `maxIterations|max_turns|maxTurns|turnCount|iterationCount` **零命中**。Pi 只在三种情况下停：模型自己停、用户 Esc、上下文溢出且压不动",
+      "nini_state": "已修（2026-10-28，v0.12）：`crates/nini-core/src/agent.rs` 的 `MAX_TOOL_ITERATIONS` 由 50 改为 **0 = 不限**（Pi 语义），循环里的判定改为 `config.max_iterations > 0 && iteration > config.max_iterations`；`DEFAULT_MAX_FOLLOW_UP_ROUNDS` 由 16 改为 **0 = 不限**（Pi 的外层是 `while (true)`）；无上限时由 `RUNAWAY_TURN_BACKSTOP`（1000 轮，nini 独有）兜底。上限改为**可配置**：`crates/nini-core/src/settings.rs` 的 `Settings::max_iterations`（别名 `maxIterations`）、`crates/nini-cli/src/main.rs` 的 `--max-iterations <N>`、`crates/nini-cli/src/app.rs` 的 `build_tui_run_config` 与 `crates/nini-cli/src/demo.rs` 的 `run_print`（TUI 与 `-p` 两条路径一致）。撞上用户设定的上限时错误文案改为可操作（`AgentError::TooManyIterations`：说明历史已保留、再发一条消息即可继续）",
+      "oracle": "crates/nini-conformance/tests/long_task_delivery.rs 3 条（60 步任务必须交付且 provider 恰好被叫 61 次；显式上限仍然生效且历史保留、错误文案可操作；`max_follow_up_rounds = 0` 表示不限而不是立即停止）；scripts/e2e-long-task.sh（真二进制 + mock provider：nini 与真 Pi 0.85.1 跑同一个 60 步剧本，断言两边都交付、请求次数都是 61 且相等、输出里没有轮数上限的字样）",
+      "status": "fixed",
+      "blocking_decision": null,
+      "round": "v0.12",
+      "exit_criterion": "cargo test -p nini-conformance --test long_task_delivery 退出 0（3 条）；bash scripts/e2e-long-task.sh 退出 0（nini 61 次请求、Pi 61 次请求、两边都交付）；cargo test --workspace 退出 0；把 MAX_TOOL_ITERATIONS 改回 50 时 long_task_delivery 与 e2e-long-task.sh 必须变红",
+      "machine_checkable": true,
+      "layer": null
     }
   ]
 }

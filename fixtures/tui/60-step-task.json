@@ -1,0 +1,428 @@
+{
+ "turns": [
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-0"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-1"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-2"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-3"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-4"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-5"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-6"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-7"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-8"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-9"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-10"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-11"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-12"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-13"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-14"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-15"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-16"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-17"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-18"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-19"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-20"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-21"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-22"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-23"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-24"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-25"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-26"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-27"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-28"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-29"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-30"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-31"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-32"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-33"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-34"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-35"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-36"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-37"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-38"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-39"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-40"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-41"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-42"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-43"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-44"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-45"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-46"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-47"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-48"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-49"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-50"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-51"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-52"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-53"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-54"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-55"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-56"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-57"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-58"
+   }
+  },
+  {
+   "type": "tool_call",
+   "name": "bash",
+   "arguments": {
+    "command": "echo step-59"
+   }
+  },
+  {
+   "type": "text",
+   "text": "TASK DELIVERED: all 60 steps done"
+  }
+ ]
+}
