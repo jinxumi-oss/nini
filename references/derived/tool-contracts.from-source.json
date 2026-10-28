@@ -1,0 +1,67 @@
+{
+  "piVersion": "0.85.1",
+  "layers": {
+    "original-builtin": [
+      "bash",
+      "edit",
+      "find",
+      "grep",
+      "ls",
+      "read",
+      "write"
+    ],
+    "extension": [],
+    "note": "Pi 默认不带任何扩展工具；扩展工具的契约见 dist/core/extensions/types.d.ts 的 ToolDefinition，与内置工具不是同一类东西。"
+  },
+  "tools": {
+    "read": {
+      "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+      "params": [],
+      "source": "tools-t1/read.js",
+      "layer": "builtin(harness)",
+      "kind": "original-builtin"
+    },
+    "write": {
+      "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+      "params": [],
+      "source": "tools-t1/write.js",
+      "layer": "builtin(harness)",
+      "kind": "original-builtin"
+    },
+    "edit": {
+      "description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+      "params": [],
+      "source": "tools-t1/edit.js",
+      "layer": "builtin(harness)",
+      "kind": "original-builtin"
+    },
+    "bash": {
+      "description": "Execute a bash command in the current working directory. Returns combined stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+      "params": [],
+      "source": "tools-t1/bash.js",
+      "layer": "builtin(harness)",
+      "kind": "original-builtin"
+    },
+    "grep": {
+      "description": "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.",
+      "params": [],
+      "source": "tools-t2/grep.js",
+      "layer": "builtin(coding)",
+      "kind": "original-builtin"
+    },
+    "find": {
+      "description": "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).",
+      "params": [],
+      "source": "tools-t2/find.js",
+      "layer": "builtin(coding)",
+      "kind": "original-builtin"
+    },
+    "ls": {
+      "description": "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} entries or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).",
+      "params": [],
+      "source": "tools-t2/ls.js",
+      "layer": "builtin(coding)",
+      "kind": "original-builtin"
+    }
+  }
+}

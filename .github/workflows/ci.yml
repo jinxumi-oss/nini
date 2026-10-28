@@ -134,6 +134,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Pi 0.85.1 — the oracle needs the real thing
+        # 黄金值是**跑 Pi 自己的代码**产出的（scripts/pi-tool-dump.mjs、
+        # scripts/truncate-oracle.mjs、scripts/pi-session-record.sh）。
+        # 没有 Pi，这三步只能「跳过并说明」——那等于把最硬的那道门禁变成空话。
+        #
+        # 版本必须与 references/TARGET.json 一致：Pi 的黄金值只对**那一个**版本成立。
+        run: |
+          npm i -g @earendil-works/pi-coding-agent@0.85.1
+          echo "PI_ROOT=$(npm root -g)/@earendil-works/pi-coding-agent" >> "$GITHUB_ENV"
+          pi --version
       - name: The parity target version is unique and frozen
         # owner 的长期指令：对标只锚定一个版本，直到 owner 宣布解除。
         # 这条规矩必须由机器守住 —— 只写在文档里的规矩会在下一次会话蒸发。
@@ -150,10 +163,13 @@ jobs:
         # 往后谁把工具契约改歪了，CI 会直接红。
         run: python3 scripts/tool-parity-check.py
       - name: The target snapshot is what it claims to be
+        # 快照目录里的文件由 SNAPSHOT.lock 的 sha256 管辖（上面的 pi-oracle-lock --check
+        # 已经查过）；这里查的是**从源码读出的近似契约**有没有漂——它住在
+        # references/derived/ 下，不在快照目录里，因此不会与运行时黄金值抢同一个文件。
         run: |
           python3 scripts/pi-tool-contracts.py --extract
-          git diff --exit-code -- references/pi-0.85.1/tool-contracts.json \
-            || (echo "tool-contracts.json 与快照不一致——快照被改过？" && exit 1)
+          git diff --exit-code -- references/derived/tool-contracts.from-source.json \
+            || (echo "源码级工具契约与快照不一致——快照被改过？" && exit 1)
       - name: The Pi session fixture is reproducible (in shape)
         # fixture 是**真 Pi 0.85.1** 写的（scripts/pi-session-record.sh 驱动）。
         # 时间戳与 id 每次都不同，所以比的是**结构**：条目类型与 role 序列。
@@ -185,8 +201,8 @@ jobs:
         # 工具契约与截断的期望值是**执行 Pi 自己的代码**产出的。
         # 这一步保证：改了实现却没重录期望值，会被 CI 抓到。
         run: |
-          node scripts/pi-tool-dump.mjs
-          node scripts/truncate-oracle.mjs
+          node scripts/pi-tool-dump.mjs --pi-root "$PI_ROOT"
+          node scripts/truncate-oracle.mjs --pi-root "$PI_ROOT"
           git diff --exit-code -- references/pi-0.85.1/tool-contracts.json \
                              references/pi-0.85.1/truncate-oracle.json \
             || (echo "Pi 侧黄金值与快照不一致——重新生成过？" && exit 1)

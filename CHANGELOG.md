@@ -1,3 +1,54 @@
+## v0.11.3 — 门禁开始跑它自己（2026-10-28）
+
+1694 tests, all green. 这一版不含用户可见的行为变更：它修的是**门禁本身**——
+连续 6 次 CI 红灯（2026-10-26 起）里，没有一次是产品坏了，两次红灯都是门禁在
+说假话。
+
+### 一、两个生产者抢同一个文件，于是快照随时可能被近似版覆盖
+
+`references/pi-0.85.1/tool-contracts.json` 有**两个生产者**：
+
+| 生产者 | 写出的东西 | 真相程度 |
+|---|---|---|
+| `scripts/pi-tool-dump.mjs` | 执行 Pi 自己的 `createToolDefinition`，冻结**运行时值**（插值后的描述、参数 schema、required、prompt 片段） | 真相 |
+| `scripts/pi-tool-contracts.py --extract` | **读源码**的近似：描述还是带 `${...}` 占位符的模板，参数只有名字（`params: []`） | 近似 |
+
+两者写**同一个路径**。CI 的步骤是「先跑近似版 → 再 `git diff` 快照 → 不一致就红」，
+所以它**永远红**：红灯的理由（近似版 ≠ 运行时版）与「快照是否被篡改」毫无关系。
+更要命的是，任何人在本地跑一次 `--extract`，就会把登记在 `SNAPSHOT.lock` 里
+（sha256 + bytes）的运行时黄金值**覆盖成近似版**，而近似版进不了那份哈希账。
+
+改法：**一份文件一个生产者**。
+
+* 近似版搬去 `references/derived/tool-contracts.from-source.json`——**不在**快照目录里，
+  因此不受 `SNAPSHOT.lock` 管辖（快照目录里的每个字节都该由黄金值生成器写）；
+* 快照目录里的 `tool-contracts.json` 只由 `pi-tool-dump.mjs` 写；
+* CI 的「快照是不是它声称的样子」改为核对**近似版**那份（它由快照源码推导，
+  所以快照被改它就会漂），而运行时黄金值另有一步在核。
+
+### 二、最硬的那道门禁在 CI 里其实**没有跑**
+
+`tool-contracts.json` / `truncate-oracle.json` / 会话 fixture 三份黄金值，都是
+**执行 Pi 0.85.1** 产出的。CI 的 runner 上**没有 Pi**，那三步要么跳过、要么直接
+失败——也就是说，最贵、最容易骗过人的那道门禁，在 CI 里是**空转**的。
+
+现在 CI 自己装上被冻结的那个版本：`npm i -g @earendil-works/pi-coding-agent@0.85.1`，
+并把 `PI_ROOT` 传给 `pi-tool-dump.mjs` / `truncate-oracle.mjs`。版本必须等于
+`references/TARGET.json`：黄金值只对**那一个**版本成立。
+
+### 三、macOS 上的偶发红灯：`try_lock().unwrap()` 撞上后台 flush 线程
+
+`crates/nini-tui/tests/p01_persist.rs` 等 7 个测试文件用
+`arc.try_lock().unwrap()` 读会话。`try_lock` 在锁被占时返回 `Err`，而**后台 flush
+线程**正好会持有会话锁做一次「序列化 + 原子重命名」——于是 macOS runner 上偶发
+`WouldBlock` panic（2026-10-28 的 `test (macos-latest)` 红灯即此）。
+
+生产代码 v0.10 起就已经用 `state::lock_session()`（阻塞 + 恢复中毒）了；**测试**没跟上。
+现在测试也用它：`crates/nini-tui/tests/` 下 11 处 `try_lock().unwrap()` 全部改成
+`nini_tui::state::lock_session(&arc)`。
+`tests/session_lock.rs` 里的两处 `try_lock()` **故意保留**——它们断言的正是
+「持锁者没放手时别人拿不到锁」。
+
 ## v0.11.2 — 台账开始说真话（C2）、D1 的判定书、D3 的收尾（2026-10-28）
 
 1694 tests, all green. 三块治理类的工作，外加一条**审查发现我自己上一轮引入的**缺陷。

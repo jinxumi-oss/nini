@@ -19,6 +19,23 @@ nini 现在的工具描述是**从 Pi 0.84.2 捕获**的（crates/nini-tools/src
     python3 scripts/pi-tool-contracts.py --extract          # 只生成 Pi 侧契约
     python3 scripts/pi-tool-contracts.py --compare          # 与 nini 逐条比对
     python3 scripts/pi-tool-contracts.py --compare --json
+
+**这个脚本不再写 `references/pi-0.85.1/tool-contracts.json`**
+------------------------------------------------------------------
+那个文件的**唯一生产者**是 `scripts/pi-tool-dump.mjs`：它执行 Pi 自己的代码，
+把**运行时值**（插值后的描述、参数 schema、required、prompt 片段）冻进仓库，
+并且它的 sha256 登记在 `references/pi-0.85.1/SNAPSHOT.lock` 里。
+
+本脚本是**读源码的近似**：它拿到的是带 `${...}` 占位符的模板字符串，参数只有名字
+（`params: []`），description 不是插值后的值。两份 JSON 形状都不同。
+
+v0.11.3 之前，两者写**同一个路径**：CI 里先跑本脚本、再 `git diff` 快照，于是
+**永远红**——而红的理由跟快照是否被篡改毫无关系（CI 2026-10-26 起的连续 6 次失败
+都源于此）。两份生产者抢一个文件 = 快照随时可能被近似版覆盖，而近似版还进不了
+`SNAPSHOT.lock` 的哈希。
+
+所以：近似值写自己的路径 `references/derived/tool-contracts.from-source.json`
+（**不在**快照目录里，因此不受 `SNAPSHOT.lock` 管辖），快照目录里的文件只由 mjs 写。
 """
 
 from __future__ import annotations
@@ -31,6 +48,13 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SNAPSHOT = REPO / "references" / "pi-0.85.1"
+
+# 近似版的落点：**不在**快照目录里。
+#
+# 快照目录里的每个文件都登记在 `SNAPSHOT.lock`（sha256 + bytes），任何写入都会
+# 让 `scripts/pi-oracle-lock.py --check` 变红——那是**应该**红的：黄金值被改了。
+# 近似版不是黄金值，它是「按源码读出来大概是什么样」的旁证，所以它住在外面。
+DERIVED = REPO / "references" / "derived"
 
 # 工具定义所在的快照文件（按 Pi 自己的分层：harness 层 / coding 层）
 #
@@ -123,8 +147,9 @@ def main() -> int:
             "kind": "original-builtin",
         }
 
-    out_path = SNAPSHOT / "tool-contracts.json"
+    out_path = DERIVED / "tool-contracts.from-source.json"
     if args.extract or not args.compare:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(
             {
                 "piVersion": "0.85.1",
@@ -139,7 +164,8 @@ def main() -> int:
             },
             ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8")
-        print(f"Pi 侧工具契约 → {out_path}（{len(contracts)} 个工具）")
+        print(f"Pi 侧工具契约（**源码近似**，非运行时真值）→ {out_path}（{len(contracts)} 个工具）")
+        print("  运行时真值由 scripts/pi-tool-dump.mjs 写在 references/pi-0.85.1/tool-contracts.json")
 
     if not args.compare:
         return 0

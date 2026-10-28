@@ -147,7 +147,7 @@ fn loading_shows_the_live_context_not_the_raw_entries() {
         st.push_assistant("an early answer about eviction policy");
         st.push_user("a later question about the TTL");
         let arc = st.session_state.session.as_ref().unwrap().clone();
-        let mut g = arc.try_lock().unwrap();
+        let mut g = nini_tui::state::lock_session(&arc);
         let legacy: Vec<nini_core::Entry> =
             g.get_path().into_iter().cloned().map(Into::into).collect();
         let cut = nini_core::compaction::find_cut_point(&legacy, 1);

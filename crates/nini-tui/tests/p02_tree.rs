@@ -54,7 +54,7 @@ fn with_session<R>(
         .as_ref()
         .unwrap()
         .clone();
-    let g = arc.try_lock().unwrap();
+    let g = nini_tui::state::lock_session(&arc);
     f(&g)
 }
 
@@ -71,7 +71,7 @@ fn with_session_mut<R>(
         .as_ref()
         .unwrap()
         .clone();
-    let mut g = arc.try_lock().unwrap();
+    let mut g = nini_tui::state::lock_session(&arc);
     f(&mut g)
 }
 

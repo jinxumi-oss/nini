@@ -83,7 +83,7 @@ async fn the_seed_reflects_a_compaction() {
         g.run_state.context_window = 200_000;
         // Force the cut: the real one is a token budget.
         let arc = g.session_state.session.as_ref().unwrap().clone();
-        let mut s = arc.try_lock().unwrap();
+        let mut s = nini_tui::state::lock_session(&arc);
         let legacy: Vec<nini_core::Entry> =
             s.get_path().into_iter().cloned().map(Into::into).collect();
         let cut = nini_core::compaction::find_cut_point(&legacy, 1);

@@ -49,7 +49,7 @@ async fn a_failed_turn_is_recorded_with_its_message() {
             .as_ref()
             .unwrap()
             .clone();
-        let g = arc.try_lock().unwrap();
+        let g = nini_tui::state::lock_session(&arc);
         g.entries
             .iter()
             .map(|e| serde_json::to_string(e).unwrap())
@@ -145,7 +145,7 @@ async fn a_transient_notice_is_not_recorded_as_a_failed_turn() {
         .as_ref()
         .unwrap()
         .clone();
-    let g = arc.try_lock().unwrap();
+    let g = nini_tui::state::lock_session(&arc);
     let recorded = g.entries.iter().any(|e| {
         serde_json::to_string(e)
             .map(|s| s.contains("retrying after transient"))

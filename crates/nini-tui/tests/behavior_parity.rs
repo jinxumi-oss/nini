@@ -92,7 +92,7 @@ fn nini_entries(state: &Arc<std::sync::Mutex<AppState>>) -> Vec<serde_json::Valu
         .as_ref()
         .unwrap()
         .clone();
-    let g = arc.try_lock().unwrap();
+    let g = nini_tui::state::lock_session(&arc);
     g.entries
         .iter()
         .map(|e| serde_json::from_str(&serde_json::to_string(e).unwrap()).unwrap())

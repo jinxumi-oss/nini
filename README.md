@@ -7,7 +7,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-[![Status](https://img.shields.io/badge/status-v0.11.1-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.11.3-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-1694%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)

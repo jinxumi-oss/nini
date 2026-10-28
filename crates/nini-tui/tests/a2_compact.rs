@@ -32,7 +32,7 @@ fn state_with_session(tag: &str) -> (AppState, SettingsManager, std::path::PathB
 
 fn messages(s: &AppState) -> Vec<String> {
     let arc = s.session_state.session.as_ref().expect("session").clone();
-    let g = arc.try_lock().unwrap();
+    let g = nini_tui::state::lock_session(&arc);
     g.entries
         .iter()
         .map(|e| match e {
@@ -199,7 +199,7 @@ fn first_kept_entry_id_is_the_entry_the_cut_landed_on() {
     // keep the id it lands on.
     let expected = {
         let arc = s.session_state.session.as_ref().unwrap().clone();
-        let g = arc.try_lock().unwrap();
+        let g = nini_tui::state::lock_session(&arc);
         let legacy: Vec<nini_core::Entry> =
             g.get_path().into_iter().cloned().map(Into::into).collect();
         let cut = find_cut_point(&legacy, settings.settings.keep_recent_tokens);
@@ -217,7 +217,7 @@ fn first_kept_entry_id_is_the_entry_the_cut_landed_on() {
 
     let (recorded, ctx_len) = {
         let arc = s.session_state.session.as_ref().unwrap().clone();
-        let g = arc.try_lock().unwrap();
+        let g = nini_tui::state::lock_session(&arc);
         let cut = g
             .get_path()
             .into_iter()
