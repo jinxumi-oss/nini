@@ -174,7 +174,7 @@ async fn drain(agent: &mut Agent) -> (String, Option<String>) {
 }
 
 /// The headline test: 60 steps, and the task **delivers**.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn a_sixty_step_task_is_delivered() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut agent = Agent::new(
@@ -207,7 +207,7 @@ async fn a_sixty_step_task_is_delivered() {
 }
 
 /// The cap is still available — as an opt-in, not as a default.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn an_explicit_cap_still_stops_the_run() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut agent = Agent::new(
@@ -262,7 +262,7 @@ impl AgentLoopHooks for FollowupProducer {
 }
 
 /// `max_follow_up_rounds = 0` means *no ceiling*.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn a_zero_follow_up_ceiling_means_unlimited() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut agent = Agent::with_hooks(
