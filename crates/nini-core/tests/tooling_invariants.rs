@@ -59,14 +59,25 @@ fn awaited_markers(script: &str) -> Vec<String> {
     out
 }
 
-/// Every `paste "<text>"` literal in the recording script.
+/// Every prompt the recording script sends to Pi.
+///
+/// Two shapes exist: the direct `paste "<text>"` and the retrying
+/// `submit_and_wait_for_request "<text>"`. Both are prompts, so both are
+/// collected — a check that only saw one of them would be vacuous for the
+/// other.
 fn pasted_texts(script: &str) -> Vec<String> {
-    script
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("paste \""))
-        .filter_map(|rest| rest.split('"').next())
-        .map(|s| s.to_string())
-        .collect()
+    let mut out = Vec::new();
+    for line in script.lines() {
+        let t = line.trim();
+        for prefix in ["paste \"", "submit_and_wait_for_request \""] {
+            if let Some(rest) = t.strip_prefix(prefix) {
+                if let Some(text) = rest.split('"').next() {
+                    out.push(text.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The prompt must not contain the phrase the script is waiting for.
@@ -113,34 +124,49 @@ fn the_awaited_phrases_come_from_the_mock_provider() {
     }
 }
 
-/// The first prompt must not be pasted before Pi finished starting.
+/// The first prompt must actually reach the model.
 ///
-/// v0.11.3's defect: on a cold runner Pi downloads fd/ripgrep on startup
-/// and does not process input while that is in flight, so the first prompt
-/// was swallowed and the recording timed out.
+/// v0.11.3's defect: Pi's startup does not process input, and a prompt
+/// submitted during startup is swallowed (`handleStartupSubmit` keeps it in
+/// the editor and shows "Startup is still in progress"; it is never resent).
+/// The script used to "wait" for that string to disappear — but the string
+/// only appears *because* of an early submit, so the wait broke on its
+/// first iteration and the prompt was pasted during startup anyway. On a
+/// cold runner that meant: Pi never answered, the mock provider never saw
+/// a request, and the fixture gate failed for a reason that had nothing to
+/// do with the fixture.
+///
+/// The only reliable signal is the mock provider's own request log, so the
+/// script now submits and re-submits until the model has actually been
+/// asked.
 #[test]
-fn the_recording_waits_for_pi_startup_before_pasting() {
+fn the_first_prompt_is_retried_until_the_model_is_actually_asked() {
     let script = read("scripts/pi-session-record.sh");
     assert!(
         script.contains("PI_OFFLINE=1"),
         "PI_OFFLINE=1 must be set: Pi otherwise downloads fd/ripgrep on a \
-         cold runner and eats the first prompt"
+         cold runner and the startup takes tens of seconds"
     );
-    // 定位**真正的那次检查**（`grep -qF`），而不是提到这句话的注释。
-    let startup_wait = script
-        .lines()
-        .position(|l| l.contains("grep -qF \"Startup is still in progress\""))
-        .unwrap_or_else(|| panic!("the script no longer waits for startup to finish"));
-    let first_paste = script
-        .lines()
-        .position(|l| l.trim_start().starts_with("paste \""))
-        .unwrap_or_else(|| panic!("the script pastes nothing"));
     assert!(
-        startup_wait < first_paste,
-        "the first prompt is pasted at line {} but the startup wait is at \
-         line {} — Pi does not process input while it is still starting",
-        first_paste + 1,
-        startup_wait + 1,
+        script.contains("mock_request_count"),
+        "the script must decide 'was the model asked?' from the mock \
+         provider's request log — that is the machine-checkable signal"
+    );
+    assert!(
+        script.contains("submit_and_wait_for_request"),
+        "the script must submit until the model has actually been asked"
+    );
+    assert_eq!(
+        script.matches("submit_and_wait_for_request \"").count(),
+        2,
+        "both rounds must go through the retrying submit — a single paste \
+         is what got eaten by Pi's startup"
+    );
+    assert!(
+        !script.contains("grep -qF \"Startup is still in progress\""),
+        "the inverted wait is back: that string only appears *because* of \
+         an early submit, so waiting for it to disappear breaks immediately \
+         and waits for nothing"
     );
 }
 
@@ -248,6 +274,11 @@ fn the_helpers_actually_find_the_markers() {
             .any(|t| t.contains("run the bash tool")),
         "the parsing helper no longer sees the script's prompts — the \
          assertions above would pass vacuously"
+    );
+    assert!(
+        pasted_texts(&script).len() >= 2,
+        "the parsing helper sees fewer than two prompts — the prompt \
+         assertions above would be checking almost nothing"
     );
     let _ = Path::new("");
 }

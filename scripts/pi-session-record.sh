@@ -130,21 +130,58 @@ wait_for "mock-rec-model" 150 || {
 # 等启动流程真的结束。
 #
 # Pi 启动时会检查 fd / ripgrep，缺了就**下载**（tools-manager.js 的 ensureTool）。
-# 在 CI 的 runner 上那是一次 GitHub 下载，几十秒起步；这段时间 pane 上写着
-# 「Startup is still in progress」，而 Pi **不处理输入**——于是我们贴进去的第一条
-# 提示被启动流程吃掉，脚本只能等超时。
+# 在 CI 的 runner 上那是一次 GitHub 下载，几十秒起步；这段时间 Pi **不处理输入**
+# ——贴进去的第一条提示会被 `handleStartupSubmit` 扣下（它只把文本留在编辑器里，
+# 并显示「Startup is still in progress」），启动完成后**也不会自动重发**。
 #
-# PI_OFFLINE=1 让它跳过下载（fd/rg 只是 grep/find 工具的可选加速，本场景用不到），
-# 这条等待是双保险：两处都堵上，才不会因为「启动慢了一点点」而红。
-for _ in $(seq 1 150); do
-  tmux -L nini-rec capture-pane -p -t "$SESSION" 2>/dev/null \
-    | grep -qF "Startup is still in progress" || break
-  sleep 0.2
-done
+# PI_OFFLINE=1 让它跳过下载（fd/rg 只是 grep/find 工具的可选加速，本场景用不到）。
+#
+# 曾经这里还有一个「等 pane 上的『Startup is still in progress』消失」的循环——
+# 它是**反的**：那个字符串只在「提交早了」之后才会出现，所以循环第一轮就 break，
+# 于是它看起来像一道等待，实际上什么都没等（2026-10-28 在 CI 上实测：它等到
+# 超时，而 Pi 还在启动）。
+#
+# 现在不再猜「启动完了没有」，而是等**机器可判定**的正向信号：mock provider
+# 收到了请求。见下面的 submit_and_wait_for_request。
 
 paste() {
   printf '%s' "$1" | tmux -L nini-rec load-buffer -b "nini-rec-$$" -
   tmux -L nini-rec paste-buffer -t "$SESSION" -b "nini-rec-$$" -p
+}
+
+# mock provider 收到几次请求了——「模型到底被问了几次」的机器证据。
+#
+# 注意 `grep -c` 在没有匹配时会**打印 0 并以 1 退出**，所以 `|| echo 0` 会
+# 多出一行 0（值变成 "0\n0"，`[[ ]]` 直接报语法错）。只用 `|| true` 吃掉
+# 退出码，计数仍由 grep 打印。
+mock_request_count() {
+  grep -c 'request #[0-9]* START' "$TMP/mock.log" 2>/dev/null || true
+}
+
+# 提交一条提示，并一直等到**模型真的被问到**为止。
+#
+# 为什么不能只等 pane 上的某个字：「Pi 启动期间提交」与「Pi 根本没回话」
+# 在 pane 上长得一模一样——启动期间提交的提示被扣在编辑器里，Pi 显示
+# 「Startup is still in progress」，之后也不会自动重发。
+#
+# 唯一可靠的正向信号是 mock provider 收到了请求。所以这里改成：
+# 提交 → 等 mock 的请求数增加 → 还没增加就**再按一次 Enter**
+# （启动完成后，这一次 Enter 才会真的把编辑器里的文本发出去；
+#  而在启动完成前，Enter 只是被 handleStartupSubmit 收下，不会误发）。
+submit_and_wait_for_request() {
+  local text="$1" tries="${2:-150}"
+  local before
+  before="$(mock_request_count)"
+  paste "$text"
+  tmux -L nini-rec send-keys -t "$SESSION" Enter
+  for _ in $(seq 1 "$tries"); do
+    if [[ "$(mock_request_count)" -gt "$before" ]]; then
+      return 0
+    fi
+    tmux -L nini-rec send-keys -t "$SESSION" Enter
+    sleep 0.2
+  done
+  return 1
 }
 
 # 第一轮：触发工具调用
@@ -154,13 +191,12 @@ paste() {
 # “pane 里出现 TOOL_RESULT_SEEN”——**用户自己输入的那行也满足它**。
 # 于是「Pi 根本没回话」会被判成「跑完了」：这道门禁可以在 Pi 完全没响应的情况下变绿。
 # 现在提示只说「做什么」，要等的是**助手**才说得出的话（那句话由 mock provider 给）。
-paste "run the bash tool"
-tmux -L nini-rec send-keys -t "$SESSION" Enter
+submit_and_wait_for_request "run the bash tool" 150 \
+  || { echo "第一轮：模型一直没被问到" >&2; dump_state; exit 3; }
 wait_for "TOOL_RESULT_SEEN" 150 || { echo "第一轮没跑完" >&2; dump_state; exit 3; }
-
 # 第二轮：纯文本
-paste "continue"
-tmux -L nini-rec send-keys -t "$SESSION" Enter
+submit_and_wait_for_request "continue" 150 \
+  || { echo "第二轮：模型一直没被问到" >&2; dump_state; exit 3; }
 wait_for "SECOND_TURN_OK" 150 || { echo "第二轮没跑完" >&2; dump_state; exit 3; }
 sleep 1
 

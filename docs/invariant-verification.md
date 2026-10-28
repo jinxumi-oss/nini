@@ -360,8 +360,9 @@ serde 直接解析失败，覆盖数为 0。现在**两种形状都收**（Pi �
 | sha | 声明于 | 注入的 bug | 变红的断言 |
 |---|---|---|---|
 | `5195b587` | `tooling_invariants` | 把提示改回「run the bash tool then say TOOL_RESULT_SEEN」（即用户自己输入的那行就满足 `wait_for`） | `the_recording_prompt_never_contains_the_awaited_phrase` 变红（其余 6 条仍绿） |
-| `dcd75b80` | `tooling_invariants` | 去掉 `PI_OFFLINE=1`（Pi 于是会在冷 runner 上下载 fd/ripgrep 并吃掉第一条提示） | `the_recording_waits_for_pi_startup_before_pasting` 变红（其余 6 条仍绿） |
-| `dcd75b80` | `tooling_invariants` | 把「等 `Startup is still in progress` 消失」那一段挪到贴第一条提示**之后** | 同上变红（这一条是上一条之外的**第二个**触发面：即使 PI_OFFLINE 在，顺序错了照样被吃掉） |
+| `dcd75b80` | `tooling_invariants` | 去掉 `PI_OFFLINE=1`（Pi 于是会在冷 runner 上下载 fd/ripgrep 并吃掉第一条提示） | `the_first_prompt_is_retried_until_the_model_is_actually_asked` 变红（其余 6 条仍绿） |
+| `dcd75b80` | `tooling_invariants` | 把第一轮改回「贴一次就完事」（不重试，直到模型真的被问到） | 同上变红（这一条是上一条之外的**第二个**触发面：即使 PI_OFFLINE 在，提交早了照样被吃掉） |
+| `dcd75b80` | `tooling_invariants` | 把那个**反着的**等待加回去（等 `Startup is still in progress` 消失） | 同上变红（见下：2026-10-28 实测，那个等待的第一轮就 break——它等的是「提交早了」才会出现的字符串） |
 | `bca7e070` | `tooling_invariants` | 让近似版又写回快照路径（`out_path = SNAPSHOT_DIR / "tool-contracts.json"`） | `the_snapshot_tool_contracts_have_exactly_one_producer` 变红（其余 6 条仍绿） |
 | `bca7e070` | `tooling_invariants` | CI 改装别的 Pi 版本（`pi-coding-agent@0.84.2`） | `ci_installs_the_frozen_pi_and_passes_its_root` 与 `ci_installs_the_version_the_target_freezes` 两条同时变红（其余 5 条仍绿） |
 
@@ -387,3 +388,13 @@ Rust 的调用入口；能守住它们的只有「脚本必须长成什么样」
 **为什么这条不能只靠「默认不限」来保证**：默认值是可以被改回去的，而且改
 回去的时候**没有测试会红**——除非有一条断言直接盯着「默认不限」这件事。
 所以这条不变量守的是**默认值的语义**，不是某一次运行的结果。
+
+**为什么必须换掉那个等待（2026-10-28 在 CI 上实测）**：`Startup is still in
+progress` 这个字符串**只在提交早了之后才会出现**——Pi 启动期间的提交会被
+`handleStartupSubmit` 扣下（文本留在编辑器里，启动完成后也不会自动重发）。
+所以「等它消失」的循环第一轮就 break，它看起来像一道等待，实际上什么都没等。
+CI 上它表现为：Pi 一直没被问到（mock provider 一个请求都没有），fixture
+录不出来，而红灯与 fixture 本身无关。
+
+现在脚本等的是**机器可判定**的正向信号：mock provider 收到请求；没收到就再按
+一次 Enter（启动完成后，这一次才会真的把编辑器里的文本发出去）。
