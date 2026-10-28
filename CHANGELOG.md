@@ -1,6 +1,6 @@
 ## v0.12.0 — 长任务不再在半路被截断（2026-10-28）
 
-1704 tests, all green. 这一版修的是一个 **Pi 没有、nini 独有的停止条件**：
+1705 tests, all green. 这一版修的是一个 **Pi 没有、nini 独有的停止条件**：
 nini 曾给一次 run 设 **50 轮硬上限**，撞上就抛错终止整轮。
 
 ### 一、50 轮不是「很多工作」，是「做了一半」
@@ -50,9 +50,9 @@ nini 曾给一次 run 设 **50 轮硬上限**，撞上就抛错终止整轮。
 
 ### 三、门禁：这条不许再退化
 
-* `crates/nini-conformance/tests/long_task_delivery.rs`（3 条）：60 步任务必须
+* `crates/nini-conformance/tests/long_task_delivery.rs`（4 条）：60 步任务必须
   交付且 provider 恰好被叫 61 次；显式上限仍然生效且历史保留；`0` 表示不限
-  而不是「立刻停止」；
+  而不是「立刻停止」；无上限但一直不停时由 runaway 兜底收住；
 * `scripts/e2e-long-task.sh`：**真二进制 + mock provider**，nini 与真 Pi 0.85.1
   跑同一个 60 步剧本，断言两边都交付、请求次数都是 61 且相等。已进 CI
   （parity-target job）。

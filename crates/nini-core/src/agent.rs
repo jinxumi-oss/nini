@@ -192,6 +192,14 @@ pub enum AgentError {
     /// next, which is why a truncated task looked like a crash.
     #[error("iteration limit reached ({0}); this turn is unfinished — the history is kept, so send another message to continue")]
     TooManyIterations(usize),
+    /// The runaway backstop tripped: the run went on for `turns` turns
+    /// without settling, and the user had set no limit of their own.
+    ///
+    /// A separate variant from `TooManyIterations` because the two mean
+    /// different things to the user: "you asked for 30 turns and got 30"
+    /// versus "this thing was not going to stop on its own".
+    #[error("runaway guard: {turns} turns without settling — the history is kept; send another message to continue, or check whether the model is looping on one tool call")]
+    RunawayGuard { turns: usize },
     #[error("invalid state: {0}")]
     InvalidState(String),
 }
@@ -1172,7 +1180,13 @@ impl Agent {
                     RUNAWAY_TURN_BACKSTOP
                 };
                 if iteration > turn_cap {
-                    Err(AgentError::TooManyIterations(turn_cap))?;
+                    if config.max_iterations > 0 {
+                        Err(AgentError::TooManyIterations(config.max_iterations))?;
+                    } else {
+                        Err(AgentError::RunawayGuard {
+                            turns: RUNAWAY_TURN_BACKSTOP,
+                        })?;
+                    }
                 }
 
                 // v0.10 (fix): the threshold check that A3 removed, restored

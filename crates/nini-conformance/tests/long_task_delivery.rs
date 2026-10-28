@@ -244,6 +244,41 @@ async fn an_explicit_cap_still_stops_the_run() {
     );
 }
 
+/// The runaway backstop: an uncapped run that never settles must stop.
+///
+/// This is nini's own guard (Pi has none — there, the user presses Esc).
+/// It exists because "no cap" must not mean "no bound, ever": a model
+/// that calls the same tool forever would otherwise spend tokens forever.
+#[tokio::test]
+async fn an_uncapped_run_that_never_settles_stops_at_the_backstop() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut agent = Agent::new(
+        // Every turn is a tool call, so the run never settles on its own.
+        Arc::new(LongTaskProvider {
+            calls: calls.clone(),
+            tool_steps: usize::MAX,
+        }),
+        ToolRegistry::new().register(Arc::new(Echo)),
+        RunConfig::new("test-model"),
+    );
+
+    let (_text, error) = drain(&mut agent).await;
+
+    let err = error.expect("the runaway guard must stop the run");
+    assert!(
+        err.contains("runaway guard"),
+        "the error must name the runaway guard, not the user's limit: {err}"
+    );
+    assert!(
+        err.contains("send another message to continue"),
+        "the error must say what the user can do next: {err}"
+    );
+    assert!(
+        calls.load(Ordering::SeqCst) <= nini_core::agent::RUNAWAY_TURN_BACKSTOP + 1,
+        "the run must stop at the backstop, not later"
+    );
+}
+
 /// A follow-up producer that never stops on its own.
 struct FollowupProducer {
     remaining: AtomicUsize,
