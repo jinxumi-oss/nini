@@ -149,6 +149,10 @@ jobs:
           npm i -g @earendil-works/pi-coding-agent@0.85.1
           echo "PI_ROOT=$(npm root -g)/@earendil-works/pi-coding-agent" >> "$GITHUB_ENV"
           pi --version
+      - name: Install the mock provider's dependency
+        # scripts/mock-provider.py 用 aiohttp 起一个假 provider，Pi 会连它。
+        # runner 的 python3 默认没有 aiohttp → 录制脚本以「环境不可用」退出。
+        run: python3 -m pip install --user aiohttp
       - name: The parity target version is unique and frozen
         # owner 的长期指令：对标只锚定一个版本，直到 owner 宣布解除。
         # 这条规矩必须由机器守住 —— 只写在文档里的规矩会在下一次会话蒸发。
