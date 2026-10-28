@@ -113,6 +113,15 @@ wait_for() {
   return 1
 }
 
+# 失败时把现场留下来：pane 上 Pi 说了什么、mock provider 收到了什么。
+# 没有这两段，一个「没跑完」只能靠猜。
+dump_state() {
+  echo "--- pi pane ---" >&2
+  tmux -L nini-rec capture-pane -p -t "$SESSION" 2>/dev/null | tail -40 >&2
+  echo "--- mock provider ---" >&2
+  tail -40 "$TMP/mock.log" 2>/dev/null >&2
+}
+
 wait_for "mock-rec-model" 150 || {
   tmux -L nini-rec capture-pane -p -t "$SESSION" 2>/dev/null | tail -20 >&2
   echo "Pi 没起来" >&2; exit 3
@@ -124,14 +133,20 @@ paste() {
 }
 
 # 第一轮：触发工具调用
-paste "run the bash tool then say TOOL_RESULT_SEEN"
+#
+# 提示里**不能**出现要等的那个词。之前的提示是
+# 「run the bash tool then say TOOL_RESULT_SEEN」，而 wait_for 找的是
+# “pane 里出现 TOOL_RESULT_SEEN”——**用户自己输入的那行也满足它**。
+# 于是「Pi 根本没回话」会被判成「跑完了」：这道门禁可以在 Pi 完全没响应的情况下变绿。
+# 现在提示只说「做什么」，要等的是**助手**才说得出的话（那句话由 mock provider 给）。
+paste "run the bash tool"
 tmux -L nini-rec send-keys -t "$SESSION" Enter
-wait_for "TOOL_RESULT_SEEN" 150 || { echo "第一轮没跑完" >&2; exit 3; }
+wait_for "TOOL_RESULT_SEEN" 150 || { echo "第一轮没跑完" >&2; dump_state; exit 3; }
 
 # 第二轮：纯文本
-paste "now say SECOND_TURN_OK"
+paste "continue"
 tmux -L nini-rec send-keys -t "$SESSION" Enter
-wait_for "SECOND_TURN_OK" 150 || { echo "第二轮没跑完" >&2; exit 3; }
+wait_for "SECOND_TURN_OK" 150 || { echo "第二轮没跑完" >&2; dump_state; exit 3; }
 sleep 1
 
 # 退出（Ctrl+D 两次）——退出时 Pi 才把会话写完
@@ -146,7 +161,7 @@ sleep 0.5
 
 # ── 收集 session 文件 ──────────────────────────────────────────────────────
 SESSION_FILE="$(find "$HOME/.pi/agent/sessions" -name '*.jsonl' -type f 2>/dev/null | sort | tail -1)"
-[[ -n "$SESSION_FILE" ]] || { echo "Pi 没有产出 session 文件" >&2; ls -R "$HOME/.pi/agent" >&2; exit 3; }
+[[ -n "$SESSION_FILE" ]] || { echo "Pi 没有产出 session 文件" >&2; dump_state; ls -R "$HOME/.pi/agent" >&2; exit 3; }
 
 # 只洗路径：cwd 与临时目录名。其余（id、parentId、时间戳、正文）**原样保留**——
 # 洗掉 id 正是旧 fixture 证明不了图结构的原因。
