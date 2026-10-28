@@ -46,6 +46,8 @@
 //! 3. `max_follow_up_rounds = 0` means *no ceiling* (Pi's outer loop is
 //!    `while (true)`), not *stop immediately* — the reading that would
 //!    silently truncate a queued follow-up.
+//!
+//! invariant: 2297600
 
 use futures_util::Stream;
 use nini_core::agent::Agent;

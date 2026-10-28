@@ -370,3 +370,20 @@ serde 直接解析失败，覆盖数为 0。现在**两种形状都收**（Pi �
 **为什么断言是「形状」而不是「行为」**：这三条修的是脚本与工作流，它们没有
 Rust 的调用入口；能守住它们的只有「脚本必须长成什么样」。这比词法启发式
 （`invariants.py` 的 NONE 判定）**更强**：注入的正是当初那个缺陷本身。
+
+---
+
+## 长任务不许在半路被截断（v0.12 · A8 修复，2026-10-28）
+
+判据是 `crates/nini-conformance/tests/long_task_delivery.rs`（3 条）。
+
+| 判据 | 注入的 bug | 变红的断言 |
+|---|---|---|
+| `long_task_delivery.rs` | 把 `MAX_TOOL_ITERATIONS` 改回 50（修复前的默认值） | `a_sixty_step_task_is_delivered` 变红（provider 只被叫 50 次，交付文本没到；其余 2 条仍绿） |
+| `long_task_delivery.rs` | 把 `DEFAULT_MAX_FOLLOW_UP_ROUNDS` 改回 16，并去掉「0 表示不限」的判定 | `a_zero_follow_up_ceiling_means_unlimited` 变红（其余 2 条仍绿） |
+
+两条注入都实测过，断言变红，源码已逐字还原。
+
+**为什么这条不能只靠「默认不限」来保证**：默认值是可以被改回去的，而且改
+回去的时候**没有测试会红**——除非有一条断言直接盯着「默认不限」这件事。
+所以这条不变量守的是**默认值的语义**，不是某一次运行的结果。
