@@ -288,8 +288,7 @@ B7 需 owner 决策（R9：体积 +2–5 MB vs nini 的单文件卖点）。
 
 C2：任何计划文档的状态字段必须能在代码里指出对应符号。
 **已闭合（2026-10-28）**：台账的 `nini_state` 一律只写**符号**（行号会漂，符号不会），
-并由两处机器检查盯住——`scripts/ledger-anchors.py`（Python）与
-`crates/nini-core/tests/ledger_anchors.rs`（Rust 侧的第二实现）。判据：每条 gap 的
+并由两处机器检查盯住——`crates/nini-core/tests/ledger_anchors.rs`（Rust 侧的第二实现）。判据：每条 gap 的
 `nini_state` 至少有一个能解析的锚点（文件存在 + 符号在该文件里 grep 得到），
 且两个实现都必须抓住「故意做坏」的样例。
 C3：provider/成本层是排期问题，记录在案，不在代码层解决。
@@ -314,7 +313,7 @@ C3：provider/成本层是排期问题，记录在案，不在代码层解决。
 |---|---|
 | 差距总数 / 按类 / 按状态 / 按批次 | `python3 scripts/parity-gap.py --json` |
 | 机器可判定判据占比 | 同上（`machine_checkable` / `not_machine_checkable`） |
-| 台账锚点（每条 gap 的 `nini_state` 是否指向真实存在的符号） | `python3 scripts/ledger-anchors.py`（Rust 侧同一套规则的第二实现：`cargo test -p nini-core --test ledger_anchors`） |
+| 台账锚点（每条 gap 的 `nini_state` 是否指向真实存在的符号） | `cargo test -p nini-core --test ledger_anchors`（Rust；跑在标准测试门禁里） |
 | 行号引用总数与分布 | `python3 scripts/pi-line-refs.py --json` |
 | 快照一致性 + 行号解析 | `python3 scripts/pi-oracle-lock.py --check --verify-refs` |
 | 裸奔不变量数 | `python3 scripts/invariants.py --json` |
@@ -374,7 +373,7 @@ C3：provider/成本层是排期问题，记录在案，不在代码层解决。
 | 2 | 参数提示逐条一致，ARG 差异 0 处 | 6 处差异 |
 | 3 | A1 会损坏 session JSONL | `O_APPEND` 单行写入原子，真实后果是**顺序交错 + TokenStats 混算 + 事件乱序** |
 | 4 | Pi 有 51 个 provider、nini 有 5 个 | Pi 0.84.2 **40 个**、nini **9 个实现**；v3 已按实测写 |
-| 5 | nini 侧 `cmd_export` 在 291 行、`cmd_clone` 在 727 行 | 实为 **300 / 863**（而且还会继续漂）；**C2 已闭合**：台账改为只写**符号**（`cmd_export` / `cmd_clone`），行号由 `scripts/ledger-anchors.py` 与 `crates/nini-core/tests/ledger_anchors.rs` 核对 |
+| 5 | nini 侧 `cmd_export` 在 291 行、`cmd_clone` 在 727 行 | 实为 **300 / 863**（而且还会继续漂）；**C2 已闭合**：台账改为只写**符号**（`cmd_export` / `cmd_clone`），行号由 `crates/nini-core/tests/ledger_anchors.rs` 与 `crates/nini-core/tests/ledger_anchors.rs` 核对 |
 
 ### 9.2 仍未闭合（实现时必须验证，不得假设）
 

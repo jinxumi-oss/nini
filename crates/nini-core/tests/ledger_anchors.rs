@@ -369,6 +369,7 @@ fn check_gap(
     root: &Path,
     basenames: &HashMap<String, Vec<PathBuf>>,
     all_rs: &[PathBuf],
+    warnings: &mut Vec<String>,
 ) -> Vec<String> {
     let mut failures: Vec<String> = Vec::new();
     let text = gap
@@ -414,7 +415,16 @@ fn check_gap(
             resolved += 1;
             if let Some(line) = tok.line {
                 if !lines.iter().any(|l| l.abs_diff(line) <= LINE_TOLERANCE) {
-                    // 行号漂了：只警告，不判死（行号本来就会随代码变动）。
+                    // 行号漂了：只警告，不判死（行号本来就会随代码变动）——
+                    // 但**要说出来**，否则「行号还在，只是指错了地方」这件事
+                    // 只有人肉看代码才发现。
+                    warnings.push(format!(
+                        "{}:{} 的行号漂了（`{}` 现在在 {:?}）",
+                        target.strip_prefix(root).unwrap_or(&target).display(),
+                        line,
+                        name,
+                        lines
+                    ));
                 }
             }
         } else if symbols.iter().any(|s| &s.name == name && s.explicit) {
@@ -473,11 +483,17 @@ fn every_gap_nini_state_has_a_resolvable_code_anchor() {
         .expect("gaps array");
 
     let mut failures: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     for gap in gaps {
         let id = gap.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-        for f in check_gap(gap, &root, &basenames.0, &basenames.1) {
+        for f in check_gap(gap, &root, &basenames.0, &basenames.1, &mut warnings) {
             failures.push(format!("{id}: {f}"));
         }
+    }
+    // 报告（不判死）：行号漂了要说出来——「行号还在，只是指错了地方」
+    // 这种事只有人肉看代码才发现。
+    for w in &warnings {
+        println!("行号漂移（不判死）：{w}");
     }
     assert!(
         failures.is_empty(),
@@ -518,7 +534,7 @@ fn a_bogus_anchor_must_be_rejected() {
             "exit_criterion": "合成样本",
             "machine_checkable": true,
         });
-        let failures = check_gap(&gap, &root, &basenames.0, &basenames.1);
+        let failures = check_gap(&gap, &root, &basenames.0, &basenames.1, &mut Vec::new());
         assert!(
             !failures.is_empty(),
             "故意做坏的样例没有被抓住（{label}）：{state}"
@@ -539,7 +555,7 @@ fn a_good_anchor_must_be_accepted() {
         "exit_criterion": "合成样本",
         "machine_checkable": true,
     });
-    let failures = check_gap(&good, &root, &basenames.0, &basenames.1);
+    let failures = check_gap(&good, &root, &basenames.0, &basenames.1, &mut Vec::new());
     assert!(failures.is_empty(), "正样本竟然失败了：{failures:?}");
 
     // 符号写在路径前面（中文常见的「`符号`（`路径`）」写法）也要认。
@@ -551,7 +567,13 @@ fn a_good_anchor_must_be_accepted() {
         "exit_criterion": "合成样本",
         "machine_checkable": true,
     });
-    let failures = check_gap(&backward, &root, &basenames.0, &basenames.1);
+    let failures = check_gap(
+        &backward,
+        &root,
+        &basenames.0,
+        &basenames.1,
+        &mut Vec::new(),
+    );
     assert!(
         failures.is_empty(),
         "正样本（符号在前）竟然失败了：{failures:?}"

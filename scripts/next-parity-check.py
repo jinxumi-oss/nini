@@ -87,10 +87,11 @@ def main() -> int:
 
     # C2 —— 台账的 nini_state 必须指向**真实存在**的代码符号。
     # 行号会漂，符号不会：这一行判的是「文档没有在说一件不存在的事」。
-    ok, detail = script_ok(
-        ["python3", "scripts/ledger-anchors.py"], "ledger-anchors"
-    )
-    add("C2", "python3 scripts/ledger-anchors.py（每条 gap 的 nini_state 都能解析到代码符号）", ok, detail)
+    #
+    # 检查本身是 **Rust**（`crates/nini-core/tests/ledger_anchors.rs`）——
+    # 它跑在 `cargo test` 里，所以标准测试门禁就能抓住它，不需要解释器。
+    ok, detail = cargo_test("nini-core", "ledger_anchors")
+    add("C2", "cargo test -p nini-core --test ledger_anchors（每条 gap 的 nini_state 都能解析到代码符号）", ok, detail)
 
     if not args.quick:
         ok, detail = cargo_test("nini-conformance", "citations_resolve")
