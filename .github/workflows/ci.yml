@@ -136,7 +136,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Pi 0.85.1 的 package.json 要求 node >= 22.19.0（它的工具层用了
+          # `node:fs` 的 globSync）。node 20 装得上、跑不起来。
+          node-version: '24'
       - name: Install Pi 0.85.1 — the oracle needs the real thing
         # 黄金值是**跑 Pi 自己的代码**产出的（scripts/pi-tool-dump.mjs、
         # scripts/truncate-oracle.mjs、scripts/pi-session-record.sh）。
