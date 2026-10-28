@@ -101,7 +101,7 @@ JSON
 
 # ── 起 Pi（真 Pi，不是 nini）────────────────────────────────────────────────
 tmux -L nini-rec -f /dev/null new-session -d -s "$SESSION" -x 100 -y 30 -c "$PROJECT" \
-  "env PI_CODING_AGENT_DIR=$HOME/.pi/agent $PI_BIN --provider mock-rec --model mock-rec-model"
+  "env PI_CODING_AGENT_DIR=$HOME/.pi/agent PI_OFFLINE=1 $PI_BIN --provider mock-rec --model mock-rec-model"
 tmux -L nini-rec set-option -t "$SESSION" -g extended-keys on 2>/dev/null || true
 
 wait_for() {
@@ -126,6 +126,21 @@ wait_for "mock-rec-model" 150 || {
   tmux -L nini-rec capture-pane -p -t "$SESSION" 2>/dev/null | tail -20 >&2
   echo "Pi 没起来" >&2; exit 3
 }
+
+# 等启动流程真的结束。
+#
+# Pi 启动时会检查 fd / ripgrep，缺了就**下载**（tools-manager.js 的 ensureTool）。
+# 在 CI 的 runner 上那是一次 GitHub 下载，几十秒起步；这段时间 pane 上写着
+# 「Startup is still in progress」，而 Pi **不处理输入**——于是我们贴进去的第一条
+# 提示被启动流程吃掉，脚本只能等超时。
+#
+# PI_OFFLINE=1 让它跳过下载（fd/rg 只是 grep/find 工具的可选加速，本场景用不到），
+# 这条等待是双保险：两处都堵上，才不会因为「启动慢了一点点」而红。
+for _ in $(seq 1 150); do
+  tmux -L nini-rec capture-pane -p -t "$SESSION" 2>/dev/null \
+    | grep -qF "Startup is still in progress" || break
+  sleep 0.2
+done
 
 paste() {
   printf '%s' "$1" | tmux -L nini-rec load-buffer -b "nini-rec-$$" -
