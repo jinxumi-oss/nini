@@ -1,6 +1,6 @@
 ## v0.13.0 — models.json 里的 provider，真的能用了（2026-10-29）
 
-1743 tests, all green. 这一版修的是一个**自相矛盾**的事实：nini 的
+1744 tests, all green. 这一版修的是一个**自相矛盾**的事实：nini 的
 `--list-models` 能把你写在 `~/.nini/agent/models.json` 里的 provider 与模型
 一条不落地列出来，而你用 `--provider` 去点名它，nini 说「没这个 provider」。
 
@@ -119,7 +119,29 @@ parse 入口。
 只出现在 `--list-models` 的警告里。实测过 Pi 之后，nini 的 TUI 与 `-p`
 路径不报解析错误，与它一致。
 
-测试 1738 → 1743。
+### 七、发布前 CI 变红，抓出一个**跟 provider 无关**的老毛病
+
+v0.13.0 的第一个 CI（run 40829135270）在 **macOS** 上变红：
+`crates/nini-tui/tests/agent_wire_e2e.rs` 的
+`submit_triggers_agent_and_renders_response` 挂在 `tool result label missing`
+——工具结果渲染成了 `✗` 而不是 `✓`，说明**工具执行失败了**。
+
+顺着往下查，发现根因不在 TUI，也不在 provider，而在 **bash 工具挑 shell 的规则**：
+
+* Pi 挑 shell 的规则是 `getShellConfig`（`dist/utils/shell.js:92-102`）——
+  `/bin/bash` 存在就用 → PATH 上的 `bash` → 兜底 `sh`，**从不问环境**；
+* nini 原来读 `$SHELL`；
+* 而 GitHub Actions 的 macOS runner 上 `$SHELL` 指向 runner 的**包装脚本**
+  `/Users/runner/bin/bash`——那不是能跑命令的 shell，于是**每一条**命令都失败。
+
+这不只是「CI 偶发」：登录 shell 是 zsh 的用户，nini 会拿 zsh 去跑命令，而 Pi 给的是
+bash——本来就是一个与 Pi 不一致的行为。现在 nini 用与 Pi 同一套规则
+（`/bin/bash` → PATH 上的 `bash` → `sh`）。
+
+反向验证：把实现改回读 `$SHELL`，在 `SHELL=/Users/runner/bin/bash` 下那条 TUI 测试
+立即变红（`tool result label missing`），改回即绿——和 macOS CI 上看到的一模一样。
+
+测试 1743 → 1744。
 
 ## v0.12.0 — 长任务不再在半路被截断（2026-10-28）
 

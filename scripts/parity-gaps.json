@@ -498,6 +498,22 @@
       "layer": null
     },
     {
+      "id": "B16",
+      "class": "B",
+      "severity": "P2",
+      "title": "nini 的 bash 工具听 $SHELL 的，Pi 不听：命令在 CI runner（macOS）上全部失败，工具结果渲染成 ✗ 而不是 ✓；登录 shell 是 zsh 的用户拿到的也是 zsh 而不是 Pi 给的 bash",
+      "pi_basis": "已安装包的 dist/utils/shell.js:58-103（getShellConfig：自定义 shellPath → Windows 找 Git Bash → Unix 下 /bin/bash 存在就用 → PATH 上的 bash → 兜底 {shell:'sh', args:['-c']}；**从不读 $SHELL**）、dist/core/tools/bash.js:117（createBashOperations 用 getShellConfig）、:50-53（spawn(shellConfig.shell, [...args, command])）",
+      "nini_state": "已修（2026-10-29，v0.13）：`crates/nini-tools/src/bash.rs` 原先是 `std::env::var(\"SHELL\").unwrap_or_else(|_| \"/bin/sh\")`；现在与 Pi 同一套规则（`resolve_shell()`）：`/bin/bash` 存在就用 → PATH 上的 `bash`（复用 `operations::bash_which`）→ 兜底 `sh`。发现的经过：GitHub Actions 的 macOS runner 上 `$SHELL` 指向 runner 的包装脚本 `/Users/runner/bin/bash`，它不是能跑命令的 shell，于是**每一条**命令都返回错误，工具结果渲染成 `✗`，`crates/nini-tui/tests/agent_wire_e2e.rs` 的 `submit_triggers_agent_and_renders_response` 因此变红（CI run 40829135270 macOS 失败）。反向验证：把实现改回读 `$SHELL`，在 `SHELL=/Users/runner/bin/bash` 下该测试立即变红（tool result label missing），改回即绿。",
+      "pi_state": "Pi 从不问环境要 shell：Unix 下永远是 /bin/bash（或 PATH 上的 bash，或 sh 兜底）。",
+      "status": "fixed",
+      "oracle": "crates/nini-tools/src/bash.rs 的单测 `the_shell_is_not_taken_from_the_environment`（解析结果只能是 /bin/bash、PATH 上的 bash 或 sh，绝不是 zsh/fish 这类登录 shell）；crates/nini-tui/tests/agent_wire_e2e.rs 的 `submit_triggers_agent_and_renders_response`（在 `SHELL=/Users/runner/bin/bash` 这类坏环境下也必须绿——它正是 macOS CI 变红的那条）",
+      "blocking_decision": null,
+      "round": "v0.13",
+      "exit_criterion": "cargo test -p nini-tools 退出 0；`SHELL=/Users/runner/bin/bash cargo test -p nini-tui --test agent_wire_e2e` 退出 0；把实现改回读 $SHELL，上面第二条必须变红",
+      "machine_checkable": true,
+      "layer": null
+    },
+    {
       "id": "D5",
       "class": "D",
       "severity": "P3",

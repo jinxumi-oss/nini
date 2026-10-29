@@ -136,14 +136,28 @@ impl Tool for BashTool {
 
         let started = std::time::Instant::now();
 
-        // Build command. Use $SHELL or /bin/sh.
+        // Build command. The shell is chosen the way **Pi** chooses
+        // it (`getShellConfig`, `dist/utils/shell.js:92-102` on Unix):
         //
+        //   1. `/bin/bash`, if it is there
+        //   2. a `bash` on PATH
+        //   3. `sh`
+        //
+        // Pi never looks at `$SHELL`, and nini used to. That difference
+        // is not academic: on a GitHub Actions macOS runner `$SHELL`
+        // points at the runner's **wrapper** (`/Users/runner/bin/bash`),
+        // which is not the shell a command should run in — every
+        // command came back as an error, so every tool result rendered
+        // as `✗` instead of `✓`. Trusting `$SHELL` also meant that a
+        // user whose login shell is zsh got zsh, where Pi gives bash.
+        //
+        // The shell is chosen the way **Pi** chooses it
         // v0.8.9 (P0-1): `shell_command` is the single place that puts
         // the child in its own process group. It used to be duplicated
         // in `bash_runner.rs` — and this file's copy was missing the
         // `pre_exec(setsid)` entirely, which silently turned the
         // process-group kill into a no-op on the LLM's bash path.
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = resolve_shell();
         let mut cmd = crate::procgroup::shell_command_tokio(&shell, &parsed.command, &ctx.cwd);
 
         let mut child = cmd
@@ -528,6 +542,31 @@ fn bytecount_lines(b: &[u8]) -> usize {
 mod tests {
     use super::*;
 
+    /// The shell is **not** taken from `$SHELL`.
+    ///
+    /// Pi: `getShellConfig` (`dist/utils/shell.js:92-102`) picks
+    /// `/bin/bash`, then a `bash` on PATH, then `sh` — and never asks
+    /// the environment which shell the user prefers. That matters on a
+    /// CI runner, where `$SHELL` can point at a wrapper that is not a
+    /// shell at all; nini used to trust it, and every command came back
+    /// as an error there.
+    #[test]
+    fn the_shell_is_not_taken_from_the_environment() {
+        let resolved = resolve_shell();
+        assert!(
+            resolved == "/bin/bash" || resolved == "sh" || resolved.ends_with("/bash"),
+            "the shell must be one Pi would pick, got {resolved}"
+        );
+        // The one thing that must never happen: the user's login shell
+        // decides. (We do not mutate the environment here — a test that
+        // did would race every other test in this binary — so we assert
+        // on the resolution rule instead.)
+        assert!(
+            !resolved.starts_with("/bin/zsh") && !resolved.starts_with("/bin/fish"),
+            "a login shell is not what Pi runs commands in: {resolved}"
+        );
+    }
+
     #[test]
     fn bash_spec_is_concise_and_nonoverlapping() {
         // v0.8 regression guard: snippet + description must not duplicate
@@ -904,4 +943,20 @@ mod tests {
         // ourselves. (No explicit assertion — absence of crash is the
         // verification.)
     }
+}
+
+/// The shell a command runs in.
+///
+/// Pi: `getShellConfig` (`dist/utils/shell.js:92-102`, Unix branch) —
+/// `/bin/bash` if it exists, else a `bash` on PATH, else `sh`. Pi does
+/// **not** consult `$SHELL`; nini does now too, for the reason spelled
+/// out at the call site.
+fn resolve_shell() -> String {
+    if std::path::Path::new("/bin/bash").exists() {
+        return "/bin/bash".to_string();
+    }
+    if let Some(bash) = crate::operations::bash_which("bash") {
+        return bash.to_string_lossy().into_owned();
+    }
+    "sh".to_string()
 }

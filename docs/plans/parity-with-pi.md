@@ -190,6 +190,18 @@ oracle：`crates/nini-cli/tests/models_json_provider.rs`（真二进制 + wiremo
 （nini 与真 Pi 0.85.1 跑同一份文件，断言两边 mock 收到的 `Authorization` 字面相等，
 缺 baseUrl / 缺 api / 缺凭证时两边指向同一个缺失项）。
 
+**B16**（nini 的 bash 工具听 `$SHELL` 的，Pi 不听）本轮**关掉**：Pi 挑 shell 的规则
+是 `getShellConfig`（`dist/utils/shell.js:92-102`，Unix 分支）——`/bin/bash` 存在就用
+→ PATH 上的 `bash` → 兜底 `sh`，**从不问环境**。nini 原来读 `$SHELL`，于是
+GitHub Actions 的 macOS runner 上（`$SHELL=/Users/runner/bin/bash`，那是 runner 的
+包装脚本，不是能跑命令的 shell）**每一条**命令都失败，工具结果渲染成 `✗` 而不是
+`✓`，`crates/nini-tui/tests/agent_wire_e2e.rs` 的
+`submit_triggers_agent_and_renders_response` 因此变红（CI run 40829135270 macOS
+失败）。现在 nini 用与 Pi 同一套规则；登录 shell 是 zsh 的用户拿到的也回到 Pi 给的
+bash。oracle：`crates/nini-tools/src/bash.rs` 的
+`the_shell_is_not_taken_from_the_environment`，以及在坏 `$SHELL` 下仍须绿的那条
+TUI 测试（改回读 `$SHELL` 必须变红）。
+
 **B15**（项目级 `<cwd>/.nini/models.json` 的 provider 配置**不被采用**）与
 **D5**（Pi 的 oauth/headers/authHeader/model 级字段在 nini 侧无承载点、模型级
 baseUrl/api/compat/cost/samplingParams/thinkingLevelMap 同理，以及同名内置 provider
