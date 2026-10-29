@@ -194,6 +194,15 @@ struct Args {
     #[arg(long, value_name = "N")]
     max_iterations: Option<usize>,
 
+    /// Ceiling on tool calls running at once. 0 = no ceiling (default).
+    ///
+    /// v0.14: Pi 0.85.1 runs a turn's tool calls all at once
+    /// (`references/pi-0.85.1/src/loop/agent-loop.ts:547-549`), so the
+    /// default is no ceiling. This flag is how a ceiling is put back —
+    /// nini's own knob, Pi has no counterpart.
+    #[arg(long, value_name = "N")]
+    max_parallel_tools: Option<usize>,
+
     /// Not supported. nini renders the export from the TUI's transcript,
     /// which takes no path; `/export` always writes to the exports
     /// directory (see `--help` output of `/export`).
@@ -312,6 +321,7 @@ async fn main() -> Result<()> {
         append_system_prompt,
         thinking,
         max_iterations,
+        max_parallel_tools,
         verbose,
         skill,
         offline,
@@ -511,6 +521,7 @@ async fn main() -> Result<()> {
                     skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
                     thinking: thinking.clone(),
                     max_iterations,
+                    max_parallel_tools,
                     verbose,
                     ..app::AppConfig::for_tool_selection()
                 },
@@ -576,6 +587,7 @@ async fn main() -> Result<()> {
                     skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
                     thinking: thinking.clone(),
                     max_iterations,
+                    max_parallel_tools,
                     verbose,
                     ..app::AppConfig::for_tool_selection()
                 },
@@ -606,6 +618,7 @@ async fn main() -> Result<()> {
                 skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
                 thinking: thinking.clone(),
                 max_iterations,
+                max_parallel_tools,
                 verbose,
             })
             .await

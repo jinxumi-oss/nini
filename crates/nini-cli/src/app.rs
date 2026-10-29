@@ -70,6 +70,13 @@ pub(crate) struct AppConfig {
     /// The cap used to be a hard-coded 50 that Pi 0.85.1 does not have,
     /// and it truncated long tasks before they delivered.
     pub max_iterations: Option<usize>,
+    /// v0.14: `--max-parallel-tools <N>`. Ceiling on tool calls running
+    /// at once; `None` means "take it from settings, else no ceiling".
+    ///
+    /// The default is no ceiling — Pi 0.85.1 runs a turn's tool calls all
+    /// at once — and this flag is how a user puts one back. nini's own
+    /// knob; Pi has no counterpart.
+    pub max_parallel_tools: Option<usize>,
     /// v0.10: `--verbose`. Consumed once by `init_logging` at the top of
     /// `main`, before any entry point runs; kept here so the flag that
     /// produced it and the config that carried it stay in one struct.
@@ -102,6 +109,7 @@ impl AppConfig {
             skill_paths: Vec::new(),
             thinking: None,
             max_iterations: None,
+            max_parallel_tools: None,
             verbose: false,
         }
     }
@@ -231,6 +239,13 @@ pub(crate) fn build_tui_run_config(
             .max_iterations
             .or(settings.max_iterations)
             .unwrap_or(nini_core::agent::MAX_TOOL_ITERATIONS),
+        // v0.14: the same shape as the turn cap above — the command line
+        // beats the settings file (it was typed for this invocation), and
+        // the fallback is "no ceiling", which is what Pi 0.85.1 does.
+        max_parallel_tools: cfg
+            .max_parallel_tools
+            .or(settings.max_parallel_tools)
+            .unwrap_or(nini_core::agent::DEFAULT_MAX_PARALLEL_TOOLS),
         ..RunConfig::new(cfg_model)
     };
     (config, skills_in_prompt)
@@ -930,6 +945,7 @@ mod p0_1_skills_tests {
             skill_paths: Vec::new(),
             thinking: None,
             max_iterations: None,
+            max_parallel_tools: None,
             verbose: false,
         }
     }
@@ -1209,6 +1225,7 @@ mod trust_wiring_tests {
             skill_paths: Vec::new(),
             thinking: None,
             max_iterations: None,
+            max_parallel_tools: None,
             verbose: false,
         }
     }
@@ -1429,6 +1446,51 @@ mod cli_flag_wiring_tests {
         );
     }
 
+    /// `--max-parallel-tools` beats the settings file, and the fallback
+    /// when neither says anything is "no ceiling" — the way Pi 0.85.1 runs
+    /// a turn's tool calls.
+    #[test]
+    fn max_parallel_tools_on_the_command_line_beats_the_settings_file() {
+        let mut settings = nini_core::settings::Settings::default();
+        settings.max_parallel_tools = Some(4);
+
+        let mut cfg = AppConfig::for_tool_selection();
+        cfg.max_parallel_tools = Some(2);
+        let (run_cfg, _) = build_tui_run_config(
+            &settings,
+            std::path::Path::new("/tmp"),
+            &nini_core::tool::ToolRegistry::new(),
+            &cfg,
+        );
+        assert_eq!(
+            run_cfg.max_parallel_tools, 2,
+            "the settings file won over the flag"
+        );
+
+        // With no flag the file still applies.
+        let (from_file, _) = build_tui_run_config(
+            &settings,
+            std::path::Path::new("/tmp"),
+            &nini_core::tool::ToolRegistry::new(),
+            &AppConfig::for_tool_selection(),
+        );
+        assert_eq!(from_file.max_parallel_tools, 4);
+
+        // With neither, there is no ceiling — the same fallback
+        // `--max-iterations` uses.
+        let empty = nini_core::settings::Settings::default();
+        let (from_nothing, _) = build_tui_run_config(
+            &empty,
+            std::path::Path::new("/tmp"),
+            &nini_core::tool::ToolRegistry::new(),
+            &AppConfig::for_tool_selection(),
+        );
+        assert_eq!(
+            from_nothing.max_parallel_tools, 0,
+            "the default ceiling must be 'no ceiling', not 8"
+        );
+    }
+
     /// `--skill` *overrides* discovery, as its help text says. This is the
     /// only reason to reach for the flag: narrowing.
     #[test]
@@ -1498,6 +1560,7 @@ mod provider_fallback_tests {
             skill_paths: Vec::new(),
             thinking: None,
             max_iterations: None,
+            max_parallel_tools: None,
             verbose: false,
         }
     }

@@ -1006,6 +1006,31 @@ mod parallel_ceiling_tests {
         Arc::new(ProgrammedProvider::from_turns(vec![turn0, turn1]))
     }
 
+    /// The same run as `run_with_limit`, but with whatever ceiling
+    /// `RunConfig::new` hands out — no explicit limit.
+    async fn run_without_limit(delay: Duration) -> (u32, u32, Duration) {
+        let probe = Arc::new(ConcurrencyProbeTool::new(delay));
+        let peak = probe.peak_live.clone();
+        let total = probe.total.clone();
+        let tools = ToolRegistry::new().register(probe as Arc<dyn Tool>);
+        let cfg = RunConfig::new("test-model");
+        let mut agent = Agent::new(provider_with(CALLS), tools, cfg);
+
+        let started = Instant::now();
+        {
+            let mut stream = Box::pin(agent.run(AgentMessage::user("go")));
+            use futures_util::StreamExt;
+            while let Some(ev) = stream.next().await {
+                let _ = ev.expect("agent stream error");
+            }
+        }
+        (
+            peak.load(Ordering::SeqCst),
+            total.load(Ordering::SeqCst),
+            started.elapsed(),
+        )
+    }
+
     async fn run_with_limit(limit: usize, delay: Duration) -> (u32, u32, Duration) {
         let probe = Arc::new(ConcurrencyProbeTool::new(delay));
         let peak = probe.peak_live.clone();
@@ -1028,6 +1053,46 @@ mod parallel_ceiling_tests {
             total.load(Ordering::SeqCst),
             started.elapsed(),
         )
+    }
+
+    /// v0.14 (Pi parity): the *default* ceiling must be "no limit".
+    ///
+    /// Pi 0.85.1's parallel branch is an unbounded `Promise.all`
+    /// (`references/pi-0.85.1/src/loop/agent-loop.ts:547-549`), so a turn
+    /// with K tool calls runs K of them at once. nini used to cap that at
+    /// 8 — a cap Pi does not have, and one the user could not change
+    /// (no flag, no settings key). `0` is nini's "unlimited" spelling,
+    /// the same one `--max-iterations` uses.
+    #[test]
+    fn the_default_ceiling_is_unlimited() {
+        assert_eq!(
+            RunConfig::new("test-model").max_parallel_tools,
+            0,
+            "the default tool-concurrency ceiling must be 0 (unlimited), \
+             the way Pi 0.85.1 runs every tool call of a turn at once"
+        );
+    }
+
+    /// v0.14 (Pi parity): with no ceiling, a turn's K tool calls all run
+    /// at once — the same peak Pi reports for the same script.
+    ///
+    /// The probe counts its own in-flight bodies, so this measures
+    /// concurrency, not "all calls eventually finished". The 60ms delay
+    /// is the same one the ceiling tests use; it keeps the in-flight
+    /// window open long enough for the counter to see every call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_default_batch_runs_all_calls_at_once() {
+        let (peak, total, _) = run_without_limit(Duration::from_millis(60)).await;
+        println!("NINI_PEAK={peak}");
+        assert_eq!(
+            total, CALLS as u32,
+            "every tool call must still run — the ceiling queues, it does not drop"
+        );
+        assert_eq!(
+            peak, CALLS as u32,
+            "peak concurrency was {peak}, expected all {CALLS} calls of the turn \
+             to run at once (Pi 0.85.1 has no concurrency cap)"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

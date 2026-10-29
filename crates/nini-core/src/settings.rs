@@ -56,6 +56,16 @@ pub struct Settings {
     /// because that is the camelCase spelling Pi's own settings use.
     #[serde(default, alias = "maxIterations")]
     pub max_iterations: Option<usize>,
+    /// v0.14: ceiling on tool calls running at once. `0` / absent = no
+    /// ceiling.
+    ///
+    /// Pi 0.85.1 runs a turn's tool calls all at once
+    /// (`references/pi-0.85.1/src/loop/agent-loop.ts:547-549`), so the
+    /// default is "no ceiling"; this key is how a user puts one back.
+    /// `maxParallelTools` is accepted as an alias because that is the
+    /// camelCase spelling Pi's own settings use.
+    #[serde(default, alias = "maxParallelTools")]
+    pub max_parallel_tools: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -116,6 +126,9 @@ pub fn load_settings(cwd: &Path) -> Settings {
     }
     if project_s.max_iterations.is_some() {
         user_s.max_iterations = project_s.max_iterations;
+    }
+    if project_s.max_parallel_tools.is_some() {
+        user_s.max_parallel_tools = project_s.max_parallel_tools;
     }
     user_s
 }
@@ -412,6 +425,52 @@ mod tests {
         .unwrap();
         let s = load_settings(dir.path());
         assert_eq!(s.provider.as_deref(), Some("anthropic"));
+    }
+
+    /// v0.14: the tool-concurrency ceiling is readable from the settings
+    /// file under Pi's camelCase spelling, and a project-level file
+    /// overrides the user-level one — exactly like `maxIterations`.
+    ///
+    /// One test, because `NINI_AGENT_DIR` is process-wide: two tests
+    /// redirecting it would see each other's files.
+    #[test]
+    fn max_parallel_tools_is_read_from_the_camel_case_key() {
+        let guard = crate::paths::agent_lock();
+
+        // The user-level file alone.
+        let mut uf = std::fs::File::create(guard.path().join("settings.json")).unwrap();
+        writeln!(uf, r#"{{"maxParallelTools": 3}}"#).unwrap();
+
+        let dir = tempdir().unwrap();
+        let pi_dir = dir.path().join(".nini");
+        std::fs::create_dir_all(&pi_dir).unwrap();
+
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.max_parallel_tools,
+            Some(3),
+            "the user-level `maxParallelTools` key was not read"
+        );
+
+        // A project-level file overrides it.
+        let mut pf = std::fs::File::create(pi_dir.join("settings.json")).unwrap();
+        writeln!(pf, r#"{{"maxParallelTools": 5}}"#).unwrap();
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.max_parallel_tools,
+            Some(5),
+            "the project-level file must override the user-level one"
+        );
+
+        // The key is absent: no ceiling from the file, so the default
+        // (no ceiling) stands.
+        std::fs::remove_file(pi_dir.join("settings.json")).unwrap();
+        std::fs::remove_file(guard.path().join("settings.json")).unwrap();
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.max_parallel_tools, None,
+            "a settings file without the key must not invent a ceiling"
+        );
     }
 
     #[test]

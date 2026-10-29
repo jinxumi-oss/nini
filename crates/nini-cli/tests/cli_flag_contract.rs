@@ -293,6 +293,63 @@ fn no_advertised_flag_is_dropped_silently() {
     );
 }
 
+/// v0.14: `--max-parallel-tools N` is a real flag, not a refused one.
+///
+/// It caps how many of a turn's tool calls run at once. `0` (the default)
+/// means "no cap", the way Pi 0.85.1 runs every tool call of a turn at
+/// once. The flag must not show up in the refusal list.
+#[test]
+fn max_parallel_tools_is_accepted_rather_than_refused() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .args([
+            "--max-parallel-tools",
+            "4",
+            "-p",
+            "hi",
+            "--provider",
+            "fixture",
+        ])
+        .output()
+        .expect("nini runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "`nini --max-parallel-tools 4` did not run: exit {:?}, stderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        !stderr.contains("--max-parallel-tools"),
+        "--max-parallel-tools is refused rather than honoured:\n{stderr}"
+    );
+}
+
+/// An illegal N is handled exactly like an illegal `--max-iterations`:
+/// clap's own error, exit code 2. This asserts the *difference* between
+/// the two invocations rather than clap's wording, which is free to change.
+#[test]
+fn an_illegal_max_parallel_tools_fails_like_an_illegal_max_iterations() {
+    let run = |flag: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+            .args([flag, "-1", "-p", "hi", "--provider", "fixture"])
+            .output()
+            .expect("nini runs")
+            .status
+            .code()
+    };
+    let parallel = run("--max-parallel-tools");
+    let iterations = run("--max-iterations");
+    assert_ne!(
+        parallel,
+        Some(0),
+        "`--max-parallel-tools -1` was accepted — an illegal N must fail"
+    );
+    assert_eq!(
+        parallel, iterations,
+        "`--max-parallel-tools -1` and `--max-iterations -1` must fail the same way"
+    );
+}
+
 /// The specific hole `no_advertised_flag_is_dropped_silently` was written for.
 #[test]
 fn export_with_a_path_is_refused_rather_than_swallowed() {

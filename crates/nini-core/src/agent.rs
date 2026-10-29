@@ -425,14 +425,29 @@ impl Default for RetrySettings {
     }
 }
 
-/// v0.8.9 (P2-10): default ceiling on concurrently-running tool calls
-/// from one assistant turn.
+/// v0.8.9 (P2-10) put a default ceiling on concurrently-running tool
+/// calls from one assistant turn; v0.14 removed it (see below).
 ///
-/// Eight is comfortably above the "read a pile of files in parallel"
-/// pattern that motivated v0.8.5's parallel execution, and low enough
-/// that a model emitting 30 `bash` calls forks 8 process trees rather
-/// than 30.
-pub const DEFAULT_MAX_PARALLEL_TOOLS: usize = 8;
+/// v0.14 (Pi parity): the default is now **0 = no ceiling**, the way Pi
+/// 0.85.1 runs a turn's tool calls (`references/pi-0.85.1/src/loop/agent-loop.ts:547-549`
+/// — an unbounded `Promise.all`). The cap of 8 was nini's own; Pi has
+/// no counterpart, and the user had no way to change it.
+///
+/// The v0.8.9 rationale — "30 `bash` calls fork 30 process trees, and
+/// each buffers `STREAM_CAPTURE_CAP`" — did not survive the numbers:
+/// `STREAM_CAPTURE_CAP` is 8MiB **per stream**
+/// (`crates/nini-tools/src/bash.rs:395`), while production sends 64KiB
+/// per stream (`crates/nini-tools/src/bash.rs:180` +
+/// `crates/nini-core/src/tool.rs:158`), so 30 concurrent calls buffer
+/// about 1.9MiB, not 240MiB. There is no measured data in the repo
+/// backing the original figure either.
+///
+/// The dangerous half is already guarded elsewhere: writes are
+/// serialised per canonical path (`crates/nini-tools/src/mutation_queue.rs:62-107`),
+/// which is the same shape as Pi's `withFileMutationQueue`. A user who
+/// wants the ceiling back asks for it with `--max-parallel-tools N` or
+/// `maxParallelTools` in settings.json.
+pub const DEFAULT_MAX_PARALLEL_TOOLS: usize = 0;
 
 /// v0.10 (R1): default bound on follow-up revivals of the turn loop.
 ///

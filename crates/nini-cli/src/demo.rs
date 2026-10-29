@@ -74,6 +74,12 @@ pub(crate) async fn run_demo(
             .max_iterations
             .or(settings.max_iterations)
             .unwrap_or(nini_core::agent::MAX_TOOL_ITERATIONS),
+        // v0.14: the tool-concurrency ceiling. The default is "no
+        // ceiling" — Pi 0.85.1 runs a turn's tool calls all at once.
+        max_parallel_tools: tool_cfg
+            .max_parallel_tools
+            .or(settings.max_parallel_tools)
+            .unwrap_or(nini_core::agent::DEFAULT_MAX_PARALLEL_TOOLS),
         ..RunConfig::new(model.to_string())
     };
     let mut agent = Agent::new(provider_impl, tools, config);
@@ -215,6 +221,12 @@ pub(crate) async fn run_print(
             .max_iterations
             .or(settings.max_iterations)
             .unwrap_or(nini_core::agent::MAX_TOOL_ITERATIONS),
+        // v0.14: the tool-concurrency ceiling. The default is "no
+        // ceiling" — Pi 0.85.1 runs a turn's tool calls all at once.
+        max_parallel_tools: tool_cfg
+            .max_parallel_tools
+            .or(settings.max_parallel_tools)
+            .unwrap_or(nini_core::agent::DEFAULT_MAX_PARALLEL_TOOLS),
         ..RunConfig::new(model.to_string())
     };
     let mut agent = Agent::new(provider_impl, tools, config);
