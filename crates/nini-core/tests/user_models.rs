@@ -62,6 +62,29 @@ fn pis_spelling_is_read() {
     assert_eq!(m.reasoning, Some(true));
 }
 
+/// The provider's **connection** settings are read in Pi's spelling too.
+///
+/// `baseUrl` and `apiKey` are the two fields that decide where a request
+/// goes and what it carries. Pi writes them in camelCase; nini's struct
+/// had only the snake_case spelling and no alias, so serde dropped both
+/// keys on the floor — the provider was in the catalogue and its
+/// connection settings were gone.
+#[test]
+fn the_provider_connection_settings_are_read_in_pis_spelling() {
+    let cfg: ModelsJson = serde_json::from_str(pi_style_models_json()).expect("models.json parses");
+    let provider = cfg.providers.get("aiio-failover").expect("provider");
+    assert_eq!(
+        provider.base_url.as_deref(),
+        Some("http://127.0.0.1:9877/v1"),
+        "Pi writes `baseUrl`; nini must read it, not ignore it"
+    );
+    assert_eq!(
+        provider.api_key.as_deref(),
+        Some("proxy-handles-auth"),
+        "Pi writes `apiKey`; nini must read it, not ignore it"
+    );
+}
+
 #[test]
 fn a_declared_model_becomes_a_spec_with_the_users_window() {
     let cfg: ModelsJson = serde_json::from_str(pi_style_models_json()).expect("models.json parses");

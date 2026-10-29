@@ -176,6 +176,29 @@ runaway 兜底防止真死循环；`max_follow_up_rounds` 同理（16 → 0 = �
 （3 条）+ `scripts/e2e-long-task.sh`（真二进制 + mock provider，nini 与真 Pi 0.85.1
 跑同一个 60 步剧本，断言两边都交付、请求次数都是 61 且相等）。
 
+**B14**（models.json 声明的 provider 用不了）本轮**关掉**：nini 此前只把
+`models.json` 当**模型目录**——`baseUrl`/`apiKey` 因为 `ProviderConfig` 没有
+camelCase 别名**连读都没读进来**（serde 整条丢弃），构造层只认十一个硬编码名字，
+于是用户自己配的网关 provider 报 `unknown provider: my-gw`，而 Pi 照着文件里的
+`baseUrl` 就去连了。现在：camelCase 别名读得进来（snake_case 旧拼法不回归）、Pi 的
+配置值求值（`$VAR`/`${VAR}`/`!cmd`/`$$`/`$!`）有了、构造层先查**用户级**
+models.json（命中即优先，11 个内置分支一行未改）、`baseUrl` 回退链 = models.json >
+原分支的 `*_BASE_URL` 环境变量 > 内置默认常量 > 报 `"baseUrl" is required`，
+`--list-models` 按 Pi 的格式在 stderr 打 `Warning: errors loading models.json:`。
+oracle：`crates/nini-cli/tests/models_json_provider.rs`（真二进制 + wiremock，断言
+请求打到文件里的 baseUrl 且带上文件里的 apiKey）+ `scripts/e2e-models-json-provider.sh`
+（nini 与真 Pi 0.85.1 跑同一份文件，断言两边 mock 收到的 `Authorization` 字面相等，
+缺 baseUrl / 缺 api / 缺凭证时两边指向同一个缺失项）。
+
+**B15**（项目级 `<cwd>/.nini/models.json` 的 provider 配置**不被采用**）与
+**D5**（Pi 的 oauth/headers/authHeader/model 级字段在 nini 侧无承载点、模型级
+baseUrl/api/compat/cost/samplingParams/thinkingLevelMap 同理，以及同名内置 provider
+命中 models.json 条目时 fallback 轮转不生效）本轮**明确不做并登记**：项目级文件
+只用于展示（`--list-models`、`merge_user_overrides`），**不参与 provider 构造**——
+一个用户 merely clone 的仓库不该能指使 nini 去连它选的主机、把凭证发过去，或执行
+它写的 `!cmd`。Pi 0.85.1 根本没有项目级 models.json 这个概念，所以「与 Pi 一致」的
+答案就是**不读**。
+
 ---
 
 ## 3. 排序规则（与 GOALS 合并后的唯一版本）

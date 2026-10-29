@@ -166,10 +166,20 @@ async def completions(request: web.Request) -> web.StreamResponse:
     # second agent spawned while the first was still streaming (A1) — and
     # overlap needs both ends of both intervals, so the end is stamped too.
     started = time.time()
+    # v0.13: the credential the request carried is logged too. The
+    # oracle needs to say "the request carried the key the file
+    # declares", and a mock that drops every header cannot answer that:
+    # "no header" and "the wrong header" look the same.
+    #
+    # The fields are **appended**: the existing ones, and their order,
+    # are what the other oracles count on.
+    auth = request.headers.get("authorization", "-")
+    x_api_key = request.headers.get("x-api-key", "-")
     print(
         f"[mock] request #{idx} START {time.strftime('%H:%M:%S', time.localtime(started))}."
         f"{int((started % 1) * 1000):03d} turns={len(body.get('messages') or [])}msgs "
-        f"tools={len(body.get('tools') or [])} → {turn.get('type')}",
+        f"tools={len(body.get('tools') or [])} → {turn.get('type')} "
+        f"auth={auth} x-api-key={x_api_key}",
         flush=True,
     )
 

@@ -134,9 +134,12 @@ const STDERR_WHITELIST: &[(&str, usize, &str)] = &[
     ),
     (
         "crates/nini-cli/src/main.rs",
-        2,
+        3,
         "the refused-flag messages: printed before the TUI starts, and \
-         they are the reason the user is told",
+         they are the reason the user is told. The third one is Pi's \
+         `Warning: errors loading models.json:` — it says which of the \
+         user's own provider entries cannot be used, and `--list-models` \
+         is a one-shot command that never opens a TUI",
     ),
     (
         "crates/nini-cli/src/demo.rs",

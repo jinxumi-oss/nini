@@ -522,6 +522,18 @@ async fn main() -> Result<()> {
             // Build runtime from models.json or fall back to defaults.
             let cwd = std::env::current_dir().unwrap_or_default();
             let mj = nini_core::settings::load_models_json(&cwd);
+            // v0.13: Pi warns about a `models.json` it could not use,
+            // and so does nini — same heading, same sentences. Only the
+            // **user-level** file is warned about: the project-level one
+            // is a catalogue, and a provider in it is never composed.
+            let user_models = nini_core::settings::load_user_models_json();
+            let warnings = provider_factory::models_json_warnings(&user_models);
+            if !warnings.is_empty() {
+                eprintln!(
+                    "Warning: errors loading models.json:\n{}",
+                    warnings.join("\n\n")
+                );
+            }
             // The shipped catalog carries the model metadata; `models.json`
             // is configuration and only overrides what it actually states.
             let mut runtime = nini_core::model_runtime::ModelRuntime::with_defaults();

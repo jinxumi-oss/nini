@@ -51,7 +51,11 @@ ROUNDS = ("W0", "W1-A", "W1-B", "W1-C", "W2", "W3", "W4", "W5", "—",
           "v0.11",
           # v0.12 计划（docs/plans/next-parity.md）：长任务的轮数上限
           # （A8）——一条 nini 独有、Pi 完全没有的截断。
-          "v0.12")
+          "v0.12",
+          # v0.13 计划（docs/plans/next-parity.md）：models.json 声明的
+          # provider 能真的发请求（B14）、项目级 models.json 不被采用
+          # （B15）、Pi 字段在 nini 侧无承载点（D5）。
+          "v0.13")
 DECISIONS = ("R4", "R5", "R9", "R10", "R11")
 
 # Every field a gap record must carry, with the type it must have.

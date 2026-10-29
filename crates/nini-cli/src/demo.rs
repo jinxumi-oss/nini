@@ -44,12 +44,17 @@ pub(crate) async fn run_demo(
     } else {
         demo_simple_turns(task)
     };
+    // v0.13: only the **user-level** `models.json` configures a
+    // provider. The project-level file is a catalogue, not a
+    // configuration.
+    let user_models = nini_core::settings::load_user_models_json();
     let provider_impl = provider_factory::build_provider(
         provider,
         turns,
         fallback_keys,
         fallback_base_urls,
         api_key,
+        Some(&user_models),
     )?;
     // v0.10 (fix): the same assembly the TUI uses. This called
     // `build_tools()` directly, which meant `nini -p "..."` — the entry
@@ -180,12 +185,17 @@ pub(crate) async fn run_print(
             usage: nini_core::provider::Usage::default(),
         },
     ]];
+    // v0.13: only the **user-level** `models.json` configures a
+    // provider. The project-level file is a catalogue, not a
+    // configuration.
+    let user_models = nini_core::settings::load_user_models_json();
     let provider_impl = provider_factory::build_provider(
         provider,
         turns,
         fallback_keys,
         fallback_base_urls,
         api_key,
+        Some(&user_models),
     )?;
     // v0.10 (fix): the same assembly the TUI uses. This called
     // `build_tools()` directly, which meant `nini -p "..."` — the entry

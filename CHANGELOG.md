@@ -1,3 +1,66 @@
+## v0.13.0 — models.json 里的 provider，真的能用了（2026-10-29）
+
+1733 tests, all green. 这一版修的是一个**自相矛盾**的事实：nini 的
+`--list-models` 能把你写在 `~/.nini/agent/models.json` 里的 provider 与模型
+一条不落地列出来，而你用 `--provider` 去点名它，nini 说「没这个 provider」。
+
+### 一、目录里有，用不了
+
+用户级 `models.json` 里写着：
+
+```json
+{ "providers": { "my-gw": {
+  "baseUrl": "http://127.0.0.1:9877/v1",
+  "api": "openai-completions",
+  "apiKey": "secret-from-models-json",
+  "models": [ { "id": "gw-model" } ] } } }
+```
+
+nini 0.12.0 的回答是 `nini: unknown provider: my-gw`（退出码 2）。两个原因叠在
+一起，都不是「差一点」：
+
+* **字段根本没读进来**：`ProviderConfig` 只有 snake_case 的 `base_url`/`api_key`，
+  没有 camelCase 别名。serde 遇到 `baseUrl`/`apiKey` **整条丢弃**——Pi 写的字段
+  在 nini 侧从来不存在。
+* **构造层不查这份文件**：`build_provider` 只认十一个硬编码的 provider 名字，
+  其它一律 `process::exit(2)`。目录（`--list-models`）与构造（`--provider`）
+  读的是两份世界。
+
+### 二、改法：把 Pi 的判定抄过来，而不是自己发明一套
+
+* `ProviderConfig` 加 camelCase 别名（`baseUrl`/`apiKey`）与 `name`；snake_case
+  旧拼法仍然能解析（不回归）。
+* 新增 Pi 的**配置值求值**（`$VAR`、`${VAR}`、`!cmd`、`$$`、`$!`）：缺环境变量
+  → 整个值缺（不是空串、不部分展开）；`!cmd` 走 `/bin/sh -c`，10 秒超时，
+  取 stdout 并 trim，空或非零退出 → 缺。
+* `build_provider` 入口先查**用户级** `models.json`，命中即优先，十一个内置分支
+  **一行未改**。`api` 决定实现（`openai-completions` / `anthropic-messages` /
+  `openai-responses`）；`baseUrl` 回退链 = models.json > 原分支的 `*_BASE_URL`
+  环境变量 > 内置默认常量 > 报 `"baseUrl" is required`。
+* 三条报错文案**逐字照 Pi**：`"baseUrl" is required`、`no "api" specified`、
+  `No API key found for`——差一个词，用户就得自己去查是哪一层缺东西。
+* `--list-models` 在 stderr 打 Pi 同款警告：`Warning: errors loading models.json:`
+  加上原始短语。
+
+### 三、边界：项目级的那份文件**不是配置**
+
+nini 有项目级 `<cwd>/.nini/models.json`（模型目录），Pi 0.85.1 根本没有这个概念
+（它只读 `~/.pi/agent/models.json`）。这一版把两者分清：**只有用户级那份参与
+provider 构造**，项目级那份只用于展示。一个用户 merely clone 的仓库，不该能
+指使 nini 去连它选的主机、把凭证发过去，或执行它写的 `!cmd`。
+
+### 四、这次凭什么算数
+
+* `crates/nini-cli/tests/models_json_provider.rs`：真二进制 + wiremock，断言请求
+  真的打到文件里的 `baseUrl`（`POST /v1/chat/completions`）并带上文件里的
+  `apiKey`；另一条断言项目级文件不被采用。
+* `scripts/e2e-models-json-provider.sh`：**同一份文件**喂给 nini 与真 Pi 0.85.1，
+  比的是两边 mock 收到的 `Authorization` 头**字面相等**；缺 baseUrl / 缺 api /
+  缺凭证时两边指向同一个缺失项；`$VAR`/`${VAR}`/`!cmd` 三种写法求值结果字面相等；
+  安全场景断言项目级的 `!cmd` 不执行、零请求（同一份内容放到 Pi 的用户级就会
+  执行——所以这条 oracle 不空转）。本地没有 Pi 时它**明确说「没做」**（退出码 2），
+  不静默跳过。
+
 ## v0.12.0 — 长任务不再在半路被截断（2026-10-28）
 
 1705 tests, all green. 这一版修的是一个 **Pi 没有、nini 独有的停止条件**：

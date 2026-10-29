@@ -147,6 +147,28 @@ pub fn load_models_json(cwd: &Path) -> ModelsJson {
     out
 }
 
+/// Load the **user-level** `models.json` — the file in the agent
+/// directory, and nothing else.
+///
+/// This is the only `models.json` a provider may be **built** from.
+/// The project-level file (`<cwd>/.nini/models.json`) is still read by
+/// `load_models_json` for the model catalogue, but a provider entry in
+/// it never reaches a request: Pi 0.85.1 has no project-level
+/// `models.json` at all, and a directory a user merely cloned must not
+/// be able to hand nini a base URL and a credential — least of all a
+/// `!command` to run.
+pub fn load_user_models_json() -> ModelsJson {
+    let mut out = ModelsJson::default();
+    if let Some(path) = crate::paths::agent_file("models.json") {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(parsed) = serde_json::from_str::<ModelsJson>(&text) {
+                out.providers.extend(parsed.providers);
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ModelsJson {
     #[serde(default)]
@@ -157,10 +179,29 @@ pub struct ModelsJson {
 pub struct ProviderConfig {
     #[serde(default)]
     pub api: Option<String>,
-    #[serde(default)]
+    /// Where the provider's requests go.
+    ///
+    /// Pi writes `baseUrl` (its `ProviderConfigSchema`), and that is the
+    /// spelling every real `models.json` uses. The alias is not a
+    /// convenience: without it serde dropped the key on the floor and
+    /// nini had no idea where the user's provider lives.
+    #[serde(default, alias = "baseUrl")]
     pub base_url: Option<String>,
-    #[serde(default)]
+    /// The credential the provider's requests carry.
+    ///
+    /// Pi writes `apiKey`; same story as `baseUrl` — the key was read
+    /// from nobody, so a provider that declared one looked
+    /// unauthenticated.
+    #[serde(default, alias = "apiKey")]
     pub api_key: Option<String>,
+    /// The provider's display name.
+    ///
+    /// Pi's `ProviderConfigSchema` has `name?`. It is carried into the
+    /// struct so the file is not silently half-read, but it never
+    /// appears in a rejection message: a refusal names the provider id
+    /// and the missing item, nothing else.
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub models: Vec<ModelConfig>,
 }

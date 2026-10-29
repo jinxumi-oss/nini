@@ -230,3 +230,17 @@ jobs:
         run: |
           cargo build --release --locked
           bash scripts/e2e-long-task.sh
+      - name: A models.json provider must behave like Pi's (nini vs Pi 0.85.1)
+        # nini 曾经只把 `models.json` 当**模型目录**：条目读出来了，
+        # `baseUrl`/`apiKey` 还因为没有 camelCase alias 被 serde 丢掉，
+        # 于是「目录里有这个 provider」和「用得了这个 provider」之间
+        # 隔着一条缝。这条门禁用**同一份文件**跑 nini 和真 Pi 0.85.1：
+        # 能用时两边 mock 收到的 Authorization 字面相等；缺 baseUrl /
+        # 缺 api / 缺凭证时两边指向同一个缺失项；`$VAR`/`${VAR}`/`!cmd`
+        # 求值结果字面相等。
+        # 另外它钉住安全边界：项目级 `<cwd>/.nini/models.json` 的 provider
+        # 配置不被采用（Pi 0.85.1 根本没有这个概念），其中的 `!cmd`
+        # 不许被执行，也不许因此发出任何请求。
+        run: |
+          cargo build --release --locked
+          bash scripts/e2e-models-json-provider.sh

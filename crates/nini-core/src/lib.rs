@@ -10,6 +10,7 @@ pub mod branch_summary;
 pub mod conversion;
 
 pub mod compaction;
+pub mod config_value;
 pub mod entries;
 pub mod git;
 pub mod logging;

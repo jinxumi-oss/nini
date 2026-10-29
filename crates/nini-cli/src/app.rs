@@ -345,23 +345,35 @@ async fn wait_signal(signal: Option<&nini_core::abort_signal::AbortSignal>) {
 fn build_provider_or_fallback(
     cfg: &AppConfig,
     scripted_turns: Vec<Vec<nini_ai::fixture::FixtureTurn>>,
-) -> (Arc<dyn Provider>, Option<String>) {
+    user_models: &nini_core::settings::ModelsJson,
+) -> Result<(Arc<dyn Provider>, Option<String>)> {
     match provider_factory::build_provider(
         &cfg.provider,
         scripted_turns,
         &cfg.fallback_keys,
         &cfg.fallback_base_urls,
         cfg.api_key.as_deref(),
+        Some(user_models),
     ) {
-        Ok(p) => (p, None),
+        Ok(p) => Ok((p, None)),
         Err(e) => {
+            // v0.13: a `models.json` that does not configure the
+            // provider the user asked for is **not** papered over with a
+            // fixture. The reason the user needs is the reason they are
+            // missing, and a fixture would hide it behind a screen that
+            // looks alive.
+            if e.downcast_ref::<provider_factory::ModelsJsonProviderError>()
+                .is_some()
+            {
+                return Err(e);
+            }
             let fallback = Arc::new(nini_ai::fixture::ProgrammedProvider::from_turns(
                 std::env::var("NINI_TUI_FIXTURE_TURNS")
                     .ok()
                     .and_then(|raw| provider_factory::parse_scripted_turns(&raw))
                     .unwrap_or_default(),
             )) as Arc<dyn Provider>;
-            (fallback, Some(e.to_string()))
+            Ok((fallback, Some(e.to_string())))
         }
     }
 }
@@ -494,8 +506,12 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
     //
     // So the error is kept, and the TUI says so: a notice in the
     // transcript, and a status bar that names the fallback.
+    // v0.13: only the **user-level** `models.json` configures a
+    // provider. The project-level file is a catalogue, not a
+    // configuration.
+    let user_models = nini_core::settings::load_user_models_json();
     let (shared_provider, provider_error): (Arc<dyn Provider>, Option<String>) =
-        build_provider_or_fallback(&cfg, scripted_turns);
+        build_provider_or_fallback(&cfg, scripted_turns, &user_models)?;
 
     let shared_tools = build_run_tools(&cfg, &cwd);
 
@@ -1483,10 +1499,15 @@ mod provider_fallback_tests {
     /// "the model is slow" from "the model is not there".
     #[test]
     fn a_provider_that_cannot_be_started_is_reported() {
+        // The user's own `models.json` must not decide this test's
+        // verdict: the agent directory is an empty sandbox.
+        let _guard = nini_core::paths::agent_lock();
+        let user_models = nini_core::settings::load_user_models_json();
         let mut cfg = cfg_with("openai-compat");
         // An empty key never resolves: the provider cannot be built.
         cfg.api_key = Some(String::new());
-        let (_provider, error) = build_provider_or_fallback(&cfg, Vec::new());
+        let (_provider, error) = build_provider_or_fallback(&cfg, Vec::new(), &user_models)
+            .expect("a provider that cannot be built is reported, not panicked on");
         let error = error.expect("the reason must not be swallowed");
         assert!(
             !error.trim().is_empty(),
@@ -1498,8 +1519,11 @@ mod provider_fallback_tests {
     /// error, so the TUI does not cry wolf.
     #[test]
     fn a_provider_that_starts_reports_no_error() {
+        let _guard = nini_core::paths::agent_lock();
+        let user_models = nini_core::settings::load_user_models_json();
         let cfg = cfg_with("fixture");
-        let (_provider, error) = build_provider_or_fallback(&cfg, Vec::new());
+        let (_provider, error) = build_provider_or_fallback(&cfg, Vec::new(), &user_models)
+            .expect("a provider that starts is not an error");
         assert!(
             error.is_none(),
             "a working provider must not produce a fallback notice: {error:?}"

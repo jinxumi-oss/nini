@@ -32,4 +32,5 @@ workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
+wiremock = { workspace = true }
 nini-tools = { path = "../nini-tools" }

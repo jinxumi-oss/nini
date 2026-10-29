@@ -15,7 +15,358 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
+use nini_core::config_value::resolve_config_value;
 use nini_core::provider::{Provider, Usage};
+use nini_core::settings::{ModelsJson, ProviderConfig};
+
+/// A provider that the user's own `models.json` declares but does not
+/// configure completely.
+///
+/// The type exists so a caller can tell "the file the user wrote is
+/// incomplete" from "the backend could not be built": the first must not
+/// be papered over with a fixture (the reason the user needs is the
+/// reason they are missing), the second may be.
+#[derive(Debug)]
+pub(crate) struct ModelsJsonProviderError {
+    /// The sentence the user reads. It names the provider the user
+    /// wrote and the item that is missing. The three phrases Pi uses
+    /// are reproduced verbatim, because a refusal that names a
+    /// different missing item than Pi's is a refusal the user cannot
+    /// act on.
+    pub(crate) detail: String,
+}
+
+impl std::fmt::Display for ModelsJsonProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for ModelsJsonProviderError {}
+
+/// What nini knows about a provider it ships with.
+///
+/// Three columns, and the order of the columns is the order of the
+/// fallback chain:
+///
+///   * `default_base` — the built-in's own default host, referenced by
+///     the constant's **real** name (only `openai`, `anthropic` and
+///     `openai_responses` call theirs `DEFAULT_BASE_URL`);
+///   * `base_env` — the `*_BASE_URL` variable the built-in branch reads.
+///     It is still the user's way of pointing nini at a gateway, and
+///     v0.8.4 was a bugfix about exactly that;
+///   * `api` — the api this provider speaks, and the credential
+///     variables it may fall back to.
+///
+/// `openai-compat` is the one built-in with **no** default base URL: its
+/// constructor takes the base URL, so there is nothing to fall back to.
+struct Builtin {
+    default_base: Option<&'static str>,
+    base_env: Option<&'static str>,
+    api: &'static str,
+    key_envs: &'static [&'static str],
+}
+
+/// The providers nini ships with, and what each one defaults to.
+const BUILTINS: &[(&str, Builtin)] = &[
+    (
+        "anthropic",
+        Builtin {
+            default_base: Some(nini_ai::anthropic::DEFAULT_BASE_URL),
+            base_env: Some("ANTHROPIC_BASE_URL"),
+            api: "anthropic-messages",
+            key_envs: &["ANTHROPIC_API_KEY"],
+        },
+    ),
+    (
+        "openai",
+        Builtin {
+            default_base: Some(nini_ai::openai::DEFAULT_BASE_URL),
+            base_env: Some("OPENAI_BASE_URL"),
+            api: "openai-completions",
+            key_envs: &["OPENAI_API_KEY"],
+        },
+    ),
+    (
+        "openai-responses",
+        Builtin {
+            default_base: Some(nini_ai::openai_responses::DEFAULT_BASE_URL),
+            // The built-in branch reads no `*_BASE_URL` at all, so there
+            // is no environment layer for this one.
+            base_env: None,
+            api: "openai-responses",
+            key_envs: &["OPENAI_API_KEY"],
+        },
+    ),
+    (
+        "openai-compat",
+        Builtin {
+            default_base: None,
+            base_env: Some("OPENAI_BASE_URL"),
+            api: "openai-completions",
+            key_envs: &["OPENAI_API_KEY"],
+        },
+    ),
+    (
+        "google",
+        Builtin {
+            default_base: Some(nini_ai::google::GEMINI_BASE_URL),
+            base_env: Some("GOOGLE_BASE_URL"),
+            api: "google-generative-ai",
+            key_envs: &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        },
+    ),
+    (
+        "deepseek",
+        Builtin {
+            default_base: Some(nini_ai::deepseek::DEEPSEEK_BASE_URL),
+            base_env: Some("DEEPSEEK_BASE_URL"),
+            api: "openai-completions",
+            key_envs: &["DEEPSEEK_API_KEY"],
+        },
+    ),
+    (
+        "groq",
+        Builtin {
+            default_base: Some(nini_ai::groq::GROQ_BASE_URL),
+            base_env: Some("GROQ_BASE_URL"),
+            api: "openai-completions",
+            key_envs: &["GROQ_API_KEY"],
+        },
+    ),
+    (
+        "mistral",
+        Builtin {
+            default_base: Some(nini_ai::mistral::MISTRAL_BASE_URL),
+            base_env: Some("MISTRAL_BASE_URL"),
+            api: "openai-completions",
+            key_envs: &["MISTRAL_API_KEY"],
+        },
+    ),
+    (
+        "cohere",
+        Builtin {
+            default_base: Some(nini_ai::cohere::COHERE_BASE_URL),
+            base_env: Some("COHERE_BASE_URL"),
+            api: "openai-completions",
+            key_envs: &["COHERE_API_KEY"],
+        },
+    ),
+];
+
+/// The provider configuration a `models.json` entry resolves to.
+#[derive(Debug)]
+struct ResolvedProvider {
+    api: String,
+    base_url: String,
+    api_key: String,
+}
+
+/// Look up what nini knows about a provider it ships with.
+fn builtin_of(id: &str) -> Option<&'static Builtin> {
+    BUILTINS
+        .iter()
+        .find(|(name, _)| *name == id)
+        .map(|(_, builtin)| builtin)
+}
+
+/// The first model a provider declares, if any.
+///
+/// Pi names the model in its "no api specified" sentence, because the
+/// api can be set per model as well as per provider.
+fn first_model_id(config: &ProviderConfig) -> Option<&str> {
+    config.models.iter().find_map(|model| model.id.as_deref())
+}
+
+/// Resolve the endpoint a `models.json` entry names.
+///
+/// The chain, in order:
+///
+///   * **api**: the file's `api`, else the built-in's api, else
+///     `no "api" specified`;
+///   * **base URL**: the file's `baseUrl`, else the `*_BASE_URL`
+///     variable the built-in branch reads, else the built-in's default
+///     host, else `"baseUrl" is required`.
+///
+/// The sentences are Pi's, verbatim: a user who compares the two
+/// programs must read the same reason on both sides.
+fn resolve_endpoint(
+    id: &str,
+    config: &ProviderConfig,
+) -> Result<(String, String), ModelsJsonProviderError> {
+    let builtin = builtin_of(id);
+
+    let api = config
+        .api
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| builtin.map(|b| b.api.to_string()))
+        .ok_or_else(|| ModelsJsonProviderError {
+            detail: match first_model_id(config) {
+                Some(model) => format!(
+                    "Provider {id}, model {model}: no \"api\" specified. Set at provider or model level."
+                ),
+                None => format!(
+                    "Provider {id}: no \"api\" specified. Set at provider or model level."
+                ),
+            },
+        })?;
+
+    let base_url = match config
+        .base_url
+        .as_deref()
+        .and_then(resolve_config_value)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(base) => base,
+        None => match builtin {
+            Some(builtin) => {
+                let from_env = builtin
+                    .base_env
+                    .and_then(|var| std::env::var(var).ok())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                match from_env {
+                    Some(base) => base,
+                    None => match builtin.default_base {
+                        Some(default) => default.to_string(),
+                        None => {
+                            // The one built-in without a default host:
+                            // it has always said this, and it keeps
+                            // saying it.
+                            let var = builtin.base_env.unwrap_or("OPENAI_BASE_URL");
+                            return Err(ModelsJsonProviderError {
+                                detail: format!("{var} required for {id}"),
+                            });
+                        }
+                    },
+                }
+            }
+            None => {
+                return Err(ModelsJsonProviderError {
+                    detail: format!(
+                        "Provider {id}: \"baseUrl\" is required when defining custom models."
+                    ),
+                })
+            }
+        },
+    };
+
+    Ok((api, base_url))
+}
+
+/// Resolve the credential a `models.json` entry names.
+///
+/// `--api-key` first (it is nini's own explicit contract), then the
+/// file's `apiKey` — resolved the way Pi resolves it, so `$VAR` and
+/// `!cmd` mean what they mean in Pi — then the environment variable the
+/// built-in provider reads, and finally Pi's
+/// `No API key found for`.
+fn resolve_credential(
+    id: &str,
+    config: &ProviderConfig,
+    api_key_override: Option<&str>,
+) -> Result<String, ModelsJsonProviderError> {
+    let builtin = builtin_of(id);
+    match api_key_override {
+        Some(key) if key.trim().is_empty() => Err(ModelsJsonProviderError {
+            detail: "--api-key was passed but is empty. Pass a real key.".to_string(),
+        }),
+        Some(key) => Ok(key.trim().to_string()),
+        None => match config
+            .api_key
+            .as_deref()
+            .and_then(resolve_config_value)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            Some(key) => Ok(key),
+            None => match builtin.and_then(|b| {
+                b.key_envs
+                    .iter()
+                    .find_map(|var| std::env::var(var).ok())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            }) {
+                Some(key) => Ok(key),
+                None => Err(ModelsJsonProviderError {
+                    detail: format!("No API key found for {id}."),
+                }),
+            },
+        },
+    }
+}
+
+/// Resolve a provider the user's `models.json` declares.
+fn resolve_models_json_provider(
+    id: &str,
+    config: &ProviderConfig,
+    api_key_override: Option<&str>,
+) -> Result<ResolvedProvider, ModelsJsonProviderError> {
+    let (api, base_url) = resolve_endpoint(id, config)?;
+    let api_key = resolve_credential(id, config, api_key_override)?;
+    Ok(ResolvedProvider {
+        api,
+        base_url,
+        api_key,
+    })
+}
+
+/// The warnings Pi prints for a `models.json` it could not use.
+///
+/// Pi collects the error of every provider it could not compose and
+/// prints them under one `Warning: errors loading models.json:`
+/// heading — one line per provider, at most. nini does the same, and
+/// for the **user-level** file: the project-level one is a catalogue,
+/// not a configuration, so a provider in it is never composed and never
+/// complained about.
+pub(crate) fn models_json_warnings(models: &ModelsJson) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (id, config) in &models.providers {
+        // Pi composes a provider's *models*; a provider that declares
+        // none has nothing to compose and nothing to complain about.
+        if config.models.is_empty() {
+            continue;
+        }
+        if let Err(e) = resolve_endpoint(id, config) {
+            warnings.push(format!("Provider \"{id}\": {}", e.detail));
+        }
+    }
+    warnings
+}
+
+/// Build the provider a `models.json` entry describes.
+///
+/// The `api` decides which implementation speaks to it. nini implements
+/// three of Pi's apis; the rest are reported the way Pi reports them.
+fn build_models_json_provider(
+    id: &str,
+    config: &ProviderConfig,
+    api_key_override: Option<&str>,
+) -> Result<Arc<dyn Provider>> {
+    let resolved = resolve_models_json_provider(id, config, api_key_override)?;
+    match resolved.api.as_str() {
+        "openai-completions" => Ok(Arc::new(nini_ai::openai_compat::OpenAiCompatProvider::new(
+            resolved.base_url,
+            resolved.api_key,
+        ))),
+        "anthropic-messages" => Ok(Arc::new(
+            nini_ai::anthropic::AnthropicProvider::new(resolved.api_key)
+                .with_base_url(resolved.base_url),
+        )),
+        "openai-responses" => Ok(Arc::new(
+            nini_ai::openai_responses::OpenAiResponsesProvider::new(resolved.api_key)
+                .with_base_url(resolved.base_url),
+        )),
+        other => Err(ModelsJsonProviderError {
+            detail: format!("No API provider registered for api: {other}"),
+        }
+        .into()),
+    }
+}
 
 /// v0.9.0: resolve the API key for a provider.
 ///
@@ -71,13 +422,27 @@ fn resolve_api_key(explicit: Option<&str>, env_var: &str, provider: &str) -> Res
 /// hand: `--api-key wrong` with a correct env var succeeded, and
 /// `--api-key correct` with no env var failed with "OPENAI_API_KEY
 /// required".
+///
+/// v0.13: `user_models` is the **user-level** `models.json` (the file in
+/// the agent directory — never the project-level one). A provider it
+/// declares wins over the built-in of the same name, which is what Pi
+/// does: the file's `baseUrl` and `apiKey` are the ones that are used.
 pub(crate) fn build_provider(
     provider: &str,
     turns: Vec<Vec<FixtureTurn>>,
     fallback_keys: &[String],
     fallback_base_urls: &[String],
     api_key_override: Option<&str>,
+    user_models: Option<&ModelsJson>,
 ) -> Result<Arc<dyn Provider>> {
+    // v0.13: the user's own `models.json` speaks first. The eleven
+    // branches below are untouched — a provider the file declares never
+    // reaches them.
+    if let Some(models) = user_models {
+        if let Some(config) = models.providers.get(provider) {
+            return build_models_json_provider(provider, config, api_key_override);
+        }
+    }
     match provider {
         "fixture" => Ok(Arc::new(ProgrammedProvider::from_turns(turns))),
         "anthropic" => {
@@ -546,7 +911,172 @@ mod tests {
     }
 
     fn build(provider: &str, key: Option<&str>) -> Result<Arc<dyn Provider>> {
-        build_provider(provider, Vec::new(), &[], &[], key)
+        // The user's own `models.json` must not decide these tests'
+        // verdicts: the agent directory is pointed at an empty sandbox
+        // for the duration.
+        let _guard = nini_core::paths::agent_lock();
+        let models = nini_core::settings::load_user_models_json();
+        build_provider(provider, Vec::new(), &[], &[], key, Some(&models))
+    }
+
+    // ---- v0.13: a provider the user's `models.json` declares ----
+    //
+    // The file used to be a catalogue and nothing else: the provider
+    // entries were read (badly — `baseUrl` and `apiKey` were dropped by
+    // serde) and never *used*. A provider the user had configured was
+    // in the list and unreachable.
+
+    /// A `models.json` entry, in Pi's spelling.
+    fn models_json_entry(
+        base_url: Option<&str>,
+        api: Option<&str>,
+        api_key: Option<&str>,
+    ) -> ProviderConfig {
+        let mut entry = ProviderConfig::default();
+        entry.base_url = base_url.map(str::to_string);
+        entry.api = api.map(str::to_string);
+        entry.api_key = api_key.map(str::to_string);
+        entry
+    }
+
+    #[test]
+    fn a_models_json_provider_wins_over_the_built_in_one() {
+        // Pi's rule: the file's `baseUrl` and `apiKey` are the ones that
+        // are used, even when the provider has the same name as one nini
+        // ships with.
+        let entry = models_json_entry(
+            Some("http://models-json.invalid/v1"),
+            Some("openai-completions"),
+            Some("from-the-file"),
+        );
+        let resolved =
+            resolve_models_json_provider("openai", &entry, None).expect("the file configures it");
+        assert_eq!(resolved.base_url, "http://models-json.invalid/v1");
+        assert_eq!(resolved.api_key, "from-the-file");
+    }
+
+    #[test]
+    fn a_models_json_provider_without_a_base_url_says_base_url_is_required() {
+        let entry = models_json_entry(None, Some("openai-completions"), Some("k"));
+        let err = resolve_models_json_provider("my-gw", &entry, None).unwrap_err();
+        assert!(
+            err.detail.contains("\"baseUrl\" is required"),
+            "Pi's phrase, verbatim: {}",
+            err.detail
+        );
+    }
+
+    #[test]
+    fn a_models_json_provider_without_an_api_says_no_api_specified() {
+        let entry = models_json_entry(Some("http://x.invalid/v1"), None, Some("k"));
+        let err = resolve_models_json_provider("my-gw", &entry, None).unwrap_err();
+        assert!(
+            err.detail.contains("no \"api\" specified"),
+            "Pi's phrase, verbatim: {}",
+            err.detail
+        );
+    }
+
+    #[test]
+    fn a_models_json_provider_without_a_credential_says_no_api_key_found() {
+        let entry = models_json_entry(
+            Some("http://x.invalid/v1"),
+            Some("openai-completions"),
+            None,
+        );
+        let err = resolve_models_json_provider("my-gw", &entry, None).unwrap_err();
+        assert!(
+            err.detail.contains("No API key found for"),
+            "Pi's phrase, verbatim: {}",
+            err.detail
+        );
+    }
+
+    #[test]
+    fn an_unregistered_api_is_reported_the_way_pi_reports_it() {
+        let entry = models_json_entry(
+            Some("http://x.invalid/v1"),
+            Some("google-generative-ai"),
+            Some("k"),
+        );
+        let err = match build_models_json_provider("my-gw", &entry, None) {
+            Ok(_) => panic!("an api nini does not implement must not build a provider"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string()
+                .contains("No API provider registered for api: google-generative-ai"),
+            "Pi's phrase, verbatim: {err}"
+        );
+    }
+
+    #[test]
+    fn the_environment_variable_still_wins_over_the_default_host() {
+        // v0.8.4 fixed exactly this: `OPENAI_BASE_URL` is how a user
+        // points nini at a gateway, and it must not be ignored just
+        // because the entry came from a file.
+        with_env_unset(&["OPENAI_BASE_URL"], || {
+            let entry = models_json_entry(None, None, None);
+            let resolved = resolve_models_json_provider("openai", &entry, Some("k"))
+                .expect("the built-in defaults fill the gaps");
+            assert_eq!(resolved.base_url, "http://test.invalid/v1");
+            assert_eq!(resolved.api, "openai-completions");
+        });
+    }
+
+    #[test]
+    fn openai_compat_keeps_the_message_it_has_always_had() {
+        // It has no default host, so the environment variable is the
+        // only way in — and the sentence stays the one users have read.
+        with_env_unset(&["OPENAI_BASE_URL"], || {
+            // The ambient table gives every `*_BASE_URL` a value; this
+            // one must be **absent** for the message to be the one the
+            // user gets.
+            unsafe { std::env::remove_var("OPENAI_BASE_URL") };
+            let entry = models_json_entry(None, Some("openai-completions"), Some("k"));
+            let err = resolve_models_json_provider("openai-compat", &entry, None).unwrap_err();
+            assert_eq!(err.detail, "OPENAI_BASE_URL required for openai-compat");
+        });
+    }
+
+    #[test]
+    fn the_api_key_on_the_command_line_wins_over_the_file() {
+        let entry = models_json_entry(
+            Some("http://x.invalid/v1"),
+            Some("openai-completions"),
+            Some("from-the-file"),
+        );
+        let resolved =
+            resolve_models_json_provider("my-gw", &entry, Some("from-the-flag")).unwrap();
+        assert_eq!(resolved.api_key, "from-the-flag");
+    }
+
+    #[test]
+    fn a_credential_in_the_file_is_resolved_like_pi_resolves_it() {
+        // SAFETY: the variable name is this test's own.
+        unsafe { std::env::set_var("NINI_TEST_MODELS_JSON_KEY", "from-the-environment") };
+        let entry = models_json_entry(
+            Some("http://x.invalid/v1"),
+            Some("openai-completions"),
+            Some("$NINI_TEST_MODELS_JSON_KEY"),
+        );
+        let resolved = resolve_models_json_provider("my-gw", &entry, None).unwrap();
+        assert_eq!(resolved.api_key, "from-the-environment");
+    }
+
+    #[test]
+    fn a_provider_the_file_does_not_declare_keeps_its_built_in_behaviour() {
+        // The eleven branches are untouched: a name the file does not
+        // mention still goes to them.
+        //
+        // `openai` and not `openai-compat`: the latter has **no default
+        // base URL** (it needs `OPENAI_BASE_URL`), so whether it builds
+        // depends on the environment the test happens to run in — a test
+        // whose verdict depends on someone else's shell is not a test.
+        let _guard = nini_core::paths::agent_lock();
+        let models = nini_core::settings::load_user_models_json();
+        let provider = build_provider("openai", Vec::new(), &[], &[], Some("k"), Some(&models));
+        assert!(provider.is_ok(), "the built-in branch still builds it");
     }
 
     #[test]
