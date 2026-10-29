@@ -984,12 +984,28 @@ mod parallel_ceiling_tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    const CALLS: usize = 20;
+    /// The default number of tool calls the scripted turn asks for.
+    const DEFAULT_CALLS: usize = 20;
     const LIMIT: usize = 4;
 
-    fn provider_with(calls: usize) -> Arc<ProgrammedProvider> {
-        let mut turn0: Vec<FixtureTurn> = Vec::with_capacity(calls + 1);
-        for i in 0..calls {
+    /// How many tool calls the scripted turn asks for.
+    ///
+    /// v0.14: the count comes from the environment (`NINI_PARALLEL_CALLS`)
+    /// so the differential oracle can move it and **both** sides move with
+    /// it. Two sources — a constant here and a `--calls` on the Pi side —
+    /// would let the two scripts drift apart, and the drift would show up
+    /// as "nini peak=20 ≠ Pi peak=30", which reads like a concurrency bug
+    /// and is not one.
+    fn calls() -> usize {
+        std::env::var("NINI_PARALLEL_CALLS")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_CALLS)
+    }
+
+    fn provider_with(n: usize) -> Arc<ProgrammedProvider> {
+        let mut turn0: Vec<FixtureTurn> = Vec::with_capacity(n + 1);
+        for i in 0..n {
             turn0.push(FixtureTurn::ToolCall {
                 name: "probe".to_string(),
                 args: json!({"label": format!("c{i}")}),
@@ -1014,7 +1030,7 @@ mod parallel_ceiling_tests {
         let total = probe.total.clone();
         let tools = ToolRegistry::new().register(probe as Arc<dyn Tool>);
         let cfg = RunConfig::new("test-model");
-        let mut agent = Agent::new(provider_with(CALLS), tools, cfg);
+        let mut agent = Agent::new(provider_with(calls()), tools, cfg);
 
         let started = Instant::now();
         {
@@ -1038,7 +1054,7 @@ mod parallel_ceiling_tests {
         let tools = ToolRegistry::new().register(probe as Arc<dyn Tool>);
         let mut cfg = RunConfig::new("test-model");
         cfg.max_parallel_tools = limit;
-        let mut agent = Agent::new(provider_with(CALLS), tools, cfg);
+        let mut agent = Agent::new(provider_with(calls()), tools, cfg);
 
         let started = Instant::now();
         {
@@ -1082,16 +1098,39 @@ mod parallel_ceiling_tests {
     /// window open long enough for the counter to see every call.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_default_batch_runs_all_calls_at_once() {
+        let k = calls();
         let (peak, total, _) = run_without_limit(Duration::from_millis(60)).await;
+        println!("NINI_CALLS={k}");
         println!("NINI_PEAK={peak}");
         assert_eq!(
-            total, CALLS as u32,
+            total, k as u32,
             "every tool call must still run — the ceiling queues, it does not drop"
         );
         assert_eq!(
-            peak, CALLS as u32,
-            "peak concurrency was {peak}, expected all {CALLS} calls of the turn \
+            peak, k as u32,
+            "peak concurrency was {peak}, expected all {k} calls of the turn \
              to run at once (Pi 0.85.1 has no concurrency cap)"
+        );
+    }
+
+    /// v0.14: the scripted turn's size has **one** source.
+    ///
+    /// The differential oracle runs the same script on both sides, so the
+    /// number of tool calls must come from one place. If this side kept a
+    /// constant while the Pi side took a `--calls`, the two scripts could
+    /// drift apart — and the drift would arrive as "nini peak=20 ≠ Pi
+    /// peak=30", which reads like a concurrency bug and is not one.
+    #[test]
+    fn the_scripted_call_count_has_one_source() {
+        let from_env: Option<usize> = std::env::var("NINI_PARALLEL_CALLS")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok());
+        assert_eq!(
+            from_env.unwrap_or(DEFAULT_CALLS),
+            calls(),
+            "the scripted call count must come from the environment (or from the \
+             default) — a second source would let the two sides of the oracle \
+             drift apart"
         );
     }
 
@@ -1099,7 +1138,8 @@ mod parallel_ceiling_tests {
     async fn peak_concurrency_respects_the_configured_limit() {
         let (peak, total, _) = run_with_limit(LIMIT, Duration::from_millis(60)).await;
         assert_eq!(
-            total, CALLS as u32,
+            total,
+            calls() as u32,
             "every tool call must still run — the limit queues, it does not drop"
         );
         assert!(
@@ -1118,7 +1158,7 @@ mod parallel_ceiling_tests {
     async fn zero_means_no_limit() {
         // Explicit opt-out preserves the pre-v0.8.9 behaviour.
         let (peak, total, _) = run_with_limit(0, Duration::from_millis(60)).await;
-        assert_eq!(total, CALLS as u32);
+        assert_eq!(total, calls() as u32);
         assert!(
             peak > LIMIT as u32,
             "max_parallel_tools = 0 should mean unlimited, but peak was only {peak}"
@@ -1128,10 +1168,10 @@ mod parallel_ceiling_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_ceiling_actually_saves_wall_clock_vs_serial() {
         // The whole point of a bounded pool: the batch finishes in about
-        // `ceil(CALLS / LIMIT)` waves, not `CALLS` serial steps.
+        // `ceil(calls() / LIMIT)` waves, not `calls()` serial steps.
         let delay = Duration::from_millis(60);
         let (_, _, elapsed) = run_with_limit(LIMIT, delay).await;
-        let serial = CALLS as u32 * delay;
+        let serial = calls() as u32 * delay;
         assert!(
             elapsed < serial / 2,
             "20 calls at {LIMIT}-way concurrency took {elapsed:?}, which is              not meaningfully better than the {serial:?} a serial run costs"
@@ -1147,7 +1187,7 @@ mod parallel_ceiling_tests {
         let tools = ToolRegistry::new().register(probe as Arc<dyn Tool>);
         let mut cfg = RunConfig::new("test-model");
         cfg.max_parallel_tools = 3;
-        let mut agent = Agent::new(provider_with(CALLS), tools, cfg);
+        let mut agent = Agent::new(provider_with(calls()), tools, cfg);
 
         let mut results: Vec<String> = Vec::new();
         {
@@ -1160,13 +1200,10 @@ mod parallel_ceiling_tests {
                 }
             }
         }
-        assert_eq!(
-            results.len(),
-            CALLS,
-            "expected {CALLS} results: {results:?}"
-        );
+        let k = calls();
+        assert_eq!(results.len(), k, "expected {k} results: {results:?}");
         let unique: std::collections::HashSet<&String> = results.iter().collect();
-        assert_eq!(unique.len(), CALLS, "duplicate tool results: {results:?}");
+        assert_eq!(unique.len(), k, "duplicate tool results: {results:?}");
     }
 }
 

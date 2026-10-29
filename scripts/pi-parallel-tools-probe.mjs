@@ -23,7 +23,13 @@
 //
 // 输出
 // ----
-//   `PI_PEAK=<n>`
+//   `PI_PEAK=<n>`        —— 工具体内的 in-flight 计数器自己报的高水位
+//   `PI_OVERLAP_PEAK=<n>` —— 探针自己拿每个调用的**开始/结束时间**算出的
+//                            最大重叠区间数
+//
+// 两个数字是**两个独立的证据**：前者靠计数器，后者靠时间戳。
+// 差分 oracle 要求两者一致——只信其中一个，「测错了却报对 K」这类坏法
+// 就能蒙混过关（第一轮就留下过这个盲区）。
 //
 // 退出码：0 成功；2 环境不可用（没装 node / 找不到 Pi 0.85.1 / 加载失败）。
 
@@ -70,9 +76,18 @@ const { createAssistantMessageEventStream } = await importFromPi(
 
 // ---------------------------------------------------------------------------
 // 假工具：数自己有多少个 body 同时在跑。
+//
+// 两个证据：
+//   1. `live` 计数器 —— 工具体内的 in-flight 高水位；
+//   2. `intervals`   —— 每个调用自己的**开始/结束时间**（纳秒）。
+//
+// 计数器说「我此刻在飞几个」，时间戳说「最多有几个区间重叠」。两者算法
+// 不同、依据不同，所以它们一致才说明测量没错。
 // ---------------------------------------------------------------------------
 let live = 0;
 let peak = 0;
+/** @type {Array<[bigint, bigint]>} */
+const intervals = [];
 
 const probeTool = {
   name: "probe",
@@ -80,13 +95,42 @@ const probeTool = {
   parameters: { type: "object", properties: {}, additionalProperties: false },
   label: "Probe",
   async execute() {
+    const startedAt = process.hrtime.bigint();
     live += 1;
     if (live > peak) peak = live;
     await new Promise((r) => setTimeout(r, SLEEP_MS));
     live -= 1;
+    const endedAt = process.hrtime.bigint();
+    intervals.push([startedAt, endedAt]);
     return { content: [{ type: "text", text: "probe done" }], details: {} };
   },
 };
+
+/**
+ * 最多有几个区间同时重叠（扫描线）。
+ *
+ * 同一个时间点上，「开始」先于「结束」计数：两个区间首尾相接时那个瞬间
+ * 仍然是重叠的。
+ */
+function maxOverlap(spans) {
+  const events = [];
+  for (const [start, end] of spans) {
+    events.push([start, 1]);
+    events.push([end, -1]);
+  }
+  events.sort((a, b) => {
+    if (a[0] < b[0]) return -1;
+    if (a[0] > b[0]) return 1;
+    return b[1] - a[1]; // 开始（+1）排在结束（-1）前面
+  });
+  let current = 0;
+  let max = 0;
+  for (const [, delta] of events) {
+    current += delta;
+    if (current > max) max = current;
+  }
+  return max;
+}
 
 // ---------------------------------------------------------------------------
 // 假流：注入 K 个 tool_call。
@@ -168,4 +212,6 @@ await runAgentLoop(
   fakeStreamFn,
 );
 
+console.log(`PI_CALLS=${CALLS}`);
 console.log(`PI_PEAK=${peak}`);
+console.log(`PI_OVERLAP_PEAK=${maxOverlap(intervals)}`);
