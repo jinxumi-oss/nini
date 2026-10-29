@@ -19,6 +19,28 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     d
 }
 
+/// Wait for the session file to land.
+///
+/// `session_flush` writes on a **background thread** (`state.rs`: the IO
+/// deliberately left the lock, so a reader is not blocked behind a
+/// serialise), so the file does not exist the moment `flush` returns.
+/// A fixed sleep is a race: 120ms is usually enough on a developer
+/// machine and not enough on a loaded CI runner — which is exactly how
+/// this test went red on macOS.
+///
+/// So: poll for the file, with a bounded wait. The write is a
+/// serialise-then-rename, so the file's **existence** already means it
+/// is complete.
+fn wait_for_session_file(path: &std::path::Path) {
+    for _ in 0..250 {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("the session file never landed: {}", path.display());
+}
+
 /// The headline. Record a `!cmd`, reload from disk, find it.
 #[test]
 fn a_shell_command_the_user_ran_survives_a_reload() {
@@ -38,7 +60,7 @@ fn a_shell_command_the_user_ran_survives_a_reload() {
             42,
         );
         s.session_flush();
-        std::thread::sleep(std::time::Duration::from_millis(120));
+        wait_for_session_file(&path);
     }
 
     let mut fresh = AppState::new("test-model");
@@ -75,7 +97,7 @@ fn it_is_recorded_as_a_bash_execution_message() {
         s.session_init(path.clone());
         s.session_append_bash_execution("echo hi", "hi", "", true, Some(0), 1);
         s.session_flush();
-        std::thread::sleep(std::time::Duration::from_millis(120));
+        wait_for_session_file(&path);
     }
 
     let text = std::fs::read_to_string(&path).unwrap();
