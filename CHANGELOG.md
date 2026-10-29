@@ -1,3 +1,66 @@
+## v0.14.0 — 工具并发度与 Pi 0.85.1 对齐（未发布）
+
+1750 tests, all green. 这一版对齐的是**工具并发度**：nini 以前给一次 run 的工具
+并发设了上限，默认 8——模型一轮发 20 个工具调用，nini 分 3 批跑（8+8+4），
+Pi 0.85.1 一次全跑。
+
+### 默认从 8 改成不限
+
+Pi 0.85.1 的并行分支是**无上限**的 `Promise.all`
+（`references/pi-0.85.1/src/loop/agent-loop.ts:547-549`）——全文没有 limit、
+没有 semaphore、没有分块。nini 的 8 是 nini 自己加的，Pi 没有对应物。
+
+v0.8.9 立这个上限的理由是「30 个 `bash` 调用会 fork 30 个进程树，每个缓冲
+`STREAM_CAPTURE_CAP`」。**那个数字经核查不成立**：`STREAM_CAPTURE_CAP` 是
+**单流** 8MiB（`crates/nini-tools/src/bash.rs:395`），而生产每流实际只有 64KiB
+（`crates/nini-tools/src/bash.rs:180` + `crates/nini-core/src/tool.rs:158`），
+30 条并发约 1.9MiB 缓冲，不是 240MiB；而且仓库里从来没有这份实测数据。
+危险的那一半（并发写坏文件）早就由**按 canonical path 串行**的写队列挡住了
+（`crates/nini-tools/src/mutation_queue.rs`），与 Pi 的
+`withFileMutationQueue` 同构。
+
+### 旋钮从不可用变成可用
+
+上限的能力没丢，只是从「只能改代码重编译」变成了用户真的摸得到：
+
+- `--max-parallel-tools N`：命令行（`0` = 不限，默认；`N > 0` = 最多 N 个并发）；
+- settings.json 的 `maxParallelTools`：同样的口径，项目级覆盖用户级。
+
+非法值（负数/非数字）的处理与 `--max-iterations` **完全同构**：clap 自己的
+报错，退出码 2。
+
+这是 nini **比 Pi 多**的能力（Pi 没有这个旋钮），属于 superset，不是新的
+不一致。
+
+### 判据是差分 oracle
+
+`scripts/e2e-parallel-tools.sh`：两侧跑**同一个剧本**（K=20 个工具调用，每个
+睡 60ms），各自报出**并发峰值**——nini 侧用 Rust 的原子计数器，Pi 侧用
+`scripts/pi-parallel-tools-probe.mjs`（node 探针，注入假流 + 假工具）。
+
+判据是三条同时成立：**nini peak == Pi peak == K=20**。只要求「两个相等」太弱——
+「两个都等于 1」也相等。
+
+峰值为什么恒等于 K（与 sleep 长短无关）：nini 侧全部 future 在
+`FuturesUnordered` 的同一次 poll 里各被首次 poll，每个 future 在第一个 await
+之前就把 in-flight 计数加一；Pi 侧 `Promise.all` 在同一个同步 map 里调用每个
+`tool.execute`。两侧的工具都是**进程内**的（没有 fork 开销），sleep 只用来保证
+in-flight 窗口不塌。
+
+两条反向变异都实测过：默认值改回 8 → nini peak=8；worker pool 串行化 →
+nini peak=1。两次都让 oracle 变红（见 `docs/invariant-verification.md`）。
+
+### 已知限制（本轮明确不修）
+
+用户级 `~/.nini/agent/settings.json` 里的 `maxParallelTools` 键，会在 TUI 保存
+设置时被抹掉——`crates/nini-tui/src/settings.rs` 的 `flush()` 只序列化它自己的
+`Settings` 结构（里面既没有 `maxIterations` 也没有 `maxParallelTools`）。
+这是**既有缺陷**，今天写 `maxIterations` 也是同样的下场，与本轮无关；**项目级**
+`.pi/settings.json` 不受影响。它**不影响默认行为**：键丢了 → 回落默认 0 =
+不限 = 与 Pi 一致。
+
+---
+
 ## v0.13.0 — models.json 里的 provider，真的能用了（2026-10-29）
 
 1744 tests, all green. 这一版修的是一个**自相矛盾**的事实：nini 的

@@ -211,6 +211,24 @@ baseUrl/api/compat/cost/samplingParams/thinkingLevelMap 同理，以及同名内
 它写的 `!cmd`。Pi 0.85.1 根本没有项目级 models.json 这个概念，所以「与 Pi 一致」的
 答案就是**不读**。
 
+**B17**（nini 的工具并发度默认 8 且用户改不了，Pi 0.85.1 的并行分支是无上限的
+`Promise.all`）本轮**关掉**：默认改成**不限**（0 = 不限），与 Pi 一致；同时把上限
+旋钮**暴露**给用户——`--max-parallel-tools N` 与 settings.json 的 `maxParallelTools`
+（0 = 不限，N > 0 = 最多 N 个并发）。这个旋钮是 **Pi 没有**的能力，属于 superset，
+不是新的不一致。v0.8.9 当初立上限的量化依据（30 × 8MiB 缓冲）不成立：
+`STREAM_CAPTURE_CAP` 是**单流**上限，生产每流只有 64KiB，且仓库里没有实测数据。
+oracle：`crates/nini-core/tests/agent_integration.rs` 的
+`the_default_ceiling_is_unlimited` 与 `the_default_batch_runs_all_calls_at_once`
+（K=20 个探针工具的 peak 必须 = 20），加 `scripts/e2e-parallel-tools.sh`
+（同一剧本，nini peak 与 Pi peak 相等**且都等于 K=20**）。
+
+**B18**（Pi 的 `executionMode` / `toolExecution` **整批降级**在 nini 侧没有接线：
+类型在、`batch_is_sequential` 判定也在，但生产路径恒 Parallel，也没有用户可配的
+开关）与 **B19**（abort 的**部分结果**语义：Pi 保留已完成工具的结果，nini 明确丢弃
+并补发 `[aborted]`，理由写在代码注释里）本轮**明确不做并登记**：B18 涉及工具注册
+API 与配置项、改动面比并发度大，而并发度旋钮已经覆盖了「用户想降级」的需求；
+B19 是 nini 的有意设计（发部分 `tool_results` 会破坏与下一次 LLM 调用的 API 契约）。
+
 ---
 
 ## 3. 排序规则（与 GOALS 合并后的唯一版本）

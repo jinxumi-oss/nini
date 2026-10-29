@@ -591,5 +591,5 @@ fn the_ledger_still_has_the_same_number_of_gaps() {
         .and_then(|v| v.as_array())
         .map(|v| v.len())
         .unwrap_or(0);
-    assert_eq!(n, 35, "台账的 gap 条数变了（现在是 {n}）——请同步更新本测试");
+    assert_eq!(n, 38, "台账的 gap 条数变了（现在是 {n}）——请同步更新本测试");
 }

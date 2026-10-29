@@ -108,7 +108,7 @@ v0.9.2 一整版都在清这个。
 | 行为 oracle | **符号引用全部可解析（drift=0）**；台账的 `nini_state` **每条都能 grep 到代码符号**（`crates/nini-core/tests/ledger_anchors.rs`）；行为层 **Pi 侧可执行对照物 ≥1**（真 Pi 0.85.1 录制的会话） | `python3 scripts/pi-oracle-lock.py --verify-refs`；`crates/nini-tui/tests/behavior_parity.rs` | 其余 oracle 仍只断言 nini 侧（依据已是机器可解析的符号引用，不再依赖行号）——**C1 已闭**，剩下的覆盖度是另一件事 |
 | 行号引用 | 过渡引用保留，且必须仍能解析到代码行 | `python3 scripts/pi-line-refs.py --json` | 无（0.84.2 → 0.85.1 的漂移结论见 `docs/pi-version-delta-0.84.2-to-0.85.1.md`） |
 | Provider | **9 个原生实现（7 个品牌）+ `models.json` 其余**（用户声明的模型现在**能被 nini 读懂**：见 v0.10.9） | `provider_factory.rs`；Pi 侧实测 `pi-ai/dist/providers/all.js` 的 `builtinProviders()` | **Pi 0.84.2 内置 40 个**（旧文档写 51，是错的）—— **R5 待 owner 决策**，实现者不自行扩范围 |
-| 差距台账 | **30 条**（A 8 / B 14 / C 5 / D 3），open 5、fixed 20、blocked-owner 4 | `python3 scripts/parity-gap.py --json` | 差距表不再手工维护 |
+| 差距台账 | **38 条**（A 9 / B 20 / C 5 / D 4），open 9、fixed 25、blocked-owner 4 | `python3 scripts/parity-gap.py --json` | 差距表不再手工维护 |
 | 能力面投入 | — | 自 10-05 起：`nini-tui` +11861 行、`nini-ai` +1295 行；但 `nini-ai` **最后一次提交停在 10-12** | 单侧化，见 §3 |
 
 ---

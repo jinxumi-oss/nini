@@ -398,3 +398,33 @@ CI 上它表现为：Pi 一直没被问到（mock provider 一个请求都没有
 
 现在脚本等的是**机器可判定**的正向信号：mock provider 收到请求；没收到就再按
 一次 Enter（启动完成后，这一次才会真的把编辑器里的文本发出去）。
+
+---
+
+## v0.14 变异验证（工具并发度）
+
+判据是 `crates/nini-core/tests/agent_integration.rs` 的
+`mod parallel_ceiling_tests` 里的两条新断言
+（`the_default_ceiling_is_unlimited` 与 `the_default_batch_runs_all_calls_at_once`），
+外加差分 oracle `scripts/e2e-parallel-tools.sh`（两侧报各自的 in-flight 峰值，
+判据是 **nini peak == Pi peak == K=20**）。
+
+| 注入的 bug | 变红的断言 |
+|---|---|
+| 把 `crates/nini-core/src/agent.rs` 的 `DEFAULT_MAX_PARALLEL_TOOLS` 改回 `8`（v0.8.9 的旧默认值） | `the_default_ceiling_is_unlimited` 变红（`left: 8, right: 0`）；`the_default_batch_runs_all_calls_at_once` 变红，断言消息写死为 `peak concurrency was 8`。差分 oracle 同时变红：`nini peak=8 ≠ Pi peak=20` |
+| 把 `crates/nini-core/src/agent.rs` 里 `max_parallel_tools == 0` 分支的 `specs.len().max(1)` 改成 `1`（永远只跑一个，串行化） | `the_default_batch_runs_all_calls_at_once` 变红，断言消息写死为 `peak concurrency was 1`。差分 oracle 同时变红：`nini peak=1 ≠ Pi peak=20` |
+
+两条注入都实测过：断言变红、oracle 变红，源码已逐字还原（`git diff` 只剩本轮
+真正的改动），还原后 `bash scripts/e2e-parallel-tools.sh` 回到退出 0 且
+`NINI_PEAK=20`、`PI_PEAK=20`。
+
+**为什么串行化这一条特别重要**：它证明 oracle 量的是**并发**，不是「跑完了」——
+一个「全部跑完、但一次只跑一个」的实现同样满足「都跑完了」，而它让峰值从
+20 掉到 1。
+
+**为什么 peak 与 sleep 的长短无关**：nini 侧全部 future 在 `FuturesUnordered`
+的同一次 poll 里各被首次 poll，每个 future 在第一个 await 之前就把 in-flight
+计数加一；Pi 侧 `Promise.all` 在同一个同步 map 里调用每个 `tool.execute`
+（`references/pi-0.85.1/src/loop/agent-loop.ts:547-549`）。两侧的工具都是
+**进程内**的（没有 fork 开销），所以 peak 恒等于 K。sleep（60ms）只用来保证
+in-flight 窗口不塌——若日后把探针换成真 bash（要 fork+exec），需要重新评估。
