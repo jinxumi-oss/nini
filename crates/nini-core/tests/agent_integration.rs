@@ -1113,25 +1113,89 @@ mod parallel_ceiling_tests {
         );
     }
 
-    /// v0.14: the scripted turn's size has **one** source.
+    /// v0.14 (round 3): the scripted turn's size has **one** source — and
+    /// this assertion can actually fail.
     ///
-    /// The differential oracle runs the same script on both sides, so the
-    /// number of tool calls must come from one place. If this side kept a
-    /// constant while the Pi side took a `--calls`, the two scripts could
-    /// drift apart — and the drift would arrive as "nini peak=20 ≠ Pi
-    /// peak=30", which reads like a concurrency bug and is not one.
-    #[test]
-    fn the_scripted_call_count_has_one_source() {
-        let from_env: Option<usize> = std::env::var("NINI_PARALLEL_CALLS")
-            .ok()
-            .and_then(|s| s.trim().parse::<usize>().ok());
+    /// The previous version compared `from_env.unwrap_or(DEFAULT_CALLS)` with
+    /// `calls()` — the same expression twice, so it was true by
+    /// construction. A tautology in the gate is worse than no assertion: it
+    /// occupies a slot and proves nothing.
+    ///
+    /// The measurement now runs the other way round. A child process gets a
+    /// call count **it could not have known by heart** (7, handed over in
+    /// its environment), runs a scripted turn whose size is decided by
+    /// `calls()`, and reports how many tool calls **really ran** (counted by
+    /// the tool itself). The parent checks that number against 7.
+    ///
+    /// So: hard-code `calls()` and the child runs 20 calls instead of 7 →
+    /// this test turns red. That is the whole point — the assertion has to
+    /// be able to fail.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_scripted_call_count_comes_from_the_environment() {
+        const PROBE_ENV: &str = "NINI_CALL_COUNT_PROBE";
+        const PROBE_CALLS: usize = 7;
+
+        // Leaf mode: the parent asked for a measurement.
+        if std::env::var_os(PROBE_ENV).is_some() {
+            let observed = measure_scripted_calls().await;
+            println!("OBSERVED_CALLS={observed}");
+            return;
+        }
+
+        let exe = std::env::current_exe().expect("the test binary's own path");
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "parallel_ceiling_tests::the_scripted_call_count_comes_from_the_environment",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("NINI_PARALLEL_CALLS", PROBE_CALLS.to_string())
+            .env(PROBE_ENV, "1")
+            .output()
+            .expect("the probe child runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let observed = parse_observed_calls(&stdout).unwrap_or_else(|| {
+            panic!("the probe child reported no call count\nstdout:\n{stdout}\nstderr:\n{stderr}")
+        });
         assert_eq!(
-            from_env.unwrap_or(DEFAULT_CALLS),
-            calls(),
-            "the scripted call count must come from the environment (or from the \
-             default) — a second source would let the two sides of the oracle \
-             drift apart"
+            observed, PROBE_CALLS,
+            "the scripted turn's size did not come from the environment: the child was \
+             told {PROBE_CALLS} calls and ran {observed}"
         );
+    }
+
+    /// How many tool calls a scripted turn **really** issued — counted by
+    /// the tool, not by the number that was asked for.
+    async fn measure_scripted_calls() -> usize {
+        let probe = Arc::new(ConcurrencyProbeTool::new(Duration::from_millis(1)));
+        let total = probe.total.clone();
+        let tools = ToolRegistry::new().register(probe as Arc<dyn Tool>);
+        let cfg = RunConfig::new("test-model");
+        let mut agent = Agent::new(provider_with(calls()), tools, cfg);
+        {
+            let mut stream = Box::pin(agent.run(AgentMessage::user("go")));
+            while let Some(ev) = stream.next().await {
+                let _ = ev.expect("agent stream error");
+            }
+        }
+        total.load(Ordering::SeqCst) as usize
+    }
+
+    /// Read the number the probe child printed.
+    ///
+    /// `--nocapture` puts libtest's `test <name> ... ` on the **same line**
+    /// as the printed value, so the marker is searched for, not matched at
+    /// the start of a line.
+    fn parse_observed_calls(text: &str) -> Option<usize> {
+        const MARKER: &str = "OBSERVED_CALLS=";
+        let at = text.rfind(MARKER)? + MARKER.len();
+        let digits: String = text[at..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        digits.parse().ok()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1159,9 +1223,16 @@ mod parallel_ceiling_tests {
         // Explicit opt-out preserves the pre-v0.8.9 behaviour.
         let (peak, total, _) = run_with_limit(0, Duration::from_millis(60)).await;
         assert_eq!(total, calls() as u32);
-        assert!(
-            peak > LIMIT as u32,
-            "max_parallel_tools = 0 should mean unlimited, but peak was only {peak}"
+        // "No ceiling" means **all of them at once** — not "more than the
+        // old limit of 4". The old assertion (`peak > 4`) stayed green when
+        // the pool quietly capped the batch at 5..19, which is not what
+        // "unlimited" says and is not what Pi 0.85.1 does.
+        assert_eq!(
+            peak,
+            calls() as u32,
+            "max_parallel_tools = 0 should mean unlimited — all {} calls at once, \
+             but peak concurrency was {peak}",
+            calls()
         );
     }
 
