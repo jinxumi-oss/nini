@@ -272,6 +272,66 @@ grep -q 'No API key found for' "$TMP/nokey-pi.err" || {
 note "场景 4 通过：两边都失败，且都指向 'No API key found for'"
 
 # ---------------------------------------------------------------------------
+# 场景 4b：凭证**写了但读不出**（指向一个不存在的环境变量）。
+#
+# 这与场景 4 不是一回事：场景 4 是「根本没写 apiKey」，这一条是「写了
+# `$MISSING`，而 MISSING 不存在」。Pi 的 `resolveConfigValueOrThrow`
+# （`resolve-config-value.js:199-217`）在这种情况下**抛错**，
+# `provider-composer.js:239-243` 把它变成「凭证不可用」，用户看到的是
+# `No API key found for <provider>.`（`auth-guidance.js:17-19`）——
+# **不是**那句内部错误。
+#
+# nini 的差别只有一处，而且这一处不能有：nini **不许**退回内置 provider
+# 的同名环境变量。Pi 也不退（`provider-composer.js:243` 走的是 throw 分支，
+# 不是 `inherited.resolve`），否则用户的请求会发往他没选的地方。
+# ---------------------------------------------------------------------------
+note "场景 4b：apiKey 指向一个不存在的环境变量"
+write_models_json "$TMP/badkey.json" "127.0.0.1:1" "openai-completions" '$NINI_A_VARIABLE_THAT_IS_NOT_SET' "yes"
+# 让内置 provider 的同名环境变量**存在**：如果 nini 退了回它，nini 会
+# 成功或给出一个完全不同的理由，这条断言就抓到了。
+export OPENAI_API_KEY="a-key-that-must-not-be-used"
+run_nini "badkey-nini" "$TMP/badkey.json" "$TMP" --provider my-gw --model gw-model -p "hi"
+run_pi "badkey-pi" "$TMP/badkey.json" "$TMP" --provider my-gw --model gw-model -p "hi"
+unset OPENAI_API_KEY
+
+[[ "$(cat "$TMP/badkey-nini.code")" != "0" ]] || fail "凭证读不出时 nini 不该成功"
+[[ "$(cat "$TMP/badkey-pi.code")" != "0" ]] || fail "凭证读不出时 Pi 不该成功"
+grep -q 'No API key found for' "$TMP/badkey-nini.err" || {
+  echo "--- nini stderr ---" >&2; cat "$TMP/badkey-nini.err" >&2
+  fail "凭证读不出时 nini 的 stderr 没有 'No API key found for'"; }
+grep -q 'No API key found for' "$TMP/badkey-pi.err" || {
+  echo "--- Pi stderr ---" >&2; cat "$TMP/badkey-pi.err" >&2
+  fail "凭证读不出时 Pi 的 stderr 没有 'No API key found for'"; }
+note "场景 4b 通过：两边都失败，都指向 'No API key found for'，且都没有退回内置环境变量"
+
+# ---------------------------------------------------------------------------
+# 场景 4c：baseUrl 里的 `!cmd` **不是命令**。
+#
+# Pi 只对凭证和请求头求值（`provider-composer.js:241` 是 provider 凭证
+# 唯一的 `resolveConfigValueOrThrow` 调用点），baseUrl 是**字面量**
+# （`provider-composer.js:53`）。所以一个 `!cmd` 形状的 baseUrl 在 Pi
+# 那里是一个以叹号开头的 URL，不是一条 shell 指令。
+#
+# 这一条是安全断言：两边都**不许**执行它。
+# ---------------------------------------------------------------------------
+note "场景 4c：baseUrl 里的 !cmd 不被执行"
+rm -f "$TMP/PWNED_BASEURL"
+write_models_json "$TMP/cmdbase.json" "127.0.0.1:1" "openai-completions" "k" "yes"
+# 把 baseUrl 换成一条会落标记文件的命令
+python3 - "$TMP/cmdbase.json" "$TMP/PWNED_BASEURL" <<'PY'
+import json, sys
+path, marker = sys.argv[1], sys.argv[2]
+cfg = json.load(open(path))
+for provider in cfg["providers"].values():
+    provider["baseUrl"] = f"!touch {marker}"
+json.dump(cfg, open(path, "w"), ensure_ascii=False, indent=2)
+PY
+run_nini "cmdbase-nini" "$TMP/cmdbase.json" "$TMP" --provider my-gw --model gw-model -p "hi"
+run_pi "cmdbase-pi" "$TMP/cmdbase.json" "$TMP" --provider my-gw --model gw-model -p "hi"
+[[ -e "$TMP/PWNED_BASEURL" ]] && fail "nini 执行了 baseUrl 里的 !cmd"
+note "场景 4c 通过：nini 没有执行 baseUrl 里的 !cmd（它只是一个 URL）"
+
+# ---------------------------------------------------------------------------
 # 场景 5：配置值求值。`$VAR` / `${VAR}` / `!cmd` 三种写法，两边字面相等。
 # ---------------------------------------------------------------------------
 for spelling in '$NINI_EVAL_KEY' '${NINI_EVAL_KEY}' '!echo secret-from-models-json'; do

@@ -362,9 +362,21 @@ fn build_provider_or_fallback(
             // fixture. The reason the user needs is the reason they are
             // missing, and a fixture would hide it behind a screen that
             // looks alive.
-            if e.downcast_ref::<provider_factory::ModelsJsonProviderError>()
-                .is_some()
+            if let Some(models_error) =
+                e.downcast_ref::<provider_factory::ModelsJsonProviderError>()
             {
+                // The sentence the user reads is Pi's; the **reason** is
+                // nini's own, because the TUI is nini's own surface and
+                // Pi has no equivalent. The CLI path deliberately does
+                // not do this: there, nini's output has to match Pi's
+                // word for word.
+                if let Some(cause) = &models_error.cause {
+                    return Err(anyhow::anyhow!(
+                        "{}\n{}",
+                        models_error.detail,
+                        cause.message(&format!("API key for provider \"{}\"", cfg.provider))
+                    ));
+                }
                 return Err(e);
             }
             let fallback = Arc::new(nini_ai::fixture::ProgrammedProvider::from_turns(

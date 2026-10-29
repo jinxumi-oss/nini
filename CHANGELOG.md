@@ -1,6 +1,6 @@
 ## v0.13.0 — models.json 里的 provider，真的能用了（2026-10-29）
 
-1733 tests, all green. 这一版修的是一个**自相矛盾**的事实：nini 的
+1738 tests, all green. 这一版修的是一个**自相矛盾**的事实：nini 的
 `--list-models` 能把你写在 `~/.nini/agent/models.json` 里的 provider 与模型
 一条不落地列出来，而你用 `--provider` 去点名它，nini 说「没这个 provider」。
 
@@ -60,6 +60,33 @@ provider 构造**，项目级那份只用于展示。一个用户 merely clone �
   安全场景断言项目级的 `!cmd` 不执行、零请求（同一份内容放到 Pi 的用户级就会
   执行——所以这条 oracle 不空转）。本地没有 Pi 时它**明确说「没做」**（退出码 2），
   不静默跳过。
+
+### 五、代码审查改掉的四处（发布前）
+
+这一版的实现先过了一遍独立审查，审查提的每一条都对着 Pi 0.85.1 的源码核过，
+四条里有三条是真的，改了：
+
+* **`baseUrl` 不再求值。** Pi 只对**凭证与请求头**求值（`provider-composer.js:241`
+  是 provider 凭证唯一的求值调用点），`baseUrl` 是**字面量**（`:53`）。原先 nini
+  也去求值它，后果有两个：baseUrl 里的 `!cmd` 会被执行（Pi 不会），
+  求值失败时又会被当成「没写」，于是内置 provider **静默改指默认主机**，
+  把凭证发到一个用户没有选的地方。现在 baseUrl 按字面量用，
+  `!cmd` 形状的 baseUrl 只是一个以叹号开头的 URL。
+* **凭证「写了但读不出」时不退回。** Pi 的 `resolveConfigValueOrThrow`
+  （`resolve-config-value.js:199-217`）在这种情形下抛错，用户看到的是
+  `No API key found for <provider>.`（`auth-guidance.js:17-19`）。原先 nini 会
+  静默退回内置 provider 的同名环境变量——用户在自己的文件里写错一个变量名，
+  请求就发去了别处。现在不退回，文案与 Pi 逐字一致，原因留在内部字段里。
+* **`google` 的 api 写的是 nini 能实现的那个。** Pi 内置的 `google` 用
+  `google-generative-ai`，nini 没有这个实现（它的 google 走 OpenAI 兼容协议），
+  照抄会让用户文件里的一条 `google` 条目把内置 google 弄坏。
+* **`models.json` 读不了不再装作没有。** Pi 对读失败与解析失败各有一句话
+  （`model-config.js:226/233`），原先 nini 把坏文件静静丢掉，用户只看到
+  provider「不存在」。
+
+四处各配一条测试，且都做过反向破坏：把实现改回原样，测试必须变红。
+差分 oracle 也补了两个场景（凭证指向不存在的变量、baseUrl 里的 `!cmd`），
+现在一共八个场景。
 
 ## v0.12.0 — 长任务不再在半路被截断（2026-10-28）
 

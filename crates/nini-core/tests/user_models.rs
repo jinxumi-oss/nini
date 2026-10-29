@@ -23,7 +23,7 @@
 //!    duplicated.
 
 use nini_core::model_runtime::{user_model_specs, ModelRuntime};
-use nini_core::settings::{load_models_json, ModelsJson};
+use nini_core::settings::{load_models_json, load_user_models_json_reporting, ModelsJson};
 use std::io::Write as _;
 
 /// A `models.json` in Pi's spelling, with a gateway provider.
@@ -128,6 +128,47 @@ fn a_catalog_model_is_overridden_not_duplicated() {
     nini_core::model_runtime::merge_user_overrides(&mut runtime, &cfg);
     let gpt5 = runtime.find_by_id("openai/gpt-5").expect("catalog entry");
     assert_eq!(gpt5.context_window, 111_111);
+}
+
+/// A `models.json` that cannot be parsed is **reported**, not dropped.
+///
+/// Pi: `model-config.js:233` turns a parse error into
+/// `Failed to parse models.json: …`. nini used to discard the file
+/// without a word, which left a user looking at a provider that was
+/// simply not there.
+#[test]
+fn a_models_json_that_does_not_parse_is_reported() {
+    let guard = nini_core::paths::agent_lock();
+    let mut f =
+        std::fs::File::create(guard.path().join("models.json")).expect("create models.json");
+    writeln!(f, "{{ this is not json").expect("write");
+
+    let (cfg, error) = load_user_models_json_reporting();
+    assert!(
+        cfg.providers.is_empty(),
+        "a file that does not parse contributes no provider"
+    );
+    let error = error.expect("a broken file must be reported");
+    assert!(
+        error.starts_with("Failed to parse models.json:"),
+        "Pi's sentence, verbatim: {error}"
+    );
+}
+
+/// A `models.json` that does not exist is not an error at all.
+///
+/// Pi: `model-config.js:215-224` — no file, no configuration, no
+/// complaint.
+#[test]
+fn an_absent_models_json_is_not_an_error() {
+    let guard = nini_core::paths::agent_lock();
+    let _ = std::fs::remove_file(guard.path().join("models.json"));
+
+    let (_cfg, error) = load_user_models_json_reporting();
+    assert!(
+        error.is_none(),
+        "a user who has no models.json has nothing to be told: {error:?}"
+    );
 }
 
 #[test]

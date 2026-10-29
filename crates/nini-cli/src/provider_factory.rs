@@ -15,7 +15,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
-use nini_core::config_value::resolve_config_value;
+use nini_core::config_value::resolve_config_value_detailed;
 use nini_core::provider::{Provider, Usage};
 use nini_core::settings::{ModelsJson, ProviderConfig};
 
@@ -34,6 +34,17 @@ pub(crate) struct ModelsJsonProviderError {
     /// different missing item than Pi's is a refusal the user cannot
     /// act on.
     pub(crate) detail: String,
+    /// Why the value could not be read, when it was there and could
+    /// not be resolved.
+    ///
+    /// Pi does not show this to the user: it resolves a credential with
+    /// `resolveConfigValueOrThrow`
+    /// (`resolve-config-value.js:199-217`), the failure is swallowed by
+    /// the authentication layer, and the user is told
+    /// `No API key found for <provider>.` (`auth-guidance.js:17-19`).
+    /// nini says the same thing and keeps the reason here, where a
+    /// diagnostic can have it.
+    pub(crate) cause: Option<nini_core::config_value::ConfigValueError>,
 }
 
 impl std::fmt::Display for ModelsJsonProviderError {
@@ -112,7 +123,14 @@ const BUILTINS: &[(&str, Builtin)] = &[
         Builtin {
             default_base: Some(nini_ai::google::GEMINI_BASE_URL),
             base_env: Some("GOOGLE_BASE_URL"),
-            api: "google-generative-ai",
+            // Pi's built-in API for this one is `google-generative-ai`.
+            // nini has no such implementation: its `google` speaks the
+            // OpenAI-compatible protocol (`GoogleProvider` wraps
+            // `OpenAiCompatProvider`), so the API it can be built from
+            // is `openai-completions`. Naming Pi's API here would make
+            // every `google` entry in a user's `models.json` fail with
+            // `No API provider registered for api: google-generative-ai`.
+            api: "openai-completions",
             key_envs: &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
         },
     ),
@@ -188,6 +206,13 @@ fn first_model_id(config: &ProviderConfig) -> Option<&str> {
 ///     variable the built-in branch reads, else the built-in's default
 ///     host, else `"baseUrl" is required`.
 ///
+/// The base URL is taken **literally**. Pi resolves configuration
+/// values only for credentials and headers (`provider-composer.js:241`
+/// is the one `resolveConfigValueOrThrow` call for a provider's key);
+/// a `baseUrl` is read as written (`provider-composer.js:53`). Resolving
+/// it here would run a `!command` that Pi never runs, and would send a
+/// half-expanded URL to the network.
+///
 /// The sentences are Pi's, verbatim: a user who compares the two
 /// programs must read the same reason on both sides.
 fn resolve_endpoint(
@@ -204,6 +229,7 @@ fn resolve_endpoint(
         .map(str::to_string)
         .or_else(|| builtin.map(|b| b.api.to_string()))
         .ok_or_else(|| ModelsJsonProviderError {
+            cause: None,
             detail: match first_model_id(config) {
                 Some(model) => format!(
                     "Provider {id}, model {model}: no \"api\" specified. Set at provider or model level."
@@ -217,11 +243,10 @@ fn resolve_endpoint(
     let base_url = match config
         .base_url
         .as_deref()
-        .and_then(resolve_config_value)
-        .map(|s| s.trim().to_string())
+        .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        Some(base) => base,
+        Some(base) => base.to_string(),
         None => match builtin {
             Some(builtin) => {
                 let from_env = builtin
@@ -239,6 +264,7 @@ fn resolve_endpoint(
                             // saying it.
                             let var = builtin.base_env.unwrap_or("OPENAI_BASE_URL");
                             return Err(ModelsJsonProviderError {
+                                cause: None,
                                 detail: format!("{var} required for {id}"),
                             });
                         }
@@ -247,6 +273,7 @@ fn resolve_endpoint(
             }
             None => {
                 return Err(ModelsJsonProviderError {
+                    cause: None,
                     detail: format!(
                         "Provider {id}: \"baseUrl\" is required when defining custom models."
                     ),
@@ -265,37 +292,77 @@ fn resolve_endpoint(
 /// `!cmd` mean what they mean in Pi — then the environment variable the
 /// built-in provider reads, and finally Pi's
 /// `No API key found for`.
+///
+/// A credential that is **configured but unreadable** is an error, not a
+/// fallback: Pi resolves it with `resolveConfigValueOrThrow`
+/// (`resolve-config-value.js:199-217`) and lets the failure through. If
+/// nini fell back to the built-in's environment variable instead, a
+/// typo in one file would silently send the request somewhere else.
 fn resolve_credential(
     id: &str,
     config: &ProviderConfig,
     api_key_override: Option<&str>,
 ) -> Result<String, ModelsJsonProviderError> {
     let builtin = builtin_of(id);
+
+    // The built-in's own environment variable: the last resort before
+    // `No API key found for`.
+    let from_builtin_env = || {
+        builtin.and_then(|b| {
+            b.key_envs
+                .iter()
+                .find_map(|var| std::env::var(var).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+    };
+
     match api_key_override {
         Some(key) if key.trim().is_empty() => Err(ModelsJsonProviderError {
+            cause: None,
             detail: "--api-key was passed but is empty. Pass a real key.".to_string(),
         }),
         Some(key) => Ok(key.trim().to_string()),
-        None => match config
-            .api_key
-            .as_deref()
-            .and_then(resolve_config_value)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-        {
-            Some(key) => Ok(key),
-            None => match builtin.and_then(|b| {
-                b.key_envs
-                    .iter()
-                    .find_map(|var| std::env::var(var).ok())
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            }) {
-                Some(key) => Ok(key),
-                None => Err(ModelsJsonProviderError {
+        None => match config.api_key.as_deref() {
+            Some(raw) => match resolve_config_value_detailed(raw) {
+                Ok(Some(key)) => {
+                    let key = key.trim().to_string();
+                    if key.is_empty() {
+                        from_builtin_env().ok_or_else(|| ModelsJsonProviderError {
+                            cause: None,
+                            detail: format!("No API key found for {id}."),
+                        })
+                    } else {
+                        Ok(key)
+                    }
+                }
+                Ok(None) => from_builtin_env().ok_or_else(|| ModelsJsonProviderError {
+                    cause: None,
                     detail: format!("No API key found for {id}."),
                 }),
+                Err(cause) => {
+                    // Pi: the failure of `resolveConfigValueOrThrow` is
+                    // swallowed by the authentication layer, and the user
+                    // is told `No API key found for <provider>.`
+                    // (`auth-guidance.js:17-19`) — **not** the reason.
+                    // The reason stays in `cause`, for a diagnostic.
+                    //
+                    // What matters, and is *not* about wording: nini does
+                    // **not** fall back to the built-in's environment
+                    // variable here. Pi does not either — a value that was
+                    // configured and could not be read is a failure
+                    // (`provider-composer.js:239-243`), not a reason to
+                    // send the request somewhere the user did not choose.
+                    Err(ModelsJsonProviderError {
+                        cause: Some(cause),
+                        detail: format!("No API key found for {id}."),
+                    })
+                }
             },
+            None => from_builtin_env().ok_or_else(|| ModelsJsonProviderError {
+                cause: None,
+                detail: format!("No API key found for {id}."),
+            }),
         },
     }
 }
@@ -362,6 +429,7 @@ fn build_models_json_provider(
                 .with_base_url(resolved.base_url),
         )),
         other => Err(ModelsJsonProviderError {
+            cause: None,
             detail: format!("No API provider registered for api: {other}"),
         }
         .into()),
@@ -974,6 +1042,82 @@ mod tests {
             err.detail.contains("no \"api\" specified"),
             "Pi's phrase, verbatim: {}",
             err.detail
+        );
+    }
+
+    #[test]
+    fn a_built_in_google_entry_in_the_file_can_still_be_built() {
+        // Pi's built-in API for google is `google-generative-ai`. nini has
+        // no such implementation — its `google` speaks the
+        // OpenAI-compatible protocol — so the file's `google` entry has
+        // to resolve to an API nini can build, not to Pi's name for it.
+        let entry = models_json_entry(
+            Some("http://models-json.invalid/v1"),
+            None,
+            Some("from-the-file"),
+        );
+        let resolved = resolve_models_json_provider("google", &entry, None)
+            .expect("a google entry in the file must not break the built-in google");
+        assert_eq!(
+            resolved.api, "openai-completions",
+            "nini's google speaks the OpenAI-compatible protocol"
+        );
+        assert_eq!(resolved.base_url, "http://models-json.invalid/v1");
+    }
+
+    #[test]
+    fn a_base_url_is_taken_literally_and_never_run_as_a_command() {
+        // Pi resolves configuration values for credentials and headers
+        // only (`provider-composer.js:241`); a `baseUrl` is read as
+        // written (`provider-composer.js:53`). A `!command` in a base URL
+        // is a URL that starts with a bang, not a shell instruction.
+        let entry = models_json_entry(
+            Some("!echo should-not-run"),
+            Some("openai-completions"),
+            Some("k"),
+        );
+        let resolved = resolve_models_json_provider("my-gw", &entry, None)
+            .expect("the URL is taken as written");
+        assert_eq!(
+            resolved.base_url, "!echo should-not-run",
+            "the base URL is literal — no command is run, no value is substituted"
+        );
+    }
+
+    #[test]
+    fn a_credential_that_is_configured_but_unreadable_is_an_error() {
+        // Pi: a credential that is **configured but unreadable** is a
+        // failure (`provider-composer.js:239-243` calls
+        // `resolveConfigValueOrThrow`), and the user is told
+        // `No API key found for <provider>.` (`auth-guidance.js:17-19`).
+        //
+        // Two things are asserted here:
+        //
+        //   * the sentence the user reads is Pi's;
+        //   * the built-in's environment variable is **not** used as a
+        //     fallback — a value that was configured and could not be
+        //     read must not send the request somewhere else.
+        //
+        // The reason is kept in `cause`: Pi swallows it, nini keeps it
+        // for a diagnostic without showing it to the user.
+        let entry = models_json_entry(
+            Some("http://x.invalid/v1"),
+            Some("openai-completions"),
+            Some("$NINI_A_VARIABLE_THAT_IS_NOT_SET"),
+        );
+        let err = resolve_models_json_provider("my-gw", &entry, None).unwrap_err();
+        assert_eq!(
+            err.detail, "No API key found for my-gw.",
+            "Pi's sentence, verbatim"
+        );
+        assert!(
+            matches!(
+                err.cause,
+                Some(nini_core::config_value::ConfigValueError::MissingEnvVars(ref names))
+                    if names == &["NINI_A_VARIABLE_THAT_IS_NOT_SET".to_string()]
+            ),
+            "the reason names the variable that was missing: {:?}",
+            err.cause
         );
     }
 

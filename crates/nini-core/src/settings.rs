@@ -158,15 +158,46 @@ pub fn load_models_json(cwd: &Path) -> ModelsJson {
 /// be able to hand nini a base URL and a credential — least of all a
 /// `!command` to run.
 pub fn load_user_models_json() -> ModelsJson {
+    load_user_models_json_reporting().0
+}
+
+/// Load the user-level `models.json`, and say why it could not be read.
+///
+/// Pi does not swallow a broken file: `model-config.js:226/233/240` turns
+/// a read error, a parse error and a schema error into three different
+/// messages, and the user is shown them. nini used to drop the file on
+/// the floor, which left a user staring at a provider that silently was
+/// not there.
+///
+/// The message is Pi's, minus the `File: <path>` tail (nini prints the
+/// path in its own header).
+pub fn load_user_models_json_reporting() -> (ModelsJson, Option<String>) {
     let mut out = ModelsJson::default();
-    if let Some(path) = crate::paths::agent_file("models.json") {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(parsed) = serde_json::from_str::<ModelsJson>(&text) {
-                out.providers.extend(parsed.providers);
+    let Some(path) = crate::paths::agent_file("models.json") else {
+        // Pi: a file that is not there is an empty configuration, not an
+        // error (`model-config.js:215-224`).
+        return (out, None);
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            // Pi: a file that is **not there** is an empty
+            // configuration, not an error (`model-config.js:215-224`).
+            // A file that is there and cannot be read is an error
+            // (`model-config.js:226`).
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return (out, None);
             }
+            return (out, Some(format!("Failed to load models.json: {error}")));
         }
+    };
+    match serde_json::from_str::<ModelsJson>(&text) {
+        Ok(parsed) => {
+            out.providers.extend(parsed.providers);
+            (out, None)
+        }
+        Err(error) => (out, Some(format!("Failed to parse models.json: {error}"))),
     }
-    out
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

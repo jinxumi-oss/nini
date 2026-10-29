@@ -526,8 +526,14 @@ async fn main() -> Result<()> {
             // and so does nini — same heading, same sentences. Only the
             // **user-level** file is warned about: the project-level one
             // is a catalogue, and a provider in it is never composed.
-            let user_models = nini_core::settings::load_user_models_json();
-            let warnings = provider_factory::models_json_warnings(&user_models);
+            let (user_models, load_error) = nini_core::settings::load_user_models_json_reporting();
+            let mut warnings = provider_factory::models_json_warnings(&user_models);
+            // A file that could not be read or parsed is Pi's own error
+            // (`model-config.js:226/233`), and it comes first: the
+            // entries in it are not the problem, the file is.
+            if let Some(load_error) = load_error {
+                warnings.insert(0, load_error);
+            }
             if !warnings.is_empty() {
                 eprintln!(
                     "Warning: errors loading models.json:\n{}",
