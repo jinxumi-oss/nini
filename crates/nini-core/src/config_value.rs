@@ -55,6 +55,13 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// that were not set. nini needs the same distinction, because "the value
 /// is missing" and "the value was configured but could not be read" are
 /// different failures — the first falls back, the second is an error.
+///
+/// Pi's own error for the second case names the reason (the command that
+/// failed, or the variables that were not set); Pi's *user-visible* text
+/// does not, because the authentication layer swallows it and says
+/// `No API key found for <provider>.` instead. nini keeps both: the
+/// sentence the user reads is Pi's, and the reason stays available for a
+/// diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigValueError {
     /// A `!command` that failed, timed out, or printed nothing.
