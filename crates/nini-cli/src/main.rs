@@ -196,8 +196,7 @@ struct Args {
 
     /// Ceiling on tool calls running at once. 0 = no ceiling (default).
     ///
-    /// v0.14: Pi 0.85.1 runs a turn's tool calls all at once
-    /// (`references/pi-0.85.1/src/loop/agent-loop.ts:547-549`), so the
+    /// v0.14: Pi 0.85.1 runs a turn's tool calls all at once, so the
     /// default is no ceiling. This flag is how a ceiling is put back —
     /// nini's own knob, Pi has no counterpart.
     #[arg(long, value_name = "N")]
@@ -292,10 +291,55 @@ pub const DEFAULT_MODEL: &str = "MiniMax-M2.7-highspeed";
 /// generated one is how two answers to one question get written down —
 /// so `--list-models` now prints what the installation can actually
 /// reach, and only that.
+///
+/// The `AppConfig` for this invocation, assembled from the parsed flags.
+///
+/// v0.14: this function exists because the wiring it holds was untested
+/// **end to end**. `--max-parallel-tools` was parsed, advertised in
+/// `--help`, and could be dropped between `Args` and `AppConfig` without a
+/// single test turning red — a contract test checked that the flag was
+/// *accepted* (exit code 0), and nothing checked that the *value* went
+/// anywhere. "Accepted" and "applied" are different properties, and only
+/// the first one was pinned.
+///
+/// One function means one place where the flags become the config the run
+/// actually uses, and a test that can reach that place.
+fn app_config_from_args(args: &Args) -> app::AppConfig {
+    // Start from the value every "flag not typed" case produces, then let
+    // the flags that *were* typed overwrite it.
+    let mut cfg = app::AppConfig::for_tool_selection();
+    cfg.provider = args.provider.clone();
+    cfg.model = args.model.clone();
+    cfg.fallback_keys = args.fallback_keys.clone();
+    cfg.fallback_base_urls = args.fallback_base_urls.clone();
+    cfg.tools = args.tools.clone();
+    cfg.exclude_tools = args.exclude_tools.clone();
+    cfg.no_tools = args.no_tools;
+    cfg.no_builtin_tools = args.no_builtin_tools;
+    // v0.10: `--theme-file` and `--use-theme` are the same field.
+    // Pi treats a theme value containing a slash as a path, so a file
+    // argument and a name argument converge on one value. An explicit
+    // file wins.
+    cfg.use_theme = args.theme_file.clone().or_else(|| args.use_theme.clone());
+    cfg.api_key = args.api_key.clone();
+    cfg.no_skills = args.no_skills;
+    cfg.system_prompt = args.system_prompt.clone();
+    cfg.append_system_prompt =
+        (!args.append_system_prompt.is_empty()).then(|| args.append_system_prompt.join("\n\n"));
+    cfg.skill_paths = args.skill.iter().map(std::path::PathBuf::from).collect();
+    cfg.thinking = args.thinking.clone();
+    cfg.max_iterations = args.max_iterations;
+    cfg.max_parallel_tools = args.max_parallel_tools;
+    cfg.verbose = args.verbose;
+    cfg
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    // Built before the destructure below: the config is a view of the
+    // parsed flags, so it has to be taken while `args` is still whole.
+    let cli_cfg = app_config_from_args(&args);
     let Args {
         cmd,
         print,
@@ -312,29 +356,17 @@ async fn main() -> Result<()> {
         api_key,
         tui_mode,
         list_models,
-        tools,
-        exclude_tools,
-        no_tools,
-        no_builtin_tools,
         approve,
-        system_prompt,
-        append_system_prompt,
-        thinking,
-        max_iterations,
-        max_parallel_tools,
         verbose,
-        skill,
         offline,
         export,
-        no_skills,
         prompt_template,
         no_prompt_templates,
-        theme_file,
-        use_theme,
         no_themes,
         extension,
         no_extensions,
         no_context_files,
+        ..
     } = args;
 
     // v0.9.0 introduced the honest-refusal mechanism for flags nini does
@@ -510,21 +542,7 @@ async fn main() -> Result<()> {
                 &fallback_keys,
                 &fallback_base_urls,
                 api_key.as_deref(),
-                &app::AppConfig {
-                    tools: tools.clone(),
-                    exclude_tools: exclude_tools.clone(),
-                    no_tools,
-                    no_builtin_tools,
-                    system_prompt: system_prompt.clone(),
-                    append_system_prompt: (!append_system_prompt.is_empty())
-                        .then(|| append_system_prompt.join("\n\n")),
-                    skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
-                    thinking: thinking.clone(),
-                    max_iterations,
-                    max_parallel_tools,
-                    verbose,
-                    ..app::AppConfig::for_tool_selection()
-                },
+                &cli_cfg,
             )
             .await
         }
@@ -576,52 +594,257 @@ async fn main() -> Result<()> {
                 &fallback_keys,
                 &fallback_base_urls,
                 api_key.as_deref(),
-                &app::AppConfig {
-                    tools: tools.clone(),
-                    exclude_tools: exclude_tools.clone(),
-                    no_tools,
-                    no_builtin_tools,
-                    system_prompt: system_prompt.clone(),
-                    append_system_prompt: (!append_system_prompt.is_empty())
-                        .then(|| append_system_prompt.join("\n\n")),
-                    skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
-                    thinking: thinking.clone(),
-                    max_iterations,
-                    max_parallel_tools,
-                    verbose,
-                    ..app::AppConfig::for_tool_selection()
-                },
+                &cli_cfg,
             )
             .await
         }
-        None => {
-            app::run_tui(app::AppConfig {
-                provider: provider.clone(),
-                model: model.clone(),
-                fallback_keys: fallback_keys.clone(),
-                fallback_base_urls: fallback_base_urls.clone(),
-                tools: tools.clone(),
-                exclude_tools: exclude_tools.clone(),
-                no_tools,
-                no_builtin_tools,
-                // v0.10: `--theme-file` and `--use-theme` are the same
-                // field. Pi treats a theme value containing a slash as a path
-                // (`settings-manager.ts:739`), so a file argument and a name
-                // argument converge on one value and `theme()` resolves both.
-                // An explicit file wins.
-                use_theme: theme_file.clone().or_else(|| use_theme.clone()),
-                api_key: api_key.clone(),
-                no_skills,
-                system_prompt: system_prompt.clone(),
-                append_system_prompt: (!append_system_prompt.is_empty())
-                    .then(|| append_system_prompt.join("\n\n")),
-                skill_paths: skill.iter().map(std::path::PathBuf::from).collect(),
-                thinking: thinking.clone(),
-                max_iterations,
-                max_parallel_tools,
-                verbose,
+        None => app::run_tui(cli_cfg).await,
+    }
+}
+
+/// v0.14: the flag's **effect**, not just its existence.
+///
+/// `--max-parallel-tools` was parsed, advertised in `--help`, and could be
+/// dropped on the way to `RunConfig` without a single test turning red: the
+/// contract test checked that the flag was *accepted* (exit code 0), and the
+/// unit test checked `AppConfig → RunConfig` with a hand-built `AppConfig`.
+/// The hop in between — clap → `Args` → `AppConfig` — was untested, and it
+/// is exactly the hop where a value goes to die.
+///
+/// These tests walk the whole way: the command line, through clap, into the
+/// config, into the `RunConfig`, and — where it matters — into the
+/// **measured** peak concurrency of a real run.
+#[cfg(test)]
+mod cli_wiring_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use futures_util::StreamExt;
+    use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
+    use nini_core::tool::{Tool, ToolContext, ToolError, ToolOutput, ToolRegistry, ToolSpec};
+    use nini_core::{AgentMessage, Provider, RunConfig};
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// How many tool calls the scripted turn asks for.
+    const CALLS: usize = 8;
+
+    /// A tool that reports how many of its own bodies were in flight at the
+    /// same time. "All N calls finished" cannot tell "N ran at once" from
+    /// "3 ran at once and 5 queued".
+    struct ProbeTool {
+        live: Arc<AtomicU32>,
+        peak: Arc<AtomicU32>,
+    }
+
+    impl ProbeTool {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                live: Arc::new(AtomicU32::new(0)),
+                peak: Arc::new(AtomicU32::new(0)),
             })
-            .await
         }
+    }
+
+    #[async_trait]
+    impl Tool for ProbeTool {
+        fn name(&self) -> &'static str {
+            "probe"
+        }
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "probe".to_string(),
+                description: "Records peak concurrency (test only).".to_string(),
+                input_schema: json!({"type": "object"}),
+            }
+        }
+
+        async fn execute(&self, _args: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
+            let now = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut peak = self.peak.load(Ordering::SeqCst);
+            while now > peak {
+                match self
+                    .peak
+                    .compare_exchange(peak, now, Ordering::SeqCst, Ordering::SeqCst)
+                {
+                    Ok(_) => break,
+                    Err(actual) => peak = actual,
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            self.live.fetch_sub(1, Ordering::SeqCst);
+            Ok(ToolOutput::ok("probe done".to_string()))
+        }
+    }
+
+    /// Parse a command line the way the binary does.
+    fn args_from(argv: &[&str]) -> Args {
+        let mut full = vec!["nini"];
+        full.extend_from_slice(argv);
+        Args::try_parse_from(full).expect("these flags parse")
+    }
+
+    /// A provider whose first turn asks for `calls` tool calls.
+    fn provider_with(calls: usize) -> Arc<dyn Provider> {
+        let mut turn0: Vec<FixtureTurn> = Vec::with_capacity(calls + 1);
+        for i in 0..calls {
+            turn0.push(FixtureTurn::ToolCall {
+                name: "probe".to_string(),
+                args: json!({"label": format!("c{i}")}),
+            });
+        }
+        turn0.push(FixtureTurn::Stop {
+            stop_reason: "tool_use".to_string(),
+            usage: nini_core::ProviderUsage::default(),
+        });
+        let turn1 = vec![FixtureTurn::Stop {
+            stop_reason: "end_turn".to_string(),
+            usage: nini_core::ProviderUsage::default(),
+        }];
+        Arc::new(ProgrammedProvider::from_turns(vec![turn0, turn1]))
+    }
+
+    /// The `RunConfig` the command line and the settings file produce,
+    /// through the same assembly the binary uses.
+    fn run_config_for(argv: &[&str], settings: &nini_core::settings::Settings) -> RunConfig {
+        let args = args_from(argv);
+        let cfg = app_config_from_args(&args);
+        let (run_cfg, _) = app::build_tui_run_config(
+            settings,
+            std::path::Path::new("/tmp"),
+            &ToolRegistry::new(),
+            &cfg,
+        );
+        run_cfg
+    }
+
+    /// Run one scripted turn and report the tool's own peak concurrency.
+    async fn peak_with(run_cfg: RunConfig) -> u32 {
+        let probe = ProbeTool::new();
+        let peak = probe.peak.clone();
+        let tools = ToolRegistry::new().register(probe as Arc<dyn Tool>);
+        let mut agent = nini_core::Agent::new(provider_with(CALLS), tools, run_cfg);
+        let mut stream = Box::pin(agent.run(AgentMessage::user("go")));
+        while let Some(ev) = stream.next().await {
+            let _ = ev.expect("agent stream error");
+        }
+        peak.load(Ordering::SeqCst)
+    }
+
+    /// v0.14: the value the user typed has to arrive.
+    ///
+    /// Three hops, three assertions: clap parsed it, the config carries it,
+    /// the `RunConfig` carries it. The middle hop is the one that was
+    /// missing — a value that clap parsed and the config then dropped
+    /// passes every other test in the repository.
+    #[test]
+    fn the_max_parallel_tools_flag_reaches_the_run_config() {
+        let args = args_from(&["--max-parallel-tools", "3"]);
+        assert_eq!(
+            args.max_parallel_tools,
+            Some(3),
+            "clap did not parse the flag's value"
+        );
+        let cfg = app_config_from_args(&args);
+        assert_eq!(
+            cfg.max_parallel_tools,
+            Some(3),
+            "the flag's value did not survive `Args` → `AppConfig`"
+        );
+        let settings = nini_core::settings::Settings::default();
+        let (run_cfg, _) = app::build_tui_run_config(
+            &settings,
+            std::path::Path::new("/tmp"),
+            &ToolRegistry::new(),
+            &cfg,
+        );
+        assert_eq!(
+            run_cfg.max_parallel_tools, 3,
+            "the flag's value did not reach the `RunConfig`"
+        );
+    }
+
+    /// v0.14: a ceiling of 3 must actually cap the concurrency at 3.
+    ///
+    /// Not "the number is 3 somewhere in the config" — the tool measures
+    /// its own in-flight bodies, so this is the number of tool calls that
+    /// really ran at the same time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_max_parallel_tools_flag_really_caps_the_concurrency() {
+        let run_cfg = run_config_for(
+            &["--max-parallel-tools", "3"],
+            &nini_core::settings::Settings::default(),
+        );
+        assert_eq!(run_cfg.max_parallel_tools, 3);
+        let peak = peak_with(run_cfg).await;
+        assert_eq!(
+            peak, 3,
+            "the ceiling of 3 did not hold — peak concurrency was {peak}"
+        );
+    }
+
+    /// v0.14: `0` means "no ceiling", the same spelling `--max-iterations`
+    /// uses. It must not be read as "a ceiling of zero" (nothing would run)
+    /// nor as "unset" (the default is 0 anyway, but the point is that the
+    /// flag is *applied*).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_max_parallel_tools_flag_zero_means_no_ceiling() {
+        let run_cfg = run_config_for(
+            &["--max-parallel-tools", "0"],
+            &nini_core::settings::Settings::default(),
+        );
+        assert_eq!(run_cfg.max_parallel_tools, 0);
+        let peak = peak_with(run_cfg).await;
+        assert_eq!(
+            peak, CALLS as u32,
+            "0 must mean 'no ceiling' — all {CALLS} calls should run at once, \
+             but peak concurrency was {peak}"
+        );
+    }
+
+    /// v0.14: the two ceilings are independent (owner ruling: no coupling).
+    /// A turn cap says nothing about how many tools one turn may run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_two_ceilings_do_not_interfere() {
+        let run_cfg = run_config_for(
+            &["--max-parallel-tools", "3", "--max-iterations", "5"],
+            &nini_core::settings::Settings::default(),
+        );
+        assert_eq!(
+            run_cfg.max_parallel_tools, 3,
+            "--max-iterations changed the tool ceiling"
+        );
+        assert_eq!(run_cfg.max_iterations, 5);
+        let peak = peak_with(run_cfg).await;
+        assert_eq!(
+            peak, 3,
+            "--max-iterations changed the observed concurrency — peak was {peak}"
+        );
+    }
+
+    /// v0.14: the settings file may say `0` explicitly, and that means
+    /// "no ceiling" — it must not be read as "the key is absent" (which
+    /// would fall back to the default) and it must not be confused with a
+    /// missing value.
+    #[test]
+    fn a_settings_file_may_say_zero_explicitly() {
+        let mut settings = nini_core::settings::Settings::default();
+        settings.max_parallel_tools = Some(0);
+
+        // No flag: the file speaks.
+        let run_cfg = run_config_for(&[], &settings);
+        assert_eq!(
+            run_cfg.max_parallel_tools, 0,
+            "an explicit `0` in the settings file was not applied"
+        );
+
+        // A flag still wins over the file.
+        let run_cfg = run_config_for(&["--max-parallel-tools", "4"], &settings);
+        assert_eq!(
+            run_cfg.max_parallel_tools, 4,
+            "the flag did not beat the settings file"
+        );
     }
 }

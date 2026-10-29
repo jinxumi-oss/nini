@@ -350,6 +350,118 @@ fn an_illegal_max_parallel_tools_fails_like_an_illegal_max_iterations() {
     );
 }
 
+/// `0` is a legal value, and it means "no ceiling" — the same spelling
+/// `--max-iterations` uses. It must be accepted, not refused.
+#[test]
+fn zero_is_an_accepted_max_parallel_tools_value() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .args([
+            "--max-parallel-tools",
+            "0",
+            "-p",
+            "hi",
+            "--provider",
+            "fixture",
+        ])
+        .output()
+        .expect("nini runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "`nini --max-parallel-tools 0` did not run: exit {:?}, stderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        !stderr.contains("--max-parallel-tools"),
+        "--max-parallel-tools 0 is refused rather than honoured:\n{stderr}"
+    );
+}
+
+/// A ceiling of 3 is a legal value too, and it is not refused.
+#[test]
+fn a_small_max_parallel_tools_value_is_accepted() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .args([
+            "--max-parallel-tools",
+            "3",
+            "-p",
+            "hi",
+            "--provider",
+            "fixture",
+        ])
+        .output()
+        .expect("nini runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "`nini --max-parallel-tools 3` did not run: exit {:?}, stderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        !stderr.contains("--max-parallel-tools"),
+        "--max-parallel-tools 3 is refused rather than honoured:\n{stderr}"
+    );
+}
+
+/// A value that is not a number fails exactly like a value that is not a
+/// number for `--max-iterations`: clap's own error, exit code 2. The
+/// assertion is the *difference* between the two invocations, not clap's
+/// wording.
+#[test]
+fn a_non_numeric_max_parallel_tools_fails_like_a_non_numeric_max_iterations() {
+    let run = |flag: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+            .args([flag, "abc", "-p", "hi", "--provider", "fixture"])
+            .output()
+            .expect("nini runs")
+            .status
+            .code()
+    };
+    let parallel = run("--max-parallel-tools");
+    let iterations = run("--max-iterations");
+    assert_ne!(
+        parallel,
+        Some(0),
+        "`--max-parallel-tools abc` was accepted — a non-numeric N must fail"
+    );
+    assert_eq!(
+        parallel, iterations,
+        "`--max-parallel-tools abc` and `--max-iterations abc` must fail the same way"
+    );
+}
+
+/// The two ceilings are independent: giving both must work, and neither
+/// may make the other fail.
+#[test]
+fn the_two_ceilings_can_be_given_together() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .args([
+            "--max-parallel-tools",
+            "3",
+            "--max-iterations",
+            "5",
+            "-p",
+            "hi",
+            "--provider",
+            "fixture",
+        ])
+        .output()
+        .expect("nini runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "`nini --max-parallel-tools 3 --max-iterations 5` did not run: exit {:?}, stderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        !stderr.contains("--max-parallel-tools") && !stderr.contains("--max-iterations"),
+        "one of the two ceilings was refused:\n{stderr}"
+    );
+}
+
 /// The specific hole `no_advertised_flag_is_dropped_silently` was written for.
 #[test]
 fn export_with_a_path_is_refused_rather_than_swallowed() {
