@@ -130,6 +130,42 @@ fn a_catalog_model_is_overridden_not_duplicated() {
     assert_eq!(gpt5.context_window, 111_111);
 }
 
+/// A `models.json` with comments in it is read, like Pi reads it.
+///
+/// Pi: `model-config.js:230` parses `stripJsonComments(stripBom(content))`
+/// — a user who writes a comment in their `models.json` has a working
+/// setup in Pi. nini used to hand the raw text to serde, so the same file
+/// was "Failed to parse models.json" here.
+#[test]
+fn a_models_json_with_comments_is_read() {
+    let guard = nini_core::paths::agent_lock();
+    let mut f =
+        std::fs::File::create(guard.path().join("models.json")).expect("create models.json");
+    // A comment, a trailing comma, and a byte order mark — all three are
+    // things Pi accepts.
+    f.write_all(b"\xef\xbb\xbf{\n  // a comment\n  \"providers\": {\n")
+        .expect("write");
+    f.write_all(b"    \"gw\": {\n      \"baseUrl\": \"http://x.invalid/v1\",\n")
+        .expect("write");
+    f.write_all(b"      \"api\": \"openai-completions\",\n      \"models\": [\n")
+        .expect("write");
+    f.write_all(b"        { \"id\": \"m\" },\n      ],\n    },\n  }\n}\n")
+        .expect("write");
+
+    let (cfg, error) = load_user_models_json_reporting();
+    assert!(
+        error.is_none(),
+        "Pi reads this file, so nini must too: {error:?}"
+    );
+    let provider = cfg.providers.get("gw").expect("the provider is read");
+    assert_eq!(provider.base_url.as_deref(), Some("http://x.invalid/v1"));
+    assert_eq!(provider.api.as_deref(), Some("openai-completions"));
+    assert_eq!(
+        provider.models.first().and_then(|m| m.id.as_deref()),
+        Some("m")
+    );
+}
+
 /// A `models.json` that cannot be parsed is **reported**, not dropped.
 ///
 /// Pi: `model-config.js:233` turns a parse error into

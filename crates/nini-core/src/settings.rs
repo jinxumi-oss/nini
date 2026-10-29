@@ -147,6 +147,103 @@ pub fn load_models_json(cwd: &Path) -> ModelsJson {
     out
 }
 
+/// Strip a UTF-8 byte order mark.
+///
+/// Pi: `stripBom` (`dist/utils/text.js`), applied before the JSON is
+/// parsed (`model-config.js:230`).
+fn strip_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
+/// Strip `//` line comments and trailing commas, leaving string
+/// literals untouched.
+///
+/// Pi: `stripJsonComments` (`dist/utils/json.js`):
+///
+/// ```text
+/// input.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/g, m => m[0] === '"' ? m : "")
+///      .replace(/"(?:\\.|[^"\\])*"|,(\s*[}\]])/g, (m, tail) => tail ?? (m[0] === '"' ? m : ""))
+/// ```
+///
+/// A file Pi accepts must be a file nini accepts: a user who writes a
+/// comment in their `models.json` gets a working setup in Pi and a
+/// "Failed to parse models.json" in nini otherwise.
+///
+/// The pattern is Pi's, translated: a string literal (with escapes) is
+/// matched first and kept whole, and only what is **not** inside one is
+/// treated as a comment or as a trailing comma.
+fn strip_json_comments(text: &str) -> String {
+    // Step 1: drop `//` line comments.
+    let bytes = text.as_bytes();
+    let mut without_line_comments = String::with_capacity(text.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'"' {
+            let end = string_literal_end(bytes, index);
+            without_line_comments.push_str(&text[index..end]);
+            index = end;
+            continue;
+        }
+        if bytes[index] == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            continue;
+        }
+        let ch = text[index..].chars().next().expect("a char");
+        without_line_comments.push(ch);
+        index += ch.len_utf8();
+    }
+
+    // Step 2: drop a comma that is only there because of how the file was
+    // written — a comma directly before `}` or `]`.
+    let bytes = without_line_comments.as_bytes();
+    let mut out = String::with_capacity(without_line_comments.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'"' {
+            let end = string_literal_end(bytes, index);
+            out.push_str(&without_line_comments[index..end]);
+            index = end;
+            continue;
+        }
+        if bytes[index] == b',' {
+            let mut next = index + 1;
+            while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+                next += 1;
+            }
+            if next < bytes.len() && (bytes[next] == b'}' || bytes[next] == b']') {
+                // The comma goes; what follows it stays.
+                index += 1;
+                continue;
+            }
+        }
+        let ch = without_line_comments[index..]
+            .chars()
+            .next()
+            .expect("a char");
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+    out
+}
+
+/// The index just past the string literal that starts at `start`.
+///
+/// A backslash escapes the next byte, so `"a\\"` ends at the second
+/// quote, not the first.
+fn string_literal_end(bytes: &[u8], start: usize) -> usize {
+    let mut index = start + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b'"' => return index + 1,
+            _ => index += 1,
+        }
+    }
+    bytes.len()
+}
+
 /// Load the **user-level** `models.json` — the file in the agent
 /// directory, and nothing else.
 ///
@@ -191,7 +288,7 @@ pub fn load_user_models_json_reporting() -> (ModelsJson, Option<String>) {
             return (out, Some(format!("Failed to load models.json: {error}")));
         }
     };
-    match serde_json::from_str::<ModelsJson>(&text) {
+    match serde_json::from_str::<ModelsJson>(&strip_json_comments(strip_bom(&text))) {
         Ok(parsed) => {
             out.providers.extend(parsed.providers);
             (out, None)

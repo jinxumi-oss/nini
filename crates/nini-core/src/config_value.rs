@@ -47,19 +47,6 @@ use std::time::{Duration, Instant};
 /// Pi's `execSync` uses the same number (`timeout: 10000`).
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Resolve a configuration value the way Pi resolves one.
-///
-/// Returns `None` when the value is undefined: a missing environment
-/// variable, a command that failed, a command that printed nothing, or a
-/// command that ran too long.
-pub fn resolve_config_value(config: &str) -> Option<String> {
-    resolve_with(config, |name| {
-        // Pi's lookup is `env?.[name] || process.env[name] || undefined`:
-        // a variable that is set but empty counts as **not set**.
-        std::env::var(name).ok().filter(|v| !v.is_empty())
-    })
-}
-
 /// Why a configured value could not be resolved.
 ///
 /// Pi's `resolveConfigValueOrThrow` (`resolve-config-value.js:199-217`)
@@ -115,15 +102,42 @@ impl ConfigValueError {
 /// value here and it could not be read". Pi makes the same distinction
 /// (`resolveConfigValue` vs `resolveConfigValueOrThrow`).
 pub fn resolve_config_value_detailed(config: &str) -> Result<Option<String>, ConfigValueError> {
+    resolve_with_detailed(config, |name| {
+        // Pi's lookup is `env?.[name] || process.env[name] || undefined`:
+        // a variable that is set but empty counts as **not set**.
+        std::env::var(name).ok().filter(|v| !v.is_empty())
+    })
+}
+
+/// The resolution with the environment lookup injected.
+///
+/// The lookup is a parameter so the rules can be tested without mutating
+/// the process environment (which the test harness shares between
+/// threads).
+fn resolve_with_detailed<F: Fn(&str) -> Option<String>>(
+    config: &str,
+    env: F,
+) -> Result<Option<String>, ConfigValueError> {
     if let Some(command) = config.strip_prefix('!') {
         return match execute_command(command, COMMAND_TIMEOUT) {
             Some(value) => Ok(Some(value)),
             None => Err(ConfigValueError::Command(command.to_string())),
         };
     }
-    resolve_template_detailed(config, |name| {
-        std::env::var(name).ok().filter(|v| !v.is_empty())
-    })
+    match resolve_with(config, &env) {
+        Some(value) => Ok(Some(value)),
+        None => {
+            let missing: Vec<String> = config_value_env_var_names(config)
+                .into_iter()
+                .filter(|name| env(name).is_none())
+                .collect();
+            if missing.is_empty() {
+                Ok(None)
+            } else {
+                Err(ConfigValueError::MissingEnvVars(missing))
+            }
+        }
+    }
 }
 
 /// The environment variables a template references, in the order they
@@ -174,20 +188,6 @@ fn collect_env_var_names(config: &str, names: &mut Vec<String>) {
     }
 }
 
-/// Resolve a template, reporting which environment variables were missing.
-fn resolve_template_detailed<F: Fn(&str) -> Option<String>>(
-    config: &str,
-    env: F,
-) -> Result<Option<String>, ConfigValueError> {
-    let mut missing: Vec<String> = Vec::new();
-    let resolved = resolve_template_tracking(config, &env, &mut missing);
-    match resolved {
-        Some(value) => Ok(Some(value)),
-        None if missing.is_empty() => Ok(None),
-        None => Err(ConfigValueError::MissingEnvVars(missing)),
-    }
-}
-
 /// The resolution itself, with the environment lookup injected.
 ///
 /// The lookup is a parameter so the rules can be tested without mutating
@@ -197,17 +197,18 @@ fn resolve_with<F: Fn(&str) -> Option<String>>(config: &str, env: F) -> Option<S
     if let Some(command) = config.strip_prefix('!') {
         return execute_command(command, COMMAND_TIMEOUT);
     }
-    let mut missing = Vec::new();
-    resolve_template_tracking(config, &env, &mut missing)
+    resolve_template(config, &env)
 }
 
-/// The template rules, with the names of the missing variables recorded
-/// on the way out.
-fn resolve_template_tracking<F: Fn(&str) -> Option<String>>(
-    config: &str,
-    env: &F,
-    missing: &mut Vec<String>,
-) -> Option<String> {
+/// The template rules: `$VAR` and `${VAR}` are replaced by the
+/// environment variable of that name, `$$` and `$!` are literal, and a
+/// variable that is not set makes the whole value undefined.
+///
+/// The resolution stops at the first variable that is missing — the same
+/// way Pi's `resolveTemplate` does (`resolve-config-value.js:89-92`).
+/// The **list** of missing variables is a separate question, and is
+/// answered by `config_value_env_var_names`.
+fn resolve_template<F: Fn(&str) -> Option<String>>(config: &str, env: &F) -> Option<String> {
     let mut out = String::new();
     let mut index = 0usize;
     while index < config.len() {
@@ -229,7 +230,7 @@ fn resolve_template_tracking<F: Fn(&str) -> Option<String>>(
                     let end = dollar + 2 + rel_end;
                     let name = &config[dollar + 2..end];
                     if is_env_var_name(name) {
-                        out.push_str(&lookup(env, name, missing)?);
+                        out.push_str(&env(name)?);
                     } else {
                         // Not a legal identifier: the whole `${...}` stays.
                         out.push_str(&config[dollar..=end]);
@@ -249,7 +250,7 @@ fn resolve_template_tracking<F: Fn(&str) -> Option<String>>(
                     .unwrap_or(rest.len());
                 let name = &rest[..name_len];
                 if !name.is_empty() && is_env_var_name(name) {
-                    out.push_str(&lookup(env, name, missing)?);
+                    out.push_str(&env(name)?);
                     index = dollar + 1 + name_len;
                 } else {
                     out.push('$');
@@ -259,23 +260,6 @@ fn resolve_template_tracking<F: Fn(&str) -> Option<String>>(
         }
     }
     Some(out)
-}
-
-/// Look one variable up, recording its name when it is not set.
-fn lookup<F: Fn(&str) -> Option<String>>(
-    env: &F,
-    name: &str,
-    missing: &mut Vec<String>,
-) -> Option<String> {
-    match env(name) {
-        Some(value) => Some(value),
-        None => {
-            if !missing.iter().any(|n| n == name) {
-                missing.push(name.to_string());
-            }
-            None
-        }
-    }
 }
 
 /// Is this a legal environment-variable name?
@@ -356,6 +340,37 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         move |name: &str| map.get(name).cloned()
+    }
+
+    #[test]
+    fn a_missing_variable_is_reported_with_its_name() {
+        // Pi's `resolveConfigValueOrThrow`
+        // (`resolve-config-value.js:199-217`) says **which** variable was
+        // missing, and names all of them, not just the first.
+        let err = resolve_with_detailed("$NINI_ABSENT_ONE", env(&[])).unwrap_err();
+        assert_eq!(
+            err.message("API key for provider \"my-gw\""),
+            "Failed to resolve API key for provider \"my-gw\" from environment variable: NINI_ABSENT_ONE"
+        );
+    }
+
+    #[test]
+    fn every_missing_variable_is_reported() {
+        let err =
+            resolve_with_detailed("$NINI_ABSENT_ONE-${NINI_ABSENT_TWO}", env(&[])).unwrap_err();
+        assert_eq!(
+            err.message("API key for provider \"my-gw\""),
+            "Failed to resolve API key for provider \"my-gw\" from environment variables: NINI_ABSENT_ONE, NINI_ABSENT_TWO"
+        );
+    }
+
+    #[test]
+    fn a_command_that_fails_is_reported_as_a_command() {
+        let err = resolve_with_detailed("!exit 3", env(&[])).unwrap_err();
+        assert_eq!(
+            err.message("API key for provider \"my-gw\""),
+            "Failed to resolve API key for provider \"my-gw\" from shell command: exit 3"
+        );
     }
 
     #[test]

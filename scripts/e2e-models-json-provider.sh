@@ -107,9 +107,12 @@ mock_auth() {
 # $1 = 路径, $2 = listen（baseUrl 用它）, $3 = api（空 = 不写）, $4 = apiKey（空 = 不写）,
 # $5 = baseUrl（"yes" = 写出来, "no" = 不写）
 write_models_json() {
-  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+  # 第 6 个参数是 provider id（默认 my-gw）。场景 4b 需要一个**内置**的
+  # id：内置 provider 才有同名环境变量可退，才谈得上「退不退」。
+  python3 - "$1" "$2" "$3" "$4" "$5" "${6:-my-gw}" <<'PY'
 import json, sys
 path, listen, api, api_key, base_url = sys.argv[1:6]
+provider_id = sys.argv[6]
 provider = {
     "models": [
         {"id": "gw-model", "reasoning": False, "input": ["text"],
@@ -122,7 +125,7 @@ if api_key:
     provider["apiKey"] = api_key
 if base_url == "yes":
     provider["baseUrl"] = f"http://{listen}/v1"
-json.dump({"providers": {"my-gw": provider}}, open(path, "w"), indent=2)
+json.dump({"providers": {provider_id: provider}}, open(path, "w"), indent=2)
 PY
 }
 
@@ -286,12 +289,14 @@ note "场景 4 通过：两边都失败，且都指向 'No API key found for'"
 # 不是 `inherited.resolve`），否则用户的请求会发往他没选的地方。
 # ---------------------------------------------------------------------------
 note "场景 4b：apiKey 指向一个不存在的环境变量"
-write_models_json "$TMP/badkey.json" "127.0.0.1:1" "openai-completions" '$NINI_A_VARIABLE_THAT_IS_NOT_SET' "yes"
+# provider id 用**内置**的 `openai`：内置 provider 才有同名环境变量可退，
+# 才谈得上「退不退」。用一个没有内置凭证的 id，这条断言就空转了。
+write_models_json "$TMP/badkey.json" "127.0.0.1:1" "openai-completions" '$NINI_A_VARIABLE_THAT_IS_NOT_SET' "yes" "openai"
 # 让内置 provider 的同名环境变量**存在**：如果 nini 退了回它，nini 会
-# 成功或给出一个完全不同的理由，这条断言就抓到了。
+# 成功——这条断言就抓到了。
 export OPENAI_API_KEY="a-key-that-must-not-be-used"
-run_nini "badkey-nini" "$TMP/badkey.json" "$TMP" --provider my-gw --model gw-model -p "hi"
-run_pi "badkey-pi" "$TMP/badkey.json" "$TMP" --provider my-gw --model gw-model -p "hi"
+run_nini "badkey-nini" "$TMP/badkey.json" "$TMP" --provider openai --model gw-model -p "hi"
+run_pi "badkey-pi" "$TMP/badkey.json" "$TMP" --provider openai --model gw-model -p "hi"
 unset OPENAI_API_KEY
 
 [[ "$(cat "$TMP/badkey-nini.code")" != "0" ]] || fail "凭证读不出时 nini 不该成功"

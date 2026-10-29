@@ -303,6 +303,22 @@ fn resolve_credential(
     config: &ProviderConfig,
     api_key_override: Option<&str>,
 ) -> Result<String, ModelsJsonProviderError> {
+    resolve_credential_with(id, config, api_key_override, |var| std::env::var(var).ok())
+}
+
+/// The credential resolution, with the environment lookup injected.
+///
+/// The lookup is a parameter so the rules can be tested without mutating
+/// the process environment (which the test harness shares between
+/// threads) — and, more importantly, so a test can **prove** that the
+/// built-in's environment variable is *not* used as a fallback: the
+/// lookup can hand one out, and the resolution must still refuse it.
+fn resolve_credential_with<F: Fn(&str) -> Option<String>>(
+    id: &str,
+    config: &ProviderConfig,
+    api_key_override: Option<&str>,
+    env: F,
+) -> Result<String, ModelsJsonProviderError> {
     let builtin = builtin_of(id);
 
     // The built-in's own environment variable: the last resort before
@@ -311,7 +327,7 @@ fn resolve_credential(
         builtin.and_then(|b| {
             b.key_envs
                 .iter()
-                .find_map(|var| std::env::var(var).ok())
+                .find_map(|var| env(var))
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         })
@@ -1091,23 +1107,27 @@ mod tests {
         // `resolveConfigValueOrThrow`), and the user is told
         // `No API key found for <provider>.` (`auth-guidance.js:17-19`).
         //
-        // Two things are asserted here:
+        // The provider here is a **built-in** one (`openai`), and the
+        // environment lookup hands out a perfectly good `OPENAI_API_KEY`.
+        // That is the point: a value that was configured and could not be
+        // read must not send the request somewhere the user did not
+        // choose — not even to the built-in's own credential, which is
+        // right there and would have worked.
         //
-        //   * the sentence the user reads is Pi's;
-        //   * the built-in's environment variable is **not** used as a
-        //     fallback — a value that was configured and could not be
-        //     read must not send the request somewhere else.
-        //
-        // The reason is kept in `cause`: Pi swallows it, nini keeps it
-        // for a diagnostic without showing it to the user.
+        // (With a provider that has no built-in credential there would be
+        // nothing to fall back to, and the test would pass on an
+        // implementation that *did* fall back. This one cannot.)
         let entry = models_json_entry(
             Some("http://x.invalid/v1"),
             Some("openai-completions"),
             Some("$NINI_A_VARIABLE_THAT_IS_NOT_SET"),
         );
-        let err = resolve_models_json_provider("my-gw", &entry, None).unwrap_err();
+        let err = resolve_credential_with("openai", &entry, None, |var| {
+            (var == "OPENAI_API_KEY").then(|| "a-key-that-must-not-be-used".to_string())
+        })
+        .unwrap_err();
         assert_eq!(
-            err.detail, "No API key found for my-gw.",
+            err.detail, "No API key found for openai.",
             "Pi's sentence, verbatim"
         );
         assert!(
@@ -1120,7 +1140,6 @@ mod tests {
             err.cause
         );
     }
-
     #[test]
     fn a_models_json_provider_without_a_credential_says_no_api_key_found() {
         let entry = models_json_entry(
