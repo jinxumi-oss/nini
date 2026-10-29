@@ -64,9 +64,6 @@ pub enum ConfigValueError {
     Command(String),
     /// Environment variables the template referenced but that are not set.
     MissingEnvVars(Vec<String>),
-    /// A value that is neither a command nor a template, and that
-    /// therefore resolved to nothing at all.
-    Unresolved,
 }
 
 impl ConfigValueError {
@@ -91,7 +88,6 @@ impl ConfigValueError {
                     names.join(", ")
                 )
             }
-            ConfigValueError::Unresolved => format!("Failed to resolve {description}"),
         }
     }
 }
@@ -101,7 +97,7 @@ impl ConfigValueError {
 /// `Ok(None)` means "there is no value here"; `Err` means "there was a
 /// value here and it could not be read". Pi makes the same distinction
 /// (`resolveConfigValue` vs `resolveConfigValueOrThrow`).
-pub fn resolve_config_value_detailed(config: &str) -> Result<Option<String>, ConfigValueError> {
+pub fn resolve_config_value_detailed(config: &str) -> Result<String, ConfigValueError> {
     resolve_with_detailed(config, |name| {
         // Pi's lookup is `env?.[name] || process.env[name] || undefined`:
         // a variable that is set but empty counts as **not set**.
@@ -117,25 +113,26 @@ pub fn resolve_config_value_detailed(config: &str) -> Result<Option<String>, Con
 fn resolve_with_detailed<F: Fn(&str) -> Option<String>>(
     config: &str,
     env: F,
-) -> Result<Option<String>, ConfigValueError> {
+) -> Result<String, ConfigValueError> {
     if let Some(command) = config.strip_prefix('!') {
         return match execute_command(command, COMMAND_TIMEOUT) {
-            Some(value) => Ok(Some(value)),
+            Some(value) => Ok(value),
             None => Err(ConfigValueError::Command(command.to_string())),
         };
     }
     match resolve_with(config, &env) {
-        Some(value) => Ok(Some(value)),
+        Some(value) => Ok(value),
+        // The resolution stopped at a variable that is not set. Which
+        // ones those are is a separate question, and Pi answers it
+        // separately too (`getMissingConfigValueEnvVarNames`,
+        // `resolve-config-value.js:107-109`) — so that the message can
+        // name **all** of them, not just the first.
         None => {
             let missing: Vec<String> = config_value_env_var_names(config)
                 .into_iter()
                 .filter(|name| env(name).is_none())
                 .collect();
-            if missing.is_empty() {
-                Ok(None)
-            } else {
-                Err(ConfigValueError::MissingEnvVars(missing))
-            }
+            Err(ConfigValueError::MissingEnvVars(missing))
         }
     }
 }
@@ -144,7 +141,7 @@ fn resolve_with_detailed<F: Fn(&str) -> Option<String>>(
 /// appear, without duplicates.
 ///
 /// Pi: `getConfigValueEnvVarNames` (`resolve-config-value.js:103-106`).
-pub fn config_value_env_var_names(config: &str) -> Vec<String> {
+fn config_value_env_var_names(config: &str) -> Vec<String> {
     let mut names = Vec::new();
     collect_env_var_names(config, &mut names);
     names

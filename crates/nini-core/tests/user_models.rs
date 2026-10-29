@@ -166,6 +166,40 @@ fn a_models_json_with_comments_is_read() {
     );
 }
 
+/// The **catalogue** side reads a commented file too.
+///
+/// `load_models_json` is the other reader: it is what `--list-models`
+/// shows. It has to make the same decisions as the user-level reader,
+/// or a user with a commented file gets a provider that Pi lists and
+/// nini does not.
+#[test]
+fn the_catalogue_reads_a_models_json_with_comments() {
+    let guard = nini_core::paths::agent_lock();
+    let mut f =
+        std::fs::File::create(guard.path().join("models.json")).expect("create models.json");
+    writeln!(
+        f,
+        r#"{{
+  // the user's own comment
+  "providers": {{
+    "my-gw": {{
+      "baseUrl": "http://x.invalid/v1",
+      "api": "openai-completions",
+      "models": [ {{ "id": "gw-model" }} ],
+    }},
+  }},
+}}"#
+    )
+    .expect("write");
+
+    let cfg = load_models_json(std::path::Path::new("/tmp"));
+    let specs = user_model_specs(&cfg);
+    assert!(
+        specs.iter().any(|s| s.id == "my-gw/gw-model"),
+        "the model the user declared must be listed: {specs:?}"
+    );
+}
+
 /// A `models.json` that cannot be parsed is **reported**, not dropped.
 ///
 /// Pi: `model-config.js:233` turns a parse error into

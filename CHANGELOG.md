@@ -1,6 +1,6 @@
 ## v0.13.0 — models.json 里的 provider，真的能用了（2026-10-29）
 
-1742 tests, all green. 这一版修的是一个**自相矛盾**的事实：nini 的
+1743 tests, all green. 这一版修的是一个**自相矛盾**的事实：nini 的
 `--list-models` 能把你写在 `~/.nini/agent/models.json` 里的 provider 与模型
 一条不落地列出来，而你用 `--provider` 去点名它，nini 说「没这个 provider」。
 

@@ -341,7 +341,7 @@ fn resolve_credential_with<F: Fn(&str) -> Option<String>>(
         Some(key) => Ok(key.trim().to_string()),
         None => match config.api_key.as_deref() {
             Some(raw) => match resolve_config_value_detailed(raw) {
-                Ok(Some(key)) => {
+                Ok(key) => {
                     let key = key.trim().to_string();
                     if key.is_empty() {
                         from_builtin_env().ok_or_else(|| ModelsJsonProviderError {
@@ -352,10 +352,6 @@ fn resolve_credential_with<F: Fn(&str) -> Option<String>>(
                         Ok(key)
                     }
                 }
-                Ok(None) => from_builtin_env().ok_or_else(|| ModelsJsonProviderError {
-                    cause: None,
-                    detail: format!("No API key found for {id}."),
-                }),
                 Err(cause) => {
                     // Pi: the failure of `resolveConfigValueOrThrow` is
                     // swallowed by the authentication layer, and the user

@@ -139,12 +139,25 @@ pub fn load_models_json(cwd: &Path) -> ModelsJson {
     let mut out = ModelsJson::default();
     for path in candidates {
         if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(parsed) = serde_json::from_str::<ModelsJson>(&text) {
+            // The same parse the user-level file goes through: a file
+            // with a comment in it is a file Pi reads, so it is a file
+            // nini reads too — **in both** places nini reads one.
+            if let Ok(parsed) = parse_models_json(&text) {
                 out.providers.extend(parsed.providers);
             }
         }
     }
     out
+}
+
+/// Parse the text of a `models.json`, the way Pi parses it.
+///
+/// Pi: `JSON.parse(stripJsonComments(stripBom(content)))`
+/// (`model-config.js:230`). A user who writes a comment in their
+/// `models.json` has a working setup in Pi; the same file must not be
+/// "Failed to parse models.json" here.
+fn parse_models_json(text: &str) -> Result<ModelsJson, serde_json::Error> {
+    serde_json::from_str(&strip_json_comments(strip_bom(text)))
 }
 
 /// Strip a UTF-8 byte order mark.
@@ -288,7 +301,7 @@ pub fn load_user_models_json_reporting() -> (ModelsJson, Option<String>) {
             return (out, Some(format!("Failed to load models.json: {error}")));
         }
     };
-    match serde_json::from_str::<ModelsJson>(&strip_json_comments(strip_bom(&text))) {
+    match parse_models_json(&text) {
         Ok(parsed) => {
             out.providers.extend(parsed.providers);
             (out, None)
