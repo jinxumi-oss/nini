@@ -16,6 +16,74 @@ use nini_core::{Agent, AgentEvent, RunConfig};
 
 use crate::{prompt_setup, provider_factory};
 
+/// The `RunConfig` of a single-shot entry point.
+///
+/// v0.14 (round 3): the two entries (`nini demo` and `nini -p`) used to
+/// **inline** the same `RunConfig` literal, and nothing in the repository
+/// tested either of them. A mutation that hard-wrote
+/// `max_parallel_tools: 0` — dropping the command line's `--max-parallel-
+/// tools` and the settings file's `maxParallelTools` — left every test in
+/// the repository green, because the CLI's own wiring tests only walked
+/// the TUI's assembly (`app::build_tui_run_config`).
+///
+/// The assembly now lives in one function with two named doors, and each
+/// door has a test that can actually fail.
+///
+/// The precedence is the same as everywhere else: the command line beats
+/// the settings file (it was typed for this invocation), and the fallback
+/// is "no ceiling" — which is what Pi 0.85.1 does.
+fn assemble_run_config(
+    tool_cfg: &crate::app::AppConfig,
+    settings: &nini_core::settings::Settings,
+    model: &str,
+    system: String,
+) -> RunConfig {
+    RunConfig {
+        model: model.to_string(),
+        system: Some(system),
+        // v0.11.4 (P0/Pi parity): the same turn cap the TUI uses — a
+        // restriction that holds in the TUI and evaporates in `-p` is not
+        // a restriction. Default: no cap (Pi 0.85.1 has no turn limit).
+        max_iterations: tool_cfg
+            .max_iterations
+            .or(settings.max_iterations)
+            .unwrap_or(nini_core::agent::MAX_TOOL_ITERATIONS),
+        // v0.14: the tool-concurrency ceiling. The default is "no
+        // ceiling" — Pi 0.85.1 runs a turn's tool calls all at once.
+        max_parallel_tools: tool_cfg
+            .max_parallel_tools
+            .or(settings.max_parallel_tools)
+            .unwrap_or(nini_core::agent::DEFAULT_MAX_PARALLEL_TOOLS),
+        ..RunConfig::new(model.to_string())
+    }
+}
+
+/// The `RunConfig` of the `nini demo` entry.
+///
+/// A named door, so a test can knock on **this** one and not only on the
+/// TUI's.
+pub(crate) fn demo_run_config(
+    tool_cfg: &crate::app::AppConfig,
+    settings: &nini_core::settings::Settings,
+    model: &str,
+    system: String,
+) -> RunConfig {
+    assemble_run_config(tool_cfg, settings, model, system)
+}
+
+/// The `RunConfig` of the `nini -p` entry.
+///
+/// `nini -p "..."` is the entry every CI job and every script uses, so a
+/// value that dies here is a value that dies in everybody's CI.
+pub(crate) fn print_run_config(
+    tool_cfg: &crate::app::AppConfig,
+    settings: &nini_core::settings::Settings,
+    model: &str,
+    system: String,
+) -> RunConfig {
+    assemble_run_config(tool_cfg, settings, model, system)
+}
+
 /// Scripted autonomous demo run (no API key needed).
 ///
 /// `task` is parsed loosely: "TODO" substring triggers
@@ -64,24 +132,7 @@ pub(crate) async fn run_demo(
     // `-p` is not a restriction.
     let tools = crate::app::build_run_tools(tool_cfg, &cwd);
     let system = prompt_setup::settings_to_system_prompt(&settings, &cwd, &tools, &skills_prompt);
-    let config = RunConfig {
-        model: model.to_string(),
-        system: Some(system),
-        // v0.11.4 (P0/Pi parity): the same turn cap the TUI uses — a
-        // restriction that holds in the TUI and evaporates in `-p` is not
-        // a restriction. Default: no cap (Pi 0.85.1 has no turn limit).
-        max_iterations: tool_cfg
-            .max_iterations
-            .or(settings.max_iterations)
-            .unwrap_or(nini_core::agent::MAX_TOOL_ITERATIONS),
-        // v0.14: the tool-concurrency ceiling. The default is "no
-        // ceiling" — Pi 0.85.1 runs a turn's tool calls all at once.
-        max_parallel_tools: tool_cfg
-            .max_parallel_tools
-            .or(settings.max_parallel_tools)
-            .unwrap_or(nini_core::agent::DEFAULT_MAX_PARALLEL_TOOLS),
-        ..RunConfig::new(model.to_string())
-    };
+    let config = demo_run_config(tool_cfg, &settings, model, system);
     let mut agent = Agent::new(provider_impl, tools, config);
     let mut stream = std::pin::pin!(agent.run(nini_core::AgentMessage::user(task)));
     let mut stdout_text = String::new();
@@ -211,24 +262,7 @@ pub(crate) async fn run_print(
     // `-p` is not a restriction.
     let tools = crate::app::build_run_tools(tool_cfg, &cwd);
     let system = prompt_setup::settings_to_system_prompt(&settings, &cwd, &tools, &skills_prompt);
-    let config = RunConfig {
-        model: model.to_string(),
-        system: Some(system),
-        // v0.11.4 (P0/Pi parity): the same turn cap the TUI uses — a
-        // restriction that holds in the TUI and evaporates in `-p` is not
-        // a restriction. Default: no cap (Pi 0.85.1 has no turn limit).
-        max_iterations: tool_cfg
-            .max_iterations
-            .or(settings.max_iterations)
-            .unwrap_or(nini_core::agent::MAX_TOOL_ITERATIONS),
-        // v0.14: the tool-concurrency ceiling. The default is "no
-        // ceiling" — Pi 0.85.1 runs a turn's tool calls all at once.
-        max_parallel_tools: tool_cfg
-            .max_parallel_tools
-            .or(settings.max_parallel_tools)
-            .unwrap_or(nini_core::agent::DEFAULT_MAX_PARALLEL_TOOLS),
-        ..RunConfig::new(model.to_string())
-    };
+    let config = print_run_config(tool_cfg, &settings, model, system);
     let mut agent = Agent::new(provider_impl, tools, config);
     let mut stream = std::pin::pin!(agent.run(nini_core::AgentMessage::user(user_input)));
     let mut stdout_text = String::new();
@@ -358,6 +392,148 @@ mod tests {
             name: "test".into(),
         });
         let _ = cli_entry_legacy(&entry);
+    }
+}
+
+/// v0.14 (round 3): the two single-shot entries carry the tool-concurrency
+/// ceiling.
+///
+/// The gap this closes: `nini demo` and `nini -p` do **not** go through
+/// `app::build_tui_run_config`, so the CLI's wiring tests never touched
+/// them. Hard-writing `max_parallel_tools: 0` in `demo.rs` — dropping
+/// `--max-parallel-tools` and `maxParallelTools` on the floor — left every
+/// test in the repository green.
+///
+/// Each entry gets its own test, and each test walks the **whole** way:
+/// the command line, through clap, into the `AppConfig`, into the
+/// `RunConfig` the entry actually runs with.
+#[cfg(test)]
+mod entry_ceiling_tests {
+    use super::*;
+    use nini_core::settings::Settings;
+
+    /// The `AppConfig` the binary's own assembly produces for a command
+    /// line — the same `app_config_from_args` the binary calls, with the
+    /// same clap parse.
+    fn cfg_from_argv(argv: &[&str]) -> crate::app::AppConfig {
+        use clap::Parser;
+        let mut full = vec!["nini"];
+        full.extend_from_slice(argv);
+        let args = crate::Args::try_parse_from(full).expect("these flags parse");
+        crate::app_config_from_args(&args)
+    }
+
+    fn cfg_with_ceiling(ceiling: Option<usize>) -> crate::app::AppConfig {
+        let mut cfg = crate::app::AppConfig::for_tool_selection();
+        cfg.max_parallel_tools = ceiling;
+        cfg
+    }
+
+    /// The `nini demo` entry must carry the ceiling.
+    #[test]
+    fn the_demo_entry_carries_the_tool_concurrency_ceiling() {
+        let quiet = Settings::default();
+
+        // The command line speaks.
+        let from_flag = cfg_from_argv(&["--max-parallel-tools", "3"]);
+        assert_eq!(
+            demo_run_config(&from_flag, &quiet, "test-model", String::new()).max_parallel_tools,
+            3,
+            "the demo entry dropped the command line's ceiling"
+        );
+
+        // The settings file speaks when the command line is silent.
+        let mut from_file = Settings::default();
+        from_file.max_parallel_tools = Some(4);
+        let silent = cfg_from_argv(&[]);
+        assert_eq!(
+            demo_run_config(&silent, &from_file, "test-model", String::new()).max_parallel_tools,
+            4,
+            "the demo entry dropped the settings file's ceiling"
+        );
+
+        // The command line beats the settings file.
+        assert_eq!(
+            demo_run_config(&from_flag, &from_file, "test-model", String::new()).max_parallel_tools,
+            3,
+            "the settings file beat the command line in the demo entry"
+        );
+
+        // `0` means "no ceiling", not "a ceiling of zero".
+        let zero = cfg_from_argv(&["--max-parallel-tools", "0"]);
+        assert_eq!(
+            demo_run_config(&zero, &quiet, "test-model", String::new()).max_parallel_tools,
+            0,
+            "an explicit 0 in the demo entry was not applied"
+        );
+
+        // Nothing says anything → no ceiling (Pi 0.85.1's behaviour).
+        assert_eq!(
+            demo_run_config(&silent, &quiet, "test-model", String::new()).max_parallel_tools,
+            0,
+            "the demo entry invented a ceiling nobody asked for"
+        );
+    }
+
+    /// The `nini -p` entry must carry the ceiling.
+    ///
+    /// `nini -p "..."` is the entry every CI job and every script uses, so
+    /// a value that dies here dies in everybody's CI.
+    #[test]
+    fn the_print_entry_carries_the_tool_concurrency_ceiling() {
+        let quiet = Settings::default();
+
+        let from_flag = cfg_from_argv(&["--max-parallel-tools", "3"]);
+        assert_eq!(
+            print_run_config(&from_flag, &quiet, "test-model", String::new()).max_parallel_tools,
+            3,
+            "the print entry dropped the command line's ceiling"
+        );
+
+        let mut from_file = Settings::default();
+        from_file.max_parallel_tools = Some(4);
+        let silent = cfg_from_argv(&[]);
+        assert_eq!(
+            print_run_config(&silent, &from_file, "test-model", String::new()).max_parallel_tools,
+            4,
+            "the print entry dropped the settings file's ceiling"
+        );
+
+        assert_eq!(
+            print_run_config(&from_flag, &from_file, "test-model", String::new())
+                .max_parallel_tools,
+            3,
+            "the settings file beat the command line in the print entry"
+        );
+
+        let zero = cfg_from_argv(&["--max-parallel-tools", "0"]);
+        assert_eq!(
+            print_run_config(&zero, &quiet, "test-model", String::new()).max_parallel_tools,
+            0,
+            "an explicit 0 in the print entry was not applied"
+        );
+
+        assert_eq!(
+            print_run_config(&silent, &quiet, "test-model", String::new()).max_parallel_tools,
+            0,
+            "the print entry invented a ceiling nobody asked for"
+        );
+    }
+
+    /// The hand-built config must not be the only way in: a value that
+    /// arrives through the config struct has to survive the assembly too.
+    #[test]
+    fn a_ceiling_in_the_config_survives_both_entries() {
+        let cfg = cfg_with_ceiling(Some(6));
+        let settings = Settings::default();
+        assert_eq!(
+            demo_run_config(&cfg, &settings, "test-model", String::new()).max_parallel_tools,
+            6
+        );
+        assert_eq!(
+            print_run_config(&cfg, &settings, "test-model", String::new()).max_parallel_tools,
+            6
+        );
     }
 }
 
