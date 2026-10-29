@@ -439,14 +439,17 @@ impl Default for RetrySettings {
 /// (`crates/nini-tools/src/bash.rs:395`), while production sends 64KiB
 /// per stream (`crates/nini-tools/src/bash.rs:180` +
 /// `crates/nini-core/src/tool.rs:158`), so 30 concurrent calls buffer
-/// about 1.9MiB, not 240MiB. There is no measured data in the repo
-/// backing the original figure either.
+/// about 3.75MiB — two streams per child (stdout **and** stderr), 64KiB
+/// each — not 240MiB. The per-stream cap follows `ctx.max_output_bytes`,
+/// so a caller who raises it raises this figure too; there is no
+/// measured data in the repo backing the original number either.
 ///
 /// The dangerous half is already guarded elsewhere: writes are
-/// serialised per canonical path (`crates/nini-tools/src/mutation_queue.rs:62-107`),
-/// which is the same shape as Pi's `withFileMutationQueue`. A user who
-/// wants the ceiling back asks for it with `--max-parallel-tools N` or
-/// `maxParallelTools` in settings.json.
+/// serialised per canonical path (`crates/nini-tools/src/mutation_queue.rs:90-112`,
+/// the lock is taken at `:110`), which is the same shape as Pi's
+/// `withFileMutationQueue`. A user who wants the ceiling back asks for
+/// it with `--max-parallel-tools N` or `maxParallelTools` in
+/// settings.json.
 pub const DEFAULT_MAX_PARALLEL_TOOLS: usize = 0;
 
 /// v0.10 (R1): default bound on follow-up revivals of the turn loop.
@@ -537,21 +540,22 @@ pub struct RunConfig {
     pub compact: Option<CompactionHook>,
     /// Retry policy for transient LLM errors.
     pub retry: RetrySettings,
-    /// v0.8.9 (P2-10): how many tool calls from a single assistant turn
-    /// may be in flight at once.
+    /// How many tool calls from a single assistant turn may be in flight
+    /// at once.
     ///
-    /// Models happily emit 30 parallel tool calls, and before this
-    /// limit every one of them got its own future immediately. For
-    /// `bash` that is 30 process trees forked in the same instant, each
-    /// buffering output against `nini_tools::bash::STREAM_CAPTURE_CAP`
-    /// — so this limit and that memory ceiling multiply together.
-    /// v0.8.5 introduced the parallelism because serial execution
-    /// wasted wall-clock time on 14 independent file reads; this keeps
-    /// that win without letting the batch size be whatever the model
-    /// felt like emitting.
+    /// v0.8.9 (P2-10) put a ceiling of 8 here: models happily emit 30
+    /// parallel tool calls, and before that limit every one of them got
+    /// its own future immediately — 30 `bash` calls forking 30 process
+    /// trees in the same instant.
     ///
-    /// `0` means "no limit" — an explicit opt-out that preserves the
-    /// pre-v0.8.9 behaviour.
+    /// v0.14 removed the ceiling: the default is now **0 = no ceiling**,
+    /// the way Pi 0.85.1 runs a turn's tool calls (an unbounded
+    /// `Promise.all`). Pi has no counterpart for this knob — it is
+    /// nini's own, and the user puts it back with `--max-parallel-tools N`
+    /// or the `maxParallelTools` settings key.
+    ///
+    /// `0` means "no ceiling" (the default); `N > 0` means at most N tool
+    /// calls at a time.
     pub max_parallel_tools: usize,
     /// v0.10 (R1): how many times the loop may be revived by a follow-up
     /// before the run gives up and returns to Idle.
@@ -1839,7 +1843,9 @@ impl Agent {
                 //    simultaneously — each buffering its own output
                 //    against `nini_tools::bash::STREAM_CAPTURE_CAP`.
                 //    The batch size was whatever the model felt like
-                //    emitting. It is now a config knob (default 8).
+                //    emitting. It is now a config knob (default 0 = no
+                //    ceiling, the way Pi 0.85.1 runs a turn's tool
+                //    calls).
                 //
                 //    Still a worker pool rather than a semaphore or a
                 //    semaphore-per-batch: futures are pushed lazily as

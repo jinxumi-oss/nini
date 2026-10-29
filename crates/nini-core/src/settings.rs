@@ -53,7 +53,8 @@ pub struct Settings {
     /// Pi 0.85.1 does not have, and it truncated long tasks before they
     /// delivered. The default is now "no cap"; this field is how a user
     /// puts a ceiling back. `maxIterations` is accepted as an alias
-    /// because that is the camelCase spelling Pi's own settings use.
+    /// because it is nini's own camelCase spelling — **Pi 0.85.1 has no
+    /// such key**; this is nini's knob, not a Pi setting.
     #[serde(default, alias = "maxIterations")]
     pub max_iterations: Option<usize>,
     /// v0.14: ceiling on tool calls running at once. `0` / absent = no
@@ -62,8 +63,16 @@ pub struct Settings {
     /// Pi 0.85.1 runs a turn's tool calls all at once
     /// (`references/pi-0.85.1/src/loop/agent-loop.ts:547-549`), so the
     /// default is "no ceiling"; this key is how a user puts one back.
-    /// `maxParallelTools` is accepted as an alias because that is the
-    /// camelCase spelling Pi's own settings use.
+    /// `maxParallelTools` is accepted as an alias because it is nini's
+    /// own camelCase spelling, following `maxIterations` — **Pi 0.85.1
+    /// has no such key** (nor a `maxIterations` one); this is nini's
+    /// knob, not a Pi setting.
+    ///
+    /// Known limit: the **user-level** file's key is wiped when the TUI
+    /// saves its settings (`crates/nini-tui/src/settings.rs` flushes
+    /// only its own `Settings` struct) — the same thing that already
+    /// happens to `maxIterations`. The project-level
+    /// `.nini/settings.json` is not written back and is unaffected.
     #[serde(default, alias = "maxParallelTools")]
     pub max_parallel_tools: Option<usize>,
 }
@@ -85,7 +94,7 @@ pub struct CompactionSettings {
 }
 
 /// Load settings from user-level (`~/.nini/agent/settings.json`) and
-/// project-level (`.pi/settings.json`). Project-level overrides user-level on
+/// project-level (`.nini/settings.json`). Project-level overrides user-level on
 /// per-field collisions.
 pub fn load_settings(cwd: &Path) -> Settings {
     let user = user_settings_path();
@@ -428,7 +437,7 @@ mod tests {
     }
 
     /// v0.14: the tool-concurrency ceiling is readable from the settings
-    /// file under Pi's camelCase spelling, and a project-level file
+    /// file under nini's camelCase spelling, and a project-level file
     /// overrides the user-level one — exactly like `maxIterations`.
     ///
     /// One test, because `NINI_AGENT_DIR` is process-wide: two tests
@@ -470,6 +479,26 @@ mod tests {
         assert_eq!(
             s.max_parallel_tools, None,
             "a settings file without the key must not invent a ceiling"
+        );
+    }
+
+    /// v0.14: an explicit `0` in the settings file means "no ceiling".
+    ///
+    /// It must not be read as "the key is absent" (which falls back to the
+    /// default) — the file said what it meant, and `0` is a value.
+    #[test]
+    fn max_parallel_tools_zero_in_the_file_is_read_as_zero() {
+        let guard = crate::paths::agent_lock();
+
+        let mut uf = std::fs::File::create(guard.path().join("settings.json")).unwrap();
+        writeln!(uf, r#"{{"maxParallelTools": 0}}"#).unwrap();
+
+        let dir = tempdir().unwrap();
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.max_parallel_tools,
+            Some(0),
+            "an explicit `0` in the settings file was not read as `0`"
         );
     }
 
