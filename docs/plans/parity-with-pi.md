@@ -216,11 +216,16 @@ baseUrl/api/compat/cost/samplingParams/thinkingLevelMap 同理，以及同名内
 旋钮**暴露**给用户——`--max-parallel-tools N` 与 settings.json 的 `maxParallelTools`
 （0 = 不限，N > 0 = 最多 N 个并发）。这个旋钮是 **Pi 没有**的能力，属于 superset，
 不是新的不一致。v0.8.9 当初立上限的量化依据（30 × 8MiB 缓冲）不成立：
-`STREAM_CAPTURE_CAP` 是**单流**上限，生产每流只有 64KiB，且仓库里没有实测数据。
-oracle：`crates/nini-core/tests/agent_integration.rs` 的
-`the_default_ceiling_is_unlimited` 与 `the_default_batch_runs_all_calls_at_once`
-（K=20 个探针工具的 peak 必须 = 20），加 `scripts/e2e-parallel-tools.sh`
-（同一剧本，nini peak 与 Pi peak 相等**且都等于 K=20**）。
+`STREAM_CAPTURE_CAP` 是**单流**上限，生产每流只有 64KiB（每个子进程两条流，
+stdout 与 stderr，30 条并发约 3.75MiB，且该预算随 `ctx.max_output_bytes` 可配），
+且仓库里没有实测数据。对齐的范围只有**工具执行阶段的并发度**这一层：Pi 的
+prepare 阶段仍是串行的，abort 的部分结果语义也不同（见 B19）。
+oracle（**行为断言**，不是常量断言）：`crates/nini-core/tests/agent_integration.rs` 的
+`the_default_batch_runs_all_calls_at_once`（K=20 个探针工具的 peak 必须 = 20），
+`crates/nini-cli/tests/cli_flag_contract.rs` 的
+`max_parallel_tools_is_accepted_rather_than_refused`（flag 被接受而不是被拒绝），
+加 `scripts/e2e-parallel-tools.sh`（同一剧本，nini peak 与 Pi peak 相等**且都等于
+K=20**，且 Pi 侧自己的两个独立证据——自报峰值与重叠区间数——互相一致）。
 
 **B18**（Pi 的 `executionMode` / `toolExecution` **整批降级**在 nini 侧没有接线：
 类型在、`batch_is_sequential` 判定也在，但生产路径恒 Parallel，也没有用户可配的
@@ -228,6 +233,10 @@ oracle：`crates/nini-core/tests/agent_integration.rs` 的
 并补发 `[aborted]`，理由写在代码注释里）本轮**明确不做并登记**：B18 涉及工具注册
 API 与配置项、改动面比并发度大，而并发度旋钮已经覆盖了「用户想降级」的需求；
 B19 是 nini 的有意设计（发部分 `tool_results` 会破坏与下一次 LLM 调用的 API 契约）。
+不限并发之后，一次中止最多同时取消 N 个在途 future（不再是 ≤8）：被取消的 `bash`
+的**直接子进程**会被 `kill_on_drop` 杀掉
+（`crates/nini-tools/src/procgroup.rs:130`），但它 spawn 出来的**子孙进程**不会
+被整组杀掉——这个取舍写进 CHANGELOG 的「已知限制」。
 
 ---
 

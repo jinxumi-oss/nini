@@ -1,8 +1,15 @@
-## v0.14.0 — 工具并发度与 Pi 0.85.1 对齐（未发布）
+## v0.14.0 — 工具**执行阶段**的并发度与 Pi 0.85.1 对齐（未发布）
 
-1750 tests, all green. 这一版对齐的是**工具并发度**：nini 以前给一次 run 的工具
-并发设了上限，默认 8——模型一轮发 20 个工具调用，nini 分 3 批跑（8+8+4），
-Pi 0.85.1 一次全跑。
+1761 tests, all green. 这一版对齐的是**工具执行阶段的并发度**：nini 以前给一次
+run 的工具并发设了上限，默认 8——模型一轮发 20 个工具调用，nini 分 3 批跑
+（8+8+4），Pi 0.85.1 一次全跑。
+
+对齐的范围只有这一层。Pi 的 **prepare 阶段**（参数校验、工具查找）是**串行**
+的（`references/pi-0.85.1/src/loop/agent-loop.ts:487-545`），nini 的对应阶段在
+被并发 poll 的 future 内部（`crates/nini-core/src/agent.rs:2227-2258`），仍是
+并发的；abort 的**部分结果**语义也不同（Pi 保留已完成工具的结果，nini 明确丢弃
+并补发 `[aborted]`，见台账 B19）。所以这里说的是「并发度上限一致」，不是
+「与 Pi 完全一致」。
 
 ### 默认从 8 改成不限
 
@@ -14,10 +21,17 @@ v0.8.9 立这个上限的理由是「30 个 `bash` 调用会 fork 30 个进程�
 `STREAM_CAPTURE_CAP`」。**那个数字经核查不成立**：`STREAM_CAPTURE_CAP` 是
 **单流** 8MiB（`crates/nini-tools/src/bash.rs:395`），而生产每流实际只有 64KiB
 （`crates/nini-tools/src/bash.rs:180` + `crates/nini-core/src/tool.rs:158`），
-30 条并发约 1.9MiB 缓冲，不是 240MiB；而且仓库里从来没有这份实测数据。
+所以 30 条并发约 **3.75MiB** 捕获缓冲（每个子进程两条流——stdout **和**
+stderr——各 64KiB），不是 240MiB；而且仓库里从来没有这份实测数据。这个预算
+随 `ctx.max_output_bytes` 可配，把它调大，这个数字就跟着涨。
 危险的那一半（并发写坏文件）早就由**按 canonical path 串行**的写队列挡住了
 （`crates/nini-tools/src/mutation_queue.rs`），与 Pi 的
 `withFileMutationQueue` 同构。
+
+**「不限并发」限的是并发度，不是进程数**：一轮 30 个 `bash` 调用就是 30 个
+进程树同时 fork（每个都在自己的进程组里，`crates/nini-tools/src/procgroup.rs`）。
+内存那一半被上面的数字否证了，**进程树那一半没有被否证**——它只是被藏在了
+「默认 8」后面。要收回它，用 `--max-parallel-tools N`。
 
 ### 旋钮从不可用变成可用
 
@@ -25,6 +39,10 @@ v0.8.9 立这个上限的理由是「30 个 `bash` 调用会 fork 30 个进程�
 
 - `--max-parallel-tools N`：命令行（`0` = 不限，默认；`N > 0` = 最多 N 个并发）；
 - settings.json 的 `maxParallelTools`：同样的口径，项目级覆盖用户级。
+
+`maxParallelTools` 是 **nini 自己**的键：Pi 0.85.1 既没有它，也没有
+`maxIterations`（Pi 快照里 grep 不到）。camelCase 别名是 nini 沿用
+`maxIterations` 的写法，不是 Pi 的设置项。
 
 非法值（负数/非数字）的处理与 `--max-iterations` **完全同构**：clap 自己的
 报错，退出码 2。
@@ -38,8 +56,15 @@ v0.8.9 立这个上限的理由是「30 个 `bash` 调用会 fork 30 个进程�
 睡 60ms），各自报出**并发峰值**——nini 侧用 Rust 的原子计数器，Pi 侧用
 `scripts/pi-parallel-tools-probe.mjs`（node 探针，注入假流 + 假工具）。
 
-判据是三条同时成立：**nini peak == Pi peak == K=20**。只要求「两个相等」太弱——
-「两个都等于 1」也相等。
+判据是这些同时成立：**nini peak == Pi peak == K=20**，**且 Pi 侧自己的两个
+证据一致**。只要求「两个相等」太弱——「两个都等于 1」也相等；只信 Pi 侧
+**自报**的数字也太弱——探针测错了却写死 `PI_PEAK=20`，oracle 照样绿。所以 Pi
+侧探针给两个**独立**的证据：① 工具体内的 in-flight 计数器报的高水位；② 每个
+假工具自己记的开始/结束时间戳，探针用扫描线算出的最大重叠区间数。两者算法
+不同、依据不同，一致才算数。
+
+K 也只有一个来源：脚本的 `K` 同时喂给两侧（Pi 侧 `--calls`，nini 侧 Rust 测试
+读环境变量 `NINI_PARALLEL_CALLS`），并且脚本会核对 nini 侧报出的调用数。
 
 峰值为什么恒等于 K（与 sleep 长短无关）：nini 侧全部 future 在
 `FuturesUnordered` 的同一次 poll 里各被首次 poll，每个 future 在第一个 await
@@ -52,12 +77,26 @@ nini peak=1。两次都让 oracle 变红（见 `docs/invariant-verification.md`�
 
 ### 已知限制（本轮明确不修）
 
-用户级 `~/.nini/agent/settings.json` 里的 `maxParallelTools` 键，会在 TUI 保存
-设置时被抹掉——`crates/nini-tui/src/settings.rs` 的 `flush()` 只序列化它自己的
+**对齐只限并发度这一层。** Pi 的 prepare 阶段（参数校验、工具查找）是串行的
+（`references/pi-0.85.1/src/loop/agent-loop.ts:487-545`），nini 那一层是并发的
+（`crates/nini-core/src/agent.rs:2227-2258`）；abort 的部分结果语义也不同
+（台账 B19）。
+
+**中止时在途的 `bash` 会留下什么。** 中止会取消在途的 future
+（`crates/nini-core/src/agent.rs` 的 `drop(futures)`），被取消的 `bash` 的**直接
+子进程**会被杀掉——`crates/nini-tools/src/procgroup.rs:130` 给子进程加了
+`kill_on_drop`。但它**自己 spawn 出来的子孙进程**不会被整组杀掉（`kill_on_drop`
+只杀直接子进程），所以一条自己开后台进程的 bash 命令仍可能留下孤儿进程。
+另外，不限并发之后，**一次**中止最多同时丢下 N 个在途命令（N = 那一轮模型发了
+多少工具调用），而不是以前的 ≤8。这是「默认不限」这个选择的直接代价，写在这里
+而不是藏起来：想收回它就用 `--max-parallel-tools N`。
+
+**用户级 `~/.nini/agent/settings.json` 里的 `maxParallelTools` 键，会在 TUI 保存
+设置时被抹掉**——`crates/nini-tui/src/settings.rs` 的 `flush()` 只序列化它自己的
 `Settings` 结构（里面既没有 `maxIterations` 也没有 `maxParallelTools`）。
 这是**既有缺陷**，今天写 `maxIterations` 也是同样的下场，与本轮无关；**项目级**
-`.pi/settings.json` 不受影响。它**不影响默认行为**：键丢了 → 回落默认 0 =
-不限 = 与 Pi 一致。
+`.nini/settings.json` 不受影响（它不会被写回）。它**不影响默认行为**：键丢了 →
+回落默认 0 = 不限 = 与 Pi 一致。
 
 ---
 

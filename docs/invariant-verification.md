@@ -428,3 +428,24 @@ CI 上它表现为：Pi 一直没被问到（mock provider 一个请求都没有
 （`references/pi-0.85.1/src/loop/agent-loop.ts:547-549`）。两侧的工具都是
 **进程内**的（没有 fork 开销），所以 peak 恒等于 K。sleep（60ms）只用来保证
 in-flight 窗口不塌——若日后把探针换成真 bash（要 fork+exec），需要重新评估。
+
+### 第二轮：把「flag 被丢弃」与「探针测错却报对」这两类坏法钉住
+
+第一轮的两条变异只覆盖了 nini 侧的默认值与 worker pool。审查发现两个盲区：
+**flag 的值可以在中途被丢掉**（clap 解析了、`--help` 宣传了，然后被扔掉），
+以及 **Pi 侧的探针可以测错却报出正确的数字**（oracle 只信自报值）。两条都补了
+断言，注入结果如下（均已还原）：
+
+| 注入的 bug | 变红的断言 |
+|---|---|
+| 把 `crates/nini-cli/src/main.rs` 里 flag 的值丢掉（`cfg.max_parallel_tools = None`） | `crates/nini-cli/src/main.rs` 的 `cli_wiring_tests`：`the_max_parallel_tools_flag_reaches_the_run_config`（`Args` → `AppConfig` 那一跳）、`the_max_parallel_tools_flag_really_caps_the_concurrency`（峰值 8 ≠ 3）、`the_two_ceilings_do_not_interfere`、`a_settings_file_may_say_zero_explicitly` —— 共 4 条变红 |
+| 把 `scripts/pi-parallel-tools-probe.mjs` 的 in-flight 计数改错（`peak = 1`） | 差分 oracle 变红：`PI_PEAK=1 ≠ PI_OVERLAP_PEAK=20` —— 「Pi 侧的两个证据不一致」 |
+| 把 `scripts/pi-parallel-tools-probe.mjs` 的时间戳改错（区间塌成一个点） | 差分 oracle 变红：`PI_OVERLAP_PEAK=1 ≠ PI_PEAK=20` —— 同上 |
+
+第一轮的 oracle 只比对「Pi 探针自报的 PI_PEAK」与「nini 测的 NINI_PEAK」，
+所以「探针测错却写死 `PI_PEAK=20`」这类坏法 oracle 照样绿。现在 Pi 侧给出
+**两个独立证据**（工具体内的计数器 vs 每个调用自己的开始/结束时间戳算出的
+重叠区间数），oracle 校验两者一致——**两个来源一致才算数**。
+
+K 也只有一个来源了：脚本的 `K` 同时喂 Pi 侧（`--calls`）与 nini 侧（Rust 测试
+读 `NINI_PARALLEL_CALLS`），脚本还会核对 nini 侧报出的 `NINI_CALLS=`。
