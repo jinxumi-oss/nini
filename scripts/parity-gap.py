@@ -42,7 +42,10 @@ SCHEMA_VERSION = 1
 # Whitelists. Anything outside these is a data error, not a judgement call.
 CLASSES = ("A", "B", "C", "D")
 SEVERITIES = ("P0", "P1", "P2", "P3")
-STATUSES = ("open", "fixed", "blocked-owner", "blocked-external")
+# `fake` = **伪差距**：盘点之后才看清——它从来不是一个待修的差距，而是
+# 有意的设计分歧、产品原则差异，或台账措辞过期（v0.15 引入，B4/B10/B15/B19）。
+# 它不是 `fixed`（什么都没修），也不是 `open`（没什么可修）。
+STATUSES = ("open", "fixed", "fake", "blocked-owner", "blocked-external")
 ROUNDS = ("W0", "W1-A", "W1-B", "W1-C", "W2", "W3", "W4", "W5", "—",
           # 工具对标计划的四个工作项（docs/plans/tool-parity.md）
           "T1", "T2", "T3", "T4", "T2+T3",
@@ -59,7 +62,11 @@ ROUNDS = ("W0", "W1-A", "W1-B", "W1-C", "W2", "W3", "W4", "W5", "—",
           # v0.14 计划（docs/plans/parity-with-pi.md）：工具并发度与 Pi
           # 0.85.1 对齐（B17）、Pi 的 executionMode 整批降级在 nini 侧
           # 没有接线（B18）、abort 的部分结果语义（B19）。
-          "v0.14")
+          "v0.14",
+          # v0.15 计划（docs/plans/parity-with-pi.md）：批次级 toolExecution
+          # 入口（B18）、台账盘点后拆出来的 B1a/B4a/B10a/B15a，以及新登记的
+          # B20（串行模式的事件时机）与 B21（工具级 executionMode 的声明通道）。
+          "v0.15")
 DECISIONS = ("R4", "R5", "R9", "R10", "R11")
 
 # Every field a gap record must carry, with the type it must have.
