@@ -80,17 +80,30 @@ jobs:
           fi
       - name: Every declared invariant needs a mutation-verification record
         run: |
+          # Same source of truth as `scripts/gate.sh`'s MISSING_VERIF check:
+          # the **ANNOTATED** tier — a commit that carries an explicit
+          # `//! invariant: <sha>` claim. A claim without a written
+          # injection record is a claim nobody can check.
+          #
+          # Both documents count. `docs/invariant-verification.md` is the
+          # main ledger; `docs/invariant-audit.md` holds the independent
+          # re-verification rounds.
           python3 - <<'PY'
-          import re, sys, pathlib
-          declared = set()
-          for path in list(pathlib.Path("crates").glob("*/tests/*.rs")) + list(pathlib.Path("crates").glob("*/src/**/*.rs")):
-              declared |= {m[:8].lower() for m in re.findall(r"invariant:\s*([0-9a-f]{7,40})", path.read_text(errors="replace"))}
-          verified = pathlib.Path("docs/invariant-verification.md").read_text(errors="replace")
-          missing = sorted(s for s in declared if s not in verified)
+          import json, pathlib, subprocess, sys
+          out = subprocess.run(["python3", "scripts/invariants.py", "--json"],
+                               capture_output=True, text=True).stdout
+          d = json.loads(out)
+          ledger = ""
+          for name in ("docs/invariant-verification.md", "docs/invariant-audit.md"):
+              p = pathlib.Path(name)
+              if p.exists():
+                  ledger += p.read_text(errors="replace")
+          claimed = [r["sha"] for r in d["invariants"] if r["tier"] == "ANNOTATED"]
+          missing = sorted(s for s in claimed if s not in ledger)
           if missing:
               print("::error::这些不变量声明没有变异验证留痕：", ", ".join(missing))
               sys.exit(1)
-          print(f"{len(declared)} 条声明全部有留痕")
+          print(f"{len(claimed)} 条声明全部有留痕")
           PY
 
   test:
