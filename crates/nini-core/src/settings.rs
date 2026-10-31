@@ -75,6 +75,26 @@ pub struct Settings {
     /// `.nini/settings.json` is not written back and is unaffected.
     #[serde(default, alias = "maxParallelTools")]
     pub max_parallel_tools: Option<usize>,
+    /// v0.15: the batch-level tool execution mode.
+    ///
+    /// **This is nini's own key.** Pi 0.85.1's settings schema has **no**
+    /// such key — nini is not reading a Pi setting here. What it does
+    /// correspond to is Pi's **SDK** option `config.toolExecution`
+    /// (`references/pi-0.85.1/pi-agent-core/dist/agent.js:134`), which
+    /// Pi's CLI never passes
+    /// (`references/pi-0.85.1/dist/core/sdk.js:177`). Saying "this is
+    /// Pi's camelCase spelling" would be false — it is nini's key, with
+    /// Pi's semantics.
+    ///
+    /// The values are `"parallel"` and `"sequential"`, lower case, the
+    /// same two values Pi's `ToolExecutionMode` has
+    /// (`references/pi-0.85.1/CORE/types.d.ts:22`). The default is
+    /// `parallel`, which is what both sides do without a declaration.
+    ///
+    /// Known limit: like `maxIterations`, one illegal value makes the
+    /// **whole file** be ignored — the loader does not read half a file.
+    #[serde(default, rename = "toolExecution")]
+    pub tool_execution: Option<crate::tool::ToolExecutionMode>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -138,6 +158,9 @@ pub fn load_settings(cwd: &Path) -> Settings {
     }
     if project_s.max_parallel_tools.is_some() {
         user_s.max_parallel_tools = project_s.max_parallel_tools;
+    }
+    if project_s.tool_execution.is_some() {
+        user_s.tool_execution = project_s.tool_execution;
     }
     user_s
 }
@@ -499,6 +522,81 @@ mod tests {
             s.max_parallel_tools,
             Some(0),
             "an explicit `0` in the settings file was not read as `0`"
+        );
+    }
+
+    /// v0.15: the batch-level execution mode is readable from the
+    /// settings file under the key `toolExecution`, at the user level and
+    /// at the project level, the project level winning.
+    ///
+    /// One test, because `NINI_AGENT_DIR` is process-wide: two tests
+    /// redirecting it would see each other's files.
+    #[test]
+    fn tool_execution_is_read_from_the_tool_execution_key() {
+        let guard = crate::paths::agent_lock();
+
+        // The user-level file alone.
+        let mut uf = std::fs::File::create(guard.path().join("settings.json")).unwrap();
+        writeln!(uf, r#"{{"toolExecution": "sequential"}}"#).unwrap();
+
+        let dir = tempdir().unwrap();
+        let pi_dir = dir.path().join(".nini");
+        std::fs::create_dir_all(&pi_dir).unwrap();
+
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.tool_execution,
+            Some(crate::tool::ToolExecutionMode::Sequential),
+            "the user-level `toolExecution` key was not read"
+        );
+
+        // A project-level file overrides it.
+        let mut pf = std::fs::File::create(pi_dir.join("settings.json")).unwrap();
+        writeln!(pf, r#"{{"toolExecution": "parallel"}}"#).unwrap();
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.tool_execution,
+            Some(crate::tool::ToolExecutionMode::Parallel),
+            "the project-level file must override the user-level one"
+        );
+
+        // The key is absent: no mode from the file, so the default
+        // (parallel) stands.
+        std::fs::remove_file(pi_dir.join("settings.json")).unwrap();
+        std::fs::remove_file(guard.path().join("settings.json")).unwrap();
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.tool_execution, None,
+            "a settings file without the key must not invent a mode"
+        );
+    }
+
+    /// v0.15: an illegal value makes the **whole file** be ignored.
+    ///
+    /// That is the existing behaviour of the settings loader (the same
+    /// one `maxIterations` has): a file that does not parse is a file
+    /// nini does not read, and it does not read half of it either. This
+    /// round does not make an exception for the new key.
+    ///
+    /// The witness is `theme`: the very same file carries a legal
+    /// `theme` value, and it must not be read either.
+    #[test]
+    fn an_illegal_tool_execution_value_ignores_the_whole_file() {
+        let guard = crate::paths::agent_lock();
+
+        let mut uf = std::fs::File::create(guard.path().join("settings.json")).unwrap();
+        writeln!(uf, r#"{{"theme": "solarized", "toolExecution": "bogus"}}"#).unwrap();
+
+        let dir = tempdir().unwrap();
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.tool_execution, None,
+            "an illegal `toolExecution` value must not be read"
+        );
+        assert_eq!(
+            s.theme.as_deref(),
+            None,
+            "an illegal value must not make the loader read half of the file"
         );
     }
 
