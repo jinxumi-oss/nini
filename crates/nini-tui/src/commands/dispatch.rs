@@ -1812,11 +1812,28 @@ fn cmd_hotkeys(
     CommandResult::output(lines)
 }
 
+/// What `/share` says, as a pure function so it can be asserted on.
+///
+/// v0.15 (B10): the old text was `"share: not yet implemented"` — a
+/// sentence about a *release plan*, and a misleading one. Pi's
+/// `/share` uploads the session to a **secret GitHub gist** (or to
+/// Radius), which needs an account and the network; nini's rule is
+/// "no account, no cloud, no phone-home" (`README.md`), so nini will
+/// **never** do that. "Not yet implemented" told the reader a cloud
+/// share was merely unfinished — it is a decision, not a gap.
+///
+/// So the message says what is true (there is no cloud sharing here)
+/// and points at what nini does have: `/export <path>`, which writes
+/// a local HTML or JSONL file.
+fn share_message() -> String {
+    "(no cloud sharing here — nini has no account, no cloud, no phone-home) — \
+     use `/export <path>` to write a local HTML or JSONL file"
+        .to_string()
+}
+
 fn cmd_share(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
-    // v0.6+: share = export to a secret GitHub gist. Not yet wired;
-    // see Pi spec `references/spec-v0.85.1/slash-commands/share.md`.
     let _ = state;
-    CommandResult::error("share: not yet implemented")
+    CommandResult::output(vec![share_message()])
 }
 
 #[cfg(test)]
@@ -2001,5 +2018,62 @@ mod honesty_tests {
         let mut state = AppState::new("test-model");
         let lines = logout_lines(&mut state, "not-a-provider");
         assert!(lines[0].contains("unknown provider"), "{lines:?}");
+    }
+
+    // ----------------------------------------------------------------
+    // B10: /share
+    // ----------------------------------------------------------------
+
+    /// v0.15 (B10): `/share` used to answer "share: not yet
+    /// implemented" — a sentence about a release plan, and a wrong one.
+    /// Pi's `/share` uploads the session to a secret GitHub gist, which
+    /// needs an account and the network; nini will never do that. The
+    /// message must say what is true and point at what exists.
+    #[test]
+    fn the_share_message_points_at_the_local_export() {
+        let msg = share_message();
+        assert!(
+            msg.contains("/export"),
+            "the message must point at the local export: {msg}"
+        );
+        assert!(
+            !msg.contains("not yet implemented"),
+            "a cloud share is a decision, not an unfinished feature: {msg}"
+        );
+        for forbidden in ["gist", "http", "upload"] {
+            assert!(
+                !msg.contains(forbidden),
+                "the message must not claim a cloud destination ({forbidden}): {msg}"
+            );
+        }
+    }
+
+    /// The same guarantee, but through the dispatcher: `/share` must
+    /// not come back as an error either — it is not a failure, it is a
+    /// pointer to the local export.
+    #[test]
+    fn the_share_command_returns_a_pointer_not_an_error() {
+        let mut state = AppState::new("test-model");
+        let mut settings = SettingsManager::default();
+        let r = dispatch(&mut state, &mut settings, CommandId::Share, "");
+        assert!(
+            r.error.is_none(),
+            "/share must not error out: {:?}",
+            r.error
+        );
+        match r.outcome {
+            crate::commands::CommandOutcome::Output(lines) => {
+                let blob = lines.join("\n");
+                assert!(
+                    blob.contains("/export"),
+                    "the output must point at the local export: {blob}"
+                );
+                assert!(
+                    !blob.contains("not yet implemented"),
+                    "the output must not say 'not yet implemented': {blob}"
+                );
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
     }
 }

@@ -125,7 +125,7 @@ pub const REGISTRY: &[CommandDef] = &[
     CommandDef::new(
         CommandId::Share,
         "share",
-        "Share the current session (export)",
+        "Export the session to a local file (no cloud sharing)",
         None,
     ),
     CommandDef::new(CommandId::Changelog, "changelog", "Show changelog", None),
@@ -271,6 +271,32 @@ mod tests {
     #[test]
     fn by_name_returns_none_for_unknown() {
         assert!(by_name("not_a_real_command").is_none());
+    }
+
+    /// v0.15 (B10): the description must not promise a cloud share.
+    ///
+    /// It used to say "Share the current session (export)" — a
+    /// sentence about a *cloud* share that nini does not do. The
+    /// palette is where a user decides what a command does, so a
+    /// wrong description here is a wrong promise there.
+    #[test]
+    fn the_share_description_says_it_exports_locally() {
+        let def = by_name("share").expect("/share is registered");
+        let d = def.description.to_lowercase();
+        assert!(
+            !d.contains("share the current session"),
+            "the description must not read as a cloud share: {d}"
+        );
+        for banned in ["gist", "http", "upload"] {
+            assert!(
+                !d.contains(banned),
+                "the description must not claim a cloud destination ({banned}): {d}"
+            );
+        }
+        assert!(
+            d.contains("local"),
+            "the description must say the export is local: {d}"
+        );
     }
 
     #[test]
