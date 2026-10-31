@@ -403,6 +403,17 @@ impl Tool for WrappedTool {
     fn spec(&self) -> ToolSpec {
         self.inner.spec()
     }
+    /// v0.15: the wrapper must not swallow the inner tool's execution
+    /// mode.
+    ///
+    /// The trust gate wraps **every** tool the project registers
+    /// (`crates/nini-core/src/trust_gate.rs`), so a missing forward
+    /// here silently turns every `Sequential` tool into a `Parallel`
+    /// one — the tool that must run alone ends up running with its
+    /// siblings.
+    fn execution_mode(&self) -> ToolExecutionMode {
+        self.inner.execution_mode()
+    }
     async fn execute(&self, args: Value, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
         self.inner.execute(args, ctx).await
     }
