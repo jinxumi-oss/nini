@@ -79,21 +79,40 @@ pub struct Settings {
     ///
     /// **This is nini's own key.** Pi 0.85.1's settings schema has **no**
     /// such key — nini is not reading a Pi setting here. What it does
-    /// correspond to is Pi's **SDK** option `config.toolExecution`
-    /// (`references/pi-0.85.1/pi-agent-core/dist/agent.js:134`), which
-    /// Pi's CLI never passes
-    /// (`references/pi-0.85.1/dist/core/sdk.js:177`). Saying "this is
-    /// Pi's camelCase spelling" would be false — it is nini's key, with
-    /// Pi's semantics.
+    /// correspond to is Pi's **SDK** option `config.toolExecution`, whose
+    /// decision site is
+    /// `references/pi-0.85.1/src/loop/agent-loop.ts:420`
+    /// (`config.toolExecution === "sequential"` → the whole batch runs one
+    /// call at a time). The SDK's default is `"parallel"`
+    /// (`node_modules/@earendil-works/pi-agent-core/dist/agent.js:134` —
+    /// **not in the snapshot**: the snapshot only carries the
+    /// `pi-coding-agent` package, so that coordinate points at the
+    /// installed package). Pi's CLI never passes the option.
+    /// Saying "this is Pi's camelCase spelling" would be false — it is
+    /// nini's key, with Pi's semantics.
+    ///
+    /// **The canonical spelling is snake_case** (`tool_execution`), like
+    /// every other key of this struct; `toolExecution` is accepted as an
+    /// **alias**, the same way `maxIterations` / `maxParallelTools` /
+    /// `fullscreenScrollbar` are. Both spellings are read, so a user who
+    /// writes either one gets the mode they asked for.
     ///
     /// The values are `"parallel"` and `"sequential"`, lower case, the
     /// same two values Pi's `ToolExecutionMode` has
-    /// (`references/pi-0.85.1/CORE/types.d.ts:22`). The default is
+    /// (`references/spec-v0.85.1/session/types.ts:192`:
+    /// `toolExecution: "sequential" | "parallel";`). The default is
     /// `parallel`, which is what both sides do without a declaration.
     ///
     /// Known limit: like `maxIterations`, one illegal value makes the
     /// **whole file** be ignored — the loader does not read half a file.
-    #[serde(default, rename = "toolExecution")]
+    ///
+    /// Known limit: the **user-level** file's key is wiped when the TUI
+    /// saves its settings (`crates/nini-tui/src/settings.rs` flushes
+    /// only its own `Settings` struct, which has no `tool_execution`
+    /// field) — the same thing that already happens to `maxIterations`.
+    /// The project-level `.nini/settings.json` is not written back and is
+    /// unaffected.
+    #[serde(default, alias = "toolExecution")]
     pub tool_execution: Option<crate::tool::ToolExecutionMode>,
 }
 
@@ -568,6 +587,120 @@ mod tests {
         assert_eq!(
             s.tool_execution, None,
             "a settings file without the key must not invent a mode"
+        );
+    }
+
+    /// v0.15 (审查修正): the **canonical** spelling of the key is
+    /// snake_case, like every other key of this struct; the camelCase
+    /// spelling is an **alias**.
+    ///
+    /// The key used to be `rename = "toolExecution"`, i.e. the camelCase
+    /// spelling was the *only* one that worked. A user who followed the
+    /// repository's own convention (snake_case, like `max_parallel_tools`
+    /// / `fullscreen_scrollbar`) wrote `"tool_execution": "sequential"`
+    /// and got **silently ignored** — no error, no warning, the mode
+    /// quietly fell back to `parallel`.
+    ///
+    /// Both spellings must work; the canonical one is the snake_case.
+    #[test]
+    fn both_spellings_of_the_tool_execution_key_are_read() {
+        let snake: Settings =
+            serde_json::from_str(r#"{"tool_execution": "sequential"}"#).unwrap();
+        assert_eq!(
+            snake.tool_execution,
+            Some(crate::tool::ToolExecutionMode::Sequential),
+            "the canonical snake_case spelling must be read"
+        );
+
+        let camel: Settings =
+            serde_json::from_str(r#"{"toolExecution": "sequential"}"#).unwrap();
+        assert_eq!(
+            camel.tool_execution,
+            Some(crate::tool::ToolExecutionMode::Sequential),
+            "the camelCase alias must be read too"
+        );
+    }
+
+    /// v0.15 (审查修正): the canonical spelling must work through the
+    /// **whole** loader, not only through serde directly.
+    ///
+    /// The file-level path is the one a user actually goes through, and it
+    /// is a different function (`load_settings`) than the one the previous
+    /// test calls.
+    #[test]
+    fn the_snake_case_spelling_is_read_from_the_settings_file() {
+        let guard = crate::paths::agent_lock();
+
+        let mut uf = std::fs::File::create(guard.path().join("settings.json")).unwrap();
+        writeln!(uf, r#"{{"tool_execution": "sequential"}}"#).unwrap();
+
+        let dir = tempdir().unwrap();
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.tool_execution,
+            Some(crate::tool::ToolExecutionMode::Sequential),
+            "the canonical snake_case key was not read from the settings file"
+        );
+    }
+
+    /// v0.15 (审查修正): an illegal value in the **project-level** file
+    /// leaves the **user-level** value in force.
+    ///
+    /// The loader ignores a file it cannot parse — that is the existing
+    /// behaviour (the same one `maxIterations` has). The consequence for
+    /// the project level is that the user-level value is *not* replaced by
+    /// nothing: it keeps applying. This is the semantics nobody had
+    /// pinned down, so it is pinned down here.
+    #[test]
+    fn an_illegal_project_level_value_leaves_the_user_level_value_in_force() {
+        let guard = crate::paths::agent_lock();
+
+        let mut uf = std::fs::File::create(guard.path().join("settings.json")).unwrap();
+        writeln!(uf, r#"{{"tool_execution": "sequential"}}"#).unwrap();
+
+        let dir = tempdir().unwrap();
+        let pi_dir = dir.path().join(".nini");
+        std::fs::create_dir_all(&pi_dir).unwrap();
+        let mut pf = std::fs::File::create(pi_dir.join("settings.json")).unwrap();
+        writeln!(pf, r#"{{"tool_execution": "bogus"}}"#).unwrap();
+
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.tool_execution,
+            Some(crate::tool::ToolExecutionMode::Sequential),
+            "an illegal project-level value must not wipe the user-level value"
+        );
+    }
+
+    /// v0.15 (审查修正): the known limit — "the TUI's settings flush wipes
+    /// this key" — must be **written down** next to the key.
+    ///
+    /// `crates/nini-tui/src/settings.rs` persists a `Settings` struct that
+    /// has no `tool_execution` field, so every TUI settings write drops
+    /// the key from the user-level file. The neighbouring
+    /// `max_parallel_tools` records the very same limit; the new key
+    /// shipped without it, which is how a documented knob disappears
+    /// without anybody noticing.
+    ///
+    /// A comment cannot be asserted at runtime, so this asserts the
+    /// **source text**: the doc comment of the field must name the TUI
+    /// flush and the wiping.
+    #[test]
+    fn the_tool_execution_key_records_the_tui_flush_limit() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/settings.rs"))
+            .expect("read settings.rs");
+        let field_at = source
+            .find("pub tool_execution")
+            .expect("the tool_execution field exists");
+        let doc_start = source[..field_at]
+            .rfind("/// v0.15")
+            .expect("the field's doc comment starts with its version");
+        let doc = &source[doc_start..field_at];
+        assert!(
+            doc.contains("TUI") && doc.contains("flush") && doc.contains("wiped"),
+            "the tool_execution doc comment must record the known limit that the \
+             TUI's settings flush wipes the key (crates/nini-tui/src/settings.rs) — \
+             found: {doc}"
         );
     }
 

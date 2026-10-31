@@ -57,11 +57,10 @@ fn assemble_run_config(
         // v0.15: the batch-level tool execution mode. Same shape as the
         // ceiling above — the command line beats the settings file, and
         // the fallback is `parallel`, which is how a turn runs when
-        // nobody declared anything about it.
-        tool_execution: tool_cfg
-            .tool_execution
-            .or(settings.tool_execution)
-            .unwrap_or(nini_core::tool::ToolExecutionMode::default()),
+        // nobody declared anything about it. The rule itself lives in
+        // `AppConfig::resolved_tool_execution`, shared with the TUI door
+        // so the two cannot drift apart.
+        tool_execution: tool_cfg.resolved_tool_execution(settings),
         ..RunConfig::new(model.to_string())
     }
 }

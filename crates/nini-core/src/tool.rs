@@ -84,12 +84,15 @@ pub struct ToolOutput {
 }
 
 /// Per-tool execution-mode override. Mirrors Pi's `ToolExecutionMode`
-/// (`pi-agent-core/src/types.ts:402-408`).
+/// (the value set is `references/spec-v0.85.1/session/types.ts:192`:
+/// `toolExecution: "sequential" | "parallel";`; the type itself lives in
+/// `node_modules/@earendil-works/pi-agent-core/dist/types.d.ts:22` —
+/// **not in the snapshot**, which only carries the `pi-coding-agent`
+/// package).
 ///
 /// v0.15: derives `Serialize`/`Deserialize` so the mode can be read out
 /// of a config file. The spelling is `lowercase` — `"parallel"` /
-/// `"sequential"` — the same two values Pi's type has
-/// (`references/pi-0.85.1/CORE/types.d.ts:22`). The parse is
+/// `"sequential"` — the same two values Pi's type has. The parse is
 /// case-sensitive on purpose: Pi accepts no other spelling, and nini
 /// growing a third dialect would be drift nobody asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

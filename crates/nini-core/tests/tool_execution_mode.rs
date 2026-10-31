@@ -1,10 +1,12 @@
 //! v0.15: `ToolExecutionMode` must be parseable out of a config file.
 //!
-//! Pi's `ToolExecutionMode` (`references/pi-0.85.1/CORE/types.d.ts:22`)
-//! has exactly two values, `parallel` and `sequential`, spelled in lower
-//! case. nini's enum had the same two values but no serde derive, so
-//! nothing could read the mode out of a settings file — the batch-level
-//! switch existed in `RunConfig` and could not be reached by a user.
+//! Pi's `ToolExecutionMode` has exactly two values, `parallel` and
+//! `sequential`, spelled in lower case
+//! (`references/spec-v0.85.1/session/types.ts:192`:
+//! `toolExecution: "sequential" | "parallel";`). nini's enum had the same
+//! two values but no serde derive, so nothing could read the mode out of a
+//! settings file — the batch-level switch existed in `RunConfig` and
+//! could not be reached by a user.
 //!
 //! The values must match Pi's spelling, and the parse must be
 //! case-sensitive: `"Parallel"` is not a value Pi accepts either, and

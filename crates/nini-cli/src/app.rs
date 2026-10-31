@@ -85,8 +85,9 @@ pub(crate) struct AppConfig {
     ///
     /// nini's own knob in the sense that Pi 0.85.1's CLI has no such
     /// flag — the same switch exists in Pi's **SDK**
-    /// (`config.toolExecution`, `pi-agent-core/dist/agent.js:134`), and
-    /// Pi's CLI never passes it (`dist/core/sdk.js:177`).
+    /// (`config.toolExecution`, decided in
+    /// `references/pi-0.85.1/src/loop/agent-loop.ts:420`), and Pi's CLI
+    /// never passes it.
     pub tool_execution: Option<nini_core::tool::ToolExecutionMode>,
     /// v0.10: `--verbose`. Consumed once by `init_logging` at the top of
     /// `main`, before any entry point runs; kept here so the flag that
@@ -124,6 +125,27 @@ impl AppConfig {
             tool_execution: None,
             verbose: false,
         }
+    }
+
+    /// The batch-level tool execution mode for this run.
+    ///
+    /// v0.15 (审查修正): this used to be written out **twice** — once in
+    /// the TUI door (`build_tui_run_config`) and once in the
+    /// `demo`/`-p` door (`demo::assemble_run_config`) — and the very same
+    /// round wrote in its own comments that copying the wiring is how
+    /// "the TUI has it, `-p` does not" happens. Two copies of one rule
+    /// are two facts waiting to disagree.
+    ///
+    /// One function, one rule: **CLI > settings > default**, and the
+    /// default is `parallel` — the way a turn runs when nobody declared
+    /// anything about it.
+    pub(crate) fn resolved_tool_execution(
+        &self,
+        settings: &nini_core::settings::Settings,
+    ) -> nini_core::tool::ToolExecutionMode {
+        self.tool_execution
+            .or(settings.tool_execution)
+            .unwrap_or(nini_core::tool::ToolExecutionMode::default())
     }
 }
 
@@ -261,11 +283,10 @@ pub(crate) fn build_tui_run_config(
         // v0.15: the batch-level tool execution mode. Same shape as the
         // turn cap above — the command line beats the settings file,
         // and the fallback is `parallel`, which is how both sides run
-        // a turn nobody declared anything about.
-        tool_execution: cfg
-            .tool_execution
-            .or(settings.tool_execution)
-            .unwrap_or(nini_core::tool::ToolExecutionMode::default()),
+        // a turn nobody declared anything about. The rule itself lives
+        // in `AppConfig::resolved_tool_execution`, shared with the
+        // `demo`/`-p` door so the two cannot drift apart.
+        tool_execution: cfg.resolved_tool_execution(settings),
         ..RunConfig::new(cfg_model)
     };
     (config, skills_in_prompt)
