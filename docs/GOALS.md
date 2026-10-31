@@ -102,7 +102,7 @@ v0.9.2 一整版都在清这个。
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
 | 版本 | **v0.15.0** | `Cargo.toml` version = 0.15.0；`nini --version` 自报同一数字 | tag 尚未推送（见下方“发布链”） |
-| 测试 | **1789 通过 / 0 ignored / 0 失败** | 本机全量 `cargo test --workspace`（2026-10-30） | 无 |
+| 测试 | **1798 通过 / 0 ignored / 0 失败** | 本机全量 `cargo test --workspace`（2026-10-30） | 无 |
 | 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 已从 stub 改为**明说本机不做云端分享并指向 `/export`**（Pi 的 `/share` 要 gh 账号或云端，与 nini「不出网」原则冲突，登记为 B10 伪差距） |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
 | 行为 oracle | **符号引用全部可解析（drift=0）**；台账的 `nini_state` **每条都能 grep 到代码符号**（`crates/nini-core/tests/ledger_anchors.rs`）；行为层 **Pi 侧可执行对照物 ≥1**（真 Pi 0.85.1 录制的会话） | `python3 scripts/pi-oracle-lock.py --verify-refs`；`crates/nini-tui/tests/behavior_parity.rs` | 其余 oracle 仍只断言 nini 侧（依据已是机器可解析的符号引用，不再依赖行号）——**C1 已闭**，剩下的覆盖度是另一件事 |
