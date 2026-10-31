@@ -150,11 +150,17 @@ pub const REGISTRY: &[CommandDef] = &[
         Some("<path>"),
     ),
     CommandDef::new(CommandId::Fork, "fork", "Fork the current session", None),
+    // v0.15 (B1a): no argument hint. `cmd_clone` ignores its `args`
+    // entirely — it copies the current session file — so the old
+    // `Some("<session-id>")` promised a parameter the command never
+    // read. Pi 0.85.1's `/clone` has no `argumentHint` either
+    // (`dist/core/slash-commands.js`: `clone` carries no hint), so
+    // dropping it moves nini *towards* Pi, not away from it.
     CommandDef::new(
         CommandId::Clone,
         "clone",
         "Clone a session into a new branch",
-        Some("<session-id>"),
+        None,
     ),
     CommandDef::new(
         CommandId::Compact,
@@ -296,6 +302,22 @@ mod tests {
         assert!(
             d.contains("local"),
             "the description must say the export is local: {d}"
+        );
+    }
+
+    /// v0.15 (B1a): `/clone` must not advertise an argument it never reads.
+    ///
+    /// The palette and the help overlay render `argument_hint` as the
+    /// command's usage line, so a hint the command ignores is a promise
+    /// the user cannot keep. `cmd_clone` copies the current session file
+    /// and ignores `args`; Pi 0.85.1's `/clone` has no hint at all.
+    #[test]
+    fn the_clone_command_declares_no_argument() {
+        let def = by_name("clone").expect("/clone is registered");
+        assert!(
+            def.argument_hint.is_none(),
+            "/clone must not advertise an argument it never reads: {:?}",
+            def.argument_hint
         );
     }
 
