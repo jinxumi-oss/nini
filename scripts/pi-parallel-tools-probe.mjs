@@ -23,6 +23,7 @@
 //
 // 输出
 // ----
+//   `PI_MODE=<mode>`    —— 这一轮量的是哪个模式（parallel / sequential）
 //   `PI_PEAK=<n>`        —— 工具体内的 in-flight 计数器自己报的高水位
 //   `PI_OVERLAP_PEAK=<n>` —— 探针自己拿每个调用的**开始/结束时间**算出的
 //                            最大重叠区间数
@@ -53,6 +54,21 @@ const PI_ROOT =
 
 const CALLS = Number(arg("--calls", "20"));
 const SLEEP_MS = Number(arg("--sleep-ms", "60"));
+
+// v0.15: 这一轮量的是哪个批次级执行模式。
+//
+// Pi 的 `toolExecution` 是**批次级**开关（`pi-agent-core/dist/agent.js:134`
+// 的 `runtimeOptions.toolExecution ?? "parallel"`，判定在
+// `dist/agent-loop.js:288`）：它决定一批工具调用是并行还是逐个跑。
+//
+// 默认 `parallel`（Pi 的默认值），`PI_TOOL_EXECUTION=sequential` 切到串行。
+// 探针工具本身**不声明** `executionMode`——它量的是批次级开关的效果，
+// 与工具级无关。
+const MODE = process.env.PI_TOOL_EXECUTION || "parallel";
+if (MODE !== "parallel" && MODE !== "sequential") {
+  console.error(`PI_TOOL_EXECUTION 只能是 parallel 或 sequential，收到：${MODE}`);
+  process.exit(2);
+}
 
 async function importFromPi(relPath, what) {
   const modPath = resolve(PI_ROOT, relPath);
@@ -200,7 +216,11 @@ const config = {
     ),
   // Pi 的默认就是 parallel（`agent-loop.js:134` 的 `toolExecution ?? "parallel"`）。
   // 这里显式写出来，是为了让「本探针量的是并发」这件事不依赖默认值。
-  toolExecution: "parallel",
+  //
+  // v0.15: 值来自环境变量 `PI_TOOL_EXECUTION`，默认仍是 parallel。
+  // 判定在 Pi 的 `agent-loop.js:288`：`config.toolExecution === "sequential"`
+  // 时整批逐个跑。
+  toolExecution: MODE,
 };
 
 await runAgentLoop(
@@ -213,5 +233,6 @@ await runAgentLoop(
 );
 
 console.log(`PI_CALLS=${CALLS}`);
+console.log(`PI_MODE=${MODE}`);
 console.log(`PI_PEAK=${peak}`);
 console.log(`PI_OVERLAP_PEAK=${maxOverlap(intervals)}`);

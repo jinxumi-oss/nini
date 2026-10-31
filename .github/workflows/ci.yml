@@ -235,6 +235,23 @@ jobs:
         run: |
           cargo build --release --locked
           bash scripts/e2e-parallel-tools.sh --pi-root "$PI_ROOT"
+      - name: The batch execution mode matches Pi's (nini vs Pi 0.85.1)
+        # Pi 0.85.1 有个**批次级**开关 `toolExecution`
+        # （`pi-agent-core/dist/agent.js:134`，判定在 `dist/agent-loop.js:288`）：
+        # `sequential` 把一轮的工具调用逐个跑，`parallel`（默认）一起跑。
+        # nini 的 `RunConfig.tool_execution` 一直带着这个字段，但用户此前
+        # **没有任何办法**改它（CLI 没开关、settings 没键）。
+        #
+        # 判据是三条同时成立：Pi 侧 sequential 的两个证据（计数器、重叠
+        # 区间数）都是 1；nini 侧 sequential 的峰值是 1；**对照组** parallel
+        # 模式下两侧的峰值都等于 K（K=20）。没有对照组，「nini 永远
+        # peak==1」也能骗过第二条。
+        #
+        # 这一步落在 `parity-target` job 里：只有这个 job 装了 Pi 0.85.1
+        # （`PI_ROOT` 由上面的 Install 步骤导出）。
+        run: |
+          cargo build --release --locked
+          bash scripts/e2e-tool-execution.sh --pi-root "$PI_ROOT"
       - name: A long task must reach its delivery (nini vs Pi 0.85.1)
         # 这条门禁钉住的是「长任务不许在半路被截断」。
         # nini 曾经给一次 run 设了 50 轮硬上限：60 步的任务会死在

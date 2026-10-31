@@ -1279,6 +1279,145 @@ mod parallel_ceiling_tests {
 }
 
 // =====================================================================
+// v0.15: the **batch-level** execution mode decides whether a turn's
+// tool calls run one at a time or all at once.
+//
+// Pi 0.85.1 has the same switch (`toolExecution`, `pi-agent-core/dist/
+// agent.js:134`, decided at `dist/agent-loop.js:288`): `sequential`
+// runs a turn's tool calls one at a time, `parallel` (the default) runs
+// them all at once.
+//
+// The measurement is the same one the Pi-side probe makes: the tool
+// counts its own in-flight bodies. "All K calls finished" cannot tell
+// "K ran at once" from "one ran at a time, K times".
+//
+// `NINI_SEQ_MODE` picks the mode this run measures (`sequential` /
+// `parallel`); the numbers are printed so the differential oracle can
+// compare them with Pi's for the same script.
+// =====================================================================
+mod batch_execution_mode_tests {
+    use super::probe_tools::ConcurrencyProbeTool;
+    use super::*;
+    use nini_core::tool::{Tool, ToolExecutionMode};
+    use nini_core::{AgentMessage, RunConfig};
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// The default number of tool calls the scripted turn asks for.
+    const DEFAULT_CALLS: usize = 20;
+
+    /// How many tool calls the scripted turn asks for.
+    ///
+    /// The count comes from the environment (`NINI_PARALLEL_CALLS`) so
+    /// the differential oracle can move it and **both** sides move with
+    /// it — the same single source the concurrency oracle uses.
+    fn calls() -> usize {
+        std::env::var("NINI_PARALLEL_CALLS")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_CALLS)
+    }
+
+    /// A provider whose first turn asks for K tool calls.
+    fn provider_with(n: usize) -> Arc<ProgrammedProvider> {
+        let mut turn0: Vec<FixtureTurn> = Vec::with_capacity(n + 1);
+        for i in 0..n {
+            turn0.push(FixtureTurn::ToolCall {
+                name: "probe".to_string(),
+                args: json!({"label": format!("c{i}")}),
+            });
+        }
+        turn0.push(FixtureTurn::Stop {
+            stop_reason: "tool_use".to_string(),
+            usage: Usage::default(),
+        });
+        let turn1 = vec![FixtureTurn::Stop {
+            stop_reason: "end_turn".to_string(),
+            usage: Usage::default(),
+        }];
+        Arc::new(ProgrammedProvider::from_turns(vec![turn0, turn1]))
+    }
+
+    /// Run one scripted turn in the given batch-level execution mode and
+    /// report the tool's own peak concurrency and how many calls ran.
+    async fn measure(mode: ToolExecutionMode, delay: Duration) -> (u32, u32) {
+        let probe = Arc::new(ConcurrencyProbeTool::new(delay));
+        let peak = probe.peak_live.clone();
+        let total = probe.total.clone();
+        let tools = ToolRegistry::new().register(probe as Arc<dyn Tool>);
+        let mut cfg = RunConfig::new("test-model");
+        cfg.tool_execution = mode;
+        let mut agent = Agent::new(provider_with(calls()), tools, cfg);
+
+        {
+            let mut stream = Box::pin(agent.run(AgentMessage::user("go")));
+            use futures_util::StreamExt;
+            while let Some(ev) = stream.next().await {
+                let _ = ev.expect("agent stream error");
+            }
+        }
+        (peak.load(Ordering::SeqCst), total.load(Ordering::SeqCst))
+    }
+
+    /// The mode this run measures.
+    ///
+    /// The default is `sequential`: it is the mode the switch exists
+    /// for, and a plain `cargo test` therefore exercises it.
+    fn mode() -> ToolExecutionMode {
+        match std::env::var("NINI_SEQ_MODE").unwrap_or_default().as_str() {
+            "sequential" => ToolExecutionMode::Sequential,
+            "parallel" => ToolExecutionMode::Parallel,
+            "" => ToolExecutionMode::Sequential,
+            other => panic!("NINI_SEQ_MODE must be sequential or parallel, got {other:?}"),
+        }
+    }
+
+    /// v0.15: `sequential` runs the turn's tool calls **one at a time**,
+    /// `parallel` runs them **all at once** — the same two behaviours Pi
+    /// 0.85.1 has.
+    ///
+    /// The tool counts its own in-flight bodies, so this measures
+    /// concurrency and not "all calls eventually finished". The 60ms
+    /// delay keeps the in-flight window open long enough for the counter
+    /// to see every call.
+    #[tokio::test]
+    async fn the_batch_execution_mode_decides_the_peak() {
+        let k = calls();
+        let mode = mode();
+        let (peak, total) = measure(mode, Duration::from_millis(60)).await;
+
+        println!("NINI_SEQ_MODE={}", mode_name(mode));
+        println!("NINI_SEQ_CALLS={total}");
+        println!("NINI_SEQ_PEAK={peak}");
+
+        assert_eq!(
+            total, k as u32,
+            "every tool call must still run — sequential execution queues, it does not drop"
+        );
+        match mode {
+            ToolExecutionMode::Sequential => assert_eq!(
+                peak, 1,
+                "a sequential batch must run one tool call at a time, but the peak was {peak}"
+            ),
+            ToolExecutionMode::Parallel => assert_eq!(
+                peak, k as u32,
+                "a parallel batch must run all {k} tool calls at once, but the peak was {peak}"
+            ),
+        }
+    }
+
+    /// The mode's name, as Pi spells it.
+    fn mode_name(mode: ToolExecutionMode) -> &'static str {
+        match mode {
+            ToolExecutionMode::Parallel => "parallel",
+            ToolExecutionMode::Sequential => "sequential",
+        }
+    }
+}
+
+// =====================================================================
 // v0.8.9 (P0-5): interleaved parallel tool calls must keep their args.
 //
 // The agent used to accumulate tool calls in a single `current_call`
