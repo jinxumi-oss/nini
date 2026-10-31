@@ -893,6 +893,53 @@ mod cli_wiring_tests {
         );
     }
 
+    /// v0.15: the settings file alone must reach **all three** assembly
+    /// doors.
+    ///
+    /// The TUI, `nini demo` and `nini -p` are three doors into the same
+    /// `RunConfig`. A mode that reaches one and dies in the other two is
+    /// a mode that behaves differently depending on how nini was
+    /// started — the exact failure this repo already paid for once with
+    /// the tool-concurrency ceiling.
+    #[test]
+    fn the_settings_file_reaches_all_three_assembly_doors() {
+        let mut settings = nini_core::settings::Settings::default();
+        settings.tool_execution = Some(nini_core::tool::ToolExecutionMode::Sequential);
+
+        // The command line says nothing.
+        let args = args_from(&[]);
+        let cfg = app_config_from_args(&args);
+
+        // Door 1: the TUI.
+        let (tui_cfg, _) = app::build_tui_run_config(
+            &settings,
+            std::path::Path::new("/tmp"),
+            &ToolRegistry::new(),
+            &cfg,
+        );
+        assert_eq!(
+            tui_cfg.tool_execution,
+            nini_core::tool::ToolExecutionMode::Sequential,
+            "the TUI door dropped the settings file's execution mode"
+        );
+
+        // Door 2: `nini demo`.
+        assert_eq!(
+            crate::demo::demo_run_config(&cfg, &settings, "test-model", String::new())
+                .tool_execution,
+            nini_core::tool::ToolExecutionMode::Sequential,
+            "the demo door dropped the settings file's execution mode"
+        );
+
+        // Door 3: `nini -p`.
+        assert_eq!(
+            crate::demo::print_run_config(&cfg, &settings, "test-model", String::new())
+                .tool_execution,
+            nini_core::tool::ToolExecutionMode::Sequential,
+            "the print door dropped the settings file's execution mode"
+        );
+    }
+
     /// v0.14: the value the user typed has to arrive.
     ///
     /// Three hops, three assertions: clap parsed it, the config carries it,

@@ -54,6 +54,14 @@ fn assemble_run_config(
             .max_parallel_tools
             .or(settings.max_parallel_tools)
             .unwrap_or(nini_core::agent::DEFAULT_MAX_PARALLEL_TOOLS),
+        // v0.15: the batch-level tool execution mode. Same shape as the
+        // ceiling above — the command line beats the settings file, and
+        // the fallback is `parallel`, which is how a turn runs when
+        // nobody declared anything about it.
+        tool_execution: tool_cfg
+            .tool_execution
+            .or(settings.tool_execution)
+            .unwrap_or(nini_core::tool::ToolExecutionMode::default()),
         ..RunConfig::new(model.to_string())
     }
 }
@@ -520,7 +528,89 @@ mod entry_ceiling_tests {
         );
     }
 
-    /// The hand-built config must not be the only way in: a value that
+    /// The `nini demo` entry must carry the execution mode.
+    ///
+    /// The mode says how a turn's tool calls run: `parallel` (the
+    /// default) or `sequential`. A mode that reaches the TUI and dies
+    /// here is a mode that does not exist for half the binary.
+    #[test]
+    fn the_demo_entry_carries_the_tool_execution_mode() {
+        let quiet = Settings::default();
+
+        // The command line speaks.
+        let from_flag = cfg_from_argv(&["--tool-execution", "sequential"]);
+        assert_eq!(
+            demo_run_config(&from_flag, &quiet, "test-model", String::new()).tool_execution,
+            nini_core::tool::ToolExecutionMode::Sequential,
+            "the demo entry dropped the command line's execution mode"
+        );
+
+        // The settings file speaks when the command line is silent.
+        let mut from_file = Settings::default();
+        from_file.tool_execution = Some(nini_core::tool::ToolExecutionMode::Sequential);
+        let silent = cfg_from_argv(&[]);
+        assert_eq!(
+            demo_run_config(&silent, &from_file, "test-model", String::new()).tool_execution,
+            nini_core::tool::ToolExecutionMode::Sequential,
+            "the demo entry dropped the settings file's execution mode"
+        );
+
+        // The command line beats the settings file.
+        let from_other_flag = cfg_from_argv(&["--tool-execution", "parallel"]);
+        assert_eq!(
+            demo_run_config(&from_other_flag, &from_file, "test-model", String::new())
+                .tool_execution,
+            nini_core::tool::ToolExecutionMode::Parallel,
+            "the settings file beat the command line in the demo entry"
+        );
+
+        // Nothing says anything → `parallel`, the way a turn runs by
+        // itself.
+        assert_eq!(
+            demo_run_config(&silent, &quiet, "test-model", String::new()).tool_execution,
+            nini_core::tool::ToolExecutionMode::Parallel,
+            "the demo entry invented an execution mode nobody asked for"
+        );
+    }
+
+    /// The `nini -p` entry must carry the execution mode.
+    ///
+    /// `nini -p "..."` is the entry every CI job and every script uses,
+    /// so a mode that dies here dies in everybody's CI.
+    #[test]
+    fn the_print_entry_carries_the_tool_execution_mode() {
+        let quiet = Settings::default();
+
+        let from_flag = cfg_from_argv(&["--tool-execution", "sequential"]);
+        assert_eq!(
+            print_run_config(&from_flag, &quiet, "test-model", String::new()).tool_execution,
+            nini_core::tool::ToolExecutionMode::Sequential,
+            "the print entry dropped the command line's execution mode"
+        );
+
+        let mut from_file = Settings::default();
+        from_file.tool_execution = Some(nini_core::tool::ToolExecutionMode::Sequential);
+        let silent = cfg_from_argv(&[]);
+        assert_eq!(
+            print_run_config(&silent, &from_file, "test-model", String::new()).tool_execution,
+            nini_core::tool::ToolExecutionMode::Sequential,
+            "the print entry dropped the settings file's execution mode"
+        );
+
+        assert_eq!(
+            print_run_config(&from_flag, &from_file, "test-model", String::new()).tool_execution,
+            nini_core::tool::ToolExecutionMode::Sequential,
+            "the settings file beat the command line in the print entry"
+        );
+
+        assert_eq!(
+            print_run_config(&silent, &quiet, "test-model", String::new()).tool_execution,
+            nini_core::tool::ToolExecutionMode::Parallel,
+            "the print entry invented an execution mode nobody asked for"
+        );
+    }
+
+    /// The hand-built config must not be the only way in: a mode that
     /// arrives through the config struct has to survive the assembly too.
     #[test]
     fn a_ceiling_in_the_config_survives_both_entries() {
