@@ -85,7 +85,15 @@ pub struct ToolOutput {
 
 /// Per-tool execution-mode override. Mirrors Pi's `ToolExecutionMode`
 /// (`pi-agent-core/src/types.ts:402-408`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// v0.15: derives `Serialize`/`Deserialize` so the mode can be read out
+/// of a config file. The spelling is `lowercase` — `"parallel"` /
+/// `"sequential"` — the same two values Pi's type has
+/// (`references/pi-0.85.1/CORE/types.d.ts:22`). The parse is
+/// case-sensitive on purpose: Pi accepts no other spelling, and nini
+/// growing a third dialect would be drift nobody asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ToolExecutionMode {
     /// This tool may run concurrently with the rest of the batch.
     #[default]
