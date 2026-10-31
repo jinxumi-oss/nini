@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.13.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1764%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1789%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
@@ -36,8 +36,10 @@ nini 也不做。
 - **同一份 `~/.pi/agent/`。** 你的 skills、`settings.json`、`models.json`
   原样读取；nini 读写的都是同一套 session JSONL v4——**真实的 Pi 会话语料
   读完 0 行丢失**（conformance 套件实测；在 v0.10 之前 nini 会丢掉其中 48%）。
-- **同样的 23 条斜杠命令**，同样的分发方式。其中 `/share` 还没实现，
-  它会直说而不是假装实现了；另外 5 条 nini 自有命令是**增补，不是替换**。
+- **同样的 23 条斜杠命令**，同样的分发方式。其中 `/share` **永远不会**做 Pi
+  那一版做的事——Pi 把会话传到 secret GitHub gist，而 nini 无账号、无云、
+  不回传，所以它会直说这一点，并指向 `/export`（把会话写成本地文件）；
+  另外 5 条 nini 自有命令是**增补，不是替换**。
 - **没有账号、没有云、不会打电话回家。** 没有登录、没有遥测、没有同步、
   没有自动更新。唯一的网络流量就是你配置的模型 provider；`/login` 只是
   告诉你该设哪个环境变量。
@@ -50,7 +52,7 @@ nini 也不做。
 
 - **单个 6.4 MiB 可执行文件**（压缩后 2.4 MB），取代一整套 Node.js 工具链
 - **无授权附加条款**——纯 MIT，不像某些带着 OpenAI/Anthropic 再分发限制的分支
-- **1764 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
+- **1789 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
   HTTP 服务器的端到端线格式测试
 - **内置工具可扩展**——bash、read、write、edit、grep、find
 - **流式 TUI**，带斜杠命令自动补全
@@ -125,6 +127,7 @@ nini
 | `nini info` | 显示已加载的 skills、settings 和 provider |
 | `nini --provider <name>` | 指定 provider（`anthropic`、`openai`、`openai-responses`、`openai-compat`、`fixture`） |
 | `nini --model <id>` | 覆盖默认模型 |
+| `nini --tool-execution <mode>` | 一批工具调用逐个跑（`sequential`）或全部一起跑（`parallel`，默认） |
 | `nini --help` / `--version` | 帮助 / 版本 |
 
 ## TUI 键位
@@ -162,7 +165,8 @@ nini
 Pi `builtin.json`（v0.85.1）里的 23 条命令全部可识别，另有五条 nini 独有
 的增补——`/help`、`/status`、`/prompt`、`/debug`、`/editor`——它们是
 **扩展，不是对等**，不计入对等声明。标为 **stub** 的命令会输出"尚未实现"，
-而不是假装干了什么。
+而不是假装干了什么。`/share` 不是 stub：它是一次**有意拒绝**（本机不做云端
+分享），并指向 `/export`。
 nini 没有实现的开关或命令会**带着理由被拒绝**——绝不会收下然后丢掉。
 
 | 命令 | 参数 | 状态 |
@@ -172,9 +176,9 @@ nini 没有实现的开关或命令会**带着理由被拒绝**——绝不会�
 | `/tree` | — | 真实实现（session 的 ASCII 树） |
 | `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | 部分实现（校验但不落盘） |
 | `/scoped-models` | — | stub（没有按范围筛模型） |
-| `/export` | — | 完整实现（写 HTML 到 `~/.pi/agent/exports/`） |
+| `/export` | — | 完整实现（写 HTML 到 `~/.nini/agent/exports/`） |
 | `/import` | `<path>` | 真实实现 |
-| `/share` | — | stub |
+| `/share` | — | 拒绝（本机不做云端分享），并指向 `/export` |
 | `/copy` | — | 部分实现（打到 stdout，无剪贴板） |
 | `/name` | `<name>` | 部分实现（只在内存，不落盘） |
 | `/session` | — | 部分实现（内存状态，没有 session 文件） |
@@ -208,14 +212,29 @@ nini 读写与 Pi v0.85.1 完全相同的文件格式：
 你可以在一个终端跑 `nini -p`、另一个终端跑 `pi`——两边写的是同一种
 session JSONL。
 
-## 已知限制（截至 v0.10.4）
+## 已知限制（截至 v0.15.0）
 
 都是对着这个二进制验证过的，不是从旧 README 抄来的。项目目标与当前状态
 写在 [`docs/GOALS.md`](docs/GOALS.md)——它是"nini 想成为什么"的权威；
 本节只是面向用户的摘要。
 
-- `/share` 是唯一一条返回"尚未实现"的命令。其余 23 条 Pi 命令都能分发；
+- **`/share` 永远不做云端分享。** Pi 的 `/share` 把会话传到 secret GitHub
+  gist——那要账号、要出网，而 nini 按设计两者都没有（无账号、无云、不回传）。
+  所以 nini 的 `/share` 会直说这一点，并指向 **`/export <path>`**（把会话写成本地
+  HTML 或 JSONL 文件）。其余 23 条 Pi 命令都能分发；
   `/tree`、`/fork`、`/settings` 是真实实现
+- **工具执行模式是「按批次」设的，不是「按工具」设的。** `--tool-execution
+  sequential`（或 settings.json 里的 `toolExecution`）让一整批工具调用**逐个**
+  跑——这与 Pi 的 SDK 里的批次级开关（`config.toolExecution`）是同一件事。Pi 的
+  **工具级** `executionMode` 在 nini 这边没有对应物：nini 没有运行时扩展系统，
+  没有工具能声明它（差距 **B21**）。两边的**默认行为一致**：Pi 的内建工具与
+  nini 的都没声明它，所以两边都不会把整批降级
+- **串行模式下工具事件的顺序与 Pi 不同。** Pi 逐个工具发「执行开始」，所以
+  start 与 end 交错；nini 只有模型流里的开始事件，一批工具的 start 会全部排在
+  任何结果之前（差距 **B20**）
+- **被中断的那一轮，已经拿到的工具结果会被丢弃。** Pi 保留中断前已完成工具的
+  结果；nini 把它们丢掉，并给每个未完成的调用补发一条 `[aborted]`——发一部分
+  `tool_results` 会破坏与下一次模型调用的 API 契约。这是**有意设计**，不是疏忽
 - 压缩用的是本地确定性摘要，不是基于 LLM 的摘要
 - 命令行上的 `--continue-session` / `--session-id` / `--fork` 会被拒绝，
   并指向对应的 TUI 命令。**TUI 里开始的对话会落盘**：写在

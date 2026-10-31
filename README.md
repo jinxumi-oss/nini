@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.13.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1764%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1789%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -45,8 +45,11 @@ What that means in practice, and nothing more:
   with **0 lines dropped** (the conformance suite measures it, because
   before v0.10 nini dropped 48% of it).
 - **The same 23 slash commands**, dispatched the same way. One of them
-  (`/share`) is not implemented yet, and says so instead of pretending
-  to. The 5 nini-only commands are additions, not replacements.
+  (`/share`) will never do what Pi's does — Pi uploads the session to a
+  secret GitHub gist, and nini has no account, no cloud and no
+  phone-home. `/share` says exactly that and points at `/export`, which
+  writes the session to a local file. The 5 nini-only commands are
+  additions, not replacements.
 - **No account, no cloud, no phone-home.** There is no login, no
   telemetry, no sync, no updater. The only network traffic is the
   model provider you configured, and `/login` only tells you which
@@ -63,7 +66,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **1764 unit + integration tests**, including property-based SSE fuzz and
+- **1789 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -140,6 +143,7 @@ hints. Type `/` to summon the slash-command autocomplete. Press
 | `nini info` | Show loaded skills, settings, and provider |
 | `nini --provider <name>` | Use a specific provider (`anthropic`, `openai`, `openai-responses`, `openai-compat`, `fixture`) |
 | `nini --model <id>` | Override the default model |
+| `nini --tool-execution <mode>` | Run one batch of tool calls at a time (`sequential`) or all at once (`parallel`, the default) |
 | `nini --help` / `--version` | Help / version |
 
 ## TUI keybindings
@@ -178,7 +182,8 @@ All 23 commands in Pi's `builtin.json` (v0.85.1) are recognized, plus five
 nini-only additions — `/help`, `/status`, `/prompt`, `/debug`, `/editor` —
 which are **extensions, not parity**, and are excluded from the parity claim.
 The commands marked **stub** output a "not yet implemented" message instead
-of taking real action.
+of taking real action. `/share` is not a stub: it is a deliberate refusal
+(no cloud sharing here) with a pointer to `/export`.
 A flag or command that nini does not implement is **refused with a reason
 naming it** — never accepted and dropped.
 
@@ -189,9 +194,9 @@ naming it** — never accepted and dropped.
 | `/tree` | — | real (ASCII tree of the session) |
 | `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | partial (validates, not persisted) |
 | `/scoped-models` | — | stub (no scoping model) |
-| `/export` | — | full (writes HTML to `~/.pi/agent/exports/`) |
+| `/export` | — | full (writes HTML to `~/.nini/agent/exports/`) |
 | `/import` | `<path>` | real |
-| `/share` | — | stub |
+| `/share` | — | refuses (no cloud sharing) and points at `/export` |
 | `/copy` | — | partial (prints to stdout, no clipboard) |
 | `/name` | `<name>` | partial (in-memory only, not persisted) |
 | `/session` | — | partial (in-memory state, no session file) |
@@ -225,15 +230,36 @@ nini reads and writes the same file formats as Pi v0.85.1:
 You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.
 
-## Known limitations (as of v0.10.4)
+## Known limitations (as of v0.15.0)
 
 Verified against this binary, not carried over from an older README.
 The project's goal and its current status live in
 [`docs/GOALS.md`](docs/GOALS.md) — it is the authority on what nini is
 trying to be; this section is the user-facing summary of it.
 
-- `/share` is the one command that returns "not yet implemented". The rest
-  of the 23 Pi commands dispatch; `/tree`, `/fork` and `/settings` are real
+- **`/share` will never do a cloud share.** Pi's `/share` uploads the session
+  to a secret GitHub gist — that needs an account and the network, and nini
+  has neither by design (no account, no cloud, no phone-home). So nini's
+  `/share` says so and points at **`/export <path>`**, which writes the
+  session to a local HTML or JSONL file. The rest of the 23 Pi commands
+  dispatch; `/tree`, `/fork` and `/settings` are real
+- **The tool-execution mode is set per batch, not per tool.** `--tool-execution
+  sequential` (or `toolExecution` in `settings.json`) makes a whole batch of
+  tool calls run one at a time — the same batch-level switch Pi's SDK has
+  (`config.toolExecution`). Pi's **per-tool** `executionMode` has no
+  counterpart here: nini has no runtime extension system, so no tool can
+  declare it (tracked as gap **B21**). The default is the same on both
+  sides: neither Pi's built-in tools nor nini's declare it, so neither
+  downgrades a batch
+- **In sequential mode the tool events arrive in a different order than
+  Pi's.** Pi emits an execution-start event per tool, so start and end
+  interleave; nini only has the model stream's start event, so a whole
+  batch's starts arrive before any result (tracked as gap **B20**)
+- **An interrupted turn drops the tool results it already got.** Pi keeps
+  the results of the tools that finished before the interrupt; nini drops
+  them and sends one `[aborted]` result per unfinished call instead — a
+  partial `tool_results` message would break the API contract with the
+  next model call. This is deliberate, not an oversight
 - Compaction uses a deterministic local summary, not an LLM-based one
 - `--continue-session` / `--session-id` / `--fork` on the command line are
   refused with a pointer to the TUI command. **A conversation started in the

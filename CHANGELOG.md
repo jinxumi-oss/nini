@@ -1,3 +1,84 @@
+## v0.15.0 — 批次级工具执行模式：对齐的是**这一层**，不是「与 Pi 完全一致」
+
+1789 tests, all green.
+
+上一版的标题写的是「工具**执行阶段**的并发度与 Pi 0.85.1 对齐」——那句话太宽，
+reviewer 抓过。这一版把话说死：**对齐的是「批次级」工具执行模式**；**没有**对齐
+的有两件事，一件是缺一个承载主体，一件是事件时机。两件都登记在台账里，不含糊。
+
+### 对齐了什么：批次级 `toolExecution`
+
+Pi 的这个旋钮在 **SDK 的 agent config** 上：`config.toolExecution`，取值
+`parallel`（默认）或 `sequential`，判定的落点是
+`references/pi-0.85.1/src/loop/agent-loop.ts:420`（`config.toolExecution ===
+"sequential"` 或本轮任一工具声明 sequential → **整批**降级为串行）。Pi 的 CLI 与
+settings 里**没有**这个开关——0.85.1 快照里 `toolExecution` 只出现在 agent loop
+的两处。
+
+nini 现在有同一个开关的三个入口：
+
+- `--tool-execution parallel|sequential`：命令行；非法值直接报错退出（退出码 2），
+  消息里写明合法值；
+- settings.json 的 `toolExecution` 键：**nini 自己的键**（Pi 0.85.1 的 settings
+  里没有它；键名沿用 Pi 的驼峰写法，不是「Pi 的设置项」）；
+- 默认 `parallel`——没人声明时，两边跑法一样。
+
+三扇装配门（TUI、`nini demo`、`nini -p`）**都**带上它。上一轮出过「TUI 里有、
+`-p` 里没有」的事故（`crates/nini-cli/src/demo.rs` 的注释还记着它），所以这一轮
+每扇门各有断言，缺一扇就红。
+
+判据是差分 oracle：`scripts/e2e-tool-execution.sh` 让 nini 与真 Pi 0.85.1 跑
+**同一个剧本**（K 个工具调用），三条断言同时成立——
+
+1. Pi 侧并发峰值 == 1（Pi 的两个独立证据：自报峰值与重叠区间数，互相一致）；
+2. nini 侧并发峰值 == 1；
+3. **对照组**：parallel 模式下**两侧**峰值都 == K。
+
+第三条不是凑数：没有它，「nini 永远峰值 1」也能骗过第二条。K 只有一个来源，
+脚本会核对 nini 侧报出的调用数，防止两侧剧本漂移。
+
+settings 那边有一个**既有行为**本轮不为新键破例：**一个非法值会让整个
+settings 文件被忽略**（与 `maxIterations` 同款）。
+
+### 明确**没有**对齐的两件事
+
+1. **工具级 `executionMode` 的声明通道**（台账 **B21**，open）。Pi 的扩展工具
+   可以在自己的定义里写 `executionMode`
+   （`references/pi-0.85.1/src/ext/types.ts:479`），声明「这个工具必须一个一个
+   跑」。nini 没有运行时扩展系统（`crates/nini-ext/src/lib.rs` 写着 NOT WIRED，
+   CLI 明确拒绝 `--extension`），所以**没有工具能声明它**。这不是「还没做」，是
+   缺一个承载主体。两边的**默认行为因此一致**：Pi 的 8 个内建工具无一声明
+   executionMode，谁都没声明，所以两边都不降级。
+2. **串行模式下的工具事件时机**（台账 **B20**，open）。Pi 的串行分支逐个工具先
+   发「执行开始」、执行完再发结束，所以 start 与 end **交错**；nini 只有模型流里
+   的开始事件，一批工具的 start 会**全部**排在任何结果之前。修它要新增事件类型
+   并改 TUI 渲染，会牵动默认的并行路径，所以这一轮**只登记，不半修**。
+
+### 顺带说清的两件事
+
+- **`/share` 不做云端分享**：Pi 的 `/share` 把会话传成 secret GitHub gist，要 gh
+  账号、要出网。nini 的原则是「无账号、无云、不回传」，所以它**永远不做**——不是
+  「还没做」。命令现在明说这一点，并指向 `/export <path>`（写本地 HTML 或
+  JSONL）。命令面板里的描述串也从「分享会话」改成「导出到本地文件（无云端分享）」。
+- **中断时丢弃部分工具结果是有意设计**：发一部分 `tool_results` 消息会破坏与
+  下一次模型调用的 API 契约，所以 nini 丢掉在途结果，并给每个未完成的调用补发
+  一条 `[aborted]`。Pi 保留已完成的结果——两边确实不同，这是**设计分歧**，不是
+  缺陷（台账把它从「待修」改成伪差距）。
+
+### 台账也同步了
+
+逐条核实过代码之后，四条**伪差距**从「待修」改成「不是差距」（状态 `fake`）：
+bash mode 早就实现了（台账措辞过期）、`/share` 是产品原则差异、项目级
+`models.json` 不参与 provider 构造是有意的安全决策、abort 丢弃部分结果是有意
+设计。另修掉三条对外说明（`/clone` 不再声明一个它从来不读的参数、`/share` 的
+文案、README 里的项目级 `models.json` 说明），并新登记 B20 与 B21。
+
+### 路径
+
+nini 自己的目录是 `~/.nini/agent/` 与 `<cwd>/.nini/`——**不是** `.pi`（那是 Pi
+的目录）。上一轮的 README 把 `/export` 的落盘目录写成了 `~/.pi/agent/exports/`，
+本轮改正为 `~/.nini/agent/exports/`。
+
 ## v0.14.0 — 工具**执行阶段**的并发度与 Pi 0.85.1 对齐
 
 1764 tests, all green. 这一版对齐的是**工具执行阶段的并发度**：nini 以前给一次
