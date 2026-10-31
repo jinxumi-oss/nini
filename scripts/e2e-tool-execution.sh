@@ -149,9 +149,11 @@ run_nini() {
     the_batch_execution_mode_decides_the_peak -- --nocapture 2>&1)" && code=0 || code=$?
   # 抓出来的数字报到 stderr（命令替换只收 stdout），这样人看得到。
   echo "$out" | grep -oE 'NINI_SEQ_(MODE|CALLS|PEAK)=[A-Za-z0-9]+' >&2 || true
+  # 测试没过的原因由**数字**说话：nini 侧的断言（峰值）与脚本的断言写的是
+  # 同一件事，谁先报都行。测试自己的失败信息也留在 stderr 里。
   if [[ "$code" != "0" ]]; then
     echo "$out" >&2
-    fail "nini 侧的批次执行模式测试没过（模式 $mode，退出码 $code）。"
+    echo "-- （nini 侧的测量测试自己也是红的：退出码 $code）" >&2
   fi
   printf '%s\n' "$out"
 }
@@ -160,19 +162,25 @@ note "nini 侧：$K 个工具调用，每个睡 ${SLEEP_MS}ms —— sequential"
 NINI_SEQ_OUT="$(run_nini sequential)"
 NINI_SEQ_PEAK="$(printf '%s\n' "$NINI_SEQ_OUT" | grep -oE 'NINI_SEQ_PEAK=[0-9]+' | tail -1 | cut -d= -f2 || true)"
 NINI_SEQ_CALLS="$(printf '%s\n' "$NINI_SEQ_OUT" | grep -oE 'NINI_SEQ_CALLS=[0-9]+' | tail -1 | cut -d= -f2 || true)"
+NINI_SEQ_MODE="$(printf '%s\n' "$NINI_SEQ_OUT" | grep -oE 'NINI_SEQ_MODE=[A-Za-z]+' | tail -1 | cut -d= -f2 || true)"
 [[ -n "$NINI_SEQ_PEAK" ]] || \
   fail "nini 侧没有报出 NINI_SEQ_PEAK=（测试改名了，或它没跑起来）。"
 [[ -n "$NINI_SEQ_CALLS" ]] || \
   fail "nini 侧没有报出 NINI_SEQ_CALLS=（测试改名了，或它没跑起来）。"
+[[ "$NINI_SEQ_MODE" == "sequential" ]] || \
+  fail "nini 侧报的模式是 ${NINI_SEQ_MODE:-<没有>}，不是 sequential —— 测量测的不是串行"
 
 note "nini 侧：$K 个工具调用，每个睡 ${SLEEP_MS}ms —— parallel"
 NINI_PAR_OUT="$(run_nini parallel)"
 NINI_PAR_PEAK="$(printf '%s\n' "$NINI_PAR_OUT" | grep -oE 'NINI_SEQ_PEAK=[0-9]+' | tail -1 | cut -d= -f2 || true)"
 NINI_PAR_CALLS="$(printf '%s\n' "$NINI_PAR_OUT" | grep -oE 'NINI_SEQ_CALLS=[0-9]+' | tail -1 | cut -d= -f2 || true)"
+NINI_PAR_MODE="$(printf '%s\n' "$NINI_PAR_OUT" | grep -oE 'NINI_SEQ_MODE=[A-Za-z]+' | tail -1 | cut -d= -f2 || true)"
 [[ -n "$NINI_PAR_PEAK" ]] || \
   fail "nini 侧没有报出 NINI_SEQ_PEAK=（测试改名了，或它没跑起来）。"
 [[ -n "$NINI_PAR_CALLS" ]] || \
   fail "nini 侧没有报出 NINI_SEQ_CALLS=（测试改名了，或它没跑起来）。"
+[[ "$NINI_PAR_MODE" == "parallel" ]] || \
+  fail "nini 侧报的模式是 ${NINI_PAR_MODE:-<没有>}，不是 parallel —— 测量测的不是并行"
 
 # ---------------------------------------------------------------------------
 # 判据

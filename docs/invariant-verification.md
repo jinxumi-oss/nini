@@ -449,3 +449,38 @@ in-flight 窗口不塌——若日后把探针换成真 bash（要 fork+exec）�
 
 K 也只有一个来源了：脚本的 `K` 同时喂 Pi 侧（`--calls`）与 nini 侧（Rust 测试
 读 `NINI_PARALLEL_CALLS`），脚本还会核对 nini 侧报出的 `NINI_CALLS=`。
+
+## v0.15 变异验证（批次级 toolExecution）
+
+判据是差分 oracle `scripts/e2e-tool-execution.sh`（两侧在 `sequential` 与
+`parallel` 两种模式下各报一次 in-flight 峰值），外加 nini 侧测量测试
+`crates/nini-core/tests/agent_integration.rs` 的
+`batch_execution_mode_tests::the_batch_execution_mode_decides_the_peak`。
+
+oracle 的三条断言：① Pi 侧 `PI_TOOL_EXECUTION=sequential` 时
+`PI_PEAK == 1` 且 `PI_OVERLAP_PEAK == 1`；② nini 侧 sequential 时
+`NINI_SEQ_PEAK == 1`；③ **对照组** parallel 模式下两侧峰值都 `== K=20`。
+
+两条注入都实测过（源码已逐字还原，还原后 oracle 回到退出 0）：
+
+| 注入的 bug | 变红的断言与实测输出 |
+|---|---|
+| **变异 1**：去掉 `crates/nini-core/src/agent.rs` 里批次降级判定中的 `config.tool_execution == Sequential \|\|`（整个 `batch_is_sequential` 变成 `false`） | `the_batch_execution_mode_decides_the_peak` 变红（`a sequential batch must run one tool call at a time, but the peak was 20`）。差分 oracle 同时变红，退出码 1：<br>`-- sequential：nini peak=20 Pi peak=1 Pi重叠=1`<br>`-- parallel：  nini peak=20 Pi peak=20 Pi重叠=20 K=20`<br>`!! nini 侧 sequential 的峰值是 20，不是 1 —— nini 的批次级串行没有生效` |
+| **变异 2**：把同一处的 `parallelism = 1`（`batch_is_sequential` 为真时的串行取值）改成 `specs.len().max(1)`（声明了 sequential 仍然并发） | `the_batch_execution_mode_decides_the_peak` 变红（同上：`peak was 20`）。差分 oracle 同时变红，退出码 1，输出与变异 1 相同：<br>`-- sequential：nini peak=20 Pi peak=1 Pi重叠=1`<br>`!! nini 侧 sequential 的峰值是 20，不是 1 —— nini 的批次级串行没有生效` |
+
+还原后的实测输出（`bash scripts/e2e-tool-execution.sh`，退出码 0）：
+
+```
+-- sequential：nini peak=1 Pi peak=1 Pi重叠=1
+-- parallel：  nini peak=20 Pi peak=20 Pi重叠=20 K=20
+OK：sequential 两侧的峰值都是 1，parallel 两侧的峰值都是 K=20（NINI_SEQ_PEAK=1 PI_SEQ_PEAK=1 NINI_PAR_PEAK=20 PI_PAR_PEAK=20）
+```
+
+**为什么这两条注入重要**：它们分别覆盖「批次级开关根本没读」与「读了但没
+照做」两种坏法。变异 1 让 `--tool-execution sequential` 变成一句空话（值被
+读进来，然后没人用）；变异 2 让串行判定生效却仍然并发跑——只有量**并发**
+才抓得住它，「都跑完了」抓不住。
+
+**对照组的意义**：没有断言 ③（parallel 模式两侧峰值都等于 K），一个
+「nini 永远 peak==1」的实现也能骗过断言 ②。断言 ③ 保证 oracle 量的是
+「模式带来的差别」，不是「nini 恰好只跑一个」。
