@@ -105,6 +105,37 @@
 
 ---
 
+## 异步落盘的等待（A14，2026-10-30）
+
+| sha | 声明于 | 注入的 bug | 变红的断言 |
+|---|---|---|---|
+| `af77d45a` | `r2f_bash_session` | `wait_for_session_file` 不再等待（直接 return），即恢复成「读盘时文件还没写出来」 | `a_shell_command_the_user_ran_survives_a_reload` + `it_is_recorded_as_a_bash_execution_message` 2 条全红（`must load: Other("io error: No such file or directory (os error 2)")`） |
+
+**注入-观察-还原的实测输出**：
+
+```
+$ cargo test -p nini-tui --test r2f_bash_session
+test a_shell_command_the_user_ran_survives_a_reload ... FAILED
+test it_is_recorded_as_a_bash_execution_message ... FAILED
+thread '...' panicked at crates/nini-tui/tests/r2f_bash_session.rs:68:38:
+must load: Other("io error: No such file or directory (os error 2)")
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ # 还原后
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+**为什么这条当初没被门禁拦住**：`af77d45` 的 subject 以 `fix` 开头，但它的改动是
+「把一条**已有**测试的等待方式从固定 sleep 改成轮询」——提交里没有**新增** `#[test]`，
+于是 `scripts/invariants.py:312` 的 `self_test` 判定为 false，`tier` 落到 `NONE`，
+`invariants_none` 由 1 变 2，`scripts/gate.sh` 的「裸奔不变量 2 > 基线 1」变红。
+
+**而 `scripts/gate.sh` 从来没有进过 CI**（`.github/workflows/ci.yml` 里没有它的调用），
+所以这条欠账一路发布到了 v0.14.0 的 tag。这是本轮堵上的流程漏洞：
+CI 现在会跑「裸奔不变量」检查，本地门禁红不再能溜过发布。
+
+---
+
 ## 已知的验证局限（如实记录）
 
 1. **两次"测试全绿"是变异打偏，不是测试无效**：一处注入了 `app.rs` 的辅助函数

@@ -10,6 +10,15 @@
 //! The output is still injected as a user message for the model, so what the
 //! agent saw was never the problem. What a resumed session showed was.
 
+//! invariant: af77d45a —— 本文件守住了「session 落盘之后才被读回」这条不变量。
+//!
+//! v0.14.0 之前这里是一条固定 `sleep(120ms)`：而 `session_flush` 是
+//! **异步**写盘（`crates/nini-tui/src/state.rs:2340` 把 IO 放到后台线程），
+//! 所以那 120ms 是一次**竞态**——开发机够用，加载较重的 CI runner 不够。
+//! CI run 40951900836 就是这样在 macOS 上红的。
+//!
+//! 现在改成有界轮询。变异验证记录在 `docs/invariant-verification.md`。
+
 use nini_tui::state::{AppState, TranscriptLine};
 
 fn scratch(tag: &str) -> std::path::PathBuf {

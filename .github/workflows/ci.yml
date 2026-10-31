@@ -46,6 +46,53 @@ jobs:
           -A clippy::complexity
           -D warnings
 
+  invariants:
+    # A fix that ships without a matching assertion is a fix whose
+    # regression nobody would notice. `scripts/invariants.py` reads the
+    # git history and decides, per `fix` commit, whether that commit
+    # carries its own test (or is corroborated by an explicit
+    # `//! invariant:` annotation plus a mutation-verification record).
+    #
+    # v0.15.0: this check lived **only** in `scripts/gate.sh`, which CI
+    # never called — so a `fix` commit with no assertion slipped through
+    # and shipped in v0.14.0 (`af77d45`). The count is now compared here
+    # against the same baseline the local gate uses, so a local red can no
+    # longer pass CI.
+    name: invariant self-test coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: No fix commit may ship without its assertion
+        run: |
+          python3 scripts/invariants.py --json > /tmp/invariants.json
+          NOW=$(python3 -c 'import json;print(json.load(open("/tmp/invariants.json"))["counts"]["NONE"])')
+          BASE=$(python3 -c 'import json;print(json.load(open("scripts/gate-baseline.json"))["invariants_none"])')
+          echo "裸奔不变量：现在 $NOW 条，基线 $BASE 条"
+          if [ "$NOW" -gt "$BASE" ]; then
+            echo "::error::有 fix 提交没有对应断言（$NOW > $BASE）。跑 python3 scripts/invariants.py 看清单。"
+            python3 scripts/invariants.py | head -40
+            exit 1
+          fi
+      - name: Every declared invariant needs a mutation-verification record
+        run: |
+          python3 - <<'PY'
+          import re, sys, pathlib
+          declared = set()
+          for path in list(pathlib.Path("crates").glob("*/tests/*.rs")) + list(pathlib.Path("crates").glob("*/src/**/*.rs")):
+              declared |= {m[:8].lower() for m in re.findall(r"invariant:\s*([0-9a-f]{7,40})", path.read_text(errors="replace"))}
+          verified = pathlib.Path("docs/invariant-verification.md").read_text(errors="replace")
+          missing = sorted(s for s in declared if s not in verified)
+          if missing:
+              print("::error::这些不变量声明没有变异验证留痕：", ", ".join(missing))
+              sys.exit(1)
+          print(f"{len(declared)} 条声明全部有留痕")
+          PY
+
   test:
     name: test (${{ matrix.os }})
     strategy:
