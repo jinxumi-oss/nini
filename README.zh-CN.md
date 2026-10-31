@@ -13,9 +13,10 @@
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
-AI coding agent）的 **clean-room Rust 重写版**。它读同一份 `~/.pi/agent/`
-配置，写同一种 session JSONL v4，暴露同样的 23 条斜杠命令，外加 5 条自己的。
-把它和 Pi 并排放着，你现有的 skills、settings 和 models.json 照常可用。
+AI coding agent）的 **clean-room Rust 重写版**。它读 `~/.nini/agent/`——
+**nini 自己的目录**——但*格式*与 Pi 兼容：同一种 session JSONL v4，
+同样的 23 条斜杠命令，外加 5 条自己的。把你的 skills、`settings.json`
+和 `models.json` 放进 `~/.nini/agent/`，它们照常可用。
 
 nini 不是想做一个"不一样的 agent"。它就是 **Pi，只不过用 Rust 写**——
 作者的目标是保留 Pi 最初的原滋味：同一份配置、同样的 session 文件、
@@ -33,8 +34,8 @@ nini 也不做。
 
 具体就是下面这些，不多也不少：
 
-- **同一份 `~/.pi/agent/`。** 你的 skills、`settings.json`、`models.json`
-  原样读取；nini 读写的都是同一套 session JSONL v4——**真实的 Pi 会话语料
+- **自己的 `~/.nini/agent/`，格式与 Pi 兼容。** 你的 skills、`settings.json`、
+  `models.json` 原样读取（放进 nini 的目录后）；nini 读写的都是同一套 session JSONL v4——**真实的 Pi 会话语料
   读完 0 行丢失**（conformance 套件实测；在 v0.10 之前 nini 会丢掉其中 48%）。
 - **同样的 23 条斜杠命令**，同样的分发方式。其中 `/share` **永远不会**做 Pi
   那一版做的事——Pi 把会话传到 secret GitHub gist，而 nini 无账号、无云、
@@ -66,7 +67,7 @@ nini 也不做。
 | **工具** | `bash`（进程树 kill、超时、SIGTERM→SIGKILL）、`read`、`write`（原子写）、`edit`（精确匹配）、`grep`（正则 + .gitignore）、`find`（glob + .gitignore） |
 | **TUI** | ratatui + crossterm，readline 式编辑、kill ring、历史回溯、斜杠命令补全下拉、命令面板（Ctrl+Shift+K）、transcript 搜索（Ctrl+F）、外部编辑器（Ctrl+G） |
 | **斜杠命令** | Pi 全部 23 条内建命令（`/model`、`/export`、`/new`、`/quit`……），外加 5 条 nini 独有（`/help`、`/status`、`/prompt`、`/debug`、`/editor`） |
-| **Session** | JSONL v4 编解码 + 旧版 v3 读取；读 `~/.pi/agent/skills/`、`settings.json`、`models.json` |
+| **Session** | JSONL v4 编解码 + 旧版 v3 读取；读 `~/.nini/agent/skills/`、`settings.json`、`models.json` |
 | **压缩** | LLM 摘要 + 确定性兜底；上下文溢出时自动触发 |
 | **Hooks（v0.7）** | 与 Pi 兼容的 5 方法 `AgentLoopHooks` trait：steering / followup / transform_context / convert_to_llm / should_stop_after_turn。工具执行前后的生命周期 hook。BashOperations + ReadOperations 让后端可 mock。 |
 
@@ -176,7 +177,7 @@ nini 没有实现的开关或命令会**带着理由被拒绝**——绝不会�
 | `/tree` | — | 真实实现（session 的 ASCII 树） |
 | `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | 部分实现（校验但不落盘） |
 | `/scoped-models` | — | stub（没有按范围筛模型） |
-| `/export` | — | 完整实现（写 HTML 到 `~/.nini/agent/exports/`） |
+| `/export` | `[path]` | 完整实现（写 HTML 到 `~/.nini/agent/exports/`） |
 | `/import` | `<path>` | 真实实现 |
 | `/share` | — | 拒绝（本机不做云端分享），并指向 `/export` |
 | `/copy` | — | 部分实现（打到 stdout，无剪贴板） |
@@ -201,12 +202,12 @@ nini 读写与 Pi v0.85.1 完全相同的文件格式：
 
 | 内容 | 位置 |
 |---|---|
-| 用户级设置 | `~/.pi/agent/settings.json` |
-| 项目级设置 | `./.pi/settings.json` |
-| 用户级 skills | `~/.pi/agent/skills/<name>/SKILL.md` |
-| 项目级 skills | `./.pi/skills/<name>/SKILL.md` |
-| 模型 | `~/.pi/agent/models.json` 和 `./.pi/models.json` |
-| 会话 | `~/.pi/agent/sessions/<project>/<timestamp>.jsonl` |
+| 用户级设置 | `~/.nini/agent/settings.json` |
+| 项目级设置 | `./.nini/settings.json` |
+| 用户级 skills | `~/.nini/agent/skills/<name>/SKILL.md` |
+| 项目级 skills | `./.nini/skills/<name>/SKILL.md` |
+| 模型 | `~/.nini/agent/models.json`（项目级 `./.nini/models.json` **不**用于构造 provider——见下） |
+| 会话 | `~/.nini/agent/sessions/<project>/<timestamp>.jsonl` |
 | 斜杠命令 | 23 个名字一致（另加 5 条 nini 独有）；参数提示不一致——Pi 只对 `model`、`thinking`、`login` 声明参数提示 |
 
 你可以在一个终端跑 `nini -p`、另一个终端跑 `pi`——两边写的是同一种

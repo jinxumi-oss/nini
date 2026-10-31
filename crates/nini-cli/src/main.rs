@@ -683,6 +683,54 @@ mod cli_wiring_tests {
     /// How many tool calls the scripted turn asks for.
     const CALLS: usize = 8;
 
+    /// The CLI's table of modes and the **settings file's** parser must
+    /// accept the same words and mean the same thing.
+    ///
+    /// The comment above `TOOL_EXECUTION_MODES` says "one table, so the
+    /// flag's validation and the flag's meaning cannot drift apart" — and
+    /// that was true only of the flag. The *settings* key goes through
+    /// serde (`#[serde(rename_all = "lowercase")]` on `ToolExecutionMode`),
+    /// so the table and serde were two independent truths: a table entry
+    /// spelled `"Parallel"` would be accepted by the flag and refused by
+    /// the settings file, and nothing would notice.
+    ///
+    /// So: every name the table accepts must parse to the same mode
+    /// through serde, and serde must not accept anything the table does
+    /// not.
+    #[test]
+    fn the_cli_table_and_the_settings_parser_agree() {
+        for (name, mode) in TOOL_EXECUTION_MODES.iter() {
+            let parsed: nini_core::tool::ToolExecutionMode =
+                serde_json::from_str(&format!("\"{name}\""))
+                    .unwrap_or_else(|e| panic!("serde must accept the CLI's `{name}`: {e}"));
+            assert_eq!(
+                parsed, *mode,
+                "the CLI's `{name}` and serde's reading of it must mean the same mode"
+            );
+        }
+        // And the other direction: the two names the flag accepts are the
+        // only ones the settings file accepts.
+        for name in ["parallel", "sequential"] {
+            assert!(
+                TOOL_EXECUTION_MODES.iter().any(|(n, _)| *n == name),
+                "the CLI must accept `{name}` too — the settings file does"
+            );
+        }
+        for refused in ["Parallel", "SEQUENTIAL", "seq", ""] {
+            assert!(
+                tool_execution_mode(refused).is_none(),
+                "the CLI must refuse `{refused}`"
+            );
+            assert!(
+                serde_json::from_str::<nini_core::tool::ToolExecutionMode>(&format!(
+                    "\"{refused}\""
+                ))
+                .is_err(),
+                "serde must refuse `{refused}` too — otherwise the two parsers disagree"
+            );
+        }
+    }
+
     /// A tool that reports how many of its own bodies were in flight at the
     /// same time. "All N calls finished" cannot tell "N ran at once" from
     /// "3 ran at once and 5 queued".

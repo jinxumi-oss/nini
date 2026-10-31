@@ -13,10 +13,11 @@
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
-the AI coding agent by Mario Zechner. It reads the same `~/.pi/agent/`
-configuration, produces the same session JSONL v4, and exposes the same
-23 slash commands plus 5 of its own. Drop it in alongside Pi and your
-existing skills, settings, and models.json keep working.
+the AI coding agent by Mario Zechner. It reads `~/.nini/agent/` — **nini's own
+directory** — but the *formats* stay Pi-compatible: the same session JSONL v4,
+and 23 slash commands with the same names plus 5 of its own. Copy your
+skills, `settings.json` and `models.json` into `~/.nini/agent/` and they work
+as they are.
 
 nini is not trying to be a different agent. It is Pi, in Rust — and the
 author's aim is to keep Pi's original flavor: the same configuration,
@@ -39,8 +40,9 @@ Pi does not also do.
 
 What that means in practice, and nothing more:
 
-- **The same `~/.pi/agent/`.** Your skills, `settings.json` and
-  `models.json` are read as they are, and nini reads and writes the
+- **Its own `~/.nini/agent/`, Pi-compatible formats.** Your skills,
+  `settings.json` and `models.json` are read as they are once they sit in
+  nini's directory, and nini reads and writes the
   same session JSONL v4 — the whole real Pi session corpus is read
   with **0 lines dropped** (the conformance suite measures it, because
   before v0.10 nini dropped 48% of it).
@@ -80,7 +82,7 @@ What that means in practice, and nothing more:
 | **Tools** | `bash` (process-tree kill, timeout, SIGTERM→SIGKILL), `read`, `write` (atomic), `edit` (exact-match), `grep` (regex + .gitignore), `find` (glob + .gitignore) |
 | **TUI** | ratatui + crossterm, readline-style editing, kill ring, history recall, slash-command autocomplete dropdown, command palette (Ctrl+Shift+K), transcript search (Ctrl+F), external editor (Ctrl+G) |
 | **Slash commands** | All 23 Pi builtin commands (`/model`, `/export`, `/new`, `/quit`, …), plus 5 nini-only ones (`/help`, `/status`, `/prompt`, `/debug`, `/editor`) |
-| **Session** | JSONL v4 codec + legacy-v3 reader; reads `~/.pi/agent/skills/`, `settings.json`, `models.json` |
+| **Session** | JSONL v4 codec + legacy-v3 reader; reads `~/.nini/agent/skills/`, `settings.json`, `models.json` |
 | **Compaction** | LLM-backed summary with deterministic fallback; auto-triggers on context overflow |
 | **Hooks (v0.7)** | Pi-compatible 5-method `AgentLoopHooks` trait: steering / followup / transform_context / convert_to_llm / should_stop_after_turn. Tool before/after lifecycle hooks. BashOperations + ReadOperations for mockable backends. |
 
@@ -194,7 +196,7 @@ naming it** — never accepted and dropped.
 | `/tree` | — | real (ASCII tree of the session) |
 | `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | partial (validates, not persisted) |
 | `/scoped-models` | — | stub (no scoping model) |
-| `/export` | — | full (writes HTML to `~/.nini/agent/exports/`) |
+| `/export` | `[path]` | full (writes HTML to `~/.nini/agent/exports/`) |
 | `/import` | `<path>` | real |
 | `/share` | — | refuses (no cloud sharing) and points at `/export` |
 | `/copy` | — | partial (prints to stdout, no clipboard) |
@@ -219,12 +221,12 @@ nini reads and writes the same file formats as Pi v0.85.1:
 
 | What | Where |
 |---|---|
-| User-level settings | `~/.pi/agent/settings.json` |
-| Project-level settings | `./.pi/settings.json` |
-| User-level skills | `~/.pi/agent/skills/<name>/SKILL.md` |
-| Project-level skills | `./.pi/skills/<name>/SKILL.md` |
-| Models | `~/.pi/agent/models.json` and `./.pi/models.json` |
-| Sessions | `~/.pi/agent/sessions/<project>/<timestamp>.jsonl` |
+| User-level settings | `~/.nini/agent/settings.json` |
+| Project-level settings | `./.nini/settings.json` |
+| User-level skills | `~/.nini/agent/skills/<name>/SKILL.md` |
+| Project-level skills | `./.nini/skills/<name>/SKILL.md` |
+| Models | `~/.nini/agent/models.json` (the project-level `./.nini/models.json` is **not** used to build a provider — see below) |
+| Sessions | `~/.nini/agent/sessions/<project>/<timestamp>.jsonl` |
 | Slash commands | the same 23 names (plus 5 nini-only ones); the argument hints differ — Pi declares a hint only for `model`, `thinking` and `login` |
 
 You can `nini -p` in one terminal and `pi` in another — both write the

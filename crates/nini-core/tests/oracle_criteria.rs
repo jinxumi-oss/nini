@@ -30,8 +30,7 @@ fn repo_root() -> PathBuf {
 
 fn oracle_script() -> String {
     let path = repo_root().join("scripts/e2e-tool-execution.sh");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
 /// The criteria the differential oracle must keep.

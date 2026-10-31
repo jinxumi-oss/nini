@@ -604,16 +604,14 @@ mod tests {
     /// Both spellings must work; the canonical one is the snake_case.
     #[test]
     fn both_spellings_of_the_tool_execution_key_are_read() {
-        let snake: Settings =
-            serde_json::from_str(r#"{"tool_execution": "sequential"}"#).unwrap();
+        let snake: Settings = serde_json::from_str(r#"{"tool_execution": "sequential"}"#).unwrap();
         assert_eq!(
             snake.tool_execution,
             Some(crate::tool::ToolExecutionMode::Sequential),
             "the canonical snake_case spelling must be read"
         );
 
-        let camel: Settings =
-            serde_json::from_str(r#"{"toolExecution": "sequential"}"#).unwrap();
+        let camel: Settings = serde_json::from_str(r#"{"toolExecution": "sequential"}"#).unwrap();
         assert_eq!(
             camel.tool_execution,
             Some(crate::tool::ToolExecutionMode::Sequential),
@@ -687,8 +685,9 @@ mod tests {
     /// flush and the wiping.
     #[test]
     fn the_tool_execution_key_records_the_tui_flush_limit() {
-        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/settings.rs"))
-            .expect("read settings.rs");
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/settings.rs"))
+                .expect("read settings.rs");
         let field_at = source
             .find("pub tool_execution")
             .expect("the tool_execution field exists");
@@ -730,6 +729,34 @@ mod tests {
             s.theme.as_deref(),
             None,
             "an illegal value must not make the loader read half of the file"
+        );
+    }
+
+    #[test]
+    fn an_illegal_tool_execution_value_in_the_project_file_leaves_the_user_level_one_alone() {
+        // The loader refuses to read half a file (one illegal value → the
+        // whole file is ignored). That is the **user-level** file's
+        // business. The project-level file is a different file: refusing it
+        // must not take the user-level value down with it, otherwise a
+        // project could silently reset the user's own setting by writing
+        // one bad key.
+        let guard = crate::paths::agent_lock();
+
+        let mut uf = std::fs::File::create(guard.path().join("settings.json")).unwrap();
+        writeln!(uf, r#"{{"toolExecution": "sequential"}}"#).unwrap();
+
+        let dir = tempdir().unwrap();
+        let project = dir.path().join(".nini");
+        std::fs::create_dir_all(&project).unwrap();
+        let mut pf = std::fs::File::create(project.join("settings.json")).unwrap();
+        writeln!(pf, r#"{{"toolExecution": "bogus"}}"#).unwrap();
+
+        let s = load_settings(dir.path());
+        assert_eq!(
+            s.tool_execution,
+            Some(crate::tool::ToolExecutionMode::Sequential),
+            "an illegal value in the project file must not take the user-level \
+             `toolExecution` down with it"
         );
     }
 

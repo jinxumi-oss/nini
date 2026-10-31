@@ -112,6 +112,14 @@ record_assertion() { ASSERTION_DONE["$1"]=1; }
 
 command -v node >/dev/null 2>&1 || not_done "环境里没有 node。"
 [[ -d "$PI_ROOT" ]] || not_done "找不到 Pi 0.85.1（PI_ROOT=$PI_ROOT）。装上 Pi（npm i -g @earendil-works/pi-coding-agent@0.85.1）或设 PI_ROOT=/path/to/pi 再跑。"
+# 版本必须是 0.85.1。目录存在**不等于**版本对 —— 一个装坏或装错版本的 Pi
+# 仍然会让 oracle 拿一个不存在于目标版本的语义去比。CI 里另一个 job
+# （pi-target-lock.py）会锁住版本，但本地跑这个脚本时没人管。
+if [[ -f "$PI_ROOT/package.json" ]]; then
+  PI_VERSION="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$PI_ROOT/package.json" 2>/dev/null || true)"
+  [[ "$PI_VERSION" == "0.85.1" ]] || \
+    not_done "Pi 的版本是 ${PI_VERSION:-<读不出>}，不是 0.85.1 —— 这个 oracle 比的是 0.85.1 的语义，换版本就没有意义（或者说是另一件事）。装 npm i -g @earendil-works/pi-coding-agent@0.85.1，或设 PI_ROOT 指向它。"
+fi
 command -v cargo >/dev/null 2>&1 || not_done "环境里没有 cargo。"
 
 # ---------------------------------------------------------------------------
