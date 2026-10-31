@@ -343,6 +343,26 @@ jobs:
         run: |
           cargo build --release --locked
           bash scripts/e2e-tool-execution.sh --pi-root "$PI_ROOT"
+      - name: The CLI flag really reaches the tool executor (nini binary, end to end)
+        # v0.15.0 的第二轮复审发现的缺口：
+        # 上面那条 oracle 的 nini 侧是用**测试内的环境变量**切模式的，
+        # 它**完全没有经过 CLI**。所以「用户敲的 `--tool-execution sequential`
+        # 真的让工具一个一个跑」这件事，一直没有任何端到端证据 ——
+        # 而 v0.14 恰恰栽在「CLI flag 被丢弃时，全仓测试仍然全绿」上。
+        #
+        # 这一条跑**编译出来的二进制**：K 个各睡 S 秒的 bash 调用，
+        # 用墙钟耗时判断并发度。判据是三条：
+        #   * sequential 的耗时 ≥ K×S×0.7（串行）；
+        #   * parallel 的耗时 ≤ S×1.9（并发）；
+        #   * sequential 严格比 parallel 慢（两次跑法确实有差别）。
+        # 阈值是**单向安全**的：机器慢只会把并发侧推高，不会让串行侧变快。
+        #
+        # 实测过两条反向变异，都会让它红：
+        #   * 把 CLI flag 丢弃（demo.rs 的装配门改成默认值）→ sequential 变 536ms；
+        #   * 去掉批次级降级判定（agent.rs）→ sequential 变 537ms。
+        run: |
+          cargo build --release --locked
+          bash scripts/e2e-tool-execution-cli.sh
       - name: A long task must reach its delivery (nini vs Pi 0.85.1)
         # 这条门禁钉住的是「长任务不许在半路被截断」。
         # nini 曾经给一次 run 设了 50 轮硬上限：60 步的任务会死在

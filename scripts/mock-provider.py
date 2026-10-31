@@ -116,6 +116,46 @@ def render_turn(turn: dict, model: str, cid: str) -> str:
         emit({}, "tool_calls")
         return "".join(out)
 
+    if kind == "tool_calls":
+        # **Several tool calls in one turn** — the shape a batch has.
+        #
+        # v0.15.0: the batch-level execution mode can only be observed from
+        # the outside if the model asks for several tools **at once**. A
+        # one-tool-per-turn script makes every batch a batch of one, so
+        # "sequential" and "parallel" are indistinguishable — the very
+        # difference the oracle exists to measure.
+        #
+        # Each call gets its own `index`, and the ids must differ: a
+        # provider that reuses one id across calls makes the agent's
+        # tool-result matching ambiguous.
+        calls = turn.get("calls") or []
+        emit({"role": "assistant"})
+        for index, call in enumerate(calls):
+            name = call["name"]
+            raw = json.dumps(call.get("arguments", {}), ensure_ascii=False)
+            for i, piece in enumerate(chunk_args(raw)):
+                fn: dict = {"arguments": piece}
+                if i == 0:
+                    fn["name"] = name
+                emit(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": index,
+                                "type": "function",
+                                **(
+                                    {"id": f"call_mock_{cid[-6:]}_{index}"}
+                                    if i == 0
+                                    else {}
+                                ),
+                                "function": fn,
+                            }
+                        ]
+                    }
+                )
+        emit({}, "tool_calls")
+        return "".join(out)
+
     emit({"role": "assistant"})
     for piece in _pieces(turn.get("text", "")):
         emit({"content": piece})

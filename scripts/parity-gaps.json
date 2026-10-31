@@ -550,11 +550,11 @@
       "title": "批次级 `toolExecution` 入口缺失（Pi 的 SDK 可设，nini 之前不可设）；工具级 executionMode 在 nini 无承载主体",
       "pi_basis": "references/pi-0.85.1/src/loop/agent-loop.ts:417-423（`config.toolExecution === \"sequential\"` 或本轮任一工具 `executionMode === \"sequential\"` → **整批**降级为串行）",
       "nini_state": "**批次级入口本轮补上了**（v0.15）：crates/nini-cli/src/main.rs:213 的 `tool_execution`（CLI 开关 `--tool-execution`）、crates/nini-core/src/settings.rs:96 的 `toolExecution`（settings 键名，字段是 `tool_execution`）、crates/nini-cli/src/app.rs:265 的 `build_tui_run_config`（TUI 门）与 crates/nini-cli/src/demo.rs:61 的 `assemble_run_config`（demo 门与 -p 门）都带上它；判定谓词与 Pi 逐字同构——crates/nini-core/src/agent.rs:1943 的 `batch_is_sequential` = config.tool_execution == Sequential || 本轮任一工具 execution_mode() == Sequential。**工具级** executionMode 在 nini 侧**无承载主体**：crates/nini-ext/src/lib.rs:3 写着 NOT WIRED（没有运行时扩展系统），crates/nini-cli/src/main.rs:558 因此明确拒绝 `--extension`；7 个内建工具无一覆写 crates/nini-core/src/tool.rs:244 的 `execution_mode` 默认实现。**两边的默认行为一致**：Pi 的 8 个内建工具无一声明 executionMode（Pi 快照里 grep toolExecution 只命中 agent-loop 两处），所以两边都不降级。工具级的声明通道单列为 B21。",
-      "oracle": "crates/nini-core/tests/agent_integration.rs 的 sequential 用例（自己打印 NINI_SEQ_PEAK=，串行时峰值为 1）；crates/nini-conformance/tests/tool_batch_semantics.rs 的 `one_sequential_tool_downgrades_the_whole_batch`；scripts/e2e-tool-execution.sh（差分 oracle：Pi 侧 peak==1、nini 侧 peak==1、对照组 parallel 两侧 peak==K）",
+      "oracle": "crates/nini-core/tests/agent_integration.rs 的 sequential 用例（自己打印 NINI_SEQ_PEAK=，串行时峰值为 1）；crates/nini-conformance/tests/tool_batch_semantics.rs 的 `one_sequential_tool_downgrades_the_whole_batch`；scripts/e2e-tool-execution.sh（差分 oracle：Pi 侧 peak==1、nini 侧 peak==1、对照组 parallel 两侧 peak==K）；**scripts/e2e-tool-execution-cli.sh（黑盒端到端：跑编译出来的二进制，用墙钟耗时判并发度）**",
       "status": "fixed",
       "blocking_decision": null,
       "round": "v0.15",
-      "exit_criterion": "bash scripts/e2e-tool-execution.sh 退出 0（三条断言同时成立：Pi 侧 PI_PEAK==1 且 PI_OVERLAP_PEAK==1、nini 侧 NINI_SEQ_PEAK==1、对照组 parallel 两侧峰值都等于 K）；cargo test -p nini-core --test agent_integration 退出 0；cargo test -p nini-conformance --test tool_batch_semantics 退出 0；cargo test -p nini-cli 退出 0（三扇装配门各一条断言）",
+      "exit_criterion": "bash scripts/e2e-tool-execution.sh 退出 0（三条断言同时成立：Pi 侧 PI_PEAK==1 且 PI_OVERLAP_PEAK==1、nini 侧 NINI_SEQ_PEAK==1、对照组 parallel 两侧峰值都等于 K）；**bash scripts/e2e-tool-execution-cli.sh 退出 0（黑盒：sequential 耗时 ≥ K×S×0.7、parallel 耗时 ≤ S×1.9、且 sequential 严格更慢）**；cargo test -p nini-core --test agent_integration 退出 0；cargo test -p nini-conformance --test tool_batch_semantics 退出 0；cargo test -p nini-cli 退出 0（三扇装配门各一条断言）",
       "machine_checkable": true,
       "layer": null
     },
