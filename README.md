@@ -220,7 +220,7 @@ nini reads and writes the same file formats as Pi v0.85.1:
 | Project-level skills | `./.pi/skills/<name>/SKILL.md` |
 | Models | `~/.pi/agent/models.json` and `./.pi/models.json` |
 | Sessions | `~/.pi/agent/sessions/<project>/<timestamp>.jsonl` |
-| Slash commands | identical names + argument hints |
+| Slash commands | the same 23 names (plus 5 nini-only ones); the argument hints differ — Pi declares a hint only for `model`, `thinking` and `login` |
 
 You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.
@@ -253,6 +253,20 @@ trying to be; this section is the user-facing summary of it.
   Their **price is not**: `models.json` states no rates, and nini does not
   invent any — a model with no known price shows no cost pill, which reads
   as "unknown", never as "free"
+- **A project-level `models.json` never configures a provider.** Only the
+  user-level `~/.nini/agent/models.json` may **build** one. The
+  project-level file (`<cwd>/.nini/models.json`) is read for the model
+  **catalogue** only: the models it declares do show up in `/model` and in
+  `--list-models`, but its `providers` entries are **not adopted** — no
+  base URL, no credential and no `!cmd` from it ever reaches a request.
+  The reason is safety, not an oversight: a directory you merely cloned
+  must not be able to hand nini a base URL and a credential — least of all
+  a `!command` to run, since a provider's `apiKey` may be a shell command
+  (`"apiKey": "!cmd"`), which nini executes exactly like Pi does. Pi
+  0.85.1 has no project-level `models.json` at all.
+
+  > 中文：项目级 `models.json` 的 provider 条目**不参与**（**不采用**）provider
+  > 构造——这是安全边界，不是「还没做」。
 - **URLs in the transcript are shown as plain text, not as clickable links.**
   Pi emits OSC 8 hyperlinks itself (it writes bytes to the terminal); nini
   draws through ratatui's cell buffer, which has no hyperlink support — and
@@ -265,6 +279,13 @@ trying to be; this section is the user-facing summary of it.
   tool definitions (`references/pi-0.85.1/tool-contracts.json`). The one
   exception is **`powershell`** (Windows-only in Pi), which nini does not ship;
   `bash` covers the same ground on POSIX.
+- **A running `!cmd` cannot be interrupted, and it blocks the UI.** `!cmd`
+  (like `!!cmd`) runs the shell **synchronously on the UI thread**: the
+  transcript shows the output only after the command has finished, the TUI
+  does not repaint while it runs, and `Esc` cannot abort it — the command
+  is killed only when it exceeds the built-in 10-second timeout. Pi
+  streams the output chunk by chunk as it arrives and lets `Esc` abort
+  the run.
 - **Double-Escape opens the tree selector** (`settings.json`'s
   `double_escape_action`: `"tree"` or `"none"`). Pi's third option,
   `"fork"`, opens a *picker of previous user messages* — nini has no such

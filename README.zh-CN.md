@@ -203,7 +203,7 @@ nini 读写与 Pi v0.85.1 完全相同的文件格式：
 | 项目级 skills | `./.pi/skills/<name>/SKILL.md` |
 | 模型 | `~/.pi/agent/models.json` 和 `./.pi/models.json` |
 | 会话 | `~/.pi/agent/sessions/<project>/<timestamp>.jsonl` |
-| 斜杠命令 | 名字与参数提示完全一致 |
+| 斜杠命令 | 23 个名字一致（另加 5 条 nini 独有）；参数提示不一致——Pi 只对 `model`、`thinking`、`login` 声明参数提示 |
 
 你可以在一个终端跑 `nini -p`、另一个终端跑 `pi`——两边写的是同一种
 session JSONL。
@@ -232,6 +232,19 @@ session JSONL。
   `--list-models` 里，context window 用的就是你写下的那个数字。
   但**价格不随之而来**：`models.json` 不写费率，nini 也不会编一个——
   没有已知价格的模型不显示费用标签，读起来是「未知」，绝不是「免费」
+- **项目级 `models.json` 里的 provider 条目不参与 provider 构造。** 只有用户级的
+  `~/.nini/agent/models.json` 能**构造** provider。项目级那份
+  （`<cwd>/.nini/models.json`）只用于**模型目录**：它声明的模型确实会出现在
+  `/model` 与 `--list-models` 里，但它的 `providers` 条目**不采用**——里面的
+  base URL、凭证，以及 `apiKey` 里写成 `"!cmd"` 的命令，都到不了任何一次请求。
+  原因是安全，不是「还没做」：你只是 clone 了一个目录，那份文件不该有权把 nini
+  指向它自己选的主机、塞给它一份凭证，更不该有权让它执行一条命令（provider 的
+  `apiKey` 可以写成 shell 命令，nini 与 Pi 一样会执行它）。Pi 0.85.1 压根没有
+  项目级 `models.json` 这个概念。
+- **运行中的 `!cmd` 不可中止，也会卡住界面。** `!cmd`（与 `!!cmd`）在 UI 线程上
+  **同步**执行：命令跑完之前 transcript 里看不到输出，TUI 也不重绘，`Esc`
+  中止不了它——只有超过内置的 10 秒超时才会被杀掉。Pi 是边跑边把输出逐块推出来，
+  并且 `Esc` 就能中止。
 - **transcript 里的 URL 以纯文本呈现，不可点击。** Pi 自己往终端写字节，能发出
   OSC 8 超链接；nini 经 ratatui 的 cell 缓冲区绘制，没有 hyperlink 支持 ——
   把那段转义序列塞进去，它会变成**字面 cell 文本**，终端把 URL 当可见文字画出来，
