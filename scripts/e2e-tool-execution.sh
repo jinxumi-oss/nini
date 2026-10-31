@@ -82,17 +82,28 @@ not_done() {
 note() { echo "-- $*"; }
 
 # ---------------------------------------------------------------------------
-# 判据清单（必须在第一次 record_assertion 之前定义）
+# 判据清单与判据本身（必须在第一次 run_criterion 之前定义）
 # ---------------------------------------------------------------------------
-# v0.15.0 (审查修正): 判据**必须成清单**。理由是一条真实的审查发现 ——
-# 把脚本里的某条判据删掉，脚本**照样退出 0**，全仓测试也全绿：
-# 判据集自己没人看守。于是「Pi 侧的断言」可以被悄悄删掉，而 Pi 侧的行为
-# 就再也没人核对。
+# v0.15.0（两轮审查修正）：判据**必须成清单，而且谓词必须有人看守**。
 #
-# 现在每条判据执行时登记自己，脚本收尾时核对「清单里的每一条都跑到了」。
-# 删掉一条判据 → 清单与执行数不符 → 脚本自己红。
-# 再加一条 Rust 测试（crates/nini-core/tests/oracle_criteria.rs）钉住
-# 清单的**内容**，所以删判据在 cargo test 层面也会红。
+# 审查实测过的三种漏法，脚本原来都照样退出 0：
+#   (h1) 删掉一条判据的登记；
+#   (k)  只删掉判据的检查体、把登记留下 —— 判据从此没人执行，脚本照样绿；
+#   (j)  把判据**放宽**（`== "1"` 改成 `== "1" || == "20"`）——
+#       这时脚本会打印与事实相反的 OK（「sequential 两侧的峰值都是 1」，
+#       而它刚刚亲手测到 20）。
+#
+# 现在的结构：
+#   * 每条判据是一个**单行函数**，函数体就是谓词；
+#   * `run_criterion` 调用它，**按返回值登记** pass/fail，所以
+#     「掏空检查体、只留登记」在结构上做不到 —— 登记记下的是「不通过」；
+#   * 收尾核对「清单里的每一条都登记过」，少一条就红；
+#   * Rust 侧 \`crates/nini-core/tests/oracle_criteria.rs\` 钉住**谓词串**
+#     本身，所以「放宽谓词」和「把函数体改成 true」也只有它能抓到。
+#
+# 登记用**临时文件**而不是关联数组：macOS 自带的 /bin/bash 是 3.2，
+# 没有 \`declare -A\`。用它会让 macOS CI 直接挂掉，而且退出码是 1 ——
+# 不是约定的 2（「环境不具备，没做」），会让「CI 挂了」和「本机没跑」混为一谈。
 ASSERTIONS=(
   "pi_mode_is_sequential"
   "pi_seq_peak_is_1"
@@ -106,8 +117,25 @@ ASSERTIONS=(
   "nini_mode_is_parallel"
   "nini_par_peak_equals_k"
 )
-declare -A ASSERTION_DONE=()
-record_assertion() { ASSERTION_DONE["$1"]=1; }
+
+RECORDED="$(mktemp)"
+trap 'rm -f "$RECORDED"' EXIT
+
+record_assertion() {
+  # record_assertion <name> <pass|fail>
+  printf '%s %s\n' "$1" "$2" >> "$RECORDED"
+}
+
+run_criterion() {
+  local name="$1"
+  if "$name"; then
+    record_assertion "$name" pass
+  else
+    record_assertion "$name" fail
+    echo "-- 诊断：PI_SEQ_MODE=${PI_SEQ_MODE:-} PI_SEQ_PEAK=${PI_SEQ_PEAK:-} PI_SEQ_OVERLAP=${PI_SEQ_OVERLAP:-} PI_PAR_MODE=${PI_PAR_MODE:-} PI_PAR_PEAK=${PI_PAR_PEAK:-} PI_PAR_OVERLAP=${PI_PAR_OVERLAP:-} NINI_SEQ_MODE=${NINI_SEQ_MODE:-} NINI_SEQ_PEAK=${NINI_SEQ_PEAK:-} NINI_SEQ_CALLS=${NINI_SEQ_CALLS:-} NINI_PAR_MODE=${NINI_PAR_MODE:-} NINI_PAR_PEAK=${NINI_PAR_PEAK:-} NINI_PAR_CALLS=${NINI_PAR_CALLS:-} K=$K" >&2
+    fail "判据不成立：$name"
+  fi
+}
 
 
 command -v node >/dev/null 2>&1 || not_done "环境里没有 node。"
@@ -154,22 +182,26 @@ PI_SEQ_OUT="$(run_pi sequential)"
 PI_SEQ_MODE="$(pi_field "$PI_SEQ_OUT" 'PI_MODE')"
 PI_SEQ_PEAK="$(pi_field "$PI_SEQ_OUT" 'PI_PEAK')"
 PI_SEQ_OVERLAP="$(pi_field "$PI_SEQ_OUT" 'PI_OVERLAP_PEAK')"
-[[ -n "$PI_SEQ_PEAK" ]] || fail "Pi 侧探针没有报出 PI_PEAK=（输出：$PI_SEQ_OUT）"
-[[ -n "$PI_SEQ_OVERLAP" ]] || fail "Pi 侧探针没有报出 PI_OVERLAP_PEAK=（输出：$PI_SEQ_OUT）"
-[[ "$PI_SEQ_MODE" == "sequential" ]] || \
-  fail "Pi 侧探针报的模式是 ${PI_SEQ_MODE:-<没有>}，不是 sequential —— 探针没切到串行"
-record_assertion "pi_mode_is_sequential"
+# --- 判据（Pi 侧 sequential）---
+pi_mode_is_sequential() { [[ "$PI_SEQ_MODE" == "sequential" ]]; }
+pi_seq_peak_is_1() { [[ "$PI_SEQ_PEAK" == "1" ]]; }
+pi_seq_overlap_is_1() { [[ "$PI_SEQ_OVERLAP" == "1" ]]; }
+run_criterion pi_mode_is_sequential
+run_criterion pi_seq_peak_is_1
+run_criterion pi_seq_overlap_is_1
 
 note "Pi 侧：$K 个工具调用，每个睡 ${SLEEP_MS}ms —— parallel"
 PI_PAR_OUT="$(run_pi parallel)"
 PI_PAR_MODE="$(pi_field "$PI_PAR_OUT" 'PI_MODE')"
 PI_PAR_PEAK="$(pi_field "$PI_PAR_OUT" 'PI_PEAK')"
 PI_PAR_OVERLAP="$(pi_field "$PI_PAR_OUT" 'PI_OVERLAP_PEAK')"
-[[ -n "$PI_PAR_PEAK" ]] || fail "Pi 侧探针没有报出 PI_PEAK=（输出：$PI_PAR_OUT）"
-[[ -n "$PI_PAR_OVERLAP" ]] || fail "Pi 侧探针没有报出 PI_OVERLAP_PEAK=（输出：$PI_PAR_OUT）"
-[[ "$PI_PAR_MODE" == "parallel" ]] || \
-  fail "Pi 侧探针报的模式是 ${PI_PAR_MODE:-<没有>}，不是 parallel —— 探针没切到并行"
-record_assertion "pi_mode_is_parallel"
+# --- 判据（Pi 侧 parallel，对照组）---
+pi_mode_is_parallel() { [[ "$PI_PAR_MODE" == "parallel" ]]; }
+pi_par_peak_equals_k() { [[ "$PI_PAR_PEAK" == "$K" ]]; }
+pi_par_overlap_equals_k() { [[ "$PI_PAR_OVERLAP" == "$K" ]]; }
+run_criterion pi_mode_is_parallel
+run_criterion pi_par_peak_equals_k
+run_criterion pi_par_overlap_equals_k
 
 # ---------------------------------------------------------------------------
 # nini 侧：同一份剧本，模式由环境变量 `NINI_SEQ_MODE` 切换。
@@ -211,7 +243,10 @@ NINI_SEQ_MODE="$(printf '%s\n' "$NINI_SEQ_OUT" | grep -oE 'NINI_SEQ_MODE=[A-Za-z
   fail "nini 侧没有报出 NINI_SEQ_CALLS=（测试改名了，或它没跑起来）。"
 [[ "$NINI_SEQ_MODE" == "sequential" ]] || \
   fail "nini 侧报的模式是 ${NINI_SEQ_MODE:-<没有>}，不是 sequential —— 测量测的不是串行"
-record_assertion "nini_mode_is_sequential"
+nini_mode_is_sequential() { [[ "$NINI_SEQ_MODE" == "sequential" ]]; }
+nini_seq_peak_is_1() { [[ "$NINI_SEQ_PEAK" == "1" ]]; }
+run_criterion nini_mode_is_sequential
+run_criterion nini_seq_peak_is_1
 
 note "nini 侧：$K 个工具调用，每个睡 ${SLEEP_MS}ms —— parallel"
 NINI_PAR_OUT="$(run_nini parallel)"
@@ -224,7 +259,10 @@ NINI_PAR_MODE="$(printf '%s\n' "$NINI_PAR_OUT" | grep -oE 'NINI_SEQ_MODE=[A-Za-z
   fail "nini 侧没有报出 NINI_SEQ_CALLS=（测试改名了，或它没跑起来）。"
 [[ "$NINI_PAR_MODE" == "parallel" ]] || \
   fail "nini 侧报的模式是 ${NINI_PAR_MODE:-<没有>}，不是 parallel —— 测量测的不是并行"
-record_assertion "nini_mode_is_parallel"
+nini_mode_is_parallel() { [[ "$NINI_PAR_MODE" == "parallel" ]]; }
+nini_par_peak_equals_k() { [[ "$NINI_PAR_PEAK" == "$K" ]]; }
+run_criterion nini_mode_is_parallel
+run_criterion nini_par_peak_equals_k
 
 
 note "sequential：nini peak=$NINI_SEQ_PEAK Pi peak=$PI_SEQ_PEAK Pi重叠=$PI_SEQ_OVERLAP"
@@ -235,39 +273,21 @@ note "parallel：  nini peak=$NINI_PAR_PEAK Pi peak=$PI_PAR_PEAK Pi重叠=$PI_PA
   fail "两侧的剧本不是同一个：nini 侧跑了 $NINI_SEQ_CALLS 个调用，脚本要的是 $K —— K 必须两侧同源"
 [[ "$NINI_PAR_CALLS" == "$K" ]] || \
   fail "两侧的剧本不是同一个：nini 侧跑了 $NINI_PAR_CALLS 个调用，脚本要的是 $K —— K 必须两侧同源"
-record_assertion "nini_calls_match_k"
+nini_calls_match_k() { [[ "$NINI_SEQ_CALLS" == "$K" && "$NINI_PAR_CALLS" == "$K" ]]; }
+run_criterion nini_calls_match_k
 
-# 断言 1：Pi 侧在 sequential 下必须一个一个跑（两个独立证据都要这么说）。
-[[ "$PI_SEQ_PEAK" == "1" ]] || \
-  fail "Pi 侧 sequential 的峰值是 $PI_SEQ_PEAK，不是 1 —— Pi 的批次级串行没有生效"
-record_assertion "pi_seq_peak_is_1"
-[[ "$PI_SEQ_OVERLAP" == "1" ]] || \
-  fail "Pi 侧 sequential 的重叠区间数是 $PI_SEQ_OVERLAP，不是 1 —— Pi 侧的两个证据互相矛盾"
-record_assertion "pi_seq_overlap_is_1"
-
-# 断言 2：nini 侧在 sequential 下也必须一个一个跑。
-[[ "$NINI_SEQ_PEAK" == "1" ]] || \
-  fail "nini 侧 sequential 的峰值是 $NINI_SEQ_PEAK，不是 1 —— nini 的批次级串行没有生效"
-record_assertion "nini_seq_peak_is_1"
-
-# 断言 3：对照组 —— parallel 模式下两边都必须把 K 个调用一起跑。
-# 没有这一条，「nini 永远 peak==1」也能骗过断言 2。
-[[ "$PI_PAR_PEAK" == "$K" ]] || \
-  fail "Pi 侧 parallel 的峰值是 $PI_PAR_PEAK，不是 K=$K —— 对照组不成立"
-record_assertion "pi_par_peak_equals_k"
-[[ "$PI_PAR_OVERLAP" == "$K" ]] || \
-  fail "Pi 侧 parallel 的重叠区间数是 $PI_PAR_OVERLAP，不是 K=$K —— 对照组不成立"
-record_assertion "pi_par_overlap_equals_k"
-[[ "$NINI_PAR_PEAK" == "$K" ]] || \
-  fail "nini 侧 parallel 的峰值是 $NINI_PAR_PEAK，不是 K=$K —— 对照组不成立"
-record_assertion "nini_par_peak_equals_k"
-
-# 收尾：清单里的每一条判据都必须真的跑到了。
-# 少了哪一条 → 说明判据集被改动了（而被删掉的那条正是有人在守的东西）。
+# ---------------------------------------------------------------------------
+# 收尾：清单里的每一条都必须登记过，且都是 pass。
+# ---------------------------------------------------------------------------
 for _assertion in "${ASSERTIONS[@]}"; do
-  if [[ -z "${ASSERTION_DONE[$_assertion]:-}" ]]; then
+  _line="$(grep -F "$_assertion " "$RECORDED" 2>/dev/null | tail -1 || true)"
+  if [[ -z "$_line" ]]; then
     fail "判据清单里的 \"$_assertion\" 没有被执行 —— 判据集被改动过（这条判据现在没人守了）"
   fi
+  if [[ "${_line##* }" != "pass" ]]; then
+    fail "判据 \"$_assertion\" 登记为不通过"
+  fi
 done
+note "判据清单核对：${#ASSERTIONS[@]} 条全部登记且通过"
 
 echo "OK：sequential 两侧的峰值都是 1，parallel 两侧的峰值都是 K=$K（NINI_SEQ_PEAK=$NINI_SEQ_PEAK PI_SEQ_PEAK=$PI_SEQ_PEAK NINI_PAR_PEAK=$NINI_PAR_PEAK PI_PAR_PEAK=$PI_PAR_PEAK）"

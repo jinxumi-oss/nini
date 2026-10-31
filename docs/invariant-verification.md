@@ -111,19 +111,30 @@
 |---|---|---|---|
 | `af77d45a` | `r2f_bash_session` | `wait_for_session_file` 不再等待（直接 return），即恢复成「读盘时文件还没写出来」 | `a_shell_command_the_user_ran_survives_a_reload` + `it_is_recorded_as_a_bash_execution_message` 2 条全红（`must load: Other("io error: No such file or directory (os error 2)")`） |
 
-**注入-观察-还原的实测输出**：
+**注入-观察-还原的实测输出**（2026-10-30 重跑逐字粘贴）：
 
 ```
 $ cargo test -p nini-tui --test r2f_bash_session
-test a_shell_command_the_user_ran_survives_a_reload ... FAILED
 test it_is_recorded_as_a_bash_execution_message ... FAILED
-thread '...' panicked at crates/nini-tui/tests/r2f_bash_session.rs:68:38:
+test a_shell_command_the_user_ran_survives_a_reload ... FAILED
+thread 'it_is_recorded_as_a_bash_execution_message' panicked at crates/nini-tui/tests/r2f_bash_session.rs:106:47:
+thread 'a_shell_command_the_user_ran_survives_a_reload' panicked at crates/nini-tui/tests/r2f_bash_session.rs:70:38:
 must load: Other("io error: No such file or directory (os error 2)")
 test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
 
 $ # 还原后
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
+
+> 上面的输出是**逐字粘贴**的，所以它带行号。但**判定依据是失败机制，
+> 不是行号**。第一次写下的是 `:68:38`，而那个行号在任何版本里都不存在
+> （注入时是 `:68`，HEAD 上是 `:70`，下一次代码编辑就会再变一次）——
+> 一条写着假行号的「实测记录」比没有记录更坏：它看起来可核对，实际不可核对。
+> 两条测试的**失败机制**才是要留痕的东西：
+>   * `a_shell_command_the_user_ran_survives_a_reload` —— `session_load` 拿到
+>     `io error: No such file or directory (os error 2)`（文件还没落盘就去读）；
+>   * `it_is_recorded_as_a_bash_execution_message` —— `read_to_string(&path).unwrap()`
+>     读不到那个还不存在的文件（同一个原因，第二个断言）。
 
 **为什么这条当初没被门禁拦住**：`af77d45` 的 subject 以 `fix` 开头，但它的改动是
 「把一条**已有**测试的等待方式从固定 sleep 改成轮询」——提交里没有**新增** `#[test]`，

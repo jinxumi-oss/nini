@@ -102,13 +102,13 @@ v0.9.2 一整版都在清这个。
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
 | 版本 | **v0.15.0** | `Cargo.toml` version = 0.15.0；`nini --version` 自报同一数字 | tag 尚未推送（见下方“发布链”） |
-| 测试 | **1798 通过 / 0 ignored / 0 失败** | 本机全量 `cargo test --workspace`（2026-10-30） | 无 |
+| 测试 | **1800 通过 / 0 ignored / 0 失败** | 本机全量 `cargo test --workspace`（2026-10-30） | 无 |
 | 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 已从 stub 改为**明说本机不做云端分享并指向 `/export`**（Pi 的 `/share` 要 gh 账号或云端，与 nini「不出网」原则冲突，登记为 B10 伪差距） |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
 | 行为 oracle | **符号引用全部可解析（drift=0）**；台账的 `nini_state` **每条都能 grep 到代码符号**（`crates/nini-core/tests/ledger_anchors.rs`）；行为层 **Pi 侧可执行对照物 ≥1**（真 Pi 0.85.1 录制的会话） | `python3 scripts/pi-oracle-lock.py --verify-refs`；`crates/nini-tui/tests/behavior_parity.rs` | 其余 oracle 仍只断言 nini 侧（依据已是机器可解析的符号引用，不再依赖行号）——**C1 已闭**，剩下的覆盖度是另一件事 |
 | 行号引用 | 过渡引用保留，且必须仍能解析到代码行 | `python3 scripts/pi-line-refs.py --json` | 无（0.84.2 → 0.85.1 的漂移结论见 `docs/pi-version-delta-0.84.2-to-0.85.1.md`） |
 | Provider | **9 个原生实现（7 个品牌）+ `models.json` 其余**（用户声明的模型现在**能被 nini 读懂**：见 v0.10.9） | `provider_factory.rs`；Pi 侧实测 `pi-ai/dist/providers/all.js` 的 `builtinProviders()` | **Pi 0.84.2 内置 40 个**（旧文档写 51，是错的）—— **R5 待 owner 决策**，实现者不自行扩范围 |
-| 差距台账 | **44 条**（A 9 / B 26 / C 5 / D 4），open 8、fixed 29、fake 4、blocked-owner 3 | `python3 scripts/parity-gap.py --json` | 差距表不再手工维护；`fake` = 伪差距（描述失真或产品原则差异，不是待修的缺口）—— 2026-10-30 逐条复核了 13 条待办，**只有 D1 一条是真差距** |
+| 差距台账 | **44 条**（A 9 / B 26 / C 5 / D 4），open 8、fixed 29、fake 4、blocked-owner 3 | `python3 scripts/parity-gap.py --json` | 差距表不再手工维护；`fake` = 伪差距（描述失真或产品原则差异，不是待修的缺口）—— 2026-10-30 逐条复核了 13 条待办（B1/B4/B7/B8/B9/B10/B15/B18/B19/C3/C4/D1/D5）：**4 条是伪差距**（B4/B10/B15/B19）、**1 条本轮修好**（B18）、**8 条仍是真差距**（B1/B7/B8/B9/C3/C4/D1/D5）；全表 open 8 条，其中 **D1 是唯一规模小、可直接做的** |
 | 能力面投入 | — | 自 10-05 起：`nini-tui` +11861 行、`nini-ai` +1295 行；但 `nini-ai` **最后一次提交停在 10-12** | 单侧化，见 §3 |
 
 ---

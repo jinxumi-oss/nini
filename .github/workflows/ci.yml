@@ -78,6 +78,31 @@ jobs:
             python3 scripts/invariants.py | head -40
             exit 1
           fi
+          # The **count** alone is not enough: the same number can hide a
+          # swap. Add one naked commit *and* withdraw one annotated promise,
+          # and the count does not move — the gate would call it "no
+          # change". So the **set** is checked as well: every naked commit
+          # must be one the baseline already knows about.
+          python3 - <<'PY'
+          import json, subprocess, sys
+          base = json.load(open("scripts/gate-baseline.json"))
+          out = subprocess.run(["python3", "scripts/invariants.py", "--json"],
+                               capture_output=True, text=True).stdout
+          now_shas = sorted(r["sha"] for r in json.loads(out)["invariants"]
+                            if r["tier"] == "NONE")
+          known = set(base.get("none_shas", []))
+          if known:
+              extra = [s for s in now_shas if s not in known]
+              if extra:
+                  print("::error::出现了基线之外的裸奔不变量提交：", ", ".join(extra),
+                        "—— 修了 bug 却没加断言。新增一条就要在 scripts/gate-baseline.json 的",
+                        "none_shas 里记下它，并在提交里写明为什么它可以裸奔。")
+                  sys.exit(1)
+          elif now_shas:
+              print("::error::基线里没有 none_shas，但当前有裸奔提交：", ", ".join(now_shas))
+              sys.exit(1)
+          print(f"裸奔集合核对：{len(now_shas)} 条，全在基线内（{', '.join(now_shas) or '无'}）")
+          PY
       - name: Every declared invariant needs a mutation-verification record
         run: |
           # Same source of truth as `scripts/gate.sh`'s MISSING_VERIF check:
@@ -99,6 +124,12 @@ jobs:
               if p.exists():
                   ledger += p.read_text(errors="replace")
           claimed = [r["sha"] for r in d["invariants"] if r["tier"] == "ANNOTATED"]
+          # A **lower bound**: an empty set is not "everything is verified",
+          # it is "the scan recognised no declaration at all" — a vacuous
+          # pass.
+          if not claimed:
+              print("::error::一条不变量声明都没有 —— 扫描器没认出任何声明，这个检查是空的")
+              sys.exit(1)
           missing = sorted(s for s in claimed if s not in ledger)
           if missing:
               print("::error::这些不变量声明没有变异验证留痕：", ", ".join(missing))
