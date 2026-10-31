@@ -202,6 +202,17 @@ struct Args {
     #[arg(long, value_name = "N")]
     max_parallel_tools: Option<usize>,
 
+    /// Execution mode for one turn's tool calls: `parallel` or `sequential`.
+    ///
+    /// v0.15: `sequential` runs a turn's tool calls one at a time.
+    /// The default is `parallel`, which is how a turn runs when nobody
+    /// says otherwise.
+    ///
+    /// nini's own knob: Pi 0.85.1's CLI has no such flag. The same
+    /// switch exists in Pi's SDK, under the name `toolExecution`.
+    #[arg(long, value_name = "MODE", value_parser = validate_tool_execution)]
+    tool_execution: Option<String>,
+
     /// Not supported. nini renders the export from the TUI's transcript,
     /// which takes no path; `/export` always writes to the exports
     /// directory (see `--help` output of `/export`).
@@ -302,6 +313,45 @@ pub const DEFAULT_MODEL: &str = "MiniMax-M2.7-highspeed";
 /// anywhere. "Accepted" and "applied" are different properties, and only
 /// the first one was pinned.
 ///
+/// The execution modes `--tool-execution` accepts.
+///
+/// One table, so the flag's *validation* and the flag's *meaning* cannot
+/// drift apart: a value the parser accepts is a value the run honours,
+/// and a value the parser refuses never reaches the run at all.
+const TOOL_EXECUTION_MODES: [(&str, nini_core::tool::ToolExecutionMode); 2] = [
+    ("parallel", nini_core::tool::ToolExecutionMode::Parallel),
+    ("sequential", nini_core::tool::ToolExecutionMode::Sequential),
+];
+
+/// The mode a `--tool-execution` value means.
+fn tool_execution_mode(raw: &str) -> Option<nini_core::tool::ToolExecutionMode> {
+    TOOL_EXECUTION_MODES
+        .iter()
+        .find(|(name, _)| *name == raw)
+        .map(|(_, mode)| *mode)
+}
+
+/// clap's value check for `--tool-execution`.
+///
+/// The error names the legal values, the way `--max-iterations`'s own
+/// error names what it wanted: a user who typed `sequential` and got
+/// "invalid value" learns nothing, and a user who typed `seqential`
+/// learns nothing either unless the two spellings are named.
+fn validate_tool_execution(raw: &str) -> Result<String, String> {
+    if tool_execution_mode(raw).is_some() {
+        Ok(raw.to_string())
+    } else {
+        Err(format!(
+            "expected one of {}",
+            TOOL_EXECUTION_MODES
+                .iter()
+                .map(|(name, _)| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
 /// One function means one place where the flags become the config the run
 /// actually uses, and a test that can reach that place.
 fn app_config_from_args(args: &Args) -> app::AppConfig {
@@ -330,6 +380,9 @@ fn app_config_from_args(args: &Args) -> app::AppConfig {
     cfg.thinking = args.thinking.clone();
     cfg.max_iterations = args.max_iterations;
     cfg.max_parallel_tools = args.max_parallel_tools;
+    // v0.15: the flag's spelling has already been checked by clap, so
+    // this lookup cannot fail for a value that got this far.
+    cfg.tool_execution = args.tool_execution.as_deref().and_then(tool_execution_mode);
     cfg.verbose = args.verbose;
     cfg
 }
@@ -731,6 +784,113 @@ mod cli_wiring_tests {
             let _ = ev.expect("agent stream error");
         }
         peak.load(Ordering::SeqCst)
+    }
+
+    /// v0.15: the mode the user typed has to arrive.
+    ///
+    /// Two hops, two assertions: clap parsed it, the config carries it.
+    /// The value is a `ToolExecutionMode` by the time the config has it,
+    /// so the flag cannot be "accepted but dropped" the way a value
+    /// carried in a `String` could be.
+    #[test]
+    fn the_tool_execution_flag_reaches_the_app_config() {
+        let args = args_from(&["--tool-execution", "sequential"]);
+        assert_eq!(
+            args.tool_execution.as_deref(),
+            Some("sequential"),
+            "clap did not keep the mode the user typed"
+        );
+        let cfg = app_config_from_args(&args);
+        assert_eq!(
+            cfg.tool_execution,
+            Some(nini_core::tool::ToolExecutionMode::Sequential),
+            "the mode did not survive `Args` → `AppConfig`"
+        );
+
+        let args = args_from(&["--tool-execution", "parallel"]);
+        let cfg = app_config_from_args(&args);
+        assert_eq!(
+            cfg.tool_execution,
+            Some(nini_core::tool::ToolExecutionMode::Parallel),
+            "`--tool-execution parallel` did not survive `Args` → `AppConfig`"
+        );
+    }
+
+    /// v0.15: no flag means no override — the settings file and then the
+    /// default decide. A flag that defaulted to a value would make the
+    /// settings file unreachable, and the settings file is the more
+    /// persistent of the two.
+    #[test]
+    fn no_tool_execution_flag_means_no_override() {
+        let args = args_from(&[]);
+        assert_eq!(
+            args.tool_execution, None,
+            "clap invented a mode out of nothing"
+        );
+        let cfg = app_config_from_args(&args);
+        assert_eq!(
+            cfg.tool_execution, None,
+            "the config invented a mode the command line did not give"
+        );
+    }
+
+    /// v0.15: an unknown mode is refused at parse time, and the message
+    /// names the flag and the legal values.
+    ///
+    /// A message that only says "invalid value" leaves the user with
+    /// nothing to type next time.
+    #[test]
+    fn an_unknown_tool_execution_mode_is_refused_with_the_legal_values() {
+        let err = Args::try_parse_from(["nini", "--tool-execution", "bogus"])
+            .expect_err("an unknown mode must not parse");
+        let message = err.to_string();
+        assert!(
+            message.contains("tool-execution"),
+            "the error does not name the flag: {message}"
+        );
+        assert!(
+            message.contains("parallel") && message.contains("sequential"),
+            "the error does not name the legal values: {message}"
+        );
+    }
+
+    /// v0.15: the mode has to arrive in the `RunConfig` too.
+    #[test]
+    fn the_tool_execution_flag_reaches_the_run_config() {
+        let run_cfg = run_config_for(
+            &["--tool-execution", "sequential"],
+            &nini_core::settings::Settings::default(),
+        );
+        assert_eq!(
+            run_cfg.tool_execution,
+            nini_core::tool::ToolExecutionMode::Sequential,
+            "the mode did not reach the `RunConfig`"
+        );
+    }
+
+    /// v0.15: the settings file may set the mode, and the command line
+    /// beats it.
+    ///
+    /// The command line was typed for this invocation; the file is the
+    /// standing default. Same order as every other knob in nini.
+    #[test]
+    fn the_tool_execution_flag_beats_the_settings_file() {
+        let mut settings = nini_core::settings::Settings::default();
+        settings.tool_execution = Some(nini_core::tool::ToolExecutionMode::Sequential);
+
+        let run_cfg = run_config_for(&["--tool-execution", "parallel"], &settings);
+        assert_eq!(
+            run_cfg.tool_execution,
+            nini_core::tool::ToolExecutionMode::Parallel,
+            "the flag did not beat the settings file"
+        );
+
+        let run_cfg = run_config_for(&[], &settings);
+        assert_eq!(
+            run_cfg.tool_execution,
+            nini_core::tool::ToolExecutionMode::Sequential,
+            "the settings file's mode was not applied"
+        );
     }
 
     /// v0.14: the value the user typed has to arrive.

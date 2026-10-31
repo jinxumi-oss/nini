@@ -77,6 +77,17 @@ pub(crate) struct AppConfig {
     /// at once — and this flag is how a user puts one back. nini's own
     /// knob; Pi has no counterpart.
     pub max_parallel_tools: Option<usize>,
+    /// v0.15: `--tool-execution <MODE>`. The batch-level tool execution
+    /// mode; `None` means "take it from settings, else the default".
+    ///
+    /// The default is `parallel`, the way a turn's tool calls run when
+    /// nobody says otherwise. `sequential` runs them one at a time.
+    ///
+    /// nini's own knob in the sense that Pi 0.85.1's CLI has no such
+    /// flag — the same switch exists in Pi's **SDK**
+    /// (`config.toolExecution`, `pi-agent-core/dist/agent.js:134`), and
+    /// Pi's CLI never passes it (`dist/core/sdk.js:177`).
+    pub tool_execution: Option<nini_core::tool::ToolExecutionMode>,
     /// v0.10: `--verbose`. Consumed once by `init_logging` at the top of
     /// `main`, before any entry point runs; kept here so the flag that
     /// produced it and the config that carried it stay in one struct.
@@ -110,6 +121,7 @@ impl AppConfig {
             thinking: None,
             max_iterations: None,
             max_parallel_tools: None,
+            tool_execution: None,
             verbose: false,
         }
     }
@@ -246,6 +258,14 @@ pub(crate) fn build_tui_run_config(
             .max_parallel_tools
             .or(settings.max_parallel_tools)
             .unwrap_or(nini_core::agent::DEFAULT_MAX_PARALLEL_TOOLS),
+        // v0.15: the batch-level tool execution mode. Same shape as the
+        // turn cap above — the command line beats the settings file,
+        // and the fallback is `parallel`, which is how both sides run
+        // a turn nobody declared anything about.
+        tool_execution: cfg
+            .tool_execution
+            .or(settings.tool_execution)
+            .unwrap_or(nini_core::tool::ToolExecutionMode::default()),
         ..RunConfig::new(cfg_model)
     };
     (config, skills_in_prompt)
@@ -946,6 +966,7 @@ mod p0_1_skills_tests {
             thinking: None,
             max_iterations: None,
             max_parallel_tools: None,
+            tool_execution: None,
             verbose: false,
         }
     }
@@ -1226,6 +1247,7 @@ mod trust_wiring_tests {
             thinking: None,
             max_iterations: None,
             max_parallel_tools: None,
+            tool_execution: None,
             verbose: false,
         }
     }
@@ -1561,6 +1583,7 @@ mod provider_fallback_tests {
             thinking: None,
             max_iterations: None,
             max_parallel_tools: None,
+            tool_execution: None,
             verbose: false,
         }
     }

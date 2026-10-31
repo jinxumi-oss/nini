@@ -490,3 +490,126 @@ fn export_with_a_path_is_refused_rather_than_swallowed() {
         "the path was named in the refusal, yet a file appeared there anyway"
     );
 }
+
+/// v0.15: `--tool-execution <MODE>` is a real flag, not a refused one.
+///
+/// It picks how a turn's tool calls run: `parallel` (the default) or
+/// `sequential`. The flag must not show up in the refusal list.
+#[test]
+fn tool_execution_is_accepted_rather_than_refused() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .args([
+            "--tool-execution",
+            "sequential",
+            "-p",
+            "hi",
+            "--provider",
+            "fixture",
+        ])
+        .output()
+        .expect("nini runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "`nini --tool-execution sequential` did not run: exit {:?}, stderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        !stderr.contains("--tool-execution"),
+        "--tool-execution is refused rather than honoured:\n{stderr}"
+    );
+}
+
+/// An illegal mode fails the way an illegal `--max-iterations` fails:
+/// clap's own error, exit code 2. The assertion is the *difference*
+/// between the two invocations, not clap's wording.
+#[test]
+fn an_illegal_tool_execution_fails_like_an_illegal_max_iterations() {
+    let run = |value: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+            .args([
+                "--tool-execution",
+                value,
+                "-p",
+                "hi",
+                "--provider",
+                "fixture",
+            ])
+            .output()
+            .expect("nini runs")
+            .status
+            .code()
+    };
+    let illegal_mode = run("bogus");
+    let illegal_number = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .args([
+            "--max-iterations",
+            "abc",
+            "-p",
+            "hi",
+            "--provider",
+            "fixture",
+        ])
+        .output()
+        .expect("nini runs")
+        .status
+        .code();
+    assert_ne!(
+        illegal_mode,
+        Some(0),
+        "`--tool-execution bogus` was accepted — an unknown mode must fail"
+    );
+    assert_eq!(
+        illegal_mode, illegal_number,
+        "`--tool-execution bogus` and `--max-iterations abc` must fail the same way"
+    );
+}
+
+/// The refusal of an unknown mode must say *which* values are legal.
+///
+/// "invalid value" alone leaves the user with nothing to type next time.
+#[test]
+fn an_illegal_tool_execution_names_the_flag_and_the_legal_values() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .args([
+            "--tool-execution",
+            "bogus",
+            "-p",
+            "hi",
+            "--provider",
+            "fixture",
+        ])
+        .output()
+        .expect("nini runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--tool-execution"),
+        "the error does not name the flag:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("parallel") && stderr.contains("sequential"),
+        "the error does not name the legal values:\n{stderr}"
+    );
+}
+
+/// The help must advertise the flag, and it must not leak the
+/// repository's internal file layout into the user's terminal.
+#[test]
+fn the_help_advertises_tool_execution_without_internal_paths() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nini"))
+        .arg("--help")
+        .output()
+        .expect("nini --help runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--tool-execution"),
+        "the help does not advertise --tool-execution:\n{stdout}"
+    );
+    for leak in ["references/", "agent-loop.ts", "settings-manager.ts"] {
+        assert!(
+            !stdout.contains(leak),
+            "the help leaks the internal path `{leak}`:\n{stdout}"
+        );
+    }
+}
