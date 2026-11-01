@@ -239,7 +239,8 @@ B19 是 nini 的有意设计（发部分 `tool_results` 会破坏与下一次 LL
 被整组杀掉——这个取舍写进 CHANGELOG 的「已知限制」。
 
 **v0.15（批次级工具执行模式 + 台账盘点）**：本轮关掉了 **B18**——批次级
-`toolExecution` 的入口补上了（CLI `--tool-execution`、settings 键 `toolExecution`，
+`toolExecution` 的入口补上了（CLI `--tool-execution`、settings 键 `tool_execution`
+（`toolExecution` 亦作为别名认），
 三扇装配门都带上），判定谓词与 Pi 逐字同构；工具级 executionMode 仍无承载主体
 （nini 没有运行时扩展系统），新登记为 **B21**。另外三条是**对外说明**类的小修：
 **B1a**（`/clone` 不再声明一个它不读的参数）、**B10a**（`/share` 说清本机不做

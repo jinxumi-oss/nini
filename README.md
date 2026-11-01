@@ -246,7 +246,8 @@ trying to be; this section is the user-facing summary of it.
   session to a local HTML or JSONL file. The rest of the 23 Pi commands
   dispatch; `/tree`, `/fork` and `/settings` are real
 - **The tool-execution mode is set per batch, not per tool.** `--tool-execution
-  sequential` (or `toolExecution` in `settings.json`) makes a whole batch of
+  sequential` (or `tool_execution` in `settings.json` — `toolExecution` is
+  accepted as an alias, the same way `maxIterations` is) makes a whole batch of
   tool calls run one at a time — the same batch-level switch Pi's SDK has
   (`config.toolExecution`). Pi's **per-tool** `executionMode` has no
   counterpart here: nini has no runtime extension system, so no tool can

@@ -225,7 +225,8 @@ session JSONL。
   HTML 或 JSONL 文件）。其余 23 条 Pi 命令都能分发；
   `/tree`、`/fork`、`/settings` 是真实实现
 - **工具执行模式是「按批次」设的，不是「按工具」设的。** `--tool-execution
-  sequential`（或 settings.json 里的 `toolExecution`）让一整批工具调用**逐个**
+  sequential`（或 settings.json 里的 `tool_execution`——`toolExecution` 也作为别名
+  认，与 `maxIterations` 同款）让一整批工具调用**逐个**
   跑——这与 Pi 的 SDK 里的批次级开关（`config.toolExecution`）是同一件事。Pi 的
   **工具级** `executionMode` 在 nini 这边没有对应物：nini 没有运行时扩展系统，
   没有工具能声明它（差距 **B21**）。两边的**默认行为一致**：Pi 的内建工具与

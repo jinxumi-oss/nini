@@ -32,8 +32,9 @@ nini 现在有同一个开关的三个入口：
 
 - `--tool-execution parallel|sequential`：命令行；非法值直接报错退出（退出码 2），
   消息里写明合法值；
-- settings.json 的 `toolExecution` 键：**nini 自己的键**（Pi 0.85.1 的 settings
-  里没有它；键名沿用 Pi 的驼峰写法，不是「Pi 的设置项」）；
+- settings.json 的 `tool_execution` 键：**nini 自己的键**（Pi 0.85.1 的 settings
+  里根本没有它；**规范拼写是蛇形**，与 nini 其它 settings 键一致，
+  `toolExecution` 作为**别名**也读——与 `maxIterations` / `maxParallelTools` 同款）；
 - 默认 `parallel`——没人声明时，两边跑法一样。
 
 三扇装配门（TUI、`nini demo`、`nini -p`）**都**带上它。上一轮出过「TUI 里有、
