@@ -118,3 +118,18 @@ strip = true
 [profile.dev]
 opt-level = 0
 debug = 1
+
+# Test targets are the disk hog, not the shipped binary. nini has 146
+# integration test files across the 8 workspace crates, and cargo links each
+# one into its own executable. With `debug = 1` a single test binary reached
+# 95 MB, and 89% of that was DWARF (`.debug_str` alone was 49 MB). Cargo
+# never removes a stale hash-named artifact, so the leftovers of a dozen
+# rebuilds filled `target/debug/deps` with 3,178 executables totalling 210 GB.
+#
+# `debug = 0` drops the DWARF these binaries never use. Panic messages and
+# assertion failures still carry file/line, because they come from
+# `#[track_caller]` locations rather than debug info; `debug-assertions` stays
+# on since it is inherited from `dev` independently. Only backtrace
+# symbolisation loses line detail.
+[profile.test]
+debug = 0
