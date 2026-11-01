@@ -526,3 +526,57 @@ OK：sequential 两侧的峰值都是 1，parallel 两侧的峰值都是 K=20（
 **对照组的意义**：没有断言 ③（parallel 模式两侧峰值都等于 K），一个
 「nini 永远 peak==1」的实现也能骗过断言 ②。断言 ③ 保证 oracle 量的是
 「模式带来的差别」，不是「nini 恰好只跑一个」。
+
+## v0.15 变异验证（第二批：判据集自己也要有人守）
+
+上一节验证的是**实现**会不会被变异抓出来。这一节验证的是**门禁本身**会不会被
+变异骗过 —— 因为一条不会失败的断言，比没有断言更坏：它让人以为门禁还在。
+
+### 差分 oracle 的判据集（`scripts/e2e-tool-execution.sh`）
+
+改造后的结构：每条判据是一个**单行函数**，函数体即谓词；`run_criterion` 按谓词
+自己的退出码登记 pass/fail；收尾核对「清单里每条都登记过且是 pass」。
+
+五条注入逐条实测（源码已还原，还原后 oracle 回到退出 0）：
+
+| 注入的 bug | 实测结果 |
+|---|---|
+| **A**：删掉 `run_criterion pi_seq_peak_is_1` 这一行（登记没了） | 差分 oracle **退出 1**（收尾核对发现清单里有、登记里没有）；`cargo test -p nini-core --test oracle_criteria` **退出 101** |
+| **B**：删掉 `pi_seq_peak_is_1` 函数**与**它的登记（清单里留着） | 差分 oracle **退出 1**（同一条收尾核对）；meta 测试 **退出 101** |
+| **C**：函数、登记、清单条目**全删**（判据彻底消失） | 差分 oracle **退出 0** —— 这是**结构上**做不到的：脚本不可能知道自己少了一条判据。抓住它的是 meta 测试（**退出 101**）。**这就是「外部守卫」存在的全部理由** |
+| **J**：把谓词放宽（`== "1"` → `== "1" \|\| == "$K"`） | 差分 oracle **退出 0**（放宽后的谓词在真值 1 上照样通过）；meta 测试 **退出 101**，报 `the differential oracle's criterion 'pi_seq_peak_is_1' no longer reads …` |
+| **K**：把谓词掏空成 `true`（登记照旧） | 差分 oracle **退出 0**；meta 测试 **退出 101** |
+
+C/J/K 三条都是「脚本自己看不见、只有外面看得见」的坏法 —— 所以
+`crates/nini-core/tests/oracle_criteria.rs` **逐字钉住每个谓词行**，
+并额外断言「每条判据都被 run_criterion 过」「登记带 pass 与 fail 两种」
+「不用 bash 4 的 `declare -A`」（macOS 自带 bash 3.2）。
+
+### 黑盒 oracle 的阈值（`scripts/e2e-tool-execution-cli.sh`）
+
+**墙钟阈值也能被放宽到永不失败** —— 这是差分 oracle 的教训在新脚本上的复现，
+所以它同样需要外部守卫。三条注入实测：
+
+| 注入的 bug | 实测结果 |
+|---|---|
+| **把 CLI flag 丢弃**（`crates/nini-cli/src/app.rs` 的 `resolved_tool_execution` 不再读 `self.tool_execution`） | 黑盒 oracle **退出 1**：<br>`-- sequential 耗时 1036ms，parallel 耗时 1036ms（K=4，每个睡 1s，中点 2500ms）`<br>`!! nini --tool-execution sequential 只用了 1036ms，不到中点 2500ms —— 这个 flag 没有被兑现（或者它根本没接到工具执行上）。` |
+| **去掉批次级降级判定**（`crates/nini-core/src/agent.rs` 的 `batch_is_sequential` 恒为假） | 黑盒 oracle **退出 1**（同一句判据，实测 1037ms） |
+| **mock 不再记 `tool_results`** | 黑盒 oracle **退出 1**：<br>`!! nini 的 sequential 那次只带回 0 个工具结果，剧本要的是 4 —— 这一批没有真的跑满 K 个工具，这次测量不算数。`<br>（证明这条判据**不会被静默跳过**） |
+| **把阈值放宽成恒成立**（`MID_MS="1"`）／**删掉 CI 里的这一步**／**删掉 `tool_results` 判据** | 差分 oracle 与黑盒 oracle 都可能看不出（阈值一变宽就没人失败）—— 由 `crates/nini-core/tests/oracle_criteria.rs` 抓住，三条注入都让 meta 测试 **退出 101** |
+
+还原后的实测输出（`bash scripts/e2e-tool-execution-cli.sh`，退出码 0）：
+
+```
+-- sequential 耗时 4041ms，parallel 耗时 1040ms（K=4，每个睡 1s，中点 2500ms）
+OK：nini 二进制真的兑现了 --tool-execution（sequential 4041ms ≥ 2500ms，parallel 1040ms ≤ 2500ms，K=4，工具结果 4 个）
+```
+
+**阈值为什么是「两端的中点」**：真值是 `S+开销` 与 `K×S+开销`（实测开销 ≈ 40ms）。
+阈值靠串行侧 → 并发侧离阈值太近，机器一慢就是**假红**；阈值靠并发侧 → 变异
+（flag 被丢弃）贴着阈值过，就是**假绿**。中点让两种风险**同时**余量最大：
+K=4、S=1s 时余量 1.5s。`SLEEP` 另有下限 0.5s —— 睡得太短，进程开销就会淹没判据
+（实测 `SLEEP=0.1` 与 `K=1` 都在开跑前以退出码 2 说明「没做」，而不是假红）。
+
+**为什么还要 `tool_results` 这一条**：工具**调用**在黑盒里看不见，工具**结果**
+看得见。没有它，「模型压根没给工具调用、nini 秒回」与「这一批并发跑了」在耗时上
+长得一模一样 —— 而前者会被读成「并发很快」。

@@ -352,14 +352,23 @@ jobs:
         #
         # 这一条跑**编译出来的二进制**：K 个各睡 S 秒的 bash 调用，
         # 用墙钟耗时判断并发度。判据是三条：
-        #   * sequential 的耗时 ≥ K×S×0.7（串行）；
-        #   * parallel 的耗时 ≤ S×1.9（并发）；
+        #   * sequential 的耗时 ≥ 中点 MID = (K+1)×S/2（串行侧的真值 ≈ K×S）；
+        #   * parallel 的耗时 ≤ 同一个中点（并发侧的真值 ≈ S）；
         #   * sequential 严格比 parallel 慢（两次跑法确实有差别）。
-        # 阈值是**单向安全**的：机器慢只会把并发侧推高，不会让串行侧变快。
         #
-        # 实测过两条反向变异，都会让它红：
-        #   * 把 CLI flag 丢弃（demo.rs 的装配门改成默认值）→ sequential 变 536ms；
-        #   * 去掉批次级降级判定（agent.rs）→ sequential 变 537ms。
+        # 阈值取**两端的中点**，不是拍脑袋的倍数：真值是 S+开销 与 K×S+开销，
+        # 中点让「机器慢导致的假红」与「变异导致的假绿」**同时**余量最大
+        # （K=4、S=1s 时余量 1.5s）。SLEEP 有下限 0.5s —— 睡得太短，
+        # 进程开销就会淹没判据。
+        #
+        # 还有第四条：这一批**真的跑了 K 个工具**吗？工具调用在黑盒里看不见，
+        # 工具结果看得见（mock 收到第二次请求时带着 K 条 role="tool"），
+        # 所以 mock 的日志记 `tool_results=N`，oracle 据此断言。
+        #
+        # 实测过三条反向变异，都会让它红：
+        #   * 把 CLI flag 丢弃（app.rs 的装配门改成默认值）→ sequential 变 1036ms；
+        #   * 去掉批次级降级判定（agent.rs）→ sequential 变 1037ms；
+        #   * mock 不再记 tool_results → 判据直接红（不是被跳过）。
         run: |
           cargo build --release --locked
           bash scripts/e2e-tool-execution-cli.sh

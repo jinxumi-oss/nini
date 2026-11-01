@@ -213,11 +213,28 @@ async def completions(request: web.Request) -> web.StreamResponse:
     #
     # The fields are **appended**: the existing ones, and their order,
     # are what the other oracles count on.
+    #
+    # v0.15.0: `tool_results` says how many **tool results** the request
+    # carried back (messages with role "tool"). That is the one number a
+    # black-box oracle can use to prove "the batch really ran K tools and
+    # their results came back" — the tool calls themselves are invisible
+    # from the outside, the results are not.
+    #
+    # It is inserted **before** the credential fields on purpose: the line
+    # still ends with `x-api-key=`, which is what
+    # `scripts/e2e-models-json-provider.sh` parses
+    # (`sed -n 's/.* auth=… x-api-key=.*/…/p'`).
+    tool_results = sum(
+        1
+        for m in (body.get("messages") or [])
+        if isinstance(m, dict) and m.get("role") == "tool"
+    )
     auth = request.headers.get("authorization", "-")
     x_api_key = request.headers.get("x-api-key", "-")
     print(
         f"[mock] request #{idx} START {time.strftime('%H:%M:%S', time.localtime(started))}."
         f"{int((started % 1) * 1000):03d} turns={len(body.get('messages') or [])}msgs "
+        f"tool_results={tool_results} "
         f"tools={len(body.get('tools') or [])} → {turn.get('type')} "
         f"auth={auth} x-api-key={x_api_key}",
         flush=True,

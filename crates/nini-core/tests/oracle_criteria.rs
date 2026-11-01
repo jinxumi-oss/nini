@@ -44,6 +44,19 @@ fn oracle_script() -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
+/// The **black-box** oracle: it runs the compiled binary and judges the
+/// batch's concurrency by wall-clock time.
+///
+/// It needs the same kind of outside guard. A wall-clock criterion has a
+/// threshold, and a threshold can be relaxed until it can no longer fail:
+/// `MID = 1` (or a `MID` computed from nothing at all) makes every
+/// comparison pass — the script would then exit 0 while proving nothing,
+/// exactly like case (j) above.
+fn black_box_script() -> String {
+    let path = repo_root().join("scripts/e2e-tool-execution-cli.sh");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
 /// The criteria the differential oracle must keep, with the **exact
 /// predicate line** each one must be.
 ///
@@ -189,4 +202,101 @@ fn the_oracle_runs_on_the_bash_that_macos_ships() {
          3.2 and a failure there must mean \"not done\" (2), not \
          \"the difference exists\" (1)."
     );
+}
+
+/// The black-box oracle's threshold must stay the **midpoint** of the two
+/// true values, and its three criteria must stay wired to it.
+///
+/// The midpoint is not a taste: the two true values are `SLEEP + overhead`
+/// (concurrent) and `K*SLEEP + overhead` (sequential), so the midpoint is
+/// the point that maximises *both* margins at once — the margin against a
+/// slow machine (a false red) and the margin against a mutation that
+/// collapses the two sides (a false green).
+#[test]
+fn the_black_box_oracle_keeps_its_threshold_and_its_three_criteria() {
+    let script = black_box_script();
+    for (what, line) in [
+        (
+            "the midpoint formula",
+            r#"MID_MS="$(python3 -c "print(int($SLEEP * ($K + 1) * 1000 / 2))")""#,
+        ),
+        ("the sequential bound", r#"SEQ_LOW="$MID_MS""#),
+        ("the parallel bound", r#"PAR_HIGH="$MID_MS""#),
+        (
+            "the sequential criterion",
+            r#"if [[ "$T_SEQ" -lt "$SEQ_LOW" ]]; then"#,
+        ),
+        (
+            "the parallel criterion",
+            r#"if [[ "$T_PAR" -gt "$PAR_HIGH" ]]; then"#,
+        ),
+        (
+            "the criterion that the two runs really differ",
+            r#"if [[ "$T_SEQ" -le "$T_PAR" ]]; then"#,
+        ),
+    ] {
+        assert!(
+            script.contains(line),
+            "the black-box oracle's {what} is no longer\n\
+             {line}\n\
+             A wall-clock threshold can be relaxed until it can no longer \
+             fail, and then the oracle exits 0 while proving nothing — the \
+             same trap as widening a predicate. The threshold and the \
+             three criteria are pinned here so that cannot happen silently."
+        );
+    }
+}
+
+/// The black-box oracle must check that the batch really ran — not just
+/// that it was slow or fast.
+///
+/// The tool *calls* are invisible from the outside; the tool *results* are
+/// not: the mock logs `tool_results=N`, and the oracle asserts it equals
+/// K. Without that check, "the model never asked for a tool and nini
+/// answered at once" would be indistinguishable from "the batch ran
+/// concurrently" — the timing would say "fast", and the reason would be
+/// "nothing happened".
+#[test]
+fn the_black_box_oracle_checks_that_k_tools_actually_ran() {
+    let script = black_box_script();
+    assert!(
+        script.contains(r#"grep -o 'tool_results=[0-9]*'"#),
+        "the black-box oracle must read the tool-result count the mock logs"
+    );
+    assert!(
+        script.contains(r#"if [[ "$got" != "$K" ]]; then"#),
+        "the black-box oracle must fail when the batch did not bring back \
+         K tool results — otherwise \"nothing ran\" looks like \"it was \
+         fast\"."
+    );
+    let mock = std::fs::read_to_string(repo_root().join("scripts/mock-provider.py"))
+        .expect("the mock provider must be readable");
+    assert!(
+        mock.contains("tool_results={tool_results}"),
+        "the mock provider must log the tool-result count — the oracle \
+         reads it, and a mock that stopped logging it would make the \
+         black-box oracle fail for the wrong reason."
+    );
+}
+
+/// CI must still run **both** tool-execution oracles.
+///
+/// Removing a CI step is the cheapest way to make a gate green again, and
+/// unlike a predicate in a script, nothing else in the repository would
+/// notice: the script would sit in the tree, correct and idle.
+#[test]
+fn ci_still_runs_both_tool_execution_oracles() {
+    let ci = std::fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
+        .expect("the CI workflow must be readable");
+    for script in [
+        "scripts/e2e-tool-execution.sh",
+        "scripts/e2e-tool-execution-cli.sh",
+    ] {
+        assert!(
+            ci.contains(script),
+            "CI no longer runs `{script}` — the oracle sits in the tree, \
+             correct and idle. Deleting the step is the cheapest way to \
+             make a gate green again, so the step itself is pinned here."
+        );
+    }
 }
