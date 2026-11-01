@@ -304,3 +304,59 @@ fn a_reproducible_build_reports_a_utc_timestamp_not_unknown() {
         "build time {when:?} is not the agreed `YYYY-MM-DD HH:MM:SS UTC` shape"
     );
 }
+
+/// The version the **binary reports** must be the version the **docs
+/// announce** — and the version `Cargo.toml` declares.
+///
+/// v0.15.0 found this the hard way: the release notes, `docs/GOALS.md` and
+/// the CHANGELOG all said `v0.15.0`, `docs/GOALS.md` even wrote "Cargo.toml
+/// version = 0.15.0" as its *evidence* — and `Cargo.toml` still said
+/// `0.14.0`. The shipped binary would have self-reported `nini 0.14.0`
+/// under a `v0.15.0` tag: the same "binary identity" ambiguity this file
+/// exists to prevent, one layer up.
+///
+/// Three facts have to agree, and this test is where they are compared:
+///
+/// | fact | where it comes from |
+///|---|---|
+/// | the binary's version | `CARGO_PKG_VERSION`, compiled in |
+/// | the workspace's version | `Cargo.toml`'s `[workspace.package] version` |
+/// | the announced version | the CHANGELOG's newest `## vX.Y.Z` heading |
+#[test]
+fn the_binary_the_manifest_and_the_changelog_agree_on_the_version() {
+    let binary_version = env!("CARGO_PKG_VERSION");
+
+    let manifest = std::fs::read_to_string(repo_root().join("Cargo.toml"))
+        .expect("the workspace manifest must be readable");
+    let manifest_version = manifest
+        .lines()
+        .find_map(|l| {
+            let l = l.trim();
+            // The workspace table's `version` — the first one, which is the
+            // only `version =` key before `[workspace.dependencies]`.
+            l.strip_prefix("version = \"")
+                .and_then(|rest| rest.split('"').next())
+                .filter(|_| l.starts_with("version = "))
+        })
+        .expect("Cargo.toml must declare [workspace.package] version");
+    assert_eq!(
+        binary_version, manifest_version,
+        "the binary reports {binary_version} but Cargo.toml says {manifest_version} — \
+         `nini --version` and the manifest must name the same release"
+    );
+
+    let changelog = std::fs::read_to_string(repo_root().join("CHANGELOG.md"))
+        .expect("the changelog must be readable");
+    let announced = changelog
+        .lines()
+        .find_map(|l| l.strip_prefix("## v"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(|v| v.trim_end_matches('—'))
+        .expect("the changelog must start with a `## vX.Y.Z` heading");
+    assert_eq!(
+        binary_version, announced,
+        "the binary reports {binary_version} but the CHANGELOG announces {announced} — \
+         a release whose binary disagrees with its own notes is the identity \
+         ambiguity this file exists to prevent"
+    );
+}
