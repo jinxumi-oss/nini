@@ -68,32 +68,57 @@ resolve_version() {
 
 # --- download + verify ---------------------------------------------------
 
+# The temp directory lives in a **global**, not in a `local` of
+# `download_and_install`.
+#
+# Why: the cleanup trap runs when the script exits — and if the download
+# failed, `set -e` exits **from inside the function**, so the function's
+# local scope (and with it the local `tmpdir`) is already gone when the
+# trap fires. The trap then hit `set -u` with an unbound variable and
+# died with `tmpdir: unbound variable` — the real error (the download
+# failure) was swallowed and the temp directory leaked.
+#
+# A global outlives the function, so the trap always has a path to clean
+# — and the user sees the error that actually happened.
+NINI_TMPDIR=""
+
+cleanup_tmpdir() {
+  if [ -n "$NINI_TMPDIR" ] && [ -d "$NINI_TMPDIR" ]; then
+    rm -rf "$NINI_TMPDIR"
+  fi
+}
+
 download_and_install() {
   local version="$1" target="$2"
   local archive="${BINARY_NAME}-${target}.tar.xz"
   local url="https://github.com/${REPO}/releases/download/${version}/${archive}"
-  local tmpdir
-  tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  NINI_TMPDIR="$(mktemp -d)"
+  trap cleanup_tmpdir EXIT
 
   log "downloading ${archive} (${version})"
   if have_cmd curl; then
-    curl -fsSL -o "${tmpdir}/${archive}" "$url"
+    if ! curl -fsSL -o "${NINI_TMPDIR}/${archive}" "$url"; then
+      err "download failed: ${url}"
+      exit 1
+    fi
   else
-    wget -qO "${tmpdir}/${archive}" "$url"
+    if ! wget -qO "${NINI_TMPDIR}/${archive}" "$url"; then
+      err "download failed: ${url}"
+      exit 1
+    fi
   fi
 
   log "extracting"
-  tar -xJf "${tmpdir}/${archive}" -C "$tmpdir"
+  tar -xJf "${NINI_TMPDIR}/${archive}" -C "$NINI_TMPDIR"
 
   # Verify checksum if available (nini releases publish .sha256 sidecars)
-  if [ -f "${tmpdir}/${archive}.sha256" ] && have_cmd sha256sum; then
-    (cd "$tmpdir" && sha256sum -c "${archive}.sha256") >/dev/null
+  if [ -f "${NINI_TMPDIR}/${archive}.sha256" ] && have_cmd sha256sum; then
+    (cd "$NINI_TMPDIR" && sha256sum -c "${archive}.sha256") >/dev/null
     log "checksum verified"
   fi
 
   mkdir -p "$INSTALL_DIR"
-  install -m 0755 "${tmpdir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+  install -m 0755 "${NINI_TMPDIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 
   # Create a legacy `nini` link only if no existing `nini` is on PATH
   # (mirrors Pi's installer behavior for compatibility).
@@ -103,7 +128,8 @@ download_and_install() {
   fi
 
   trap - EXIT
-  rm -rf "$tmpdir"
+  rm -rf "$NINI_TMPDIR"
+  NINI_TMPDIR=""
 }
 
 # --- PATH -----------------------------------------------------------------
