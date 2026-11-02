@@ -8,7 +8,7 @@
 //! them trivially testable without a terminal.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 // v0.10 (fix): this file imported `tokio::sync::Mutex` for `session`
 // because a comment claimed "`session` is held across `.await` points in
@@ -927,6 +927,16 @@ pub enum EscapeTarget {
     Retrying,
     /// 正在生成分支摘要：Esc 中止它（Pi 的 BranchSummary）。
     BranchSummary,
+    /// v0.15 (B4a)：**一条 `!cmd` 正在跑**（Pi 的 `isBashRunning`）。
+    ///
+    /// Pi 的顺序（`interactive-mode.ts:2855-2861`）：
+    /// `isStreaming` → abort、**`isBashRunning` → `abortBash()`**、
+    /// `isBashMode` → 清空输入。所以 bash 作业活着时 Esc 只中止**命令**，
+    /// 不中止回合——即使同一时刻有一个回合在跑。
+    ///
+    /// 由 `AppState::begin_bash_job` 立起、`AppState::finish_bash_job`
+    /// 落下，与作业本身同临界区（见 `RunState::bash_job`）。
+    Bash,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1320,6 +1330,66 @@ pub struct TranscriptState {
 // RunState — agent loop state machine + token statistics.
 // =================================================================
 
+/// One running `!cmd`.
+///
+/// v0.15 (B4a). Before this existed, `!cmd` ran to completion **inside the
+/// UI event loop**: the frame could not be repainted, no output appeared
+/// until the command exited, and Esc could not reach it at all (only the
+/// runner's own 10 s timeout ended it).
+///
+/// Everything the job needs is one value so that "which job does this
+/// callback belong to?" is a single comparison against `id`, never a
+/// guess: a finish callback carries the id it was started with, so a
+/// late callback from job N cannot clear job N+1's guard (the v0.15 A1
+/// lesson — the watchdog's seq had to be read in the same critical
+/// section that lifted the guard).
+#[derive(Debug, Clone)]
+pub struct BashJob {
+    /// The transcript line this job appends to.
+    pub line: usize,
+    /// The transcript line's id (`bash-<n>`), also the job's identity.
+    pub id: String,
+    /// Raised by Esc; the runner polls it and `killpg`s the process tree.
+    pub cancel: Arc<AtomicBool>,
+    /// True once someone asked for the job to be aborted. Kept here rather
+    /// than read back from `cancel` so the transcript/session marker does
+    /// not depend on the runner having observed the flag before it
+    /// returned (a command that had already exited is "not aborted" even
+    /// if the key arrived in the same millisecond).
+    pub aborted: bool,
+    /// stdout accumulated so far. `!cmd`/`!!cmd` output is small in
+    /// practice; the transcript line is capped at 16 KiB for display and
+    /// this copy is what the session record is written from.
+    pub output: String,
+    /// stderr accumulated so far (displayed separately, like the blocking
+    /// path did).
+    pub stderr: String,
+    /// Pi's `excludeFromContext`: `!!cmd` → the output must never reach the
+    /// model. Decided once, at spawn time, from the typed text.
+    pub private: bool,
+    /// The command as the user typed it, without the `!`/`!!` prefix.
+    pub cmd: String,
+    /// The Escape target that was in force **before** the job started.
+    ///
+    /// A command is a local escape: it may well run *while* a turn is
+    /// running (or while a compaction is in progress), and those contexts
+    /// own their own Escape meaning (`AbortTurn`, `AbortCompaction`). The
+    /// job takes the target over only for its own lifetime and gives it
+    /// back — putting it back verbatim, not resetting it to `Idle`.
+    pub prev_escape_target: EscapeTarget,
+    /// The status bar text before the job started ("running: …" replaces
+    /// it while the job lives; the original comes back afterwards).
+    pub prev_status: String,
+}
+
+impl BashJob {
+    /// Ask the runner to kill the command's process group.
+    pub fn request_abort(&mut self) {
+        self.aborted = true;
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+}
+
 /// Agent run state. Owns mode (Editing/Running/Aborted/Quitting),
 /// status string, abort signaling, compaction flags, and token stats.
 #[derive(Debug)]
@@ -1411,6 +1481,19 @@ pub struct RunState {
     /// Pi: `interactive-mode.ts#lastEscapeTime`。**只在编辑器为空时**
     /// 记录（Pi 的规则），窗口是 500 ms 的**挂钟**窗口。
     pub last_escape_ms: Option<u64>,
+    /// v0.15 (B4a)：**正在跑的那条 `!cmd`**（Pi 的 `isBashRunning` + 它的
+    /// `BashExecutionComponent`）。`None` = 没有作业。
+    ///
+    /// 一个作业的**全部**事实都在这一个字段里：
+    /// * `id`/`line` —— 它对应的转录行；
+    /// * `cancel` —— 取消标志，Esc 抬它，读 goroutine 看见它 `killpg`；
+    /// * `output`/`stderr` —— 已累计的输出（结束时整体写一次 session）；
+    /// * `private` —— `!!` 隐私标记，结束时决定要不要进模型上下文。
+    ///
+    /// 结束（正常/timeout/中止）时由 `AppState::finish_bash_job` 清空，
+    /// 它同时把 `escape_target` 送回 `Idle`。两件事在**同一个 `&mut self`**
+    /// 里做，所以不可能出现「作业已经没了、Esc 还是 Bash」的窗口。
+    pub bash_job: Option<BashJob>,
     /// True while a manual compaction is in progress. When true,
     /// /model /model/<arg> still works but the next prompt gets queued.
     pub is_compacting: bool,
@@ -1732,6 +1815,7 @@ impl Clone for RunState {
             abort_signal: self.abort_signal.clone(),
             abort_compaction_signal: self.abort_compaction_signal.clone(),
             last_escape_ms: self.last_escape_ms,
+            bash_job: self.bash_job.clone(),
             is_compacting: self.is_compacting,
             is_auto_compacting: self.is_auto_compacting,
             pending_steer_messages: self.pending_steer_messages.clone(),
@@ -1759,6 +1843,7 @@ impl Default for RunState {
             abort_signal: None,
             abort_compaction_signal: None,
             last_escape_ms: None,
+            bash_job: None,
             is_compacting: false,
             is_auto_compacting: false,
             pending_steer_messages: Vec::new(),
@@ -2647,6 +2732,224 @@ impl AppState {
 
     pub fn transcript_len(&self) -> usize {
         self.transcript_state.lines.len()
+    }
+
+    // ── v0.15 (B4a): the running `!cmd` job ────────────────────────────
+
+    /// Push the transcript line for a command that is about to start and
+    /// hand back its id.
+    ///
+    /// The line goes up **before** the command runs (Pi creates the
+    /// `BashExecutionComponent` first, `interactive-mode.ts:6520-6533`), so
+    /// the user sees what is running and an abort has a line to write its
+    /// marker into.
+    pub fn begin_bash_job(&mut self, cmd: &str, private: bool, cancel: Arc<AtomicBool>) -> String {
+        let id = format!("bash-{}", self.transcript_len());
+        let cmd_display = if private {
+            format!("!!{cmd}")
+        } else {
+            cmd.to_string()
+        };
+        let transcript = Arc::make_mut(&mut self.transcript_state);
+        let line = transcript.lines.len();
+        transcript.lines.push(TranscriptLine::BashExecution {
+            id: id.clone(),
+            cmd: cmd_display,
+            output: String::new(),
+            stderr: String::new(),
+            ok: false,
+            exit_code: None,
+            duration_ms: 0,
+            collapsed: false,
+        });
+        transcript.autoscroll = true;
+        self.run_state.bash_job = Some(BashJob {
+            line,
+            id: id.clone(),
+            cancel,
+            aborted: false,
+            output: String::new(),
+            stderr: String::new(),
+            private,
+            cmd: cmd.to_string(),
+            prev_escape_target: self.run_state.escape_target,
+            prev_status: std::mem::take(&mut self.run_state.status),
+        });
+        // Pi: `isBashRunning` outranks `isBashMode` in the Escape ladder.
+        self.run_state.escape_target = EscapeTarget::Bash;
+        self.run_state.status = format!("running: {cmd}");
+        id
+    }
+
+    /// Append one chunk of output to the job's transcript line **and** to
+    /// the job's accumulated copy.
+    ///
+    /// Returns `false` when `id` is not the job that is running right now
+    /// (a stale callback from a job that already finished). The caller
+    /// must not repaint on `false` — and, more importantly, must not
+    /// touch the *current* job.
+    pub fn append_bash_chunk(&mut self, id: &str, is_stderr: bool, text: &str) -> bool {
+        let Some(job) = self.run_state.bash_job.as_mut() else {
+            return false;
+        };
+        if job.id != id {
+            return false;
+        }
+        if is_stderr {
+            job.stderr.push_str(text);
+        } else {
+            job.output.push_str(text);
+        }
+        // The display copy is re-derived from the accumulated text rather
+        // than appended to: `strip_ansi` is a per-string pass, and an escape
+        // sequence can be split across two chunks, so stripping each chunk
+        // in isolation would print half a sequence. The cap is the same
+        // 16 KiB the blocking path applied.
+        let (shown_out, _t, _b, _l) =
+            crate::ansi::truncate(&crate::ansi::strip_ansi(&job.output), 16 * 1024, 200);
+        let shown_err = crate::ansi::strip_ansi(&job.stderr);
+        let line = job.line;
+        let transcript = Arc::make_mut(&mut self.transcript_state);
+        if let Some(TranscriptLine::BashExecution { output, stderr, .. }) =
+            transcript.lines.get_mut(line)
+        {
+            *output = shown_out;
+            *stderr = shown_err;
+        }
+        transcript.autoscroll = true;
+        true
+    }
+
+    /// Finish the job: write the final state into its transcript line,
+    /// record **one** session entry, clear the job and restore the Escape
+    /// target.
+    ///
+    /// Returns the full output for the caller's model-context injection
+    /// (`!cmd` only), or `None` if `id` did not name the running job (a
+    /// late finish from a job someone else already cleaned up).
+    ///
+    /// This is the **only** place a session entry is written for a bash
+    /// command — per chunk would put N `bashExecution` records on disk and
+    /// `/resume` would replay a command as a series of fragments.
+    pub fn finish_bash_job(
+        &mut self,
+        id: &str,
+        ok: bool,
+        exit_code: Option<i32>,
+        duration_ms: u64,
+        timed_out: bool,
+        aborted: bool,
+    ) -> Option<(String, String, bool)> {
+        let job = self.run_state.bash_job.as_ref()?;
+        if job.id != id {
+            return None;
+        }
+        let job = self.run_state.bash_job.take().expect("just checked");
+        // Same shape as the blocking path: a timeout or an abort leaves
+        // partial output, so say so instead of letting the user read it as
+        // complete.
+        //
+        // The ANSI codes are stripped **here**, on the accumulated text —
+        // not per chunk (an escape sequence can be split across two
+        // chunks) and not only for the display (the session record and the
+        // model-context message carried the stripped text too, and raw
+        // escape bytes in a session file are garbage on `/resume`).
+        //
+        // The 16 KiB cap is the blocking path's, unchanged: it applies to
+        // the transcript line, the session record and the model-context
+        // message alike, so a `!cat hugefile` cannot blow up the session
+        // file.
+        let mut display = crate::ansi::strip_ansi(&job.output);
+        let (mut capped, _t, _b, _l) = crate::ansi::truncate(&display, 16 * 1024, 200);
+        // The **runner's** verdict decides the marker, not the fact that
+        // Esc was pressed: Esc that lands after the command already exited
+        // must not claim the command was aborted.
+        // The marker goes on its own line — but only if there is output
+        // above it: a command that printed nothing should show
+        // `…(aborted)`, not a line that starts with a newline.
+        let marker = if aborted {
+            Some("…(aborted)".to_string())
+        } else if timed_out {
+            Some(format!("…(timed out after {duration_ms} ms)"))
+        } else {
+            None
+        };
+        if let Some(marker) = marker {
+            if !capped.is_empty() {
+                capped.push('\n');
+            }
+            capped.push_str(&marker);
+        }
+        display = capped.clone();
+        let stderr_display = crate::ansi::strip_ansi(&job.stderr);
+        let transcript = Arc::make_mut(&mut self.transcript_state);
+        if let Some(TranscriptLine::BashExecution {
+            output,
+            stderr,
+            ok: line_ok,
+            exit_code: line_exit,
+            duration_ms: line_duration,
+            ..
+        }) = transcript.lines.get_mut(job.line)
+        {
+            *output = capped;
+            *stderr = stderr_display.clone();
+            *line_ok = ok;
+            *line_exit = exit_code;
+            *line_duration = duration_ms;
+        }
+        transcript.autoscroll = true;
+
+        self.session_append_bash_execution(
+            &job.cmd,
+            &display,
+            &stderr_display,
+            ok,
+            exit_code,
+            duration_ms,
+        );
+        self.session_flush();
+
+        // The job is gone, so is its Escape target — and the target that
+        // comes back is the one that was in force **before** the job, not
+        // a blanket `Idle`: a command may have run while a turn (or a
+        // compaction) was in flight, and that context owns its Escape
+        // meaning.
+        //
+        // Done in the same `&mut self` that removed the job — there is no
+        // window in which the target still says `Bash` while `bash_job`
+        // is `None`.
+        self.run_state.escape_target = job.prev_escape_target;
+        self.run_state.status = if aborted {
+            "bash aborted".to_string()
+        } else if timed_out {
+            "bash timed out".to_string()
+        } else if job.private {
+            // Brief status bar hint so users can confirm the privacy
+            // marker actually fired (v0.6).
+            "executed (private)".to_string()
+        } else {
+            job.prev_status
+        };
+        Some((display, stderr_display, job.private))
+    }
+
+    /// Abort the running command, if any. Returns the job's id so the
+    /// caller can log it, or `None` when nothing was running (in which
+    /// case Esc must keep its old meaning).
+    ///
+    /// **Does not touch `abort_signal`**: Pi's `abortBash()` kills the
+    /// command, not the turn.
+    pub fn abort_bash_job(&mut self) -> Option<String> {
+        let job = self.run_state.bash_job.as_mut()?;
+        job.request_abort();
+        self.run_state.status = "aborting bash…".to_string();
+        Some(job.id.clone())
+    }
+
+    /// True while a `!cmd` is running (Pi's `session.isBashRunning`).
+    pub fn is_bash_running(&self) -> bool {
+        self.run_state.bash_job.is_some()
     }
 
     /// Cheap heuristic: estimate the transcript's token usage and decide

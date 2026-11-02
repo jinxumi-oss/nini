@@ -2034,11 +2034,31 @@ fn handle_key(
             if !submit_popup_gate(&mut state) {
                 return;
             }
+            // v0.15 (B4a)：`!cmd` / `!!cmd` 不再在事件循环里同步跑完。
+            //
+            // 此前这条路径把 `BashRunner::run_blocking` 直接调在 UI 线程上：
+            // 命令跑完之前不重绘、不出输出、Esc 完全无效（只有 runner 自己
+            // 的 10 s 超时能结束它）。现在它起一个后台作业，块由 collector
+            // 线程逐块写进同一条转录行，并叫醒循环重绘。
+            //
+            // 只解释**用户亲手提交**的文本（A4 的那条不许被破坏），
+            // 所以这里看的是 `state.input`，不是自动投递的显式文本。
+            //
+            // 判定用的是**原始前缀**（`!`），与 `submit_user_input_inner`
+            // 里那条分支同一条规则——两处若用不同规则，同一行输入会在
+            // 两个入口得到不同的解释。
+            let is_bash_input = state.input.text.starts_with('!');
             // v0.11 (N5)：中止信号**不再**在这里创建——它在
             // `submit_user_input_inner` 里创建（每一轮的唯一入口），
             // 否则自动投递那条路径（轮后把队列里的消息送出去）就没有
             // 信号可用。
+            //
+            // 放锁：`start_bash_job_from_input` 自己要拿这把锁（std 的
+            // Mutex 不可重入，握着它再拿就是死锁）。
             drop(state);
+            if is_bash_input && start_bash_job_from_input(shared, event_tx.clone()) {
+                return;
+            }
             submit_user_input(shared, agent_driver, done, event_tx.clone());
         }
         KeyAction::FollowUp => {
@@ -2133,6 +2153,19 @@ fn handle_key(
                     sig.trigger();
                 }
                 state.run_state.status = "compaction cancelled".to_string();
+            }
+            EscapeAction::AbortBash => {
+                // v0.15 (B4a)：bash 作业活着 → Esc 只中止**命令**。
+                //
+                // `abort_bash_job` 抬的是作业自己的取消标志，读管道的
+                // runner 看见它 `killpg(SIGTERM→SIGKILL)` 整棵进程树。
+                // 这里**不碰** `abort_signal` / `mode` / 队列（Pi：
+                // `session.abortBash()`）。
+                let aborted = state.abort_bash_job();
+                tracing::debug!("abort bash job: {aborted:?}");
+                // 立即让循环醒一次：帧要显示 "aborting bash…"，而命令
+                // 真正退出还要一个 SIGTERM 宽限期。
+                let _ = event_tx.send(true);
             }
             EscapeAction::ExitBashMode => {
                 // v0.11 (B4)：清空输入框 → 退出 bash mode。
@@ -2551,6 +2584,281 @@ pub fn submit_queued_turn(
     true
 }
 
+// ── v0.15 (B4a)：`!cmd` 的后台作业 ──────────────────────────────────────
+//
+// 设计（为何是这个形状）：
+//
+// * **不阻塞 UI**：命令跑在一个 `std::thread` 里（runner 是同步模块，不为
+//   它拉一个 tokio 运行时），拼块（collector）跑在**第二个** `std::thread`
+//   上；两个线程都不碰 UI。UI 线程只在 `start_bash_job_from_input` 里起作业
+//   并立刻返回；
+// * **不轮询**：每块输出由 collector 通过既有的 `event_tx`（watch 重绘通道）
+//   叫醒事件循环，不新增 timer、不睡 UI；
+// * **可中止**：Esc → `AbortBash` → `BashJob::request_abort()` 抬取消标志；
+//   runner 的 20 ms 等待循环看见它就 `killpg(SIGTERM→SIGKILL)` 整棵进程树；
+// * **不串台**：每个回调都带作业 `id`，`append_bash_chunk` /
+//   `finish_bash_job` 在**持锁读 `bash_job.id` 的同一临界区**里比较它，
+//   对不上就丢弃——迟到的完成回调不可能清掉新作业的守卫（v0.15 A1）。
+
+/// What a spawned bash job's collector sends back.
+enum BashFeed {
+    /// One block of output, tagged with the job it belongs to.
+    Chunk {
+        id: String,
+        is_stderr: bool,
+        text: String,
+    },
+    /// The runner returned.
+    Done {
+        id: String,
+        ok: bool,
+        exit_code: Option<i32>,
+        duration_ms: u64,
+        timed_out: bool,
+        /// The runner killed the command because the cancel flag was
+        /// raised (Esc). This — not the mere fact that Esc was pressed —
+        /// decides the `…(aborted)` marker.
+        aborted: bool,
+    },
+}
+
+/// What one feed item did to the state.
+enum BashFeedOutcome {
+    /// A chunk landed on the job's transcript line.
+    Chunk,
+    /// The item named a job that is no longer running; it must be dropped.
+    Stale,
+    /// The job finished. The payload is what the caller needs to close the
+    /// turn: the full output, its stderr, and the `!!` privacy flag.
+    Finished {
+        output: String,
+        stderr: String,
+        private: bool,
+    },
+}
+
+/// Apply one [`BashFeed`] item to the state.
+///
+/// **The single place both entry points share** — the event loop's
+/// collector and the blocking `submit_user_input` path both call it, so
+/// chunk appending, the id check, and the finish bookkeeping cannot drift
+/// apart.
+///
+/// The id comparison and the mutation happen under the caller's state
+/// guard, so "is this still the running job?" and "write to it" are one
+/// critical section (v0.15 A1).
+fn apply_bash_feed(g: &mut AppState, feed: BashFeed) -> BashFeedOutcome {
+    match feed {
+        BashFeed::Chunk {
+            id,
+            is_stderr,
+            text,
+        } => {
+            if g.append_bash_chunk(&id, is_stderr, &text) {
+                BashFeedOutcome::Chunk
+            } else {
+                BashFeedOutcome::Stale
+            }
+        }
+        BashFeed::Done {
+            id,
+            ok,
+            exit_code,
+            duration_ms,
+            timed_out,
+            aborted,
+        } => match g.finish_bash_job(&id, ok, exit_code, duration_ms, timed_out, aborted) {
+            Some((output, stderr, private)) => BashFeedOutcome::Finished {
+                output,
+                stderr,
+                private,
+            },
+            None => BashFeedOutcome::Stale,
+        },
+    }
+}
+
+/// Start the `!cmd` / `!!cmd` in `state.input`, if it is one.
+///
+/// Returns `true` when the input was a command — a job was started, or the
+/// input was refused because another command is running. The caller then
+/// does **not** fall through to `submit_user_input_inner` (a local escape
+/// is not a turn). Returns `false` for everything else, leaving the editor
+/// untouched.
+pub fn start_bash_job_from_input(
+    shared: &SharedState,
+    event_tx: tokio::sync::watch::Sender<bool>,
+) -> bool {
+    let (id, cmd, cancel) = {
+        let mut g = lock_state(shared);
+        // 原始前缀判定（不是 `trim_start`）——与 `submit_user_input_inner`
+        // 里那条分支的 `strip_prefix('!')` 同一规则。
+        let text = g.input.text.clone();
+        let Some(rest) = text.strip_prefix('!') else {
+            return false;
+        };
+        let (private, cmd) = match rest.strip_prefix('!') {
+            Some(c) => (true, c.trim()),
+            None => (false, rest.trim()),
+        };
+        if cmd.is_empty() {
+            // 只有一个 `!`：不是命令。**不动输入框**——让它照旧走普通提交
+            // （旧行为：空命令会作为一条普通消息送出去）。
+            return false;
+        }
+        if g.run_state.bash_job.is_some() {
+            // One command at a time: Pi's bash mode is a single editor row,
+            // and a second job would have no line to append to.
+            //
+            // 输入框**不动**：用户可以在第一条命令结束后直接重按 Enter。
+            g.run_state.status = "a command is already running".to_string();
+            return true;
+        }
+        // 命令被认领了：输入框清空、进历史。
+        g.input.submit();
+        // `private` lives on the job: `finish_bash_job` reports it back and
+        // is the only place that decides whether the output reaches the
+        // model.
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let id = g.begin_bash_job(cmd, private, Arc::clone(&cancel));
+        (id, cmd.to_string(), cancel)
+    };
+    spawn_bash_job(shared, event_tx, id, cmd, cancel);
+    true
+}
+
+/// Run `cmd` off the event loop and feed its output back into `shared`.
+///
+/// Two threads: the runner (owns the child and the cancel flag) and the
+/// collector (drains the feed, patches the transcript, wakes the loop).
+/// Neither touches the terminal or the UI thread.
+pub fn spawn_bash_job(
+    shared: &SharedState,
+    watch: tokio::sync::watch::Sender<bool>,
+    id: String,
+    cmd: String,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let (tx, rx) = std::sync::mpsc::channel::<BashFeed>();
+    let shared = Arc::clone(shared);
+
+    {
+        let tx = tx.clone();
+        let chunk_id = id.clone();
+        let done_id = id.clone();
+        let run_cmd = cmd.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("nini-bash-{id}"))
+            .spawn(move || {
+                let mut runner = nini_tools::bash_runner::BashRunner::new();
+                let chunk_tx = tx.clone();
+                let result = runner.run_streaming(
+                    &run_cmd,
+                    &cwd,
+                    nini_tools::bash_runner::DEFAULT_TIMEOUT_MS,
+                    move |chunk| {
+                        use nini_tools::bash_runner::BashChunk;
+                        let (is_stderr, text) = match chunk {
+                            BashChunk::Stdout(t) => (false, t),
+                            BashChunk::Stderr(t) => (true, t),
+                        };
+                        let _ = chunk_tx.send(BashFeed::Chunk {
+                            id: chunk_id.clone(),
+                            is_stderr,
+                            text,
+                        });
+                    },
+                    cancel,
+                );
+                let _ = tx.send(BashFeed::Done {
+                    id: done_id,
+                    ok: result.ok,
+                    exit_code: result.exit_code,
+                    duration_ms: result.duration_ms,
+                    timed_out: result.timed_out,
+                    aborted: result.aborted,
+                });
+            });
+        if let Err(e) = spawned {
+            let mut g = lock_state(&shared);
+            g.finish_bash_job(&id, false, None, 0, false, false);
+            g.push_notice(format!("could not start the command: {e}"));
+            g.push_divider();
+            drop(g);
+            let _ = watch.send(true);
+            return;
+        }
+    }
+
+    // The collector. It exits when the runner's channel closes, or when the
+    // job it is collecting is no longer the running one.
+    let _ = std::thread::Builder::new()
+        .name(format!("nini-bash-collect-{id}"))
+        .spawn(move || {
+            while let Ok(feed) = rx.recv() {
+                let outcome = {
+                    let mut g = lock_state(&shared);
+                    apply_bash_feed(&mut g, feed)
+                };
+                match outcome {
+                    BashFeedOutcome::Chunk => {
+                        // Repaint now — Pi: `appendOutput(chunk);
+                        // requestRender()`. `watch` coalesces a burst into
+                        // one frame, so a chatty command does not cost a
+                        // frame per 4 KiB read.
+                        let _ = watch.send(true);
+                    }
+                    BashFeedOutcome::Stale => {
+                        // No longer the running job: painting here, or
+                        // reporting to whatever job *is* running, is exactly
+                        // the cross-talk the id check prevents.
+                        return;
+                    }
+                    BashFeedOutcome::Finished {
+                        output,
+                        stderr,
+                        private,
+                    } => {
+                        deliver_bash_output(&shared, &cmd, output, stderr, private);
+                        let _ = watch.send(true);
+                        return;
+                    }
+                }
+            }
+        });
+}
+
+/// Close out a finished command: divider, and — for `!cmd` only — the output
+/// as a user message so the model sees it.
+///
+/// v0.11 (B4)：`!cmd` 的输出**进**模型上下文，`!!cmd` 不进。
+///
+/// Pi 的分界线（`agent-session.ts:2979`：「If true, command output won't be
+/// sent to LLM (**!!** prefix)」）：nini 的会话转换会丢掉 `bashExecution`
+/// 条目（`crates/nini-core/src/conversion.rs:172`），所以要让模型看见只能
+/// 写成一条 **User** 消息；`!!` 则**不写**，这正是隐私标记的语义。
+fn deliver_bash_output(
+    shared: &SharedState,
+    cmd: &str,
+    output: String,
+    stderr: String,
+    private: bool,
+) {
+    let mut g = lock_state(shared);
+    g.push_divider();
+    if !private {
+        g.deliver_queued_user(format!(
+            "[bash $ {cmd}]\n{}",
+            if stderr.is_empty() {
+                output
+            } else {
+                format!("{output}\n[stderr]\n{stderr}")
+            }
+        ));
+    }
+}
+
 /// Internal helper for `submit_user_input` — takes an additional
 /// `event_tx` arg that is passed to the agent sink so the runtime
 /// can wake on each event arrival.
@@ -2670,111 +2978,95 @@ pub fn submit_user_input_inner(
         //
         // 所以：**只有用户亲手敲的提交**才解释 `!` 与 `/`。
         let is_user_submit = !is_auto_delivery;
+        // v0.15 (B4a)：`submit_user_input` 是**已提交文本**的入口，没有事件
+        // 循环可借，所以这里起同一条后台作业（同一个 `AppState::bash_job`、
+        // 同一条转录行、同一个 `finish_bash_job`：唯一一条 session 记录、
+        // `!`/`!!` 的上下文边界都只有一份），然后**在本线程**把 feed 消费到
+        // `Done` 为止——`submit_user_input` 的契约本来就是「返回时这一轮已经
+        // 记完账」。
+        //
+        // 同步等待只发生在这个 API 入口：UI 走 `start_bash_job_from_input`，
+        // 它立刻返回，由 collector 线程逐块拼进转录并叫醒循环重绘。
         if is_user_submit {
             if let Some(rest) = text.strip_prefix('!') {
-                // v0.6: `!!cmd` is a privacy marker — runs the command and
-                // shows the output in the transcript, but does NOT inject
-                // it into the agent's session context. Useful for sensitive
-                // commands (`!!cat ~/.aws/credentials`) where the user
-                // wants the LLM to never see the bytes.
-                //
-                // v0.11 (B4)：`!cmd` 现在**同样不注入**（Pi 语义）。`!!`
-                // 保留的是**标记**语义：transcript 里显示 `!!cmd`，状态栏
-                // 显示 `executed (private)`。
                 let (private, cmd) = match rest.strip_prefix('!') {
                     Some(c) => (true, c.trim()),
                     None => (false, rest.trim()),
                 };
                 if !cmd.is_empty() {
-                    let mut cx = nini_tools::bash_runner::BashRunner::new();
-                    let result = cx.run_blocking(cmd, &std::env::current_dir().unwrap_or_default());
-                    use crate::state::TranscriptLine;
-                    let id = format!("bash-{}", g.transcript_len());
-                    // Strip ANSI codes + truncate so the transcript stays clean.
-                    let cleaned_out = crate::ansi::strip_ansi(&result.output);
-                    let (output, _truncated, _ob, _ol) =
-                        crate::ansi::truncate(&cleaned_out, 16 * 1024, 200);
-                    // For timeout, append a clear suffix so users know output
-                    // may be incomplete.
-                    let output = if result.timed_out {
-                        format!("{output}\n…(timed out after {} ms)", result.duration_ms)
-                    } else {
-                        output
+                    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let id = g.begin_bash_job(cmd, private, Arc::clone(&cancel));
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    let (tx, rx) = std::sync::mpsc::channel::<BashFeed>();
+                    let cmd_owned = cmd.to_string();
+                    let spawned = {
+                        let chunk_id = id.clone();
+                        let done_id = id.clone();
+                        std::thread::Builder::new()
+                            .name(format!("nini-bash-{id}"))
+                            .spawn(move || {
+                                let mut runner = nini_tools::bash_runner::BashRunner::new();
+                                let chunk_tx = tx.clone();
+                                let result = runner.run_streaming(
+                                    &cmd_owned,
+                                    &cwd,
+                                    nini_tools::bash_runner::DEFAULT_TIMEOUT_MS,
+                                    move |chunk| {
+                                        use nini_tools::bash_runner::BashChunk;
+                                        let (is_stderr, text) = match chunk {
+                                            BashChunk::Stdout(t) => (false, t),
+                                            BashChunk::Stderr(t) => (true, t),
+                                        };
+                                        let _ = chunk_tx.send(BashFeed::Chunk {
+                                            id: chunk_id.clone(),
+                                            is_stderr,
+                                            text,
+                                        });
+                                    },
+                                    cancel,
+                                );
+                                let _ = tx.send(BashFeed::Done {
+                                    id: done_id,
+                                    ok: result.ok,
+                                    exit_code: result.exit_code,
+                                    duration_ms: result.duration_ms,
+                                    timed_out: result.timed_out,
+                                    aborted: result.aborted,
+                                });
+                            })
                     };
-                    // Show `!!cmd` in the transcript so the user can see what was
-                    // actually executed (the privacy marker is for the agent,
-                    // not for the user).
-                    let cmd_display = if private {
-                        format!("!!{cmd}")
-                    } else {
-                        cmd.to_string()
-                    };
-                    Arc::make_mut(&mut g.transcript_state).lines.push(
-                        TranscriptLine::BashExecution {
-                            id,
-                            cmd: cmd_display,
-                            output: output.clone(),
-                            stderr: crate::ansi::strip_ansi(&result.stderr),
-                            ok: result.ok,
-                            exit_code: result.exit_code,
-                            duration_ms: result.duration_ms,
-                            collapsed: false,
-                        },
-                    );
-                    // v0.10 (R2f): record it too. The transcript line above is
-                    // display only - without a session entry the command is gone
-                    // on `/resume`, and `render_context_entries` rebuilds from
-                    // the session rather than from what is on screen.
-                    g.session_append_bash_execution(
-                        &cmd,
-                        &output,
-                        &crate::ansi::strip_ansi(&result.stderr),
-                        result.ok,
-                        result.exit_code,
-                        result.duration_ms,
-                    );
-                    g.session_flush();
-                    g.push_divider();
-                    // v0.11 (B4)：**`!cmd` 的输出进模型上下文，`!!cmd` 不进**。
+                    // 关键：**放掉状态锁**再去等下一块。
                     //
-                    // Pi 的分界线写在自己的注释里
-                    // （`agent-session.ts:2979`）：
-                    // 「If true, command output won't be sent to LLM (**!!**
-                    // prefix)」——也就是说 `!cmd` 的输出**是**发给 LLM 的，
-                    // 只有 `!!cmd` 才排除。分界由 `interactive-mode.ts:3109`
-                    // 的 `isExcluded = text.startsWith("!!")` 决定，一路传到
-                    // `recordBashResult(command, result, { excludeFromContext })`。
-                    //
-                    // nini 的会话转换会**丢掉** `bashExecution` 角色的条目
-                    // （`crates/nini-core/src/conversion.rs:172`——
-                    // `PiMsg::BashExecution(_) => None`），所以 nini 要让模型
-                    // 看见这段输出，只能把它写成一条 **User** 消息。这就是
-                    // `!cmd` 的做法；`!!cmd` 则**不写**——模型永远学不到
-                    // 命令的内容，这正是 `!!` 的**隐私标记**语义。
-                    //
-                    // （A4/Q1 把输出从**用户消息队列**里挪走、改成当场写
-                    // session；B4 把 `!!` 的边界写明。）
-                    if !private {
-                        g.deliver_queued_user(format!(
-                            "[bash $ {}]\n{}",
-                            cmd,
-                            if result.stderr.is_empty() {
-                                output.clone()
-                            } else {
-                                format!("{output}\n[stderr]\n{}", result.stderr)
+                    // 否则整个等待期间 `state` 都被这把锁占着——观察者（UI
+                    // 的重绘、别的线程）看不到「已经流出来的那一块」，看到的
+                    // 只有命令结束后的完整输出；那就不是流式。
+                    drop(g);
+                    if spawned.is_ok() {
+                        while let Ok(feed) = rx.recv() {
+                            let outcome = {
+                                let mut g = lock_state(shared);
+                                apply_bash_feed(&mut g, feed)
+                            };
+                            match outcome {
+                                BashFeedOutcome::Chunk => {}
+                                BashFeedOutcome::Stale => break,
+                                BashFeedOutcome::Finished {
+                                    output,
+                                    stderr,
+                                    private,
+                                } => {
+                                    // Same boundary as the collector thread:
+                                    // `!` reaches the model, `!!` never does.
+                                    deliver_bash_output(shared, cmd, output, stderr, private);
+                                    break;
+                                }
                             }
-                        ));
-                    }
-                    // Brief status bar hint so users can confirm the privacy
-                    // marker actually fired.
-                    if private {
-                        g.run_state.status = "executed (private)".to_string();
+                        }
                     }
                     return;
                 }
             }
         }
-
         // ── Slash-command interception ──────────────────────────────────────
         // Mirror the same dispatch logic as apply_action (tests) so the live
         // TUI and tests share one code path.
@@ -3156,6 +3448,20 @@ pub enum EscapeAction {
     /// 是**派生**的（`AppState::is_bash_mode`），所以清空输入框就等于
     /// 退出 bash mode，边框色随之回去——没有第二个状态需要维护。
     ExitBashMode,
+    /// v0.15 (B4a)：**中止正在跑的 `!cmd`**（Pi 的 `abortBash()`）。
+    ///
+    /// Pi: `interactive-mode.ts:2855-2856` —
+    /// ```text
+    /// if (this.session.isStreaming) {
+    ///     this.restoreQueuedMessagesToEditor({ abort: true });
+    /// } else if (this.session.isBashRunning) {
+    ///     this.session.abortBash();
+    /// ```
+    ///
+    /// 它只杀**命令的进程树**：不碰 `abort_signal`、不碰 `mode`、不动队列。
+    /// 一个回合同时在跑时，Esc 也只中止命令（bash 作业优先：nini 的
+    /// `escape_action` 在 `EscapeTarget` 分派之前就判它）。
+    AbortBash,
 }
 
 /// Pi 的 double-ESC 窗口：两次 Esc 相隔不超过 500 ms。
@@ -3241,6 +3547,19 @@ pub fn escape_action(state: &AppState) -> EscapeAction {
     if state.run_state.pending_quit.is_some() {
         return EscapeAction::CancelQuit;
     }
+    // v0.15 (B4a)：**正在跑的 `!cmd` 最先**（Pi 的 `isBashRunning` 档）。
+    //
+    // Pi 自己的顺序是 `isStreaming` → abort、**`isBashRunning` →
+    // `abortBash()`**（`interactive-mode.ts:2855-2861`）；B4a 把
+    // `isBashRunning` 提到**回合**之前——一条本地命令和一轮对话可以同时
+    // 在跑，这时 Esc 必须只杀命令（杀进程树），**不动那一轮**：回合的
+    // `abort_signal`、队列、`mode` 都不碰。
+    //
+    // 读的是 `bash_job` 而不是 `escape_target`，所以即使相位事件把 target
+    // 改了回去（例：压缩 + `!cmd` 同时在跑），命令也仍然可中止。
+    if state.run_state.bash_job.is_some() {
+        return EscapeAction::AbortBash;
+    }
     // v0.10.8 (A3)：target 优先于 mode —— 压缩/重试/分支摘要的上下文里，
     // Esc 是「中止这一轮」，而 Idle 里才是「清空输入」。
     match state.run_state.escape_target {
@@ -3250,6 +3569,12 @@ pub fn escape_action(state: &AppState) -> EscapeAction {
         crate::state::EscapeTarget::Retrying
         | crate::state::EscapeTarget::BranchSummary
         | crate::state::EscapeTarget::Agent => EscapeAction::AbortTurn,
+        // `escape_target` 只在 `bash_job` 非空时才会是 `Bash`（两者同临界区
+        // 读写，见 `AppState::begin_bash_job` / `finish_bash_job`），而上面
+        // 已经拦下了那种情况；万一有一条路径只改了 target，这里仍然中止
+        // **命令**——宁可少中止一次回合，也不能去杀一条正在跑的本地命令
+        // 时反而把回合砍了。
+        crate::state::EscapeTarget::Bash => EscapeAction::AbortBash,
         crate::state::EscapeTarget::Idle => {
             if state.run_state.mode == RunMode::Running {
                 EscapeAction::AbortTurn
@@ -3657,6 +3982,10 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                     sig.trigger();
                 }
                 state.run_state.status = "compaction cancelled".to_string();
+            }
+            EscapeAction::AbortBash => {
+                // v0.15 (B4a)：见 `handle_key` 里的同名分支。
+                let _ = state.abort_bash_job();
             }
             EscapeAction::ExitBashMode => {
                 // v0.11 (B4)：见 `handle_key` 里的同名分支。
