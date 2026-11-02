@@ -33,6 +33,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::mermaid::MermaidRenderingMode;
 use crate::theme::Theme;
 
 /// Render markdown text into styled ratatui lines.
@@ -49,6 +50,29 @@ use crate::theme::Theme;
 const MAX_HR_WIDTH: usize = 80;
 
 pub fn render_markdown(s: &str, theme: &Theme, width: Option<usize>) -> Vec<Line<'static>> {
+    render_markdown_with_mermaid(s, theme, width, MermaidRenderingMode::default())
+}
+
+/// Same, with an explicit mermaid mode (Pi's `markdown.mermaid` setting).
+///
+/// `render_markdown` keeps its signature — every call site (`rich.rs`, the
+/// transcript, the tests) is unchanged — and uses the default mode. Wiring
+/// the setting into those call sites is a separate change; this function is
+/// what that change will call, and what `b8_mermaid_block` uses to pin the
+/// `Off` behaviour.
+///
+/// `Final` and `Streaming` are the same code path here on purpose. In Pi they
+/// differ only in *when* the transformer runs — while the response is still
+/// arriving (`streaming`) or once it is complete (`final`)
+/// (`interactive-mode.ts:439`, `:2025`). nini has no streaming markdown pass:
+/// a `Line` is produced from finished text, so there is no phase to tell
+/// apart. Mode is therefore read for `Off` alone.
+pub fn render_markdown_with_mermaid(
+    s: &str,
+    theme: &Theme,
+    width: Option<usize>,
+    mermaid: MermaidRenderingMode,
+) -> Vec<Line<'static>> {
     if s.trim().is_empty() {
         return vec![Line::from("")];
     }
@@ -60,7 +84,7 @@ pub fn render_markdown(s: &str, theme: &Theme, width: Option<usize>) -> Vec<Line
     options.insert(Options::ENABLE_FOOTNOTES);
 
     let parser = Parser::new_ext(s, options);
-    let mut state = MdState::new(theme, width);
+    let mut state = MdState::new(theme, width, mermaid);
     state.content_width = width;
     for event in parser {
         state.handle(event);
@@ -115,6 +139,12 @@ struct MdState<'a> {
     /// True if the previous event ended a block element (used for blank-line
     /// spacing between blocks).
     last_was_block_end: bool,
+    /// Mermaid mode in force for this render. `Off` leaves the code-block
+    /// path untouched (see `on_start`/`on_end(CodeBlock)`).
+    mermaid: MermaidRenderingMode,
+    /// True while the open fence is a mermaid block that is being collected
+    /// for [`crate::mermaid::render_mermaid_block`]. Never set in `Off` mode.
+    in_mermaid: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -139,7 +169,7 @@ struct ListCtx {
 }
 
 impl<'a> MdState<'a> {
-    fn new(theme: &'a Theme, width: Option<usize>) -> Self {
+    fn new(theme: &'a Theme, width: Option<usize>, mermaid: MermaidRenderingMode) -> Self {
         Self {
             theme,
             width,
@@ -159,6 +189,8 @@ impl<'a> MdState<'a> {
             heading_underline: false,
             pending_link_url: None,
             last_was_block_end: true, // treat start as if a block just ended
+            mermaid,
+            in_mermaid: false,
         }
     }
 
@@ -298,6 +330,18 @@ impl<'a> MdState<'a> {
                     pulldown_cmark::CodeBlockKind::Indented => String::new(),
                     pulldown_cmark::CodeBlockKind::Fenced(cow) => cow.to_string(),
                 };
+                // B8: a ```mermaid fence gets the placeholder block instead
+                // of the fenced-code rendering. The source is collected
+                // through the ordinary code path (`push_text` appends to
+                // `code_buf` while `in_code` is set) and converted once the
+                // fence closes, so nothing else in the state machine changes.
+                //
+                // `Off` is checked first and leaves `in_mermaid` false: the
+                // block then runs through `flush_code_block`, i.e. exactly
+                // the code that existed before this hook.
+                if !self.mermaid.is_off() && crate::mermaid::is_mermaid_fence_lang(&lang) {
+                    self.in_mermaid = true;
+                }
                 self.in_code = Some(lang);
                 self.code_buf.clear();
             }
@@ -380,8 +424,20 @@ impl<'a> MdState<'a> {
                 self.ensure_block_gap_after();
             }
             TagEnd::CodeBlock => {
-                self.flush_code_block();
-                self.in_code = None;
+                if self.in_mermaid {
+                    self.in_mermaid = false;
+                    let source = std::mem::take(&mut self.code_buf).concat();
+                    let block = crate::mermaid::render_mermaid_block(
+                        &source,
+                        self.theme,
+                        self.content_width,
+                    );
+                    self.in_code = None;
+                    self.out.extend(block);
+                } else {
+                    self.flush_code_block();
+                    self.in_code = None;
+                }
                 self.ensure_block_gap_after();
             }
             TagEnd::HtmlBlock => {}

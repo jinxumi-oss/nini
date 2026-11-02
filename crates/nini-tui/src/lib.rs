@@ -32,6 +32,7 @@ pub mod keybindings_manager;
 pub mod keyhint;
 pub mod keys;
 pub mod markdown;
+pub mod mermaid;
 pub mod render;
 pub mod rich;
 pub mod runtime;
