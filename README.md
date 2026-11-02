@@ -7,9 +7,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-[![Status](https://img.shields.io/badge/status-v0.13.0-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.16.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1803%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1850%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -68,7 +68,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **1803 unit + integration tests**, including property-based SSE fuzz and
+- **1850 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -308,13 +308,20 @@ trying to be; this section is the user-facing summary of it.
   tool definitions (`references/pi-0.85.1/tool-contracts.json`). The one
   exception is **`powershell`** (Windows-only in Pi), which nini does not ship;
   `bash` covers the same ground on POSIX.
-- **A running `!cmd` cannot be interrupted, and it blocks the UI.** `!cmd`
-  (like `!!cmd`) runs the shell **synchronously on the UI thread**: the
-  transcript shows the output only after the command has finished, the TUI
-  does not repaint while it runs, and `Esc` cannot abort it — the command
-  is killed only when it exceeds the built-in 10-second timeout. Pi
-  streams the output chunk by chunk as it arrives and lets `Esc` abort
-  the run.
+- **A running `!cmd` streams, and `Esc` aborts it.** `!cmd` (like `!!cmd`) runs
+  the shell **off the UI thread**: the transcript shows the output chunk by
+  chunk as it arrives, the TUI keeps repainting while the command runs, and
+  `Esc` kills the command's **whole process tree** (SIGTERM → SIGKILL). Pi
+  streams the same way and lets `Esc` abort the run. Gap **B4a**, closed in
+  v0.16.
+- **A mermaid code block is rendered as an explicit placeholder, not as a
+  diagram.** Pi's mermaid renderer (`src/ui/components/mermaid.ts`) is not in
+  the reference snapshot, so its exact output is unverifiable, and nini has
+  no mermaid layout engine (and adds no dependency for one). What nini does
+  is say so: the block is titled `◇ mermaid · flowchart` (the diagram kind),
+  states plainly that nothing was drawn, and keeps the source line by line —
+  so nothing is ever lost. Turning it into a real diagram needs a layout
+  engine and is tracked as gap **B22**.
 - **Double-Escape opens the tree selector** (`settings.json`'s
   `double_escape_action`: `"tree"` or `"none"`). Pi's third option,
   `"fork"`, opens a *picker of previous user messages* — nini has no such

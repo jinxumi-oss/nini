@@ -66,7 +66,12 @@ ROUNDS = ("W0", "W1-A", "W1-B", "W1-C", "W2", "W3", "W4", "W5", "—",
           # v0.15 计划（docs/plans/parity-with-pi.md）：批次级 toolExecution
           # 入口（B18）、台账盘点后拆出来的 B1a/B4a/B10a/B15a，以及新登记的
           # B20（串行模式的事件时机）与 B21（工具级 executionMode 的声明通道）。
-          "v0.15")
+          "v0.15",
+          # v0.16 计划（docs/plans/parity-with-pi.md）：本轮关掉的 B4a
+          # （`!cmd` 流式与可中止）、B8（mermaid 的降级占位）、B20（工具
+          # 「执行开始」事件的时机）、D1（三个符号接线），以及新登记的 B22
+          # （mermaid 的真图渲染仍未做）。
+          "v0.16")
 DECISIONS = ("R4", "R5", "R9", "R10", "R11")
 
 # Every field a gap record must carry, with the type it must have.

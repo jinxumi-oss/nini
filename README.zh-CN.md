@@ -7,9 +7,9 @@
 
 [English](README.md) | **简体中文**
 
-[![Status](https://img.shields.io/badge/status-v0.13.0-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.16.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1803%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1850%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
@@ -53,7 +53,7 @@ nini 也不做。
 
 - **单个 6.4 MiB 可执行文件**（压缩后 2.4 MB），取代一整套 Node.js 工具链
 - **无授权附加条款**——纯 MIT，不像某些带着 OpenAI/Anthropic 再分发限制的分支
-- **1803 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
+- **1850 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
   HTTP 服务器的端到端线格式测试
 - **内置工具可扩展**——bash、read、write、edit、grep、find
 - **流式 TUI**，带斜杠命令自动补全
@@ -262,10 +262,15 @@ session JSONL。
   指向它自己选的主机、塞给它一份凭证，更不该有权让它执行一条命令（provider 的
   `apiKey` 可以写成 shell 命令，nini 与 Pi 一样会执行它）。Pi 0.85.1 压根没有
   项目级 `models.json` 这个概念。
-- **运行中的 `!cmd` 不可中止，也会卡住界面。** `!cmd`（与 `!!cmd`）在 UI 线程上
-  **同步**执行：命令跑完之前 transcript 里看不到输出，TUI 也不重绘，`Esc`
-  中止不了它——只有超过内置的 10 秒超时才会被杀掉。Pi 是边跑边把输出逐块推出来，
-  并且 `Esc` 就能中止。
+- **运行中的 `!cmd` 边跑边出，`Esc` 就能中止。** `!cmd`（与 `!!cmd`）在 UI 线程
+  **之外**执行：输出逐块推进 transcript，命令跑着的时候 TUI 照常重绘，
+  `Esc` 会杀掉这条命令的**整棵进程树**（SIGTERM → SIGKILL）。Pi 也是边跑边
+  逐块推输出，并且 `Esc` 就能中止。对应差距 **B4a**，v0.16 关掉。
+- **mermaid 代码块渲染成一块**明确的降级占位**，不是图。** Pi 的 mermaid 渲染器
+  （`src/ui/components/mermaid.ts`）**不在参考快照里**，它的确切输出无从验证，
+  而 nini 没有 mermaid 布局引擎（也不会为此引入依赖）。nini 做的是把话说清楚：
+  标题是 `◇ mermaid · flowchart`（图种），正文直说「没画」，源码逐行保留——
+  所以不会有任何一行丢失。把它变成真图需要布局引擎，对应差距 **B22**。
 - **transcript 里的 URL 以纯文本呈现，不可点击。** Pi 自己往终端写字节，能发出
   OSC 8 超链接；nini 经 ratatui 的 cell 缓冲区绘制，没有 hyperlink 支持 ——
   把那段转义序列塞进去，它会变成**字面 cell 文本**，终端把 URL 当可见文字画出来，

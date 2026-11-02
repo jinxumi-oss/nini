@@ -418,6 +418,39 @@ C2：任何计划文档的状态字段必须能在代码里指出对应符号。
 且两个实现都必须抓住「故意做坏」的样例。
 C3：provider/成本层是排期问题，记录在案，不在代码层解决。
 
+### v0.16 —— 关掉最后四条**可做**的真差距（2026-11-02）
+
+这一轮没有新的功能面，只把台账里剩下的、**不依赖 owner 决策**的真差距关掉，
+并把每一条变成**可判定的断言**。
+
+| 条目 | 做了什么 | 判据 |
+|---|---|---|
+| **B4a** | `!cmd` / `!!cmd` 边跑边出、Esc 杀整棵进程树、不再卡 UI（`run_streaming` + `BashJob` + `EscapeTarget::Bash`） | `cargo test -p nini-tui --test b4a_bash_stream` 退出 0（9 条） |
+| **B20** | 新增 `AgentEvent::ToolExecutionStart`：**串行**批次里 start/end 按工具交错，**并行**批次里所有 start 在任何 result 之前（与 `agent-loop.ts:431`/`:487` 逐条对齐）；TUI 用它区分「排队」与「正在执行」 | `cargo test -p nini-core --test tool_execution_events` 退出 0（5 条）+ `cargo test -p nini-tui --test b20_tool_execution_events` 退出 0（2 条） |
+| **D1** | 三个「已就位但没接线」的符号接进运行时（终端标题 / tmux 键盘检查 / 资源诊断），并让 skills 的同名碰撞**落败者不再被静默丢弃** | `cargo test -p nini-tui --test d1_startup_wiring` 退出 0（9 条）+ `cargo test -p nini-core --test skill_collision_precedence` 退出 0（5 条） |
+| **B8** | mermaid 围栏块 → **明确降级占位**（图种 + 「没画」+ 源码逐行保留）；`Off` 逐字节走回旧代码块路径 | `cargo test -p nini-tui --test b8_mermaid_block` 退出 0（10 条） |
+
+**新登记 B22**：B8 按它自己的判据（「渲染为图**或**明确的降级占位」）关掉了，
+但**真图**渲染仍未做——Pi 的 `components/mermaid.ts` 不在快照里（无从验证），
+nini 也没有布局引擎。这一条单独登记，不含糊。
+
+**顺带修掉**：`install.sh` 的 EXIT trap 吞掉真正的下载错误（并泄漏临时目录）；
+`--skill` 的优先级与它自己的帮助文本相悖。
+
+**本轮台账**：46 条，`open` 8 → 5，`fixed` 29 → 33，`fake` 4 → 5（新登记 B23）。
+前后快照在
+`docs/parity-snapshots/2026-11-01-v0.15-before-v0.16.json` 与
+`docs/parity-snapshots/2026-11-02-v0.16-after.json`。
+
+**新登记 B23**：`/export` 默认省略 thinking 内容（Pi 的导出保留）——那是有意的
+产品决定（v0.8），但**导出器注释承诺的 `--include-thinking` flag 此前根本不存在**，
+v0.16 把它做出来。这是跑 `gate.sh --full` 的导出对照时撞出来的。
+
+**剩下的 8 条**（`open` 5 + `blocked-owner` 3）**都不是「还没人做」**：
+B21 与 C4 缺一个**运行时扩展系统**（承载主体），B22 缺一个**布局引擎**，
+C3/D5 与 B9 是 **provider 覆盖面与字段**（R5 待拍板），B1 是 `/clone` 的语义
+（R10），B7 是语法高亮（R9）。每一缺什么写在台账的 `nini_state` 里。
+
 ---
 
 ## 5. 门禁与验证口径

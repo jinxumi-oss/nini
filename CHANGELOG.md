@@ -1,3 +1,194 @@
+## v0.16.0 — 把台账里剩下的三条真差距关掉：`!cmd` 边跑边出、工具「执行开始」的时机、三个符号的接线
+
+1850 tests, all green.
+
+> 这一版做的不是「加功能」，是**把差距变成可判定的断言**。台账从 44 条到 45 条：
+> `open` 8 → 5，`fixed` 29 → 33。关掉的是 B4a（`!cmd` 不可中止、不流式、阻塞 UI）、
+> B20（串行模式下工具事件的时机）、D1（三个「已就位但没接线」的符号）、B8
+> （mermaid 的**明确降级占位**）；新登记一条 B22（mermaid 的**真图**渲染仍未做）。
+> 剩下的 5 条 `open` 与 3 条 `blocked-owner` 在最后一节**逐条**列出来，每一条都写着
+> 它为什么还在——其中 3 条要 owner 拍板，不是「还没做」。
+
+### 1. B4a：`!cmd` 边跑边出、Esc 杀整棵进程树、不再卡住 UI
+
+`!cmd` / `!!cmd` 此前**同步跑在 UI 事件循环线程上**。三件事同时坏掉：命令跑完之前
+**不重绘、不出输出**（用户盯着一个静止的界面）；`Esc` **够不着它**（`EscapeTarget`
+的五态里没有「bash 正在跑」）；命令期间**整个 TUI 无响应**。
+
+Pi 是**边跑边出、Esc 可中止**（`references/pi-0.85.1/src/ui/interactive-mode.ts:2855-2856`
+的 `abortBash` 与 `:6535-6538` 的逐 chunk 追加）。
+
+这一版：
+
+* `crates/nini-tools/src/bash_runner.rs` 新增 `run_streaming(cmd, cwd, timeout,
+  on_chunk, cancel)`：procgroup `setsid` 起子进程，stdout/stderr 各一条 pump
+  线程按 4 KiB 读并回调，等待循环 20 ms 轮询 `cancel` 与超时（命中即
+  SIGTERM → 200 ms → SIGKILL，**整棵进程树**）。**没有引入 tokio**——runner 是
+  同步模块，为它拉一个 reactor 会在测试里 panic。
+* `crates/nini-tui/src/state.rs` 新增 `EscapeTarget::Bash` 与
+  `RunState.bash_job: Option<BashJob>`：作业的 id、取消标志、已累计输出、`!!`
+  隐私标记、命令，以及**作业开始前的 Escape target 与状态栏文案**，都在这一个
+  字段里。
+* `crates/nini-tui/src/runtime.rs`：UI 路径起后台作业并**立刻返回**，collector
+  线程逐块写进同一条转录行，并用**既有的 watch 重绘通道**叫醒事件循环（不轮询、
+  不睡 UI、不新增 timer）；API 路径起**同一条**作业，等待期间**放掉状态锁**，
+  否则观察者看不到中间块，那就不是流式。
+* Esc → `AbortBash`：只抬作业自己的取消标志并 `killpg`，**不碰**回合的
+  `abort_signal` / `mode` / 队列（Pi 的 `abortBash()`）。
+* **不串台**：每个回调带作业 id，`append_bash_chunk` / `finish_bash_job` 在
+  **持锁读 `bash_job.id` 的同一临界区**里比较，对不上就丢弃——迟到的完成回调
+  不可能清掉新作业的守卫（v0.15 的 A1 教训）。
+* 结束时**恰好一条** `bashExecution` session 记录（完整输出，不是最后一次
+  chunk），`/resume` 仍能回放；`!cmd` 进模型上下文、`!!cmd` 不进的边界不变。
+
+**与 Pi 的一处有意差异（登记在台账 B4a）**：Pi 的 Esc 阶梯是 `isStreaming` →
+`isBashRunning` → `isBashMode`，即**回合优先**；nini 把 `isBashRunning` 提到回合
+之前——命令活着时 Esc 只杀命令。理由是 B4a 自己的判据「Esc 能中止正在跑的
+`!cmd`」在 Pi 的顺序下**不成立**（回合还活着时 Esc 够不着命令）。这条差异由
+断言钉住，不许无声漂移。
+
+断言：`crates/nini-tui/tests/b4a_bash_stream.rs` 9 条（流式用**时间点**断言，不是
+只看最终结果；中止后 1.5 s 内出现 `…(aborted)` 且作业被清空；Esc 不误伤回合；
+session 恰好一条记录；超时标记；迟到的回调动不了新作业；第二条命令被拒）。
+
+### 2. B20：工具「执行开始」的事件时机
+
+nini 只有**模型流**里的开始事件（`AgentEvent::ToolCallStart`），模型把这一批工具
+调用吐完时就发完了，于是**一批工具的 start 全部排在任何结果之前**。
+
+Pi 有**两个不同的时刻**：「模型说我要调它」与「**真的要执行了**」
+（`tool_execution_start`）。快照里读得到两者的顺序
+（`references/pi-0.85.1/src/loop/agent-loop.ts`）：
+
+* **并行分支**（:487 `executeToolCallsParallel`）：循环里逐个先发 start，执行塞进
+  数组，最后 `Promise.all` 一起跑 → **所有 start 在任何 end 之前**；
+* **串行分支**（:431 `executeToolCallsSequential`）：`await emit(start)` 在**每个
+  工具的循环体里** → **start 与 end 交错**：`start(A), end(A), start(B), end(B)`。
+
+nini 两个分支都走同一个 worker 池（串行时 `parallelism = 1`），所以发出点按模式
+分开：并行时在**推任何 future 之前**把整批 start 全 yield 出来；串行时每个调用
+**被 dispatch 的那一刻**才 yield——于是顺序就是 Pi 的交错顺序。
+
+TUI 侧真的用上了这个事件：`UiState::executing_tools: HashSet<String>` 记住正在
+执行的工具 id，渲染按 id 查它——排队/已结束仍是 `▸ `（**不变**，既有快照与既有
+测试的期望值一个都没动），**正在执行**是 `» `。于是串行批次里用户能一眼看出
+agent 此刻坐在哪个工具上，那正是这个事件存在的意义。
+
+状态放在 `UiState` 而不是 `TranscriptLine::ToolCall` 上：后者被十几处结构体字面量
+构造（测试里也有），加字段会把整个 crate 的改动面拉大，而「正在执行」本来就不是
+那一行的内容。
+
+断言：`crates/nini-core/tests/tool_execution_events.rs` 5 条（串行批次断言**下标
+关系** `idx(start(A)) < idx(result(A)) < idx(start(B))`；并行批次两个 start 都排在
+任何 result 之前；模型流的 start 仍排在所有执行开始之前；id 一致；serde tag）+
+`crates/nini-tui/tests/b20_tool_execution_events.rs` 2 条（帧文本断言两种画法
+**不同**且写死，执行标记跟随调用而不是行号）。
+
+### 3. D1：三个「已就位但没接线」的符号接进运行时
+
+D1 的判定书里写着：「三个『做』的符号已就位，但还没接线进运行时……**接线完成前
+本条不得标 fixed**」。已就位的三个符号有 8 条测试，但那 8 条测的是**积木**——
+没有任何一条证明运行时**真的调用**了它们。这一版把三者接上，并补上证明接线的
+断言。
+
+* **终端标题**（Pi 的 `updateTerminalTitle`，`interactive-mode.ts:1020`）：形状是
+  `<产品> - <会话标识> - <cwd basename>`；nini 没有「会话名」，用 session id 近似，
+  没有会话时退化成 Pi 的第二形态。新增 `update_startup_title(shared, write)`——
+  **写入器是注入的**（TUI 运行期 stdout 归渲染器所有，测试一个字节都不落终端），
+  真 sink 是 crossterm 的 `SetTitle`（OSC 2，不是文本）。在
+  `EnterAlternateScreen` **之后**调用。
+* **tmux 键盘检查**（Pi 的 `checkTmuxKeyboardSetup`，`:1161`）：nini 把 **Alt+Enter**
+  绑成 followUp，而 modified Enter 正是 tmux 会吃掉的东西——用户敲了 Alt+Enter，
+  什么都没发生，那条 follow-up 就**静默丢了**。警告只走 `push_notice` 进**转录**
+  （TUI 运行期转录是唯一的用户可见通道，直接写终端会盖在画好的帧上）；
+  `NotApplicable` / `Ok` / `Unknown` **一个字都不说**（Pi：读不到的设置不警告）。
+* **资源诊断**（Pi 的 `formatDiagnostics`，`:1589`）：nini 的 skills 加载器此前把
+  同名碰撞的**落败者直接丢掉**。现在 `LoadSkillsResult` 带 `collisions`，每个
+  落败者都被记下来（路径是真正读过的 `SKILL.md`），CLI 在加载处用
+  `format_diagnostics` 打到 stderr（启动期，TUI 还没接管屏幕；没有诊断就一个字都
+  不打）。依赖方向不变：碰撞信息住 nini-core，映射在 nini-cli。
+
+断言：`crates/nini-tui/tests/d1_startup_wiring.rs` 9 条（含一条**源码级**断言：
+`include_str!` 读 `runtime.rs`，断言它**真的调用了**那两个函数——真正的 `run()` 在
+TTY 后面，测试够不着，这是唯一能证明「符号不是死的」的办法）+
+`crates/nini-core/tests/skill_collision_precedence.rs` 5 条。
+
+### 4. B8：mermaid 的**明确降级占位**（不是对齐）
+
+Pi 把 mermaid 接进转录（`interactive-mode.ts:131` / `:439` / `:2025`），设置项是
+`markdown.mermaid: off | final | streaming`（默认 `streaming`）。
+
+**但 `components/mermaid.ts` 不在参考快照里**——Pi 真正的画图代码读不到，它的盒形、
+配色、截断规则**无法从快照验证**；nini 也没有 mermaid 布局引擎（没有图布局、没有
+节点标签的文本测量），这一轮**不加任何依赖**。
+
+所以交付的**不是对齐**，是一个说清楚「这里是一张图、本机不画」的占位块：首行给出
+图种（`◇ mermaid · flowchart`），第二行直说没画，正文是源码**逐行保留**、可复制、
+给了宽度就按宽度截断（**没有一行会消失**）。模式这一侧对齐的是**设置**而不是
+渲染；`Off` 必须**逐字节**走回原来的代码块路径。
+
+断言：`crates/nini-tui/tests/b8_mermaid_block.rs` 10 条（含一条「`Off` 的输出与写死
+的旧代码块渲染逐行相等」——防回归的关键）。
+
+**真图渲染仍未做**，单独登记为 **B22**：那需要一个布局引擎（以及引哪个），要先有
+owner 决策。
+
+### 5. 顺带修掉的三个缺陷
+
+* **`install.sh` 的 trap 吞掉了真正的错误**：临时目录是 `download_and_install` 的
+  **local**，下载失败时 `set -e` 从函数内部退出，函数的局部作用域先没了，trap 于是
+  撞上 `set -u` 报 `tmpdir: unbound variable` 并死掉——用户看到的是「unbound
+  variable」，**真正的原因（下载失败/404/无网络）被吞掉了**，退出码也不对，临时
+  目录还泄漏。改成全局 `NINI_TMPDIR` + 具名 trap，下载失败时先打印**带 URL 的**
+  错误再 `exit 1`。
+* **`--skill` 的优先级与它自己的帮助文本相悖**：`load_skills_from_paths` 的注释写着
+  「显式指定的 skill 赢下同名碰撞」，帮助文本写着 "Overrides automatic skill
+  discovery"——**两处都说显式的赢**，但代码是反的：用户**点名**的
+  `--skill path/to/SKILL.md` 输给同一次调用里另一个**目录**里的同名 skill。D1 的
+  碰撞报告会让这件事对用户可见（「你点名的那个 skill 被跳过了」），所以代码改成
+  与两处声明一致。
+* **`/export --include-thinking` 是个不存在的 flag**——而导出器里的注释写着
+  「Users can re-export with --include-thinking if they want it」。全仓 grep
+  `include-thinking` **只命中那条注释自己**：注释在承诺一个用户敲不出来的选项，
+  而导出物**永远**丢掉 thinking 内容（Pi 的导出保留它）。这一版把 flag 真的做
+  出来（可与路径同时给、顺序随意；thinking 内容按 HTML 转义——它是模型输出）。
+  默认口径**不变**（仍省略，那是有意的产品决定，登记为伪差距 **B23**）。
+  这条是跑 `scripts/gate.sh --full` 的导出对照时撞出来的：那一格「thinking」恒红，
+  原因是 nini 默认省略而 Pi 默认保留——**oracle 没读这个开关**，本轮**没有去改
+  oracle**（不许为了让门禁变绿而改判定）。
+
+### 6. 台账现在长什么样
+
+`scripts/parity-gap.py`（机器台账的唯一出口）：
+
+| | v0.15 | v0.16 |
+|---|---|---|
+| 条数 | 44 | 46 |
+| `open` | 8 | **5** |
+| `fixed` | 29 | **33** |
+| `fake` | 4 | **5**（新登记 B23） |
+| `blocked-owner` | 3 | 3 |
+| 可机器判定 | 30 | **34** |
+
+### 7. 还在的（逐条：为什么还在）
+
+**`open`（5 条）**
+
+| id | 级别 | 为什么还在 |
+|---|---|---|
+| B21 | P2 | 工具级 `executionMode` 的**声明通道**：Pi 靠扩展注册来声明，nini 没有运行时扩展系统（`crates/nini-ext` 写着 NOT WIRED）——缺的是**承载主体**，不是判定逻辑 |
+| B22 | P3 | mermaid 的**真图**渲染：需要布局引擎，且 Pi 的实现不在快照里，「对齐 Pi 的画图」无从验证——**要 owner 先拍板引不引引擎** |
+| C3 | P2 | 投入单侧化：provider / 成本层长期无人推进（与 B9 同源，B9 要 owner 拍板） |
+| C4 | P2 | 扩展层能力缺口：nini 的 Tool 能贡献 prompt，但不能贡献自己的渲染、流式更新与 signal——**要 owner 先决定要不要做扩展兼容** |
+| D5 | P3 | Pi 的 provider / model 级字段（oauth、headers、authHeader、modelOverrides、cost、samplingParams、thinkingLevelMap…）在 nini 侧无承载点 |
+
+**`blocked-owner`（3 条）**：B1（`/clone` 的语义：Pi 是 fork-at-leaf 并切到新
+session，nini 只复制 JSONL 文件，**要 R10 拍板**）、B7（语法高亮：**要 R9 拍板**）、
+B9（provider 覆盖面：**要 R5 拍板**）。
+
+这 8 条**都不是「还没人做」**：每一条要么缺一个承载主体，要么缺一个 owner 决策，
+要么缺一个布局引擎。台账把缺什么写在了每一条的 `nini_state` 里。
+
 ## v0.15.0 — 批次级工具执行模式：对齐的是**这一层**，不是「与 Pi 完全一致」
 
 1803 tests, all green.
