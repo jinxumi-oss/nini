@@ -290,6 +290,90 @@ Pi 的 extensions 在 nini 这边不存在），
 
 **接线完成前，D1 不能标 fixed。**
 
+> **状态更新（2026-08-02）：接线已完成，见 §9。** 三处接线全部落地，
+> `docs/plans/d1-decision.md` §9 记了落点、时序与验证；D1 的三个「做」项
+> 至此才算真的进了运行时。
+
+---
+
+## 9. 接线完成记录（2026-08-02）
+
+三个符号不再是「就位但没人叫」的了。这一节记的是**落在哪个函数**、
+**启动时序**、以及**为什么这么落**。
+
+### 9.1 终端标题 —— `runtime.rs`
+
+| 位置 | 内容 |
+|---|---|
+| `crates/nini-tui/src/runtime.rs` | 新增 `pub fn update_startup_title<F: FnMut(&str)>(shared: &SharedState, write: F)` |
+| 同一个文件的 `run()` | `execute!(stdout, EnterAlternateScreen)?` **之后**调用它，写入器是真正的落盘口 `terminal_title::write_title_to_terminal`（crossterm `SetTitle`，OSC 2） |
+
+* session id 取自 `state.session_state.session_id`（`Option<String>`）——
+  **没有会话就是 `None`**，走 Pi 的退化形态 `nini - <cwd basename>`；
+  运行时不编造 id。CLI 的 bootstrap 在 `run()` 之前调了 `start_session`，
+  所以正常情况下启动即有三段形态。
+* cwd 取自 `state.session_state.cwd`，缺省回落到 `current_dir()`。
+* 写入器是**注入**的：测试传记录器，断言标题字符串，**不产生任何真实终端写入**；
+  `SetTitle` 是控制序列而不是可打印文本，不违反 no-terminal-writes 不变式。
+
+### 9.2 tmux 键盘检查 —— `runtime.rs`
+
+| 位置 | 内容 |
+|---|---|
+| `crates/nini-tui/src/runtime.rs` | 新增 `pub fn push_startup_diagnostics(shared: &SharedState, status: TmuxKeyboardStatus)` |
+| 同一个文件的 `run()` | 在**进入 alternate screen 之前**（ambiguous-width 探测之后、`enable_raw_mode()` 之前）调 `check_tmux_keyboard_setup_env()`，再把结论交给 `push_startup_diagnostics` |
+
+* 警告**只进转录**（`push_notice`），**绝不写终端**——转录才是 TUI 运行期
+  唯一的用户可见通道。
+* 文案是 Pi 的原文（`tmux_setup.rs` 模块注释里逐字抄的两句）。
+* `NotApplicable` / `Ok` / `Unknown` 一律不警告（Pi 的规则：读不到就不警告）。
+* 没有 tmux 的机器上 `check_tmux_keyboard_setup_env()` 返回 `Unknown`，
+  不加超时也不加重试。
+
+### 9.3 资源诊断 —— `nini-core` → `nini-cli` → `nini-tui`
+
+分层红线：`nini-core` **不能**依赖 `nini-tui`（依赖方向是 nini-tui → nini-core），
+所以碰撞信息住在 nini-core，由 nini-cli 映射成 nini-tui 的 `ResourceDiagnostic`。
+
+| 位置 | 内容 |
+|---|---|
+| `crates/nini-core/src/skills.rs` | 新增 `pub struct SkillCollision { name, winner, loser }`；`LoadSkillsResult` 新增 `pub collisions: Vec<SkillCollision>`。`load_skills_from_roots` 的 `or_insert` 现在**把落败者记下来**（赢家 = 根目录顺序里**靠后**的那个，落败者 = 靠前的那个）；`load_skills_from_paths` 同样记录「显式路径 vs 根目录」的碰撞（按**代码实际行为**：根目录赢） |
+| `crates/nini-cli/src/app.rs` | 新增 `startup_skill_diagnostics()`（nini-core 的碰撞/错误 → `nini_tui::tmux_setup::ResourceDiagnostic`）与 `report_startup_diagnostics()`（`format_diagnostics` 格式化后**打到 stderr**）；`build_tui_run_config` 的两个 skills 分支都调用它 |
+| `crates/nini-tui/tests/no_terminal_writes.rs` | `crates/nini-cli/src/app.rs` 的 stderr 计数 **16 → 17**（旧的逐条 skill 错误打印被诊断块取代，新增的是「诊断块表头」+「诊断块正文」两条），reason 已改写说明这一条是什么 |
+
+* **空诊断一个字都不打**：`format_diagnostics` 对空输入返回空串，`report_startup_diagnostics` 直接返回。
+* 诊断块表头单独一行、正文原样打印：正文首行是缩进的（`  "name" collision (skill):`），
+  前面加 `[nini] ` 会破坏对齐。
+
+### 9.4 prompts：确认过，不丢，所以不改
+
+`nini_core::prompt_template::load_prompt_templates` **不丢**同名模板：
+它把每个模板都 `push` 进 `result.templates`，同名模板**并存**；
+`/prompt` 命令再按名字取第一个匹配（`crates/nini-tui/src/commands/dispatch.rs:1440` 附近）。
+另外 prompts 在 nini 里是**懒加载**的（只有 `/prompt` 命令会读），
+CLI 启动期根本没有加载它们——所以启动期没有 prompt 诊断可报，
+`crates/nini-core/src/prompt_template.rs` **未改动**。
+
+### 9.5 验证
+
+新测试 `crates/nini-tui/tests/d1_startup_wiring.rs`（9 条）：标题三段/两段、
+写入器注入无终端写入、两条 Pi 原文警告进转录、三个「不警告」状态、
+碰撞的赢家/落败者路径 + `✓`/`✗ (skipped)`、以及**源码级**断言
+（`runtime.rs` 真的调了 `update_startup_title` / `push_startup_diagnostics`，
+且时序是 tmux → alt screen → 标题）。
+
+变异注入：
+
+| 变异 | 变红的断言 |
+|---|---|
+| 删掉 `push_startup_diagnostics(&shared, tmux_status)` 调用 | `the_runtime_really_calls_the_startup_seams`（"run() must call push_startup_diagnostics"） |
+| 碰撞的 winner / loser 填反 | `a_skill_name_collision_reports_its_winner_and_its_loser`（"the winner is the one from the later root"） |
+
+执行的命令与退出码见交付记录。`cargo fmt --all --check` 在**本轮未改动的文件**
+（`nini-tools/src/bash_runner.rs`、`nini-tui/src/state.rs`、
+`nini-tui/tests/b4a_bash_stream.rs`）上仍报既有差异——与本轮无关。
+
+
 ---
 
 ## 8. 本轮实际执行的命令与退出码

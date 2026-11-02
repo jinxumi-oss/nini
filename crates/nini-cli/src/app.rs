@@ -196,6 +196,57 @@ pub(crate) fn build_run_tools(
     )
 }
 
+/// The startup diagnostics for the skills that were loaded.
+///
+/// Pi reports the resources it had to skip, and the ones it could not
+/// load, in one block (`references/pi-0.85.1/src/ui/interactive-mode.ts:1589`,
+/// `formatDiagnostics`). nini's skills loader used to drop the loser of a
+/// name collision **silently**; the loader now reports it
+/// (`nini_core::skills::SkillCollision`), and this function turns it into
+/// the shape Pi prints.
+///
+/// The mapping lives on the CLI side because the dependency runs the
+/// other way: `nini-core` must not depend on `nini-tui`.
+pub(crate) fn startup_skill_diagnostics(
+    skills: &nini_core::skills::LoadSkillsResult,
+) -> Vec<nini_tui::tmux_setup::ResourceDiagnostic> {
+    let mut out: Vec<nini_tui::tmux_setup::ResourceDiagnostic> = Vec::new();
+    for c in &skills.collisions {
+        out.push(nini_tui::tmux_setup::ResourceDiagnostic::Collision {
+            kind: nini_tui::tmux_setup::ResourceKind::Skill,
+            name: c.name.clone(),
+            winner: c.winner.clone(),
+            loser: c.loser.clone(),
+        });
+    }
+    for e in &skills.errors {
+        out.push(nini_tui::tmux_setup::ResourceDiagnostic::Load {
+            kind: nini_tui::tmux_setup::ResourceKind::Skill,
+            severity: nini_tui::tmux_setup::DiagnosticSeverity::Error,
+            path: None,
+            message: e.clone(),
+        });
+    }
+    out
+}
+
+/// Print the startup diagnostics to stderr.
+///
+/// This runs **before** the TUI starts, so stderr is still the user's
+/// terminal — Pi prints its startup diagnostics the same way. Nothing is
+/// printed when there is nothing to say: an empty block is not a block.
+pub(crate) fn report_startup_diagnostics(skills: &nini_core::skills::LoadSkillsResult) {
+    let text = nini_tui::tmux_setup::format_diagnostics(&startup_skill_diagnostics(skills));
+    if text.is_empty() {
+        return;
+    }
+    // The header on a line of its own, and the block verbatim: the
+    // block's first line is indented (`  "name" collision (skill):`), and
+    // a `[nini] ` prefix in front of it would break that alignment.
+    eprintln!("[nini] startup diagnostics:");
+    eprintln!("{text}");
+}
+
 pub(crate) fn build_tui_run_config(
     settings: &nini_core::settings::Settings,
     cwd: &std::path::Path,
@@ -216,9 +267,10 @@ pub(crate) fn build_tui_run_config(
         // would make the flag unable to narrow anything, which is the only
         // reason to reach for it.
         let skills = nini_core::skills::load_skills_from_paths(&cfg.skill_paths);
-        for e in &skills.errors {
-            eprintln!("[nini] {e}");
-        }
+        // D1: the skills that lost a name collision, and the ones that
+        // could not be loaded, are reported at startup — the same text
+        // Pi's `formatDiagnostics` produces for the resources it loads.
+        report_startup_diagnostics(&skills);
         let n = skills.skills.len();
         (
             nini_core::skills::format_skills_for_prompt(&skills.skills),
@@ -226,6 +278,7 @@ pub(crate) fn build_tui_run_config(
         )
     } else {
         let skills = load_skills(cwd);
+        report_startup_diagnostics(&skills);
         let n = skills.skills.len();
         (
             nini_core::skills::format_skills_for_prompt(&skills.skills),

@@ -117,11 +117,36 @@ pub struct SkillRoot {
     pub dir: PathBuf,
 }
 
+/// A skill that lost a name collision.
+///
+/// The loader used to drop the loser of a name collision **silently**:
+/// the user saw "loaded 34 skills" in the status bar and had no way to
+/// know that a `review` skill in `~/.claude/skills/` was shadowed by a
+/// `review` skill in `~/.nini/agent/skills/`, or that their own edit was
+/// the one being ignored. Pi reports the collision
+/// (`interactive-mode.ts:1592`, `formatDiagnostics`); nini now carries
+/// the information out of the loader so the caller can print it.
+///
+/// The paths are the **`SKILL.md` files**, not the directories: that is
+/// the file the loader actually read, and it is the path a user can open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillCollision {
+    /// The contested name.
+    pub name: String,
+    /// The `SKILL.md` that was loaded.
+    pub winner: PathBuf,
+    /// The `SKILL.md` that was skipped.
+    pub loser: PathBuf,
+}
+
 /// Result of loading skills.
 #[derive(Debug, Clone, Default)]
 pub struct LoadSkillsResult {
     pub skills: Vec<Skill>,
     pub errors: Vec<String>,
+    /// The skills that were skipped because another skill of the same
+    /// name won. Empty when nothing collided.
+    pub collisions: Vec<SkillCollision>,
 }
 
 /// Load skills from every directory nini will read.
@@ -254,14 +279,60 @@ pub fn load_skills_from_paths(paths: &[std::path::PathBuf]) -> LoadSkillsResult 
     // contributed roots. Explicitly named skills win a name collision —
     // `--skill` is an override, so it should not be shadowed by a root
     // listed after it.
+    //
+    // v0.16 (D1 接线时发现): the code did the **opposite** — the roots were
+    // inserted first and `or_insert` kept them, so a skill the user named
+    // explicitly (`--skill path/to/SKILL.md`) lost to a skill with the same
+    // name inside a directory the user also named (`--skill path/to/dir/`).
+    // The comment right above (and `--skill`'s help text: "Overrides
+    // automatic skill discovery") both say the explicit one wins, so the
+    // code is what was wrong — and D1's collision report would have made
+    // the wrongness visible to the user ("your --skill'd skill was
+    // skipped").
+    //
+    // Now: the explicit skills are inserted **first** (the first one wins
+    // among themselves, as before), and the roots only fill the names that
+    // are still free. Every loser is recorded.
     let loaded = load_skills_from_roots(&roots);
-    let mut by_name: std::collections::BTreeMap<String, Skill> = loaded
-        .skills
-        .into_iter()
-        .map(|s| (s.name.clone(), s))
-        .collect();
-    for sk in result.skills {
-        by_name.entry(sk.name.clone()).or_insert(sk);
+    // Within-root collisions (two roots offering the same name) were
+    // already decided inside `load_skills_from_roots`; keep them.
+    result.collisions.extend(loaded.collisions);
+    let mut by_name: std::collections::BTreeMap<String, Skill> = std::collections::BTreeMap::new();
+    let explicit = std::mem::take(&mut result.skills);
+    for sk in explicit {
+        match by_name.entry(sk.name.clone()) {
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert(sk);
+            }
+            std::collections::btree_map::Entry::Occupied(e) => {
+                // Two explicitly named skills with the same name: the
+                // first one wins (the old `or_insert` behaviour), and the
+                // second one is reported instead of vanishing.
+                let winner = e.get();
+                result.collisions.push(SkillCollision {
+                    name: sk.name.clone(),
+                    winner: skill_file(&winner.base_dir),
+                    loser: skill_file(&sk.base_dir),
+                });
+            }
+        }
+    }
+    for sk in loaded.skills {
+        match by_name.entry(sk.name.clone()) {
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert(sk);
+            }
+            std::collections::btree_map::Entry::Occupied(e) => {
+                // The explicitly named skill wins; the root's skill is the
+                // loser and is reported.
+                let winner = e.get();
+                result.collisions.push(SkillCollision {
+                    name: sk.name.clone(),
+                    winner: skill_file(&winner.base_dir),
+                    loser: skill_file(&sk.base_dir),
+                });
+            }
+        }
     }
     result.skills = by_name.into_values().collect();
     result.errors.extend(loaded.errors);
@@ -284,12 +355,34 @@ pub fn load_skills_from_roots(roots: &[SkillRoot]) -> LoadSkillsResult {
 
     // `all` is in root order (lowest first), so reversing and taking the
     // first `or_insert` makes the last definition win.
+    //
+    // The loser of a collision is **not** dropped silently any more: it
+    // is recorded, with the winner's path, so the caller can tell the
+    // user which of their skills was ignored (Pi's `formatDiagnostics`
+    // does the same for the resources it loads).
     let mut by_name: std::collections::BTreeMap<String, Skill> = std::collections::BTreeMap::new();
     for s in all.into_iter().rev() {
-        by_name.entry(s.name.clone()).or_insert(s);
+        match by_name.entry(s.name.clone()) {
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert(s);
+            }
+            std::collections::btree_map::Entry::Occupied(e) => {
+                let winner = e.get();
+                result.collisions.push(SkillCollision {
+                    name: s.name.clone(),
+                    winner: skill_file(&winner.base_dir),
+                    loser: skill_file(&s.base_dir),
+                });
+            }
+        }
     }
     result.skills = by_name.into_values().collect();
     result
+}
+
+/// The `SKILL.md` inside a skill's directory — the file the loader read.
+fn skill_file(base_dir: &Path) -> PathBuf {
+    base_dir.join("SKILL.md")
 }
 
 fn load_from_dir(

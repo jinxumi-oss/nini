@@ -626,6 +626,73 @@ pub fn startup_theme(shared: &SharedState) -> (String, crate::theme::Theme) {
     (theme.name.clone(), theme)
 }
 
+/// Set the terminal title, the way Pi's `updateTerminalTitle` does.
+///
+/// Pi's shape (`references/pi-0.85.1/src/ui/interactive-mode.ts:1020`):
+///
+/// ```text
+/// nini - <session label> - <cwd basename>
+/// nini - <cwd basename>              // no session yet
+/// ```
+///
+/// nini has no session *name*; the session's identity is its id
+/// (`u_<uuid>`), so the id stands in for the label. The session id comes
+/// from the live state — never from a made-up constant — and a state with
+/// no session yet degrades to Pi's second form instead of panicking.
+///
+/// The writer is **injected**: the TUI owns stdout while it runs, so the
+/// test hands this function a recorder and asserts the string without a
+/// single byte reaching the terminal. The runtime passes the real sink
+/// ([`crate::terminal_title::write_title_to_terminal`], crossterm's
+/// `SetTitle` — an OSC 2 sequence, not text).
+pub fn update_startup_title<F>(shared: &SharedState, mut write: F)
+where
+    F: FnMut(&str),
+{
+    let (session_id, cwd) = {
+        let g = lock_state(shared);
+        (
+            g.session_state.session_id.clone(),
+            g.session_state.cwd.clone(),
+        )
+    };
+    let cwd = cwd
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    crate::terminal_title::update_terminal_title(session_id.as_deref(), &cwd, &mut write);
+}
+
+/// Report the startup diagnostics that belong in the transcript.
+///
+/// The tmux keyboard check (Pi's `checkTmuxKeyboardSetup`,
+/// `interactive-mode.ts:1161`) answers one question: is tmux going to
+/// eat a **modified Enter**? nini binds Alt+Enter to `followUp`, so a
+/// "yes" here is a silent data loss waiting to happen — the user types a
+/// follow-up, presses Alt+Enter, and nothing happens.
+///
+/// The warning goes into the **transcript**, not to the terminal: while
+/// the TUI runs, the transcript is the only user-visible channel (a write
+/// to stderr would land on top of the painted frame — the defect the
+/// terminal guard exists for). Pi shows the same warning in its own
+/// message area.
+///
+/// A status that means "fine" — or a status nini could not read
+/// (`Unknown`) — produces nothing: Pi does not warn about a setup it
+/// could not see.
+pub fn push_startup_diagnostics(
+    shared: &SharedState,
+    status: crate::tmux_setup::TmuxKeyboardStatus,
+) {
+    if let Some(msg) = crate::tmux_setup::warning_message(status) {
+        push_notice(shared, msg);
+    }
+}
+
 pub async fn run<F>(
     bootstrap: F,
     agent_driver: AgentDriver,
@@ -728,6 +795,17 @@ where
         }
     }
 
+    // D1 (Pi's `checkTmuxKeyboardSetup`): ask tmux whether it is going to
+    // swallow a modified Enter key — **before** the alternate screen is
+    // entered, so the answer can still reach the user as a transcript
+    // notice rather than as a line on a screen the TUI is about to own.
+    //
+    // The check itself is a `tmux show -gv` with a 2-second timeout; on a
+    // machine without tmux it answers `Unknown` and says nothing, which
+    // is Pi's rule: do not warn about a setup you could not read.
+    let tmux_status = crate::tmux_setup::check_tmux_keyboard_setup_env();
+    push_startup_diagnostics(&shared, tmux_status);
+
     enable_raw_mode()?;
     crate::signals::mark_raw_mode(true);
     // v0.10.3: from here on, the library's stderr is a pipe, not the
@@ -755,6 +833,16 @@ where
     };
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    // D1 (Pi's `updateTerminalTitle`): the window title, **after** the
+    // alternate screen is entered — the title belongs to the running
+    // TUI, not to the shell that launched it.
+    //
+    // `SetTitle` is an OSC 2 sequence: it sets the tab/window title and
+    // puts no glyph on the painted screen, so it does not violate the
+    // no-terminal-writes invariant (that one is about *text*).
+    update_startup_title(&shared, |title| {
+        let _ = crate::terminal_title::write_title_to_terminal(title);
+    });
     if verbose {
         // The size nini believes it has, and the size the terminal
         // actually has, are the two numbers that decide whether the

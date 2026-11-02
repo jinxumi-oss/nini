@@ -127,10 +127,13 @@ const STDERR_WHITELIST: &[(&str, usize, &str)] = &[
     // all and a whitelist entry for it would be a stale exemption.
     (
         "crates/nini-cli/src/app.rs",
-        16,
-        "the TUI host: startup diagnostics, the no-TTY usage text (printed \
-         before the TUI starts), and the agent stream error — which the \
-         guard turns into a transcript notice while the TUI runs",
+        17,
+        "the TUI host: startup diagnostics (the header line and the block \
+         itself — the skills that lost a name collision and the ones that \
+         could not be loaded, formatted by nini-tui's `format_diagnostics`), \
+         the no-TTY usage text (printed before the TUI starts), and the \
+         agent stream error — which the guard turns into a transcript \
+         notice while the TUI runs",
     ),
     (
         "crates/nini-cli/src/main.rs",
