@@ -101,7 +101,7 @@ v0.9.2 一整版都在清这个。
 
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
-| 版本 | **v0.16.0** | `Cargo.toml` version = 0.16.0；`nini --version` 自报同一数字（`crates/nini-cli/tests/build_identity.rs` 把二进制/manifest/CHANGELOG 三方放在一起比） | tag 尚未推送（见下方“发布链”） |
+| 版本 | **v0.16.0** | `Cargo.toml` version = 0.16.0；`nini --version` 自报同一数字（`crates/nini-cli/tests/build_identity.rs` 把二进制/manifest/CHANGELOG 三方放在一起比） | **已发布**：tag `v0.16.0`（annotated），release 资产 `nini-x86_64-unknown-linux-gnu.tar.xz` + `.sha256`（`install.sh` 按这两个名字取） |
 | 测试 | **1850 通过 / 0 失败**（另有 1 个 doctest 被 ignore：TUI 的 `dynamic_border` 示例需要 TTY） | 本机全量 `cargo test --workspace`（2026-11-02） | 无 |
 | 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 已从 stub 改为**明说本机不做云端分享并指向 `/export`**（Pi 的 `/share` 要 gh 账号或云端，与 nini「不出网」原则冲突，登记为 B10 伪差距） |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
