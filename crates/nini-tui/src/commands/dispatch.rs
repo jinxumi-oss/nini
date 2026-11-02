@@ -307,7 +307,33 @@ fn cmd_export(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     //
     // 现在：给了路径就写到那个路径（.html 写 HTML，.jsonl 写会话 JSONL）；
     // 没给路径就保持原样（exports 目录 + HTML）。
-    let requested = args.trim();
+    //
+    // v0.16：**认 `--include-thinking`**。
+    //
+    // 导出器里那句注释写着「Users can re-export with --include-thinking if
+    // they want it」——**而这个 flag 从来不存在**（全仓 grep `include-thinking`
+    // 只命中那条注释自己）。于是：注释在承诺一个用户敲不出来的选项，而导出
+    // 物**永远**丢掉 thinking 内容。Pi 0.85.1 的导出**保留** thinking。
+    //
+    // 现在 flag 真的存在：`/export --include-thinking`（可以与路径同时给，
+    // 顺序随意）。
+    let mut include_thinking = false;
+    let mut requested = String::new();
+    for token in args.split_whitespace() {
+        if token == "--include-thinking" {
+            include_thinking = true;
+        } else if requested.is_empty() {
+            requested = token.to_string();
+        } else {
+            // 第二个非 flag 参数：多出来的路径没有意义（Pi 的 `/export` 也只
+            // 认一个路径），说清楚比默默丢掉好。
+            return CommandResult::output(vec![format!(
+                "(unexpected extra argument `{token}` — /export takes one path and \
+                 the flag --include-thinking)"
+            )]);
+        }
+    }
+    let requested = requested.as_str();
     if !requested.is_empty() {
         let target = std::path::PathBuf::from(requested);
         let ext = target
@@ -317,7 +343,7 @@ fn cmd_export(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
             .to_ascii_lowercase();
         match ext.as_str() {
             "html" | "htm" => {
-                let html = render_transcript_html(&state.transcript_state.lines);
+                let html = render_transcript_html(&state.transcript_state.lines, include_thinking);
                 return match std::fs::write(&target, html) {
                     Ok(()) => CommandResult::output(vec![format!(
                         "exported transcript to {}",
@@ -357,7 +383,7 @@ fn cmd_export(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     }
 
     // A minimal HTML snapshot of the transcript, into the agent directory.
-    let html = render_transcript_html(&state.transcript_state.lines);
+    let html = render_transcript_html(&state.transcript_state.lines, include_thinking);
     let dir = nini_core::paths::exports_dir();
     let path = match dir {
         Some(d) => {

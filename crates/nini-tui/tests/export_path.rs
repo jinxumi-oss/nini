@@ -94,3 +94,64 @@ fn an_unsupported_extension_is_refused_out_loud() {
         "必须**明说**支持什么：{msg}"
     );
 }
+
+// ── v0.16：`--include-thinking` —— 注释承诺过的 flag，此前根本不存在 ──────────
+
+/// A state whose transcript carries a thinking block.
+fn state_with_thinking() -> (AppState, PathBuf) {
+    let (mut g, dir) = state_with_session();
+    g.push_thinking_raw("the model thought about it");
+    (g, dir)
+}
+
+#[test]
+fn the_thinking_is_elided_by_default_and_written_out_with_the_flag() {
+    // The default: elided, and the document says so.
+    let (mut state, dir) = state_with_thinking();
+    let plain = dir.join("plain.html");
+    let msg = run(&mut state, plain.to_str().unwrap());
+    assert!(plain.exists(), "导出必须写出来：{msg}");
+    let html = std::fs::read_to_string(&plain).unwrap();
+    assert!(
+        html.contains("[thinking elided]"),
+        "默认导出必须说清楚 thinking 被省略了：{html}"
+    );
+    assert!(
+        !html.contains("the model thought about it"),
+        "默认导出不该带 thinking 内容：{html}"
+    );
+
+    // The flag: the content is there.
+    let (mut state, dir) = state_with_thinking();
+    let full = dir.join("full.html");
+    let msg = run(
+        &mut state,
+        &format!("--include-thinking {}", full.display()),
+    );
+    assert!(full.exists(), "导出必须写出来：{msg}");
+    let html = std::fs::read_to_string(&full).unwrap();
+    assert!(
+        html.contains("the model thought about it"),
+        "--include-thinking 必须把 thinking 内容写出来：{html}"
+    );
+    assert!(
+        !html.contains("[thinking elided]"),
+        "内容都在了，就没什么可省略的：{html}"
+    );
+}
+
+#[test]
+fn the_flag_may_come_after_the_path() {
+    let (mut state, dir) = state_with_thinking();
+    let target = dir.join("after.html");
+    let msg = run(
+        &mut state,
+        &format!("{} --include-thinking", target.display()),
+    );
+    assert!(target.exists(), "导出必须写出来：{msg}");
+    let html = std::fs::read_to_string(&target).unwrap();
+    assert!(
+        html.contains("the model thought about it"),
+        "flag 在路径之后也要生效：{html}"
+    );
+}

@@ -59,8 +59,10 @@ fn a_notice_in_the_export_is_escaped() {
     let mut state = AppState::new("test-model");
     state.push_notice("model said: use Vec<String> here <script>alert('xss')</script>");
 
-    let html =
-        nini_tui::commands::html_export::render_transcript_html(&state.transcript_state.lines);
+    let html = nini_tui::commands::html_export::render_transcript_html(
+        &state.transcript_state.lines,
+        false,
+    );
 
     assert!(
         !html.contains("<script>"),

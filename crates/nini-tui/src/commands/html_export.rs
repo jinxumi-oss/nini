@@ -18,8 +18,18 @@ fn html_escape(s: &str) -> String {
 /// Render the transcript as a minimal HTML document.
 ///
 /// Used by `/export`. Includes inline CSS, no external assets. HTML
-/// escapes all user content (`&`, `<`, `>`).
-pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
+/// escapes all user content (`&`, `<`, `>`, `>`).
+///
+/// `include_thinking` decides what happens to the model's **thinking**
+/// blocks: `false` (the default) replaces them with a marker, `true`
+/// writes their content out.
+///
+/// The default is `false` because thinking is model-internal noise and
+/// most people want a transcript of the conversation. It is a **choice,
+/// not a loss**: `/export --include-thinking` writes the content, and
+/// Pi 0.85.1 keeps it in its export by default — so the flag is how a
+/// user gets Pi's document (see the ledger's B23).
+pub fn render_transcript_html(lines: &[TranscriptLine], include_thinking: bool) -> String {
     let mut out = String::from(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>nini session</title>\
          <style>body{font-family:system-ui;max-width:800px;margin:2em auto;padding:0 1em;}\
@@ -87,8 +97,15 @@ pub fn render_transcript_html(lines: &[TranscriptLine]) -> String {
             // v0.8: omit thinking content from HTML export by
             // default — it's model-internal noise. Users can
             // re-export with --include-thinking if they want it.
-            TranscriptLine::ThinkingText(_) => {
-                out.push_str("<p class=\"thinking\" style=\"color:#aaa;font-style:italic\">\n[thinking elided]\n</p>\n");
+            TranscriptLine::ThinkingText(text) => {
+                if include_thinking {
+                    out.push_str(&format!(
+                        "<p class=\"thinking\" style=\"color:#aaa;font-style:italic\">\n{}\n</p>\n",
+                        html_escape(text)
+                    ));
+                } else {
+                    out.push_str("<p class=\"thinking\" style=\"color:#aaa;font-style:italic\">\n[thinking elided]\n</p>\n");
+                }
             }
             // v0.8.4 (ux-001): surface stop notices in the exported
             // HTML so an exported session record reflects aborted /
@@ -129,7 +146,7 @@ mod tests {
 
     #[test]
     fn empty_transcript_produces_valid_html() {
-        let html = render_transcript_html(&[]);
+        let html = render_transcript_html(&[], false);
         assert!(html.starts_with("<!DOCTYPE html>"));
         assert!(html.ends_with("</body></html>\n"));
     }
@@ -139,7 +156,7 @@ mod tests {
         let lines = vec![crate::state::TranscriptLine::User(
             "<script>alert('xss')</script>".into(),
         )];
-        let html = render_transcript_html(&lines);
+        let html = render_transcript_html(&lines, false);
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
     }
@@ -174,7 +191,7 @@ mod tests {
             },
             crate::state::TranscriptLine::StopNotice("<script>alert(3)</script>".into()),
         ];
-        let html = render_transcript_html(&lines);
+        let html = render_transcript_html(&lines, false);
         assert!(
             !html.contains("<script>"),
             "the export carries live markup:\n{html}"
@@ -191,11 +208,66 @@ mod tests {
     /// attribute cannot break out of it.
     #[test]
     fn html_escape_covers_quotes() {
-        let html = render_transcript_html(&[crate::state::TranscriptLine::User(
-            "he said \"hi\" and 'bye'".into(),
-        )]);
+        let html = render_transcript_html(
+            &[crate::state::TranscriptLine::User(
+                "he said \"hi\" and 'bye'".into(),
+            )],
+            false,
+        );
         assert!(html.contains("&quot;hi&quot;"));
         assert!(html.contains("&#39;bye&#39;"));
+    }
+
+    /// The thinking block is elided **by default** — it is model-internal
+    /// noise, and most people want a transcript of the conversation.
+    ///
+    /// It is a choice, not a loss: `include_thinking` writes the content
+    /// out, and `/export --include-thinking` is how a user asks for it
+    /// (Pi 0.85.1 keeps it by default — see the ledger's B23).
+    ///
+    /// Both arms are pinned here, because the previous state of this code
+    /// was a **comment promising a flag that did not exist**: the export
+    /// elided the thinking and there was no way to get it back.
+    #[test]
+    fn thinking_is_elided_by_default_and_written_out_on_request() {
+        let lines = vec![crate::state::TranscriptLine::ThinkingText(
+            "the model thought about it".into(),
+        )];
+
+        let default = render_transcript_html(&lines, false);
+        assert!(
+            default.contains("[thinking elided]"),
+            "the default export must say the thinking was elided:\n{default}"
+        );
+        assert!(
+            !default.contains("the model thought about it"),
+            "the default export must not carry the thinking content:\n{default}"
+        );
+
+        let with_thinking = render_transcript_html(&lines, true);
+        assert!(
+            with_thinking.contains("the model thought about it"),
+            "--include-thinking must write the thinking content out:\n{with_thinking}"
+        );
+        assert!(
+            !with_thinking.contains("[thinking elided]"),
+            "with the content present there is nothing to elide:\n{with_thinking}"
+        );
+    }
+
+    /// The thinking content is model output — it can carry markup, and
+    /// the export is a document the user opens in a browser.
+    #[test]
+    fn the_thinking_content_is_escaped_when_it_is_written_out() {
+        let lines = vec![crate::state::TranscriptLine::ThinkingText(
+            "<script>alert('x')</script>".into(),
+        )];
+        let html = render_transcript_html(&lines, true);
+        assert!(
+            !html.contains("<script>"),
+            "the thinking content is model output and must be escaped:\n{html}"
+        );
+        assert!(html.contains("&lt;script&gt;"));
     }
 
     #[test]
@@ -204,7 +276,7 @@ mod tests {
             crate::state::TranscriptLine::User("hi".into()),
             crate::state::TranscriptLine::AssistantText("hello".into()),
         ];
-        let html = render_transcript_html(&lines);
+        let html = render_transcript_html(&lines, false);
         assert!(html.contains(r#"class="user""#));
         assert!(html.contains(r#"class="assistant""#));
     }

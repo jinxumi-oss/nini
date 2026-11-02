@@ -141,7 +141,7 @@ pub const REGISTRY: &[CommandDef] = &[
         CommandId::Export,
         "export",
         "Export current session to HTML",
-        Some("[path]"),
+        Some("[path] [--include-thinking]"),
     ),
     CommandDef::new(
         CommandId::Import,
