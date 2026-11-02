@@ -144,6 +144,36 @@ pub fn render_tool_call(
     theme: &Theme,
     max_width: Option<usize>,
 ) -> Vec<RLine<'static>> {
+    render_tool_call_state(name, args, theme, max_width, false)
+}
+
+/// B20 — the same row, but painted as **running right now**.
+///
+/// Pi tells the UI two different things about a tool call: the model
+/// announced it (`tool_call`), and the runtime is executing it
+/// (`tool_execution_start`,
+/// `references/pi-0.85.1/src/loop/agent-loop.ts:431` / `:487`). Only the
+/// second one means "this is the tool the agent is sitting in right
+/// now", and in a sequential batch it is the only way to tell it apart
+/// from the calls that are still queued.
+///
+/// The two states get different **markers** rather than different
+/// colours, because a colour is invisible in a captured frame and in a
+/// terminal with no colour support:
+///
+///   * queued / finished → `▸ ` (unchanged, so every existing snapshot
+///     still matches),
+///   * executing now      → `» `.
+///
+/// Both markers are one cell wide plus a space, so the args budget
+/// below is unchanged.
+pub fn render_tool_call_state(
+    name: &str,
+    args: &str,
+    theme: &Theme,
+    max_width: Option<usize>,
+    running: bool,
+) -> Vec<RLine<'static>> {
     let bg = theme.bg_style("toolPendingBg");
     // "▸ " + name + " " — cells consumed before args start.
     let fixed: usize = 2 + display_width(name) + 1;
@@ -156,8 +186,10 @@ pub fn render_tool_call(
         None => TOOL_CALL_ARGS_FALLBACK_CELLS,
     };
     let args_preview = truncate_cells(args, args_budget);
+    // B20 — the marker says whether this call is the one running now.
+    let marker = if running { "» " } else { "▸ " };
     vec![RLine::from(vec![
-        Span::styled("▸ ".to_string(), bg.fg(theme.color("toolTitle"))),
+        Span::styled(marker.to_string(), bg.fg(theme.color("toolTitle"))),
         Span::styled(
             name.to_string(),
             bg.fg(theme.color("toolTitle"))

@@ -1734,6 +1734,24 @@ pub struct UiState {
     /// true, the runtime appends per-keystroke lines to
     /// `~/.nini/state.log` so users can `tail -f` it.
     pub debug_logging: bool,
+    /// B20 — the ids of the tool calls that are **executing right now**.
+    ///
+    /// The transcript line for a tool call is created when the MODEL
+    /// says it wants to call the tool (`ToolCallStart`), which is a
+    /// different moment from the tool actually running. Pi publishes
+    /// that second moment as `tool_execution_start`
+    /// (`references/pi-0.85.1/src/loop/agent-loop.ts:431` / `:487`),
+    /// and the TUI keeps it here so the renderer can paint the running
+    /// call differently from the ones still queued — in a sequential
+    /// batch that is the only way to see which tool the agent is
+    /// sitting in right now.
+    ///
+    /// A `HashSet` rather than a field on `TranscriptLine::ToolCall`:
+    /// that struct is built by literal in a dozen places (and in
+    /// tests), and adding a field to it would ripple through the whole
+    /// crate for a piece of state that is not part of the line's
+    /// content.
+    pub executing_tools: std::collections::HashSet<String>,
 }
 
 // =================================================================
@@ -1928,6 +1946,7 @@ impl Clone for UiState {
             selector: None,
             completion: self.completion.clone(),
             debug_logging: self.debug_logging,
+            executing_tools: self.executing_tools.clone(),
         }
     }
 }
@@ -1953,6 +1972,7 @@ impl Default for UiState {
             selector: None,
             completion: None,
             debug_logging: false,
+            executing_tools: std::collections::HashSet::new(),
         }
     }
 }

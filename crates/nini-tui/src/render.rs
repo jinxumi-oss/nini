@@ -20,7 +20,7 @@
 #![allow(unused_mut)] // render/runtime use mut bindings for future hook points
 
 use crate::rich::{
-    render_assistant_message, render_bash_execution, render_tool_call, render_tool_result,
+    render_assistant_message, render_bash_execution, render_tool_call_state, render_tool_result,
     render_user_message,
 };
 use crate::selector::{SelectorItem, SelectorPanel};
@@ -731,6 +731,10 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // Clamping costs nothing and caps the damage of a missed reset at
     // "the user sees the top" instead of "the user sees nothing".
     let lines = &state.transcript_state.lines;
+    // B20 — the tool calls that are executing right now. The renderer
+    // paints those rows differently from the queued ones, so the user
+    // can see which call the agent is sitting in.
+    let executing = &state.ui_state.executing_tools;
     let total_lines = lines.len();
     // v0.10.3: the number of rows the transcript *area* has. The rows
     // the content may use is one less whenever an overflow indicator is
@@ -771,9 +775,14 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 match cache.get(idx, width) {
                     Some((cached_fp, count)) if cached_fp == fingerprint => count,
                     _ => {
-                        let count =
-                            items_for_line(line, theme, width as usize, SearchHighlight::None)
-                                .len();
+                        let count = items_for_line(
+                            line,
+                            theme,
+                            width as usize,
+                            SearchHighlight::None,
+                            &executing,
+                        )
+                        .len();
                         cache.put(idx, width, fingerprint, count);
                         count
                     }
@@ -781,7 +790,14 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
             }
             // A poisoned lock must not take the TUI down; worst case is
             // the pre-cache behaviour (recompute every frame).
-            Err(_) => items_for_line(line, theme, width as usize, SearchHighlight::None).len(),
+            Err(_) => items_for_line(
+                line,
+                theme,
+                width as usize,
+                SearchHighlight::None,
+                &executing,
+            )
+            .len(),
         };
         items_per_line.push(count);
     }
@@ -887,6 +903,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 theme,
                 area.width as usize,
                 highlight_for(i),
+                &executing,
             ));
         }
     } else if autoscroll {
@@ -896,8 +913,13 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         for i in (0..total_lines).rev() {
             let count = items_per_line[i];
             if count <= budget {
-                let line_items =
-                    items_for_line(&lines[i], theme, area.width as usize, highlight_for(i));
+                let line_items = items_for_line(
+                    &lines[i],
+                    theme,
+                    area.width as usize,
+                    highlight_for(i),
+                    &executing,
+                );
                 visible_items = line_items
                     .into_iter()
                     .chain(visible_items.into_iter())
@@ -908,8 +930,13 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 }
             } else {
                 // Single line bigger than entire visible area — tail-truncate.
-                let mut line_items =
-                    items_for_line(&lines[i], theme, area.width as usize, highlight_for(i));
+                let mut line_items = items_for_line(
+                    &lines[i],
+                    theme,
+                    area.width as usize,
+                    highlight_for(i),
+                    &executing,
+                );
                 let start = line_items.len() - budget;
                 visible_items = line_items
                     .split_off(start)
@@ -948,8 +975,13 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 continue;
             }
             let take = take_from_line.min(budget);
-            let mut line_items =
-                items_for_line(&lines[i], theme, area.width as usize, highlight_for(i));
+            let mut line_items = items_for_line(
+                &lines[i],
+                theme,
+                area.width as usize,
+                highlight_for(i),
+                &executing,
+            );
             let start = line_items.len() - take;
             visible_items = line_items
                 .split_off(start)
@@ -1028,7 +1060,13 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     if visible_items.is_empty() && total_lines > 0 {
         let mut tail: Vec<ListItem> = Vec::with_capacity(visible_height);
         for line in lines.iter().rev() {
-            let mut items = items_for_line(line, theme, area.width as usize, highlight_for(0));
+            let mut items = items_for_line(
+                line,
+                theme,
+                area.width as usize,
+                highlight_for(0),
+                &executing,
+            );
             items.reverse();
             if items.len() >= visible_height {
                 items.drain(..items.len() - visible_height);
@@ -1174,6 +1212,7 @@ fn items_for_line(
     theme: &Theme,
     area_width: usize,
     highlight: SearchHighlight,
+    executing: &std::collections::HashSet<String>,
 ) -> Vec<ListItem<'static>> {
     // v0.8.9 (P1-3): one width for every branch. Only the ToolResult
     // arm used to receive it, which is why a 210-character user message
@@ -1199,12 +1238,18 @@ fn items_for_line(
             crate::rich::render_thinking_block(text, theme, max_w)
         }
         TranscriptLine::ToolCall {
-            id: _,
+            id,
             name,
             args,
             collapsed,
         } => {
-            let mut out: Vec<RLine<'static>> = render_tool_call(name, args, theme, max_w);
+            // B20 — a call that is executing RIGHT NOW is painted
+            // differently from one that is still queued (or already
+            // finished). `executing` is the set of ids the runtime
+            // marked as running; see `UiState::executing_tools`.
+            let running = executing.contains(id);
+            let mut out: Vec<RLine<'static>> =
+                render_tool_call_state(name, args, theme, max_w, running);
             if *collapsed {
                 if !out.is_empty() {
                     out.truncate(1);

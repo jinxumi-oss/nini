@@ -131,6 +131,22 @@ pub enum AgentEvent {
     ThinkingDelta { text: String },
     /// A tool call started, ended, or emitted a delta.
     ToolCallStart { id: String, name: String },
+    /// B20 — a tool is **about to execute**.
+    ///
+    /// This is a *different moment* from [`AgentEvent::ToolCallStart`],
+    /// and the difference is load-bearing. `ToolCallStart` is emitted
+    /// while the **model stream** is being consumed: the model said
+    /// "I want to call this". `ToolExecutionStart` is emitted when the
+    /// tool is **really about to run**.
+    ///
+    /// Pi has exactly the same split (`agent-loop.ts:487` / `:431`):
+    /// the parallel branch emits every `tool_execution_start` before
+    /// any result, the sequential branch interleaves them
+    /// (`start(A), end(A), start(B), end(B)`). The TUI needs it to
+    /// tell a *queued* call apart from the one that is running right
+    /// now — in a sequential batch that is the only way to see which
+    /// tool the agent is sitting in.
+    ToolExecutionStart { id: String, name: String },
     ToolCallDelta {
         id: String,
         input_json_delta: String,
@@ -1965,12 +1981,47 @@ impl Agent {
                     } else {
                         config.max_parallel_tools
                     };
+
+                    // B20 — Pi's `executeToolCallsParallel`
+                    // (`agent-loop.ts:487`): the parallel branch emits
+                    // EVERY `tool_execution_start` first, and only then
+                    // runs the calls (`Promise.all`). So in a parallel
+                    // batch every start precedes every result.
+                    //
+                    // Pi's sequential branch (`agent-loop.ts:431`) is the
+                    // opposite: `await emit(start)` sits INSIDE the
+                    // per-call loop, so the events interleave —
+                    // `start(A), end(A), start(B), end(B)`.
+                    //
+                    // nini runs both shapes through one worker pool, so
+                    // the emission point differs by mode:
+                    //   * parallel → all starts up front (below),
+                    //   * sequential → one start per dispatched future
+                    //     (in the pool setup and in the refill below).
+                    if !batch_is_sequential {
+                        for (id, name) in batch_identities.iter() {
+                            yield AgentEvent::ToolExecutionStart {
+                                id: id.clone(),
+                                name: name.clone(),
+                            };
+                        }
+                    }
                     {
                         let mut queue = specs.into_iter().enumerate();
                         for _ in 0..parallelism {
                             let Some((idx, spec)) = queue.next() else {
                                 break;
                             };
+                            // B20 — sequential batch: the start goes out
+                            // at the moment THIS call is dispatched, so
+                            // the event order matches Pi's
+                            // `executeToolCallsSequential`.
+                            if batch_is_sequential {
+                                yield AgentEvent::ToolExecutionStart {
+                                    id: spec.id.clone(),
+                                    name: spec.name.clone(),
+                                };
+                            }
                             futures.push(dispatch_tool_call(
                                 idx,
                                 spec,
@@ -2009,6 +2060,17 @@ impl Agent {
                     // next queued tool call into it.
                     if let Some(queue) = pending_queue.as_mut() {
                         if let Some((nidx, nspec)) = queue.next() {
+                            // B20 — sequential batch: the next call's
+                            // start is emitted here, i.e. AFTER the
+                            // previous call's result. That is exactly
+                            // Pi's interleaving
+                            // (`start(A), end(A), start(B), end(B)`).
+                            if batch_is_sequential {
+                                yield AgentEvent::ToolExecutionStart {
+                                    id: nspec.id.clone(),
+                                    name: nspec.name.clone(),
+                                };
+                            }
                             futures.push(dispatch_tool_call(
                                 nidx,
                                 nspec,

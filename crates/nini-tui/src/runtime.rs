@@ -132,6 +132,21 @@ pub enum AgentEventLite {
         id: String,
         name: String,
     },
+    /// B20 — the tool is **about to execute**.
+    ///
+    /// Distinct from [`AgentEventLite::ToolCallStart`], which fires when
+    /// the MODEL announces the call. Pi has the same two moments
+    /// (`agent-loop.ts:487` / `:431`): `tool_execution_start` is the
+    /// "we are running it now" signal, and in a sequential batch it
+    /// arrives interleaved with the results
+    /// (`start(A), end(A), start(B), end(B)`).
+    ///
+    /// The TUI keeps the id in `UiState::executing_tools` so the
+    /// renderer can tell the running call apart from the queued ones.
+    ToolExecutionStart {
+        id: String,
+        name: String,
+    },
     ToolCallStop {
         id: String,
         args: String,
@@ -325,6 +340,12 @@ impl AgentSink {
                     s.push_tool_call(id.clone(), name.clone(), "");
                     s.session_buffer_tool_call_start(&id, &name);
                 }
+                // B20 — the tool is running NOW. Remember it so the
+                // renderer paints this row differently from the calls
+                // that are still queued.
+                AgentEventLite::ToolExecutionStart { id, name: _ } => {
+                    s.ui_state.executing_tools.insert(id.clone());
+                }
                 AgentEventLite::ToolCallStop { id, args } => {
                     // v0.8.8 (tool-identity): update the SPECIFIC tool
                     // call line by id, not by last position. Parallel
@@ -375,6 +396,8 @@ impl AgentSink {
                     details,
                     duration_ms,
                 } => {
+                    // B20 — the call is over; it is no longer running.
+                    s.ui_state.executing_tools.remove(&id);
                     // Capture edit-tool diff stats for the status bar pill.
                     if let Some(d) = &details {
                         if let (Some(adds), Some(dels)) = (

@@ -755,6 +755,14 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
                         Ok(AgentEvent::ToolCallStart { id, name }) => {
                             nini_tui::runtime::AgentEventLite::ToolCallStart { id, name }
                         }
+                        // B20 — "the tool is running now". Distinct from
+                        // `ToolCallStart` above, which only says "the
+                        // model asked for this". Pi publishes the same
+                        // two moments
+                        // (`references/pi-0.85.1/src/loop/agent-loop.ts:431` / `:487`).
+                        Ok(AgentEvent::ToolExecutionStart { id, name }) => {
+                            nini_tui::runtime::AgentEventLite::ToolExecutionStart { id, name }
+                        }
                         Ok(AgentEvent::ToolCallStop { id, input_json }) => {
                             nini_tui::runtime::AgentEventLite::ToolCallStop {
                                 id,
