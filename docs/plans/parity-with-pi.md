@@ -451,6 +451,26 @@ B21 与 C4 缺一个**运行时扩展系统**（承载主体），B22 缺一个*
 C3/D5 与 B9 是 **provider 覆盖面与字段**（R5 待拍板），B1 是 `/clone` 的语义
 （R10），B7 是语法高亮（R9）。每一缺什么写在台账的 `nini_state` 里。
 
+### TUI 第一轮（v0.16.0 之后，未发布）—— 把「作者认为 Pi 长这样」变成「实测」
+
+上一轮的结论是：nini 的 TUI **不缺功能，缺可判定的对照**。这一轮把三件事做掉。
+
+| 交付 | 是什么 | 判据 |
+|---|---|---|
+| **键位语义层对照** | 屏幕级对照（`scripts/tui-oracle.py`）提取器不可用（§5.4），于是换一条路：**从源码取真相**——Pi 的 `KEYBINDINGS`（90 个 binding id）逐条对 nini 的 `default_keymap()`。契约在 `scripts/keymap-parity.json`（唯一数据源），判定在 `scripts/keymap-parity.py` | `python3 scripts/keymap-parity.py` 退出 0（**新增门禁项**：gate 的链④ + CI 的 parity job）；`cargo test -p nini-tui --test keymap_parity` 退出 0（5 条，含**四种改坏方式各自变红**） |
+| **五个浮层的帧级 oracle** | `model` / `settings` / `trust` / `help` / `palette` 此前没有帧级 oracle，`command_palette.rs` 全仓零测试引用 | `cargo test -p nini-tui --test selector_palette_frame --test selector_model_frame --test selector_settings_frame --test selector_trust_frame --test help_overlay_frame` 退出 0（22 条） |
+| **两个真缺陷** | ① 浮层面板只清样式不清符号 → 转录从面板空行里透出文字（v0.5 时代的缺陷，注释一直声称已防住）；② 欢迎卡片读 `theme.fg_style("keyHint")`——**一个不存在的槽** → 落到默认色 = 白色 + 粗体 | 前者由 `the_panel_covers_the_transcript_it_sits_on` 钉住（去掉 `set_symbol` → 红）；后者由 `the_example_keys_use_a_theme_slot_that_exists` 钉住（**按颜色**断言，改回 `keyHint` → 红） |
+
+**顺带**：R9 的体积估算被实测推翻（syntect **+0.63 MiB**，不是估的 +2–5 MB），
+决策包见 [`r9-syntax-highlighting.md`](./r9-syntax-highlighting.md)；同时查清
+**Pi 的终端确实做语法高亮**且用的正是那 9 个 `syntax*` 槽 → B7 是**真差距**。
+
+**新登记**：**B24**（16 个主题槽悬空 + `keyHint` 读不存在的槽；legacy×6 是 nini
+自创的已死 schema，删槽会**静默丢弃用户 theme.json 的值**，所以不是能顺手做的
+清理）、**B25**（三处键位语义分叉：`Ctrl+T` 显隐 thinking 块 vs 档位 +、
+`Ctrl+U` 删到行首 vs 清空输入框、`Ctrl+C` 清空/退出 vs 中止回合；另有 5 个 Pi
+的键位 nini 没有）。**改键是用户可见的行为变更，本轮只登记不改**。
+
 ---
 
 ## 5. 门禁与验证口径

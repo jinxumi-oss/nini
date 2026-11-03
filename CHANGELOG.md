@@ -1,3 +1,76 @@
+## Unreleased — TUI：键位语义层对照 oracle + 五个浮层的帧级 oracle + 两个真缺陷
+
+1878 tests, all green.
+
+这一轮不是发布（v0.16.0 之后的第一轮 TUI 工作），下面是三件事。
+
+### 1. 键位语义层对照：从「屏幕取真相」换成「源码取真相」
+
+屏幕级对照（`scripts/tui-oracle.py`）**进不了门禁**——它的提取器把表头框线当成
+键名，110 列下 Pi 侧只提到 11 个键（真实约 25 个），`docs/invariant-audit.md`
+§5.4 自己记着这件事。
+
+于是换了一条路：**Pi 的键位表在源码里**
+（`references/pi-0.85.1/src/ui/keybindings.ts` 的 `KEYBINDINGS` 90 个 id +
+`src/tui/keybindings.ts` 的 `TUI_KEYBINDINGS` 47 个 + `interactive-mode.ts` 的
+`handleHotkeysCommand` 模板），nini 的键位表也在源码里
+（`crates/nini-tui/src/keys.rs` 的 `default_keymap`）。
+
+* **`scripts/keymap-parity.py`**：把两边逐条对齐，**退出码即判定**。
+  主轴是 **binding id ↔ nini 的 KeyAction**，不是键——Pi 的同一个键在不同上下文
+  里是不同动作，而 nini 刻意换过几个键，按键比对必然误报。
+* **`scripts/keymap-parity.json`**：这张表的**唯一数据源**（与台账同一个规矩），
+  里有四段：Pi 的语义类、nini 的语义类、配对表、**已知冲突**与**豁免**（每条
+  带理由）。
+* **判红三件事**：Pi 新增了一个键位 id 而没有人裁决；契约指向的 nini 动作不
+  存在；配对的**语义类**对不上且没登记成已知冲突。
+* **进两个地方**：`scripts/gate.sh` 新增「链④ 键位对照」；CI 的 parity target
+  lock job 新增一步。**新增**判定项，不改既有项的判定逻辑。
+* **自测**（`crates/nini-tui/tests/keymap_parity.rs`，5 条）：把契约改坏**四种
+  方式**（删一条 Pi 键位登记 / 把配对指向别的动作 / 改 nini 自己的键绑定 / 删掉
+  一条已知冲突的登记），每一种都必须让 oracle 变红——**一个不会失败的 oracle
+  比没有 oracle 更糟**（它会躺在门禁里装作绿的）。
+
+**它当场逮住了三处语义分叉**（登记为台账 **B25**）：`Ctrl+T` 在 Pi 是「显隐
+thinking 块」而 nini 是「thinking 档位 +」；`Ctrl+U` 在 Pi 是「删到行首」而 nini
+是「清空输入框」（**nini 里有 `KillToLineStart` 动作但没绑定**）；`Ctrl+C` 在 Pi
+是「先清空输入框、再按退出」而 nini 是「中止回合」。另有 5 个 Pi 的键位 nini 没有
+（挂起后台 / 复制上一条助手消息 / 取回排队消息 / 跳字符 / 选区复制）。
+
+**改键是用户可见的行为变更，本轮只登记不改**——由 owner 决定。
+
+### 2. 五个浮层的帧级 oracle
+
+`model` / `settings` / `trust` / `help` / `palette` 五个浮层此前**没有帧级
+oracle**，其中 `command_palette.rs`（Ctrl+Shift+K）**全仓零测试引用**。
+
+新增 22 条帧级断言（五个文件）：打开后帧里有它、**选中项会动**（写死是哪一
+行）、关闭后帧里没有它，外加 palette 的过滤生效与 model 的选中项。每个浮层
+3–5 条。
+
+### 3. 顺带修掉的两个真缺陷
+
+* **浮层面板不透明**：`selector.rs` 写着「Explicit Clear over the inner area」，
+  但只调了 `cell.set_style(bg)`——**符号没清**，于是转录从面板的空行里**透出
+  文字**（v0.5 时代的「text fragments peeking out」缺陷，注释一直声称已经防
+  住）。修法是多一句 `cell.set_symbol(" ")`。
+* **`keyHint` 读了一个不存在的槽**：欢迎卡片的示例键读
+  `theme.fg_style("keyHint")`，而 `keyHint` 不在 `theme.rs` 的 `COLOR_NAMES`
+  里 → 落到默认色 = **白色 + 粗体**（冷启动画面上最刺眼的东西），而 nini 自己
+  的 `keyhint.rs` 与 Pi 的 `keybinding-hints.js` 都用 `dim`。改成读 `dim`，并
+  加了一条**按颜色**断言的回归测试。
+
+### 4. R9 决策包（语法高亮）
+
+台账 **B7** 的体积估算被实测推翻了：syntect+fancy-regex 是 **+0.63 MiB**
+（6.63 → 7.28 MiB），不是当初估的 +2–5 MB（高估 3–8 倍）。顺带查清了一件事：
+**Pi 的终端确实做语法高亮**，而且用的正是那 9 个 `syntax*` 槽——所以 B7 是**真
+差距**，nini 的 9 个槽只是 v0.8.3 照抄主题键表时一并抄来、至今零读取。
+
+完整证据、三个选项与各自的代价在
+[`docs/plans/r9-syntax-highlighting.md`](./docs/plans/r9-syntax-highlighting.md)。
+**决策仍是 owner 的**：实现者不替 owner 拍板。
+
 ## v0.16.0 — 把台账里剩下的三条真差距关掉：`!cmd` 边跑边出、工具「执行开始」的时机、三个符号的接线
 
 1850 tests, all green.
