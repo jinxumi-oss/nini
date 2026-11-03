@@ -267,6 +267,17 @@ jobs:
         # 2026-10-23：T1–T4 全部完成（5/5 绿），所以它从**报告**升级为**硬门禁**——
         # 往后谁把工具契约改歪了，CI 会直接红。
         run: python3 scripts/tool-parity-check.py
+      - name: The keymap matches Pi's binding inventory
+        # v0.16：屏幕级对照（tui-oracle）进不了门禁（提取器噪声大，
+        # docs/invariant-audit.md §5.4），于是换了一条**从源码取真相**的路：
+        # Pi 0.85.1 的键位表 ↔ nini 自己的键位表，逐条对齐。
+        #
+        # 它判红的三件事：Pi 新增了一个键位 id 而没有人裁决、契约指向的
+        # nini 动作不存在、配对的**语义类**对不上（未登记的语义分叉）。
+        # 契约在 scripts/keymap-parity.json；自测在
+        # crates/nini-tui/tests/keymap_parity.rs（它把契约改坏 4 种方式，
+        # 每一种都必须让 oracle 变红）。
+        run: python3 scripts/keymap-parity.py
       - name: The target snapshot is what it claims to be
         # 快照目录里的文件由 SNAPSHOT.lock 的 sha256 管辖（上面的 pi-oracle-lock --check
         # 已经查过）；这里查的是**从源码读出的近似契约**有没有漂——它住在

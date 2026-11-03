@@ -237,6 +237,21 @@ else
   skip "tui-oracle（提取器未达标，不进 gate）"
 fi
 
+# --- 链④ 键位对照（不进 --full：只需要快照，不需要真 Pi 或 tmux）------------
+# v0.16: 屏幕级对照（tui-oracle）因为提取器噪声大进不了门禁，于是换了一条
+# **从源码取真相**的路：`scripts/keymap-parity.py` 把 Pi 0.85.1 的键位表
+# （`references/pi-0.85.1/src/ui/keybindings.ts`）与 nini 自己的键位表
+# （`crates/nini-tui/src/keys.rs`）逐条对齐。
+#
+# 它是**新增**的判定项，不改既有项的判定逻辑——门禁的既有红线是「不许为了让
+# 门禁变绿而改判定」，而这一项是「多一件必须为真的事」。
+head2 "链④ 键位对照"
+if python3 scripts/keymap-parity.py >/tmp/gate-keymap.log 2>&1; then
+  ok "keymap-parity（Pi 的键位表 ↔ nini 的键位表）"
+else
+  bad "keymap-parity" "$(grep -E '✗' /tmp/gate-keymap.log | head -3)"
+fi
+
 # --- 汇总 ------------------------------------------------------------------
 head2 "汇总"
 printf '  通过 %d   失败 %d   跳过 %d\n' "$PASS" "$FAIL" "$SKIP"

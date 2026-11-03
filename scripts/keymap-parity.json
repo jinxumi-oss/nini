@@ -1,0 +1,587 @@
+{
+  "schema": 1,
+  "target": "pi-0.85.1",
+  "authority": "docs/GOALS.md",
+  "note": "键位语义层对照的**唯一数据源**。Pi 侧从 references/pi-0.85.1 的源码取（KEYBINDINGS + TUI_KEYBINDINGS + handleHotkeysCommand 的模板），nini 侧从 crates/nini-tui/src/keys.rs 与 commands/dispatch.rs 取。判定由 scripts/keymap-parity.py 产出（退出码即判定）。**语义类**是把两边的行为归到同一把尺子上的词表：pi_classes 是 Pi 的，nini_classes 是 nini 的，map 的 class 是「这个配对在 nini 侧的行为属于哪一类」。",
+  "pi_classes": {
+    "app.clear": "clear",
+    "app.clipboard.pasteImage": "clipboard-paste",
+    "app.editor.external": "external-editor",
+    "app.exit": "exit",
+    "app.interrupt": "interrupt",
+    "app.message.copy": "copy-last",
+    "app.message.dequeue": "dequeue",
+    "app.message.followUp": "followup",
+    "app.model.cycleBackward": "model-cycle",
+    "app.model.cycleForward": "model-cycle",
+    "app.model.select": "model-select",
+    "app.models.clearAll": "models-clear",
+    "app.models.enableAll": "models-enable",
+    "app.models.reorderDown": "models-reorder",
+    "app.models.reorderUp": "models-reorder",
+    "app.models.save": "models-save",
+    "app.models.toggleProvider": "models-toggle-provider",
+    "app.session.delete": "session-delete",
+    "app.session.deleteNoninvasive": "session-delete",
+    "app.session.rename": "session-rename",
+    "app.session.toggleNamedFilter": "session-filter",
+    "app.session.togglePath": "session-path",
+    "app.session.toggleSort": "session-sort",
+    "app.suspend": "suspend",
+    "app.thinking.cycle": "thinking-cycle",
+    "app.thinking.save": "thinking-save",
+    "app.thinking.toggle": "thinking-toggle",
+    "app.tools.expand": "tool-expand",
+    "app.tree.editLabel": "tree-edit-label",
+    "app.tree.filter.all": "tree-filter",
+    "app.tree.filter.cycleBackward": "tree-filter",
+    "app.tree.filter.cycleForward": "tree-filter",
+    "app.tree.filter.default": "tree-filter",
+    "app.tree.filter.labeledOnly": "tree-filter",
+    "app.tree.filter.noTools": "tree-filter",
+    "app.tree.filter.userOnly": "tree-filter",
+    "app.tree.foldOrUp": "tree-fold",
+    "app.tree.toggleLabelTimestamp": "tree-label-timestamp",
+    "app.tree.unfoldOrDown": "tree-unfold",
+    "tui.altScreen.bottom": "alt-screen-bottom",
+    "tui.altScreen.nextPrompt": "alt-screen-next-prompt",
+    "tui.altScreen.pageDown": "page-scroll",
+    "tui.altScreen.pageUp": "page-scroll",
+    "tui.altScreen.previousPrompt": "alt-screen-prev-prompt",
+    "tui.altScreen.search": "alt-screen-search",
+    "tui.altScreen.searchClose": "search-close",
+    "tui.altScreen.searchNext": "search-next",
+    "tui.altScreen.searchPrevious": "search-prev",
+    "tui.altScreen.top": "alt-screen-top",
+    "tui.editor.cursorDown": "cursor",
+    "tui.editor.cursorLeft": "cursor",
+    "tui.editor.cursorRight": "cursor",
+    "tui.editor.cursorUp": "cursor",
+    "tui.editor.cursorLineEnd": "line-end",
+    "tui.editor.cursorLineStart": "line-start",
+    "tui.editor.cursorWordLeft": "word",
+    "tui.editor.cursorWordRight": "word",
+    "tui.editor.deleteCharBackward": "delete-char-back",
+    "tui.editor.deleteCharForward": "delete-char-fwd",
+    "tui.editor.deleteToLineEnd": "delete-to-end",
+    "tui.editor.deleteToLineStart": "delete-to-start",
+    "tui.editor.deleteWordBackward": "delete-word-back",
+    "tui.editor.deleteWordForward": "delete-word-fwd",
+    "tui.editor.jumpBackward": "char-jump",
+    "tui.editor.jumpForward": "char-jump",
+    "tui.editor.pageDown": "page-scroll",
+    "tui.editor.pageUp": "page-scroll",
+    "tui.editor.undo": "undo",
+    "tui.editor.yank": "yank",
+    "tui.editor.yankPop": "yank-pop",
+    "tui.input.copy": "copy-selection",
+    "tui.input.newLine": "newline",
+    "tui.input.submit": "submit",
+    "tui.input.tab": "completion",
+    "tui.select.cancel": "select-cancel",
+    "tui.select.confirm": "select-confirm",
+    "tui.select.down": "select-down",
+    "tui.select.pageDown": "select-page-down",
+    "tui.select.pageUp": "select-page-up",
+    "tui.select.up": "select-up"
+  },
+  "nini_classes": {
+    "Submit": [
+      "submit",
+      "select-confirm"
+    ],
+    "Newline": [
+      "newline"
+    ],
+    "FollowUp": [
+      "followup"
+    ],
+    "Abort": [
+      "interrupt",
+      "select-cancel",
+      "search-close"
+    ],
+    "Quit": [
+      "exit"
+    ],
+    "SwitchModel": [
+      "model-select"
+    ],
+    "CycleModelNext": [
+      "model-cycle"
+    ],
+    "CycleModelPrev": [
+      "model-cycle"
+    ],
+    "CycleThinkingNext": [
+      "thinking-cycle"
+    ],
+    "CycleThinkingPrev": [
+      "thinking-cycle"
+    ],
+    "ShowHelp": [
+      "help"
+    ],
+    "ToggleCollapse": [
+      "tool-expand"
+    ],
+    "MoveLeft": [
+      "cursor"
+    ],
+    "MoveRight": [
+      "cursor"
+    ],
+    "MoveUp": [
+      "cursor"
+    ],
+    "MoveDown": [
+      "cursor"
+    ],
+    "ScrollToTop": [
+      "alt-screen-top"
+    ],
+    "ScrollToBottom": [
+      "alt-screen-bottom"
+    ],
+    "MoveWordLeft": [
+      "word"
+    ],
+    "MoveWordRight": [
+      "word"
+    ],
+    "Backspace": [
+      "delete-char-back"
+    ],
+    "Delete": [
+      "delete-char-fwd"
+    ],
+    "MoveLineStart": [
+      "line-start"
+    ],
+    "MoveLineEnd": [
+      "line-end"
+    ],
+    "KillToLineEnd": [
+      "delete-to-end"
+    ],
+    "KillToLineStart": [
+      "delete-to-start"
+    ],
+    "KillWordBackward": [
+      "delete-word-back"
+    ],
+    "KillWordForward": [
+      "delete-word-fwd"
+    ],
+    "Yank": [
+      "yank"
+    ],
+    "YankPop": [
+      "yank-pop"
+    ],
+    "Undo": [
+      "undo"
+    ],
+    "OpenSearch": [
+      "alt-screen-search"
+    ],
+    "OpenCommandPalette": [
+      "palette"
+    ],
+    "OpenExternalEditor": [
+      "external-editor"
+    ],
+    "ScrollUp": [
+      "page-scroll"
+    ],
+    "ScrollDown": [
+      "page-scroll"
+    ],
+    "ClearInput": [
+      "clear-input"
+    ],
+    "AcceptCompletionOrInsertTab": [
+      "completion"
+    ],
+    "PasteImage": [
+      "clipboard-paste"
+    ],
+    "Noop": []
+  },
+  "map": [
+    {
+      "pi": "tui.editor.cursorUp",
+      "nini": "MoveUp",
+      "keys": "same",
+      "class": "cursor",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.cursorDown",
+      "nini": "MoveDown",
+      "keys": "same",
+      "class": "cursor",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.cursorLeft",
+      "nini": "MoveLeft",
+      "keys": "same",
+      "class": "cursor",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.cursorRight",
+      "nini": "MoveRight",
+      "keys": "same",
+      "class": "cursor",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.cursorWordLeft",
+      "nini": "MoveWordLeft",
+      "keys": "same",
+      "class": "word",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.cursorWordRight",
+      "nini": "MoveWordRight",
+      "keys": "same",
+      "class": "word",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.cursorLineStart",
+      "nini": "MoveLineStart",
+      "keys": "same",
+      "class": "line-start",
+      "note": "Pi 的主键是 Home（它同时是 altScreen.top），行首另有 Ctrl+Home / Ctrl+a；nini 用 Ctrl+A"
+    },
+    {
+      "pi": "tui.editor.cursorLineEnd",
+      "nini": "MoveLineEnd",
+      "keys": "same",
+      "class": "line-end",
+      "note": "Pi 的主键是 End（它同时是 altScreen.bottom），行尾另有 Ctrl+End / Ctrl+e；nini 用 Ctrl+E"
+    },
+    {
+      "pi": "tui.editor.pageUp",
+      "nini": "ScrollUp",
+      "keys": "same",
+      "class": "page-scroll",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.pageDown",
+      "nini": "ScrollDown",
+      "keys": "same",
+      "class": "page-scroll",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.deleteCharBackward",
+      "nini": "Backspace",
+      "keys": "same",
+      "class": "delete-char-back",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.deleteCharForward",
+      "nini": "Delete",
+      "keys": "same",
+      "class": "delete-char-fwd",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.deleteWordBackward",
+      "nini": "KillWordBackward",
+      "keys": "same",
+      "class": "delete-word-back",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.deleteWordForward",
+      "nini": "KillWordForward",
+      "keys": "same",
+      "class": "delete-word-fwd",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.deleteToLineStart",
+      "nini": "ClearInput",
+      "keys": "same",
+      "class": "clear-input",
+      "note": "**语义不同**：Pi 的 Ctrl+u 是「删到行首」，nini 的 Ctrl+u 是「清空整个输入框」"
+    },
+    {
+      "pi": "tui.editor.deleteToLineEnd",
+      "nini": "KillToLineEnd",
+      "keys": "same",
+      "class": "delete-to-end",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.yank",
+      "nini": "Yank",
+      "keys": "same",
+      "class": "yank",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.yankPop",
+      "nini": "YankPop",
+      "keys": "same",
+      "class": "yank-pop",
+      "note": ""
+    },
+    {
+      "pi": "tui.editor.undo",
+      "nini": "Undo",
+      "keys": "differ",
+      "class": "undo",
+      "note": "Pi 是 Ctrl+-，nini 是 Ctrl+/"
+    },
+    {
+      "pi": "tui.editor.jumpForward",
+      "nini": null,
+      "keys": "n/a",
+      "class": "char-jump",
+      "note": "nini 没有「跳到下一个相同字符」"
+    },
+    {
+      "pi": "tui.editor.jumpBackward",
+      "nini": null,
+      "keys": "n/a",
+      "class": "char-jump",
+      "note": "nini 没有「跳到上一个相同字符」"
+    },
+    {
+      "pi": "tui.input.submit",
+      "nini": "Submit",
+      "keys": "same",
+      "class": "submit",
+      "note": ""
+    },
+    {
+      "pi": "tui.input.newLine",
+      "nini": "Newline",
+      "keys": "same",
+      "class": "newline",
+      "note": ""
+    },
+    {
+      "pi": "tui.input.tab",
+      "nini": "AcceptCompletionOrInsertTab",
+      "keys": "same",
+      "class": "completion",
+      "note": ""
+    },
+    {
+      "pi": "tui.input.copy",
+      "nini": null,
+      "keys": "n/a",
+      "class": "copy-selection",
+      "note": "nini 的剪贴板只有写没有读（见 D1 判定书）"
+    },
+    {
+      "pi": "app.interrupt",
+      "nini": "Abort",
+      "keys": "same",
+      "class": "interrupt",
+      "note": ""
+    },
+    {
+      "pi": "app.clear",
+      "nini": "Abort",
+      "keys": "same",
+      "class": "interrupt",
+      "note": "**语义不同**：Pi 的 Ctrl+c 是「先清空输入框、再按退出」，nini 的 Ctrl+c 是「中止回合」"
+    },
+    {
+      "pi": "app.exit",
+      "nini": "Quit",
+      "keys": "same",
+      "class": "exit",
+      "note": ""
+    },
+    {
+      "pi": "app.suspend",
+      "nini": null,
+      "keys": "n/a",
+      "class": "suspend",
+      "note": "nini 没有「挂起到后台」"
+    },
+    {
+      "pi": "app.thinking.cycle",
+      "nini": "CycleThinkingNext",
+      "keys": "differ",
+      "class": "thinking-cycle",
+      "note": "Pi 用 Shift+Tab 循环 thinking 档；nini 用 Ctrl+T / Shift+Ctrl+T"
+    },
+    {
+      "pi": "app.thinking.toggle",
+      "nini": "CycleThinkingNext",
+      "keys": "same",
+      "class": "thinking-cycle",
+      "note": "**语义不同**：Pi 的 Ctrl+t 是「显示/隐藏 thinking 块」，nini 的 Ctrl+t 是「thinking 档位 +」"
+    },
+    {
+      "pi": "app.model.cycleForward",
+      "nini": "CycleModelNext",
+      "keys": "same",
+      "class": "model-cycle",
+      "note": ""
+    },
+    {
+      "pi": "app.model.cycleBackward",
+      "nini": "CycleModelPrev",
+      "keys": "same",
+      "class": "model-cycle",
+      "note": ""
+    },
+    {
+      "pi": "app.model.select",
+      "nini": "SwitchModel",
+      "keys": "same",
+      "class": "model-select",
+      "note": ""
+    },
+    {
+      "pi": "app.tools.expand",
+      "nini": "ToggleCollapse",
+      "keys": "same",
+      "class": "tool-expand",
+      "note": ""
+    },
+    {
+      "pi": "app.editor.external",
+      "nini": "OpenExternalEditor",
+      "keys": "same",
+      "class": "external-editor",
+      "note": ""
+    },
+    {
+      "pi": "app.message.copy",
+      "nini": null,
+      "keys": "n/a",
+      "class": "copy-last",
+      "note": "nini 没有「复制上一条助手消息」的键"
+    },
+    {
+      "pi": "app.message.followUp",
+      "nini": "FollowUp",
+      "keys": "same",
+      "class": "followup",
+      "note": ""
+    },
+    {
+      "pi": "app.message.dequeue",
+      "nini": null,
+      "keys": "n/a",
+      "class": "dequeue",
+      "note": "nini 没有「把排队的消息取回编辑器」的键"
+    },
+    {
+      "pi": "app.clipboard.pasteImage",
+      "nini": "PasteImage",
+      "keys": "same",
+      "class": "clipboard-paste",
+      "note": ""
+    },
+    {
+      "pi": "tui.altScreen.top",
+      "nini": "ScrollToTop",
+      "keys": "same",
+      "class": "alt-screen-top",
+      "note": ""
+    },
+    {
+      "pi": "tui.altScreen.bottom",
+      "nini": "ScrollToBottom",
+      "keys": "same",
+      "class": "alt-screen-bottom",
+      "note": ""
+    },
+    {
+      "pi": "tui.altScreen.pageUp",
+      "nini": "ScrollUp",
+      "keys": "same",
+      "class": "page-scroll",
+      "note": ""
+    },
+    {
+      "pi": "tui.altScreen.pageDown",
+      "nini": "ScrollDown",
+      "keys": "same",
+      "class": "page-scroll",
+      "note": ""
+    },
+    {
+      "pi": "tui.altScreen.search",
+      "nini": "OpenSearch",
+      "keys": "differ",
+      "class": "alt-screen-search",
+      "note": "Pi 是 Ctrl+Shift+F，nini 是 Ctrl+F"
+    },
+    {
+      "pi": "tui.altScreen.searchClose",
+      "nini": "Abort",
+      "keys": "same",
+      "class": "search-close",
+      "note": ""
+    }
+  ],
+  "divergences": [
+    {
+      "pi": "tui.editor.deleteToLineStart",
+      "reason": "Pi 的 Ctrl+u 删到行首，nini 清空输入框——nini 里有 KillToLineStart 动作但**没有绑定**，改键即可对齐"
+    },
+    {
+      "pi": "app.clear",
+      "reason": "Pi 的 Ctrl+c 先清空输入框再退出，nini 的 Ctrl+c 中止回合；nini 的 Quit 走 Ctrl+D（与 Pi 一致）"
+    },
+    {
+      "pi": "app.thinking.toggle",
+      "reason": "Pi 的 Ctrl+t 显隐 thinking 块，nini 的 Ctrl+t 提高 thinking 档位——nini 没有「显隐 thinking 块」这个动作"
+    }
+  ],
+  "exempt": [
+    {
+      "glob": "app.session.*",
+      "reason": "nini 的会话操作走斜杠命令（/new、/resume、/tree、/rename），没有 Pi 那套会话键位"
+    },
+    {
+      "glob": "app.models.*",
+      "reason": "nini 的模型管理是 /model 选择器 + Ctrl+P 循环，没有 Pi 的批量 enable/reorder/save"
+    },
+    {
+      "glob": "app.tree.*",
+      "reason": "nini 没有 Pi 的 tree 视图（台账 B5：double-ESC 不切 tree）"
+    },
+    {
+      "glob": "app.thinking.save",
+      "reason": "nini 的 thinking 档位存在 settings.json，不需要一个「保存」键"
+    },
+    {
+      "glob": "tui.altScreen.searchNext",
+      "reason": "nini 的搜索在搜索栏内用 Enter/Shift+Enter 上下移动，没有独立的键位 id"
+    },
+    {
+      "glob": "tui.altScreen.searchPrevious",
+      "reason": "同上"
+    },
+    {
+      "glob": "tui.altScreen.previousPrompt",
+      "reason": "nini 没有「跳到上一个语义提示」"
+    },
+    {
+      "glob": "tui.altScreen.nextPrompt",
+      "reason": "nini 没有「跳到下一个语义提示」"
+    },
+    {
+      "glob": "tui.select.*",
+      "reason": "nini 的浮层用 Enter/Esc 走统一路径（handle_selector_key），没有 Pi 那套 select.* 键位 id"
+    }
+  ]
+}
