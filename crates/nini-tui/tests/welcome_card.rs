@@ -141,7 +141,9 @@ fn the_example_keys_use_a_theme_slot_that_exists() {
     let state = AppState::new("test-model");
     let theme = Theme::default();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    terminal.draw(|f| nini_tui::render::render_frame_with_theme(f, &state, &theme)).unwrap();
+    terminal
+        .draw(|f| nini_tui::render::render_frame_with_theme(f, &state, &theme))
+        .unwrap();
     let buffer = terminal.backend().buffer().clone();
 
     let dim = theme.color("dim");

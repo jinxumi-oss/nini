@@ -197,10 +197,7 @@ fn an_accidental_rebind_in_ninis_own_keymap_makes_it_red() {
     // keymap from drifting away from Pi without anybody noticing.
     let keys_path = scratch.join("crates/nini-tui/src/keys.rs");
     let keys = std::fs::read_to_string(&keys_path).expect("read keys.rs");
-    let broken = keys.replace(
-        "KeyCode::Char('a')",
-        "KeyCode::Char('b')",
-    );
+    let broken = keys.replace("KeyCode::Char('a')", "KeyCode::Char('b')");
     assert_ne!(
         broken, keys,
         "the binding to rebind must have been found verbatim — keys.rs's \
