@@ -122,3 +122,47 @@ fn the_card_is_gone_once_the_user_types_even_without_sending() {
         "the typed character is not on screen at all:\n{frame}"
     );
 }
+
+/// The example keys must be drawn in a slot that **exists**.
+///
+/// v0.16: the card drew its example keys with `theme.fg_style("keyHint")`
+/// — a slot that is **not** in `theme.rs`'s `COLOR_NAMES`. `fg_style` on an
+/// unknown name falls through to `default_color("keyHint")`, which is
+/// white: the keys on a cold-start screen were the brightest thing on it,
+/// while nini's own footer hints draw the same kind of text in `dim` (and
+/// Pi does too: `theme.fg("dim", key) + theme.fg("muted", desc)`).
+///
+/// The assertion is on the **colour**, not on the text: the text was always
+/// right, the colour was silently wrong.
+#[test]
+fn the_example_keys_use_a_theme_slot_that_exists() {
+    use nini_tui::theme::Theme;
+
+    let state = AppState::new("test-model");
+    let theme = Theme::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|f| nini_tui::render::render_frame_with_theme(f, &state, &theme)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    let dim = theme.color("dim");
+    let mut seen = 0;
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let Some(cell) = buffer.cell((x, y)) else {
+                continue;
+            };
+            if cell.symbol() == "/" || cell.symbol() == "!" {
+                // Only the example keys are single-character cells like
+                // this; the card's prose has none.
+                if cell.fg == dim {
+                    seen += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        seen > 0,
+        "the card's example keys must be drawn in the `dim` slot \
+         (theme.color(\"dim\") = {dim:?}); none was"
+    );
+}

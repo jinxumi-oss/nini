@@ -1455,7 +1455,17 @@ fn render_welcome_card(f: &mut Frame, theme: &Theme, area: Rect) {
         }
         spans.push(Span::styled(
             key.to_string(),
-            theme.fg_style("keyHint").add_modifier(Modifier::BOLD),
+            // v0.16: this read `theme.fg_style("keyHint")` — a slot that
+            // **does not exist** in `theme.rs`'s `COLOR_NAMES`, so it fell
+            // through to `default_color("keyHint")` = **white + bold**: the
+            // welcome card's example keys were the brightest thing on a
+            // cold-start screen, and nini's own footer hints
+            // (`crates/nini-tui/src/keyhint.rs`) draw the same kind of text
+            // in `dim`. Pi does the same (`keybinding-hints.js`:
+            // `theme.fg("dim", key) + theme.fg("muted", desc)`).
+            //
+            // The fix reads a slot that exists and means what it says.
+            theme.fg_style("dim").add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(format!("  {desc}"), theme.fg_style("muted")));
         example_lines.push(RLine::from(spans));

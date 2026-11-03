@@ -104,10 +104,22 @@ impl Widget for SelectorPanel {
         // is applied to every cell, preventing prior transcript content
         // from bleeding through (visible in v0.5 as text fragments
         // peeking out between selector rows).
+        //
+        // v0.16: the clear only set the **style**. The **symbols** stayed,
+        // so the transcript underneath was still *readable* through the
+        // panel — only its colours were overwritten. That is what the
+        // comment above always claimed to prevent, and it was not
+        // prevented. The fix is one more call: reset the cell's symbol to
+        // a space, then paint the background.
+        //
+        // (The worker's oracle for the five selectors caught this while
+        // measuring: the palette's own filter left the welcome card
+        // visible below the list.)
         let bg = bg_style;
         for y in inner.y..inner.y.saturating_add(inner.height) {
             for x in inner.x..inner.x.saturating_add(inner.width) {
                 if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_symbol(" ");
                     cell.set_style(bg);
                 }
             }
