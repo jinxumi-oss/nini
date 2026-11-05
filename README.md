@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.16.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1878%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1997%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -68,7 +68,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **1878 unit + integration tests**, including property-based SSE fuzz and
+- **1997 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -191,29 +191,40 @@ naming it** — never accepted and dropped.
 
 | Command | Argument | Status |
 |---|---|---|
-| `/settings` | — | real (selector) |
-| `/model` | `<provider/model>` | partial (sets state, not persisted) |
+| `/settings` | — | full (selector) |
+| `/model` | `<provider/model>` | partial (sets state, **not** persisted to disk) |
 | `/tree` | — | real (ASCII tree of the session) |
-| `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | partial (validates, not persisted) |
-| `/scoped-models` | — | stub (no scoping model) |
-| `/export` | `[path]` | full (writes HTML to `~/.nini/agent/exports/`) |
+| `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | full (validates and **persists** to `settings.json`) |
+| `/scoped-models` | `add` / `remove` / `clear` / `list` | full (a model cycle, persisted) |
+| `/export` | `[path]` `--include-thinking` | full (writes HTML to `~/.nini/agent/exports/`) |
 | `/import` | `<path>` | real |
 | `/share` | — | refuses (no cloud sharing) and points at `/export` |
-| `/copy` | — | partial (prints to stdout, no clipboard) |
+| `/copy` | — | full (clipboard; falls back to stdout) |
 | `/name` | `<name>` | partial (in-memory only, not persisted) |
-| `/session` | — | partial (in-memory state, no session file) |
+| `/session` | — | partial (reports the session id and file path) |
 | `/changelog` | — | real |
 | `/hotkeys` | — | full (**derived from the keymap at runtime**) |
 | `/fork` | `[n]` / `at n` | real (writes a branch session file) |
 | `/clone` | — | real (copies the session file) |
-| `/trust` | — | partial (in-memory only) |
+| `/trust` | — | full (persisted to the trust store) |
 | `/login` | `<provider>` | lists providers + where to put the key |
 | `/logout` | — | tells you what to unset (cannot mutate the parent shell) |
 | `/new` | — | full (clears transcript) |
 | `/compact` | — | real (session-layer compaction) |
-| `/resume` | — | real (session picker) |
-| `/reload` | — | full (re-reads skills) |
+| `/resume` | `[session-id]` | real (session picker) |
+| `/reload` | — | full (re-reads `settings.json`; **skills need a new session** — the prompt is fixed for the life of a run) |
 | `/quit` | — | full |
+
+The five nini-only additions are **extensions, not parity** — they are not in
+Pi's `builtin.json`, and they are not counted toward the 23:
+
+| Command | Argument | Status |
+|---|---|---|
+| `/help` | — | real (lists every command) |
+| `/status` | — | real (one-shot status block) |
+| `/prompt` | `<name> [args]` | real (runs a prompt template) |
+| `/debug` | — | full (toggles debug logging to a file) |
+| `/editor` | — | real (opens `$EDITOR` on the input buffer) |
 
 ## Pi ecosystem compatibility
 
@@ -232,7 +243,7 @@ nini reads and writes the same file formats as Pi v0.85.1:
 You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.
 
-## Known limitations (as of v0.15.0)
+## Known limitations (as of v0.16.0)
 
 Verified against this binary, not carried over from an older README.
 The project's goal and its current status live in

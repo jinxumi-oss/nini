@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.16.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1878%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-1997%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
@@ -53,7 +53,7 @@ nini 也不做。
 
 - **单个 6.4 MiB 可执行文件**（压缩后 2.4 MB），取代一整套 Node.js 工具链
 - **无授权附加条款**——纯 MIT，不像某些带着 OpenAI/Anthropic 再分发限制的分支
-- **1878 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
+- **1997 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
   HTTP 服务器的端到端线格式测试
 - **内置工具可扩展**——bash、read、write、edit、grep、find
 - **流式 TUI**，带斜杠命令自动补全
@@ -172,29 +172,40 @@ nini 没有实现的开关或命令会**带着理由被拒绝**——绝不会�
 
 | 命令 | 参数 | 状态 |
 |---|---|---|
-| `/settings` | — | 真实实现（选择器） |
-| `/model` | `<provider/model>` | 部分实现（只改状态，不落盘） |
+| `/settings` | — | 完整实现（选择器） |
+| `/model` | `<provider/model>` | 部分实现（只改状态，**不**落盘） |
 | `/tree` | — | 真实实现（session 的 ASCII 树） |
-| `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | 部分实现（校验但不落盘） |
-| `/scoped-models` | — | stub（没有按范围筛模型） |
-| `/export` | `[path]` | 完整实现（写 HTML 到 `~/.nini/agent/exports/`） |
+| `/thinking` | `<off\|minimal\|low\|medium\|high\|xhigh\|max>` | 完整实现（校验并**落盘**到 `settings.json`） |
+| `/scoped-models` | `add` / `remove` / `clear` / `list` | 完整实现（模型循环表，落盘） |
+| `/export` | `[path]` `--include-thinking` | 完整实现（写 HTML 到 `~/.nini/agent/exports/`） |
 | `/import` | `<path>` | 真实实现 |
 | `/share` | — | 拒绝（本机不做云端分享），并指向 `/export` |
-| `/copy` | — | 部分实现（打到 stdout，无剪贴板） |
+| `/copy` | — | 完整实现（剪贴板；失败时回落到 stdout） |
 | `/name` | `<name>` | 部分实现（只在内存，不落盘） |
-| `/session` | — | 部分实现（内存状态，没有 session 文件） |
+| `/session` | — | 部分实现（报告 session id 与文件路径） |
 | `/changelog` | — | 真实实现 |
 | `/hotkeys` | — | 完整实现（**运行时从键位表推导**） |
 | `/fork` | `[n]` / `at n` | 真实实现（写出分支 session 文件） |
 | `/clone` | — | 真实实现（复制 session 文件） |
-| `/trust` | — | 部分实现（只在内存） |
+| `/trust` | — | 完整实现（落盘到信任存储） |
 | `/login` | `<provider>` | 列出 provider + 密钥该放哪 |
 | `/logout` | — | 告诉你该取消哪个变量（无法改父 shell） |
 | `/new` | — | 完整实现（清空 transcript） |
 | `/compact` | — | 真实实现（session 层压缩） |
-| `/resume` | — | 真实实现（session 选择器） |
-| `/reload` | — | 完整实现（重读 skills） |
+| `/resume` | `[session-id]` | 真实实现（session 选择器） |
+| `/reload` | — | 完整实现（重读 `settings.json`；**skills 需要新 session**——prompt 在一个 run 的生命周期内是固定的） |
 | `/quit` | — | 完整实现 |
+
+五条 nini 独有命令是**扩展，不是 parity**——它们不在 Pi 的 `builtin.json` 里，
+也不计入那 23 条：
+
+| 命令 | 参数 | 状态 |
+|---|---|---|
+| `/help` | — | 真实实现（列出全部命令） |
+| `/status` | — | 真实实现（一次性状态块） |
+| `/prompt` | `<name> [args]` | 真实实现（跑一个 prompt 模板） |
+| `/debug` | — | 完整实现（切换 debug 日志到文件） |
+| `/editor` | — | 真实实现（用 `$EDITOR` 打开当前输入） |
 
 ## Pi 生态兼容性
 
@@ -213,7 +224,7 @@ nini 读写与 Pi v0.85.1 完全相同的文件格式：
 你可以在一个终端跑 `nini -p`、另一个终端跑 `pi`——两边写的是同一种
 session JSONL。
 
-## 已知限制（截至 v0.15.0）
+## 已知限制（截至 v0.16.0）
 
 都是对着这个二进制验证过的，不是从旧 README 抄来的。项目目标与当前状态
 写在 [`docs/GOALS.md`](docs/GOALS.md)——它是"nini 想成为什么"的权威；
