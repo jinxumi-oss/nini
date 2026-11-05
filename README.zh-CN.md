@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.16.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1997%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-2043%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
@@ -53,7 +53,7 @@ nini 也不做。
 
 - **单个 6.4 MiB 可执行文件**（压缩后 2.4 MB），取代一整套 Node.js 工具链
 - **无授权附加条款**——纯 MIT，不像某些带着 OpenAI/Anthropic 再分发限制的分支
-- **1997 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
+- **2043 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
   HTTP 服务器的端到端线格式测试
 - **内置工具可扩展**——bash、read、write、edit、grep、find
 - **流式 TUI**，带斜杠命令自动补全
@@ -225,6 +225,23 @@ nini 读写与 Pi v0.85.1 完全相同的文件格式：
 session JSONL。
 
 ## 已知限制（截至 v0.16.0）
+
+**有意的范围决定**（owner 于 2026-11-05 拍板）——它们**不是缺陷**，也不在等待修复：
+
+- **没有语法高亮。** 代码块不着色。Pi 会着色，nini 不做。卡点**不是体积**
+  （实测：syntect + fancy-regex +0.63 MiB，onig +0.90 MiB），而是
+  **scope → 主题槽的映射表**；而且 Pi 的高亮实现
+  （`src/utils/syntax-highlight.ts`）**不在对照快照里**，所以「逐行对齐 Pi 的输出」
+  在本仓库内无法验证。九个 `syntax*` 主题槽**保留为契约位**——它们的名字是 Pi 自己的
+  （`docs/plans/r9-syntax-highlighting.md` §4）。
+- **扩展不在 parity 范围内。** Pi 用 `jiti` 加载 TypeScript 扩展；`crates/nini-ext`
+  是 `dlopen` 的 cdylib，两者没有共同的执行模型。接上也跑不通，所以保留为
+  NOT WIRED 并写明原因，而不是半接上（`docs/GOALS.md` §4 R6/R11）。
+- **mermaid 块是占位，不是图。** nini 画 `◇ mermaid · <kind>` 加源码行。
+  真图需要布局引擎；Pi 用的是 npm 包，其 Rust 上游在本机不可得。
+  **刻意不提供 `markdown.mermaid` 设置**：只有占位框时，`final` 与 `streaming`
+  两个取值行为完全相同，而一个什么都不做的设置比没有设置更糟
+  （`docs/GOALS.md` §4 R12）。
 
 都是对着这个二进制验证过的，不是从旧 README 抄来的。项目目标与当前状态
 写在 [`docs/GOALS.md`](docs/GOALS.md)——它是"nini 想成为什么"的权威；

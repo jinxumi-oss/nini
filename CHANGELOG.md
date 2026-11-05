@@ -1,6 +1,6 @@
 ## Unreleased — TUI 的键位/浮层 oracle + provider 层的四个真缺陷：错误体被丢弃、HTTP 400 不压缩重试、空 content 被序列化成空串、瞬时错误不重试；外加一次独立审查（2 Critical + 9 Warning）
 
-1997 tests, all green.
+2043 tests, all green.
 
 这一轮不是发布，是 **v0.16.0 之后的两次工作合流**：前半是 TUI 的对照 oracle
 （第 1–4 节），后半是一次**线上故障的复盘**（第 5–13 节）——用户的 provider 是
@@ -161,6 +161,53 @@ selector 的鼠标。
 **自己的可用性缺陷**（不存在对标的 Pi 行为可抄）。登记原则的原文在
 [`docs/plans/parity-with-pi.md`](./docs/plans/parity-with-pi.md)：nini 自己的
 正确性问题**不登记进台账**，塞进去会让那张表失去意义。所以它只出现在这里。
+
+### 4c. owner 拍板 8 个决策，台账关账（open 7 → 1）
+
+**这一轮不是实现优先，是把「卡在决策上」的东西一次性推到能动手。**
+`docs/plans/owner-decision-packs.md` 把 6 个待决项从「一句话提问」写成「事实 +
+选项表 + 工作量 + 不做的代价」；owner 拍板后，台账的 `blocked-owner` **归零**。
+
+| 决策 | owner 结论 | 落地 |
+|---|---|---|
+| **R5** | 补 **28 个 provider 薄壳**；不做 5 个（bedrock / vertex / codex / azure / copilot） | 新增 `crates/nini-ai/src/provider_registry.rs`：Pi 的 39 个有目录 provider 里 6 个已原生实现、5 个不做、**28 个用的都是 nini 已实现的方言**——缺的只是「名字 → base URL + 密钥环境变量」。表**逐条抄自** Pi 的 `models.generated.js` 与 `env-api-keys.js`（`huggingface` → `HF_TOKEN`，不是自创的 `HUGGINGFACE_API_KEY`） |
+| **R10** | `/clone` 对齐 Pi | 取 session 树叶子 → fork-at-leaf → **切到新 session** → 清空编辑器，**不带参数**。复用 `cmd_fork` 的既有能力 |
+| **R11** | 不做扩展运行时，关账 | README 明写「扩展工具不在 parity 范围内」；B21/C4 → fake |
+| **R12** | 不做 mermaid 真图 | 保留降级占位 + known limitations；**也不接 `markdown.mermaid` 键**（只有占位框时两个取值等价，那正是 v0.9.2 清掉的「打印成功但什么都没做」） |
+| **R13** | 接 thinking×7 + 删 legacy×6 并显式提示 | `COLOR_NAMES` **61 → 55**；输入框外框按档位取色（bash mode 优先）；用户 `theme.json` 里被忽略的旧键**显式提示一次** |
+| **R14** | `Ctrl+U` / `Ctrl+X` / `Ctrl+Z` | `Ctrl+U`→删到行首、`Ctrl+X`→复制上一条助手消息、`Ctrl+Z`→挂起到后台；`Ctrl+C`/`Ctrl+T` 保留 nini 语义并登记理由 |
+| **R9** | 本轮不做语法高亮 | 判据改成「9 个槽各能出对应颜色」；发现 Pi 的高亮实现**不在快照里**（`src/utils/` 整个目录缺失） |
+| **R4** | 不做凭据存储 | 保持 env-var-only，写明这是**有意的产品决定** |
+
+**顺带逮住并修掉的三个真缺陷**：
+
+1. **`InputBuffer::kill_to_line_start` 名不副实** —— 它删的是**上一个词的边界**
+   （readline 的 `unix-word-rubout`），不是行首。R14 之前 `Ctrl+U` 走的是
+   `ClearInput`，这个动作**没有任何键绑定**，所以只改绑定不改实现时，
+   parity 契约里那句「delete to start」就是假话。已改成按 `\n` 找行首。
+2. **`/login` 在教用户用一个二进制会拒绝的 provider** —— 清单里有 `together`
+   （10 个），而 `build_provider` 的 `other =>` 臂会打印 `unknown provider: together`
+   然后 `exit(2)`。清单现在**与实现同源**（都从 `provider_registry` 生成，37 个 id），
+   并有一条 oracle 钉住「清单数量 == 注册表数量」防漂移。
+3. **`openai_compat.rs` 的注释指向不存在的符号与行号** —— 写着 Pi 的兼容表是
+   `getCompatOptions`、`openai-completions.ts:1462-1502`，实际是 `getCompat`（`:1682`，
+   且**按 model**）与 `detectCompat`（`:1577-1670`），而 `:1462` 现在是 `convertTools`。
+   做 R5 的人会被这条注释带偏。
+
+**`detectCompat` 移植**：Pi 的 OpenAl 兼容生态不统一（DeepSeek / Together / Zai /
+Moonshot / Nvidia / AntLing / Cerebras / Xai / OpenRouter 各有 wire 差异），
+nini 此前一律继承 OpenAI 的拼写。已把 `detectCompat`（101 行 TS）移植进
+`openai_compat::detect_compat`，薄壳走 OpenAI 兼容方言时**自动带上**正确的 compat。
+
+**两条**需要用户自己给值：`cloudflare-ai-gateway` / `cloudflare-workers-ai` 的 Pi
+baseUrl 带 `{CLOUDFLARE_ACCOUNT_ID}` 占位符，静态表填不了 → 必须给
+`{ID}_BASE_URL` 或写进 `models.json`，否则**显式拒绝并说明**（不接受静默失败，
+也不接受拿一个猜的 URL 去请求）。
+
+**测试数 1997 → 2043**（+46）。其中 `provider_registry` 在 `nini-cli` 上开了个
+**lib 目标**（`src/lib.rs`）给集成测试用，它与 bin 编的是**同一份**
+`provider_factory.rs` —— 所以 `[lib] test = false` 是必须的：不关掉，那 27 条
+单测会被**数两遍**，而 README 的徽章与实测是**精确相等**的关系。
 
 ### 5. 线上一次 400：长任务直接死掉，零信息
 
@@ -370,6 +417,7 @@ model id 错」，而线上那次 400 的真实原因恰恰是上下文超限（
 | 更新前 | 49 | 7 | 34 | 5 | 3 | 36 |
 | 更新后 | 56 | 7 | 40 | 6 | 3 | 43 |
 | 本轮文档收尾后 | 56 | 1 | 40 | 6 | 9 | 43 |
+| **owner 拍板后（最终）** | **56** | **1** | **45** | **10** | **0** | 43 |
 
 「本轮文档收尾后」这一行是收尾时才落的：6 条原本 `status=open` 的条目
 （B21 / B22 / B24 / B25 / C3 / C4）**自己的 `exit_criterion` 就写着「要先有 owner

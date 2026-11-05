@@ -4,6 +4,10 @@
 > 作用：把台账里**卡在 owner 手里**的 6 个决策，从「一句话提问」变成「事实 + 选项 + 代价」的可拍板材料。
 > 权威：决策本身属 owner（`docs/GOALS.md` §4 决策台账）；本文件只提供**证据**与**选项**，不替 owner 拍板。
 > 机器数据：`python3 scripts/parity-gap.py --json`（台账）、`python3 scripts/keymap-parity.py`（键位）。
+>
+> **2026-11-05 更新**：owner 已就 6 个决策**全部拍板**。本文件从「决策材料」改为
+> **决策纪要**：结论在 §0.3，各节原「推荐」小节改为「拍板结论」——
+> **事实与选项表原样保留**（那是决策的留痕），原推荐保留为留痕。
 
 ---
 
@@ -33,9 +37,11 @@
 
 - 不是「实现者自行决定」的授权书。每一节的「推荐」都只是**从工程事实出发的倾向**；
   在 owner 在 `docs/GOALS.md` §4 写下结论之前，实现者不动手。
+  **2026-11-05 起**：owner 已拍板（见 §0.3），各节「推荐」小节改为「拍板结论」，
+  原推荐作为留痕保留。
 - 不是覆盖率报告。台账里的条数只用来定位，不用来评价工作。
 
-### 0.3 一处必须先纠正的口径
+### 0.2b 一处必须先纠正的口径
 
 台账 `blocked-owner` 一共 **9 条**：`B1、B7、B9、B21、B22、B24、B25、C3、C4`。
 
@@ -62,15 +68,50 @@
   实测 0.85.1 的 `builtinProviders()` **也是 40 个**，两版数字相同。
 - 所有「行数 / 条数 / 提交数」都是**本文件写作时的实测值**，会随提交漂移。复算命令都写在相应小节里。
 
-### 0.5 拍板之后怎么落地（本文件只做准备，不代劳）
+### 0.5 拍板之后怎么落地（owner 已拍板，剩下的是执行）
 
 1. 在 `docs/GOALS.md` §4 决策台账里给该决策写一行结论。
    ⚠️ 现状：§4 只有 `R4 / R5 / R9 / R10 / R6` 五行，**R11–R14 四行缺失**——
    而 `scripts/parity-gap.py:81` 的 `DECISIONS` 白名单**已经**包含 `R11 R12 R13 R14`。
    落地时必须把 §4 与白名单补齐，否则台账与 GOALS 各说一套。
+   **2026-11-05：`R11 / R12 / R13 / R14` 四行已补**（见 §7.2），剩下的是把
+   本文件 §0.3 的**结论**写进对应行。
 2. 改 `scripts/parity-gaps.json` 里对应条目的 `status`（`blocked-owner` → `open`/`fixed`/`fake`）
    与 `exit_criterion`（把「等 owner 拍板」换成可判定的判据）。
 3. 实现只做被拍板的那一条口径，不顺手扩范围。
+
+---
+
+## 0.3 拍板结果（2026-11-05）
+
+owner 已就 6 个决策**全部拍板**。下表是结论与一句话理由；每个决策的**事实、选项表、
+原推荐**原样保留在各节里，作为决策的留痕。
+
+| 决策号 | owner 的结论（2026-11-05） | 一句话理由 |
+|---|---|---|
+| **R5** | **补 28 个薄壳**；**不做** 4 个需要新协议的（`amazon-bedrock` / `google-vertex` / `openai-codex` / `azure-openai-responses`）+ 1 个需要 OAuth 的（`github-copilot`） | 薄壳 ≈ 70–90 行/家，在 env-var-only 的前提下就能把覆盖面拉起来，并解掉 C3 的「投入单侧化」；新协议与 OAuth 要么破坏「单文件、无运行时」原则，要么需要 R4 之外的凭据存储 |
+| **R10** | **完全对齐 Pi**：`/clone` = fork-at-leaf + 切到新 session，**不带参数** | 能力已在 `cmd_fork` 里现成（`crates/nini-tui/src/commands/dispatch.rs` 的 `cmd_fork`）；Pi 的 `/clone` 本来就**没有参数**（`references/pi-0.85.1/src/ui/interactive-mode.ts:5186`），台账那句「接受 session-id 参数」是台账自己写错了 |
+| **R11** | **不做**，关账；README 明写「扩展工具不在 parity 范围内」 | R6 已被源码证伪（Pi 加载 TS、`nini-ext` 是 dlopen cdylib，无共同执行模型）；关账 + 一句声明是零代码成本的合法口径 |
+| **R12** | **不做**（真图），写进 known limitations | 真图要么自研（与 Pi 长得不一样），要么依赖本机拿不到的第三方源码与**未查**的许可；nini 保留降级占位框 |
+| **R13** | 接 **thinking×7** + 删 **legacy×6** 并把静默丢弃改成**显式提示**；**customMessage×3** 与 **border×2** 挂起 | thinking 有现成的档位表与边框 UI（零新概念）；legacy 现在零可见效果，缺的是「提示」不是「槽」；customMessage 没有生产者、border×2 没有使用点 |
+| **R14** | 做 **3 项**：`Ctrl+U`→删到行首、`Ctrl+X`→复制上一条助手消息、`Ctrl+Z`→挂起到后台；**`Ctrl+C` 保留 nini 语义**（登记为 divergence）；**跳字符与选区复制跳过** | 前两项能接上现有动作，第三项是新能力但产品上独立；`Ctrl+C` 改语义会破坏 nini 用户「Ctrl+C 中止回合」的高频手势；跳字符与选区复制要引入「选区」这个新概念 |
+
+口径说明（数字都指本文件写作时的实测值）：
+
+- **R5 的 28 是怎么算出来的**：Pi 内建 **40** 个 provider
+  （`references/pi-0.85.1/src/provider/all.ts:89-131`），其中 **39 个有模型目录**
+  （`src/api/*.models.ts` 共 39 个；`radius` 没有目录）→ 39 − 6（已原生：anthropic /
+  deepseek / google / groq / mistral / openai）− 5（明确不做）= **28**。
+- **R14 的 3 项里有两项要新增能力**：`Ctrl+X` 需要**剪贴板读**
+  （`crates/nini-tui/src/clipboard.rs` 只有 `copy()`），`Ctrl+Z` 需要**进程级挂起/恢复**
+  （nini 原先只有「挂起 TUI 去跑外部编辑器」那一路，不是挂起进程）。这两项是**新功能**，
+  不是纯 parity 对齐。
+- **R4（凭据存储）owner 也已拍板：不做**，保持 **env-var-only**（凭据只从环境变量读，
+  `/login` 打印该设哪个环境变量），并**写明这是有意的产品决定**，不是「待决」——
+  §1.2 选项 C 里「C 与 R4 相互依赖」的那条因此关闭（选 C 还需要 OAuth 运行时，
+  与本文件的产品原则冲突）。
+- **R9 不在本文件**：owner 另拍板「本轮不做」，结论见
+  `docs/plans/r9-syntax-highlighting.md` §4.4 / §6。
 
 ---
 
@@ -104,10 +145,21 @@
 | **B 追平「能追平的那部分」**：只做 T2 的 22 家中**用户真正常用**的若干家（按 Pi 品牌逐个落薄壳），T3/T4 明确登记为不做 | `crates/nini-ai/src/<brand>.rs`（每家 ~70–90 行）、`crates/nini-cli/src/provider_factory.rs`（每家 ~10 行分支）、`crates/nini-core/data/model-catalog.json`（补模型条目）、`docs/GOALS.md` §4 | 每家 **≈ 1.5 文件 × ~90 行**；补 10 家 ≈ **15 文件 × ~900 行**；补满 22 家 ≈ **33 文件 × ~2 000 行** | 风险：①「哪些家常用」需要 owner 给名单，否则就是又一轮自选范围；② `models.json` 通道已能覆盖 T2 的 22 家（只差 baseUrl + key），薄壳的真实增量是**内置默认值与目录条目**，不是「能不能用」——收益比看上去小；③ 仍然差 8 家（T3 的 4 + T4 的 4 + Cloudflare 2），覆盖面叙事会变成「34/40」这种不好解释的数 |
 | **C 全追平 40** | 同 B，再加 OAuth 运行时（nini 目前**没有**任何 OAuth 代码）、6 个新方言的协议实现、Cloudflare 的 stream 层 | **不可估**：OAuth 一家 ≥ 1 文件 × ~300 行起，6 个方言按 `openai.rs`(1 524 行)/`anthropic.rs`(568 行)/`sse.rs`(488 行) 的量级，每个 ≈ **1–2 文件 × ~300–600 行** | 风险：与 nini「单文件、无运行时、只读环境变量拿凭据」的产品原则正面冲突（`crates/nini-tui/src/commands/dispatch.rs:1018-1024` 明确写了 nini 不在 TUI 里跑 OAuth）；`R4`（是否自建凭据存储）**本身也还没拍板**，C 与 R4 相互依赖 |
 
-### 1.3 推荐
+### 1.3 拍板结论（2026-11-05）
+
+**owner 选 B 的变体：补 28 个薄壳；4 个需要新协议的 + 1 个需要 OAuth 的明确不做。**
+
+- 口径：39 个有目录的 provider 里，6 个已原生实现、5 个明确不做 → **补 28 个薄壳**（算法见 §0.3）。
+- §7.1 第 9 项「用户真正常用哪几家」：**不再自选范围，全部薄壳**。
+- 薄壳形态 = §1.2 的 B 口径：每家 ≈ 70–90 行 + `provider_factory` 分支 ≈ 10 行 + 目录条目。
+- 「用 `models.json` 覆盖（0 行 Rust 代码）还是做内置薄壳」这一问：**做薄壳**；
+  `models.json` 通道仍作为补充手段保留（`provider_factory.rs:424-448`）。
+
+**原推荐（2026-11-02 的倾向，留痕；owner 已改口径）**：
 
 **推荐 B，但把口径改成「按方言分层，而不是按品牌数追平」**，并请 owner 明确一件事：
 **T2 的 22 家，用 `models.json` 覆盖（0 行 Rust 代码）还是做内置薄壳（~90 行/家）？**
+（这一问已被 owner 回答：**全部做薄壳**。）
 
 理由：
 
@@ -171,7 +223,15 @@
 | **B 对齐 Pi**：`/clone` = 在当前 leaf 处 fork-at-leaf，**切到新 session**（不带参数） | `crates/nini-tui/src/commands/dispatch.rs`（`cmd_clone` 重写，**复用 `cmd_fork` 已有的 fork + `session_load` 逻辑**，≈ 40–60 行）、`crates/nini-tui/src/commands/registry.rs`（描述 1 行）、`crates/nini-tui/tests/` 新增 1 个测试文件（≈ 60–100 行）、`scripts/parity-gaps.json`（`B1.exit_criterion` 改口径）、`docs/GOALS.md` §4 | **4 文件 × ~130 行** | 风险：**用户可见行为变更**。现有 `/clone` 的产物文件名是 `<stem>-clone-<ts>.jsonl`；改成 fork 后产物名走 `fork_path_for`（`crates/nini-session/src/lib.rs:1232`，格式 `<stamp>_<id>.jsonl`），**已有用户的 clone 文件不会被删，但命名规则变了**；另外 `/clone` 会从「不打断当前会话」变成「切走当前会话」——这是**语义反转**，不是加个参数 |
 | **C 折中**：`/clone` 保留复制语义，但**接受可选的 session-id**，复制指定会话 | `dispatch.rs`（≈ 40 行）、`registry.rs`（2 行）、测试 1 文件（≈ 60 行）、台账 + GOALS | **4 文件 × ~110 行** | 风险：这条正是台账 exit_criterion 字面写的口径，但 **Pi 没有这个参数**，做完 nini 与 Pi 仍然不一致，却把差距从「语义」缩小成「多一个没用的参数」——**看起来更接近、实际上更难解释** |
 
-### 2.3 推荐
+### 2.3 拍板结论（2026-11-05）
+
+**owner 选 B：完全对齐 Pi——`/clone` = fork-at-leaf + 切到新 session，不带参数。**
+
+- 同时改掉 `B1.exit_criterion` 里那句与 Pi 冲突的「接受 session-id 参数」：
+  按 Pi 的实际（**无参数**）改——§7.1 第 6 项由此解决。
+- 验收口径按 §2.4 的 B 分支：产物路径走 `fork_path_for`，不再出现 `-clone-` 后缀。
+
+**原推荐（2026-11-02 的倾向，留痕；owner 已采纳）**：
 
 **推荐 B（对齐 Pi），并同时改掉 `B1.exit_criterion` 里那句与 Pi 冲突的「接受 session-id 参数」。**
 
@@ -233,7 +293,16 @@
 | **B 只补「工具能力」，不补「运行时」**：给 `Tool` 加三样 Pi 有的东西——① 按工具注册渲染器 ② 执行期流式更新回调 ③ signal/取消；**不引入任何第三方扩展的装载机制** | `crates/nini-core/src/tool.rs`（`ToolContext` 加 signal + update 回调、`Tool` 加渲染钩子，≈ 100–140 行）、`crates/nini-core/src/agent.rs`（执行期接线 ≈ 40–60 行）、`crates/nini-tui/src/rich.rs`（渲染器注册表 + 分发 ≈ 60–100 行）、`crates/nini-tui/tests/` 新增 1 文件（≈ 80–120 行） | **4 文件 × ~300 行** | 风险：**B21 仍然关不掉**。`B21` 要的是「用户能声明 executionMode 的入口」——**没有扩展运行时，就没有任何人能声明**，补了工具能力也只是一个「将来会有用」的接口。收益全部落在 `C4` 的 ①②③ 上（那 3 项是**给 nini 自己的工具**用的，不是给扩展用的） |
 | **C 做真扩展运行时**（让第三方扩展能注册工具） | 需要一个 JS 运行时（QuickJS 类）或一个进程外协议；再加一个能加载 Pi 的 `.ts` 扩展的加载器 | **不可估**：`rquickjs`/`boa` 本地**不可得**（见 §3.1），体积与工作量需联网才能测；即便能引，还需要「Pi 的扩展 API（28 类运行时事件、TypeBox schema、ExtensionContext）」到 Rust 的映射层 | 风险：与 `docs/GOALS.md` §4 的 **R6 已被证伪**的结论**正面冲突**——R6 的原文理由是「Pi 加载 TS，`nini-ext` 是 `dlopen` cdylib，无共同执行模型」。**选 C 等于重开 R6**，需要 owner 明确推翻它。同时 nini 的「单文件、无运行时」卖点会被打破 |
 
-### 3.3 推荐
+### 3.3 拍板结论（2026-11-05）
+
+**owner 选 A：不做，关账；README 明写「扩展工具不在 parity 范围内」。**
+
+- `B21` / `C4` 离开 `blocked-owner`，按「产品原则差异」收口。
+- §3.4 里的二选一（`nini-ext` 删还是留）**本次拍板未涉及**：默认**保留现状**
+  （留在 workspace，头注释已写 `Status: NOT WIRED`；仓库里没有任何 crate 依赖它）。
+- 「工具能力三项」（按工具注册渲染器 / 流式更新 / signal）**不在 R11 内**，需要另立条目。
+
+**原推荐（2026-11-02 的倾向，留痕；owner 已采纳）**：
 
 **推荐 A（关账 + README 声明）。** 若 owner 同时希望内部工具能力更强，**B 可以单独立项**，但它**不是 R11 的必要条件**。
 
@@ -308,7 +377,17 @@
 | **B 自己写一个 Rust 布局引擎** | 新增 `crates/nini-tui/src/mermaid_layout.rs`（或独立 crate）+ 解析 + 画布 + 标签测量 | **量级参考**：`grok-mermaid` 的 TS 版是 **4 546 行**（含 width-data 993 行的字符宽度表）；一个 Rust 移植或等价实现 **≥ 2 000 行，且质量对不齐**。体积 **未实测**（本地无可参考 crate） | 风险：**这是 R9 量级的另一个「体积未知」**，而这次连 TS 原版的**对照物都在**（可以逐功能对齐）；但也意味着**没有捷径**——手写一个能画 flowchart 的最小实现可能只要 600–800 行，代价是**和 Pi 的图长得不一样**（Pi 画的是 Unicode 方框艺术，不是 ASCII art） |
 | **C 移植上游 Rust 原版**（`xai-org/grok-build` 的 `crates/codegen/xai-grok-markdown/src/mermaid.rs`） | 新增一个 mermaid 渲染模块（可整段移植或作为独立 crate vendor 进来） | **不可估**：源码**本机不可得**（未查到）；体积不可实测（本地 cargo registry 无候选） | 风险：**需要 owner 提供源码或放行联网**；`xai-org/grok-build` 的**许可未查**（未查到，需 owner 确认）——vendoring 第三方代码必须先确认许可。另外 Pi 自己也是通过 npm 依赖 `grok-mermaid`（TS 版）实现 C 的，**不是**直接用 Rust 原版，所以「对齐 Pi」在 C 下反而要**再移植一层** |
 
-### 4.3 推荐
+### 4.3 拍板结论（2026-11-05）
+
+**owner 选「不做」：mermaid 真图这一轮不实现，写进 known limitations。**
+
+- nini 保留现在的降级占位框（`crates/nini-tui/src/mermaid.rs:188` `render_mermaid_block`），
+  并在 known limitations 里写明「nini 不画 mermaid 真图」。
+- §7.1 第 1 项（上游 Rust 源码与许可）、第 2 项（Rust 侧体积）**因此不再需要 owner 提供**。
+- 「`markdown.mermaid` 这个 settings 键要不要接」**不在本次拍板范围**：接了也只是
+  §4.2 的 A 口径（「`final` 与 `streaming` 在 nini 里同义」），需要另一次拍板。
+
+**原推荐（2026-11-02 的倾向，留痕；owner 未采纳）**：
 
 **推荐 A，但把 A 的定位说清楚：它只关掉「模式未接到 settings 键」，不关掉「真图渲染」。**
 若 owner 想要真图，则走 **C**（移植上游 Rust 原版），**且需要 owner 先提供源码并确认许可**。
@@ -383,7 +462,17 @@
 | **C 清理 legacy×6 + 其余悬空槽**，并且**把静默丢弃改成显式提示** | `crates/nini-tui/src/theme.rs`（删槽 + `retain` 改成「未知键 → 收集起来 → 提示一次」，≈ 50–80 行）、`crates/nini-tui/tests/`（≈ 60–100 行） | **2 文件 × ~150 行** | 风险：**删槽会影响老用户的 `theme.json`**——正是 `theme.rs:349` 注释警告的那件事。若不做「显式提示」，删槽就是把用户配置**静默扔掉**（现状），若做了提示就是一次**用户可见的行为变更**（启动时多一行提示）。另外 legacy×6 现在**已经零可见效果**，删它们的**收益接近零**，成本却不为零 |
 | **D 一个都不动** | 只改台账：`scripts/parity-gaps.json`（`B24`）+ `docs/GOALS.md` §4 | **2 文件 × ~15 行** | 风险：27 个悬空槽继续占着主题键表的位置；**未来每个新写的槽都会让人怀疑「这个是不是也没接线」**；而且 `COLOR_NAMES` 是写回过滤器——**槽表与实际可用槽长期不一致，等于一份会骗人的清单** |
 
-### 5.3 推荐
+### 5.3 拍板结论（2026-11-05）
+
+**owner 选 A + C 的组合：接 thinking×7 + 删 legacy×6 并把静默丢弃改成显式提示；customMessage×3 与 border×2 挂起。**
+
+- **thinking×7**：按当前 thinking 档位给**已有的输入框外框**上色（不新造 UI）。
+- **legacy×6**：删槽；且用户 `theme.json` 里的这 6 个键**必须显式忽略并提示**，
+  不能静默丢弃（现状是 `theme.rs:349` 的 `colors.retain(...)` 直接丢掉）。
+- **customMessage×3**（无生产者）与 **border×2**（无使用点）：**挂起**，本轮不接。
+- §7.1 第 7 项（`B24` 的数字）已在本轮解决（见 §5.1 末行）。
+
+**原推荐（2026-11-02 的倾向，留痕；owner 已改口径）**：
 
 **推荐 A（只接 thinking×7），并把 C 里的「显式提示」那一半单独拿出来做（不动删槽）。**
 
@@ -456,7 +545,23 @@
 | **C 只做「零争议的那一处」**：Ctrl+U 改绑到**已经存在但没绑定**的 `KillToLineStart`（`keys.rs:140`），其余 2 处分叉与 6 个缺失**全部登记为「有意差异」并写明理由** | `crates/nini-tui/src/keys.rs`（≈ 5 行）、`scripts/keymap-parity.json`（`divergences` 里 2 条写理由 + `map` 里 6 条 `nini: null` 写 `note`）、`docs/GOALS.md` §4 | **3 文件 × ~40 行** | 风险：`B25` 的 exit_criterion 说「要么按 Pi 改，要么在 `divergences` 里写明理由」——**C 完全满足判据**；但「有意差异」若不写理由就等于没写，所以**理由必须由 owner 给**，不能由实现者编 |
 | **D 一个都不改** | 只改台账 | **2 文件 × ~10 行** | 风险：`B25` 是**唯一一条 `machine_checkable: true` 却被 `blocked-owner` 卡住**的差距——它的机器判据（两个脚本都退出 0）**已经达成**，卡住的是「语义要不要对齐」这个产品问题。挂着不动 = 台账里唯一的「判据已达成但状态未推进」的条目 |
 
-### 6.3 推荐
+### 6.3 拍板结论（2026-11-05）
+
+**owner 选 C 的变体：做 3 项，其余登记为 divergence。**
+
+| 键 / binding id | 拍板 | 说明 |
+|---|---|---|
+| `Ctrl+U`（`tui.editor.deleteToLineStart`） | **做** | 改绑到**已存在但没绑定**的 `KillToLineStart`（`crates/nini-tui/src/keys.rs` 里的 `KillToLineStart`），语义 = Pi 的「删到行首」 |
+| `Ctrl+X`（`app.message.copy`） | **做** | 复制上一条助手消息（Pi：`src/ui/keybindings.ts:130`）；nini 需新增**剪贴板读**能力（`clipboard.rs` 只有 `copy()`） |
+| `Ctrl+Z`（`app.suspend`） | **做** | 挂起到后台（Pi：`src/ui/keybindings.ts:96`）；nini 需新增**进程级挂起/恢复**（原先只有「挂起 TUI 去跑外部编辑器」那一路） |
+| `Ctrl+C`（`app.clear`） | **不做，保留 nini 语义** | nini = 中止回合；**登记为 divergence**（`scripts/keymap-parity.json` 的 `divergences` 段），不改成 Pi 的「先清空编辑器」 |
+| 跳字符（`tui.editor.jumpForward` / `jumpBackward`） | **跳过** | 登记理由 |
+| 选区复制（`tui.input.copy`） | **跳过** | 登记理由（需引入「选区」这个新概念） |
+
+- 跳过去的部分在 `scripts/keymap-parity.json` 的 `map` 段里**每条都要有一句理由**
+  （§6.4 的验收项），不是光秃秃的 `null`。
+
+**原推荐（2026-11-02 的倾向，留痕；owner 已改口径）**：
 
 **推荐 C（先做 Ctrl+U 那一条，其余登记理由），并请 owner 对 3 处分叉逐条给结论。**
 
@@ -508,30 +613,31 @@
 
 ## 7. 一页总表
 
-| 决策 | 一句话问题 | 推荐 | 台账条目 | 主要工作量（文件 × 行） | 拍板后的第一条可判定判据 |
+| 决策 | 一句话问题 | **owner 结论**（2026-11-05） | 台账条目 | 主要工作量（文件 × 行） | 拍板后的第一条可判定判据 |
 |---|---|---|---|---|---|
-| **R5** | provider 覆盖面要不要追平 Pi 的 40 | **不按「40」追平**，按方言分层；只补用户真正常用的若干家（每家 ~90 行），OAuth/新方言明确不做 | `B9`、`C3` | 每家 ≈ 1.5 文件 × ~90 行；补 10 家 ≈ 15 文件 × ~900 行 | 脚本能算出 nini 支持的 provider 集合，并与 `builtinProviders()` 的 40 在 `SNAPSHOT.lock` 对账 |
-| **R10** | `/clone` 改成「切到新分支」要不要 | **对齐 Pi**：`/clone` = fork-at-leaf 并切到新 session（复用 `cmd_fork`），**不带参数** | `B1` | 4 文件 × ~130 行 | 1 条 oracle：clone 后当前 session 已切换且原分支仍在 tree 中 |
-| **R11** | 要不要做 Pi 兼容的扩展运行时 | **不做**（R6 已被证伪）：关账 + README 明写「扩展工具不在 parity 范围内」；工具能力三项另立条目 | `B21`、`C4` | 3 文件 × ~20 行（声明） | README 里有那句话，且可被测试 grep 到 |
-| **R12** | mermaid 要不要引布局引擎画真图 | **先只接 `markdown.mermaid` 键**（~180 行）；真图等 owner 提供上游 Rust 源码与许可后走移植 | `B22` | 4 文件 × ~180 行（接键）；真图不可估 | `markdown.mermaid` 三个取值真的改变渲染结果 |
-| **R13** | 主题槽怎么接线 | **只接 thinking×7** 到**已有的**输入框外框；customMessage 等 R11；legacy×6 保留但把静默丢弃改成显式提示 | `B24` | 3 文件 × ~100 行 | 七档 thinking 对应七种边框颜色，各有断言 |
-| **R14** | 键位语义要不要跟 Pi 对齐 | **先改 Ctrl+U**（绑到已有的 `KillToLineStart`，5 行）；其余 2 处分叉与 6 个缺失由 owner 逐条给理由或另立功能项 | `B25` | 3 文件 × ~40 行 | `divergences` 里每条都有理由；`map` 里 6 条 `nini: null` 都有 note |
+| **R5** | provider 覆盖面要不要追平 Pi 的 40 | **补 28 个薄壳**；4 个需要新协议的（`amazon-bedrock` / `google-vertex` / `openai-codex` / `azure-openai-responses`）+ 1 个需要 OAuth 的（`github-copilot`）**明确不做** | `B9`、`C3` | 每家 ≈ 1.5 文件 × ~90 行；28 家 ≈ 42 文件 × ~2 500 行（按同一口径推算） | 脚本能算出 nini 支持的 provider 集合，并与 `builtinProviders()` 的 40 在 `SNAPSHOT.lock` 对账 |
+| **R10** | `/clone` 改成「切到新分支」要不要 | **完全对齐 Pi**：`/clone` = fork-at-leaf 并切到新 session（复用 `cmd_fork`），**不带参数**；台账那句「接受 session-id 参数」按 Pi 实际删掉 | `B1` | 4 文件 × ~130 行 | 1 条 oracle：clone 后当前 session 已切换且原分支仍在 tree 中 |
+| **R11** | 要不要做 Pi 兼容的扩展运行时 | **不做**（R6 已被证伪）：关账 + README 明写「扩展工具不在 parity 范围内」 | `B21`、`C4` | 3 文件 × ~20 行（声明） | README 里有那句话，且可被测试 grep 到 |
+| **R12** | mermaid 要不要引布局引擎画真图 | **不做**（真图），写进 known limitations | `B22` | known limitations 一条（体积与工作量均不再评估） | known limitations 里写明「nini 不画 mermaid 真图」，且可被 grep 到 |
+| **R13** | 主题槽怎么接线 | 接 **thinking×7** 到**已有的**输入框外框 + 删 **legacy×6** 并把静默丢弃改成**显式提示**；customMessage×3 与 border×2 **挂起** | `B24` | thinking：3 文件 × ~100 行；legacy 清理与提示：2 文件 × ~150 行 | 七档 thinking 对应七种边框颜色，各有断言；legacy 6 键被显式忽略并提示 |
+| **R14** | 键位语义要不要跟 Pi 对齐 | 做 **3 项**（`Ctrl+U`→删到行首、`Ctrl+X`→复制上一条助手消息、`Ctrl+Z`→挂起到后台）；**`Ctrl+C` 保留 nini 语义**（登记为 divergence）；跳字符与选区复制**跳过** | `B25` | 改绑 3 处 ≈ 5 行；`Ctrl+X`（剪贴板读）与 `Ctrl+Z`（进程挂起/恢复）是新能力，量级待实现时估 | `divergences` 里每条都有理由；`map` 里 6 条 `nini: null` 都有 note |
 
 ### 7.1 需要 owner 提供/确认的清单（查不到的事实）
 
-以下 9 项**本文件查不到**，它们要么需要外部材料，要么是台账自身的口径矛盾：
+以下 9 项**本文件查不到**，它们要么需要外部材料，要么是台账自身的口径矛盾。
+**owner 拍板后，9 项全部有了结论**（见「现状」列）：
 
 | # | 事项 | 属于 | 现状 |
 |---|---|---|---|
-| 1 | `xai-org/grok-build` 的 Rust `crates/codegen/xai-grok-markdown/src/mermaid.rs` 源码与其**许可** | R12 | 本机与仓库**都不可得**；许可**未查** |
-| 2 | Rust 侧 mermaid 布局引擎的**体积增量** | R12 | 本机 cargo registry 缓存 915 个 crate，**无任何** mermaid/graph/layout crate → **未实测** |
-| 3 | JS 引擎 crate（rquickjs/boa 等）的可得性与体积 | R11 | 本机 registry **无** → 选项 C 的体积与工作量**无法离线估** |
-| 4 | Pi 每家 provider 的**模型目录** | R5 | `references/pi-0.85.1/src/api/data/*.json` **不在快照** → 无法逐家对账 |
-| 5 | Pi 内建工具到底 **7 个还是 8 个** | R14 / B21 | 快照内 **7 个**；本机安装包 **8 个**（多 `powershell`）→ 需 owner 确认台账用哪个口径 |
-| 6 | `B1.exit_criterion` 里「cmd_clone **接受 session-id 参数**」与 Pi 实际（**无参数**）的冲突 | R10 | 需 owner 确认按哪个口径 |
+| 1 | ~~`xai-org/grok-build` 的 Rust `crates/codegen/xai-grok-markdown/src/mermaid.rs` 源码与其**许可**~~ | R12 | 本机与仓库**都不可得**；许可**未查** → **owner 决定 R12 不做**（§0.3 / §4.3），本项**不再需要**：nini 不画真图，写进 known limitations |
+| 2 | ~~Rust 侧 mermaid 布局引擎的**体积增量**~~ | R12 | 本机 cargo registry 缓存 915 个 crate，**无任何** mermaid/graph/layout crate → **未实测** → 同上，**不再需要** |
+| 3 | ~~JS 引擎 crate（rquickjs/boa 等）的可得性与体积~~ | R11 | 本机 registry **无** → 选项 C 的体积与工作量**无法离线估** → **owner 决定 R11 不做**（§0.3 / §3.3），本项**不再需要** |
+| 4 | ~~Pi 每家 provider 的**模型目录**~~ | R5 | `references/pi-0.85.1/src/api/data/*.json` **不在快照** → 无法逐家对账 → **2026-11-05 已解决**：本轮从本机安装包的 `@earendil-works/pi-ai/dist/models.generated.js` 取到了——它 import `./providers/<id>.models.js`，后者再 import `./data/<id>.json`；`pi-ai/dist/providers/data/*.json` 共 **39** 个，与快照里 39 个 `src/api/*.models.ts` 对得上（`radius` 仍无目录） |
+| 5 | ~~Pi 内建工具到底 **7 个还是 8 个**~~ | R14 / B21 | 快照内 **7 个**；本机安装包 **8 个**（多 `dist/core/tools/powershell.js`）→ **已定：保留 7（快照口径）**，本机安装包那一个记为旁注，不改口径 |
+| 6 | ~~`B1.exit_criterion` 里「cmd_clone **接受 session-id 参数**」与 Pi 实际（**无参数**）的冲突~~ | R10 | 需 owner 确认按哪个口径 → **已解决**：按 **Pi 的实际（无参数）** 改（§0.3 / §2.3）；台账 `B1.exit_criterion` 不再出现「接受 session-id 参数」 |
 | 7 | ~~`B24` 的数字：16 还是 18~~ | — | **2026-11-05 已解决**：根因是「零读取」没写口径。按写明的口径复算 = **27 零读 = 9 syntax* + 18**，台账标题已改为 18、口径与复算命令已写进 `B24.nini_state`，不再需要 owner 裁决 |
 | 8 | ~~`B25` 的「5 个缺失」是 5 组还是 6 个 binding id~~ | — | **2026-11-05 已解决**：`map` 里 `nini: null` 实为 **6 条**，其中「跳字符」占 2 个 id（「跳上/跳下同一字符」在 Pi 是两个独立 binding id，nini 一个都没有）→ **5 组 / 6 个 id**。台账标题与正文已按此改写 |
-| 9 | R5 的「用户真正常用哪几家」 | R5 | 无客观依据 → 需 owner 给名单，否则就是又一轮自选范围 |
+| 9 | ~~R5 的「用户真正常用哪几家」~~ | R5 | 无客观依据 → 需 owner 给名单，否则就是又一轮自选范围 → **已解决**：owner 选了「**全部薄壳**」——不按「常用」自选范围，28 个薄壳全做（§0.3 / §1.3） |
 
 ### 7.2 台账自身还需要修的三处口径（与拍板并行，不额外花成本）
 
@@ -547,3 +653,20 @@
 `exit(2)`。也就是说 `/login` 在**教用户用一个 nini 拒绝的 provider**。修法二选一：
 ① 把 `together` 从 `/login`/`/logout` 清单里去掉（**5 行**）；② 给它加一个走
 `openai_compat` 的薄壳（**~90 行**，属 R5 的「方言分层」范围）。
+
+---
+
+## 8. 拍板之后还剩什么
+
+owner 拍板后（§0.3），**本文件写完时台账的收口方向**是：
+
+- 这 6 个决策各自卡住的台账条目（`B9` / `C3` / `B1` / `B21` / `C4` / `B22` / `B24` / `B25`）
+  **全部离开 `blocked-owner`**，按各自拍板口径落成 **fixed** / **fake** / **明确不做**。
+- 拍板后台账里**唯一**还是 `open` 的是 **D5**（Pi 的 provider/model 级字段在 nini 侧
+  无承载点：`oauth`、`headers`、`authHeader`、`modelOverrides`，以及 model 级的
+  `baseUrl` / `api` / `compat` / `cost` / `samplingParams` / `thinkingLevelMap`）——
+  它**不是**这 6 个决策卡住的，是独立的一条能力缺口。
+- **R9 单独走** `docs/plans/r9-syntax-highlighting.md`：**本轮不做**，
+  B7 的判据改成「9 个 `syntax*` 槽各能出对应颜色」（该文件 §4.4 / §6）。
+- 本文件**不复述**台账的条数与状态数字——台账的具体数字由 owner 在同一轮里更新；
+  这里只记**收口方向**。

@@ -744,6 +744,33 @@ fn cmd_changelog(
     CommandResult::output(lines)
 }
 
+/// 把 fork 出来的分支写成新的 session 文件，**并切过去**。
+///
+/// `/fork` 与 `/clone` 共用这一条链路：写文件 → `state.session_load(path)`。
+/// 之前 `/clone` 只复制了一份 JSONL 却没有切换当前会话（产物有了，当前
+/// 会话还在原地），用户还得自己 `/resume` —— 做了一半。
+fn write_branch_and_load(
+    state: &mut AppState,
+    forked: &nini_session::Session,
+) -> Result<std::path::PathBuf, String> {
+    let parent_path = state.session_state.session_path.clone();
+    let dir = nini_core::paths::sessions_dir().or_else(|| {
+        parent_path
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    });
+    let Some(dir) = dir else {
+        return Err("no session directory — this session was never persisted".to_string());
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = nini_session::fork_path_for(&dir, &forked.header);
+    forked.write_to_file(&path).map_err(|e| e.to_string())?;
+    state
+        .session_load(path.clone())
+        .map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
 fn cmd_fork(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
     // /fork [n]
     //
@@ -850,30 +877,13 @@ fn cmd_fork(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -
                 if matches!(m.message, nini_core::entries::AgentMessage::Assistant(_))
         )
     });
-    let parent_path = state.session_state.session_path.clone();
-    let dir = nini_core::paths::sessions_dir().or_else(|| {
-        parent_path
-            .as_ref()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    });
-    let Some(dir) = dir else {
-        return CommandResult::output(vec![
-            "(fork: no session directory — this session was never persisted)".to_string(),
-        ]);
-    };
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        return CommandResult::output(vec![format!("(fork failed: {e})")]);
-    }
-    let path = nini_session::fork_path_for(&dir, &forked.header);
-    if let Err(e) = forked.write_to_file(&path) {
-        return CommandResult::output(vec![format!("(fork failed: {e})")]);
-    }
     // Without an assistant turn there is nothing yet worth listing, and
     // `session_load` on an empty branch would show an empty transcript.
     let _ = has_assistant;
 
-    match state.session_load(path.clone()) {
-        Ok(()) => {
+    // 写分支文件 → 切过去（与 `/clone` 同一条链路）。
+    match write_branch_and_load(state, &forked) {
+        Ok(path) => {
             let mut out = vec![format!(
                 "forked at user msg #{n} (\"{}\") — {} entries kept",
                 point.preview,
@@ -888,37 +898,77 @@ fn cmd_fork(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -
             }
             CommandResult::output(out)
         }
-        Err(e) => CommandResult::output(vec![format!("(fork failed to load: {e})")]),
+        Err(e) => CommandResult::output(vec![format!("(fork failed: {e})")]),
     }
 }
 
 fn cmd_clone(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
-    // /clone — duplicate the current session's JSONL to a new file
-    // with a fresh timestamp. The current in-memory transcript
-    // keeps editing the original; the clone is a side artifact.
-    let Some(path) = &state.session_state.session_path else {
+    // /clone —— 对齐 Pi 的 `handleCloneCommand`
+    // （references/pi-0.85.1/src/ui/interactive-mode.ts:5186）：
+    //
+    //   1. `getLeafId()` —— 取 session 树的**叶子**；没有就
+    //      `showStatus("Nothing to clone yet")`；
+    //   2. `runtimeHost.fork(leafId, { position: "at" })`；
+    //   3. `editor.setText("")` —— **清空编辑器**；
+    //   4. `showStatus("Cloned to new session")`。
+    //
+    // 之前 nini 的 `/clone` 只把 JSONL 复制一份就结束了：产物有了，
+    // **当前会话没有切过去**，用户还得自己 `/resume` —— 做了一半。
+    // 现在走的是与 `/fork` 同一条链路：fork-at-leaf → 写分支文件 →
+    // `session_load` 切过去。
+    let Some(session) = state.session_state.session.clone() else {
         return CommandResult::output(vec![
             "(clone: no active session — start one with /new first)".to_string(),
         ]);
     };
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("session");
-    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S-%6f");
-    let dest = parent.join(format!("{stem}-clone-{ts}.jsonl"));
-    match std::fs::copy(path, &dest) {
-        Ok(_) => {
-            state.push_assistant(format!("[clone] {} → {}", path.display(), dest.display()));
-            state.push_divider();
-            CommandResult::output(vec![
-                format!("cloned to {}", dest.display()),
-                "use /resume to switch".to_string(),
-            ])
-        }
-        Err(e) => CommandResult::output(vec![format!("(clone failed: {e})")]),
+
+    // 叶子：session 树里最新那条 entry（`nini_session::tree::SessionTree`）。
+    // nini 的 fork API 只能在**主链**上切，所以叶子若不在主链上
+    // （会话里分过叉），退回主链自己的叶子。
+    let (leaf_id, position) = {
+        let guard = crate::state::lock_session(&session);
+        let tree = nini_session::tree::SessionTree::from_entries(&guard.entries);
+        let leaf_id = tree.main_path().last().cloned();
+        let path = guard.get_path();
+        let position = leaf_id
+            .as_ref()
+            .and_then(|id| path.iter().position(|e| e.id() == id))
+            .map(|i| i + 1)
+            .unwrap_or(path.len());
+        (leaf_id, position)
+    };
+    if leaf_id.is_none() || position == 0 {
+        return CommandResult::output(vec![
+            "(clone: nothing to clone yet — this session has no entries)".to_string(),
+        ]);
     }
+
+    // fork-at-leaf：保留到叶子为止的整条链（Pi 的 `position: "at"`）。
+    let forked = {
+        let guard = crate::state::lock_session(&session);
+        guard.fork_at_inclusive(position)
+    };
+    let forked = match forked {
+        Ok(f) => f,
+        Err(e) => return CommandResult::output(vec![format!("(clone failed: {e})")]),
+    };
+
+    // 写分支文件 → 切过去（当前会话变成新 session）。
+    let new_path = match write_branch_and_load(state, &forked) {
+        Ok(p) => p,
+        Err(e) => return CommandResult::output(vec![format!("(clone failed: {e})")]),
+    };
+
+    // Pi: `editor.setText("")` —— clone 之后编辑器是空的。
+    state.input.clear();
+
+    // `session_load` 会按新会话重建 transcript，所以这条提示要放在切换之后。
+    state.push_notice(format!("[clone] → {}", new_path.display()));
+    state.push_divider();
+    CommandResult::output(vec![
+        "cloned to new session".to_string(),
+        format!("new session: {}", new_path.display()),
+    ])
 }
 
 fn cmd_trust(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
@@ -1023,19 +1073,13 @@ fn cmd_login(_state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     // and verifies (without exposing the value) whether the
     // current shell has it.
     let provider_arg = args.trim().to_lowercase();
-    let known: &[(&str, &str)] = &[
-        ("anthropic", "ANTHROPIC_API_KEY"),
-        ("openai", "OPENAI_API_KEY"),
-        ("openai-responses", "OPENAI_API_KEY"),
-        ("openai-compat", "OPENAI_API_KEY"),
-        ("google", "GOOGLE_API_KEY"),
-        ("mistral", "MISTRAL_API_KEY"),
-        ("cohere", "COHERE_API_KEY"),
-        ("deepseek", "DEEPSEEK_API_KEY"),
-        ("groq", "GROQ_API_KEY"),
-        ("together", "TOGETHER_API_KEY"),
-    ];
-    let matched: Vec<(&str, &str)> = if provider_arg.is_empty() {
+    // **清单来自 `nini_ai::provider_registry`**（R11）：这里原来写死了 10 个
+    // provider，其中 `together` 在 `provider_factory` 里根本构造不出来 ——
+    // 命令面在教用户用一个二进制会拒绝的名字。清单与实现同源，才不会再次漂移。
+    let known: Vec<(&'static str, &'static str)> = nini_ai::provider_registry::all()
+        .map(|e| (e.id, e.api_key_env))
+        .collect();
+    let matched: Vec<(&'static str, &'static str)> = if provider_arg.is_empty() {
         known.iter().map(|x| *x).collect()
     } else {
         known
@@ -1048,7 +1092,7 @@ fn cmd_login(_state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     if matched.is_empty() {
         out.push(format!("login: unknown provider {provider_arg:?}"));
         out.push("known providers:".to_string());
-        for (name, env) in known {
+        for (name, env) in &known {
             out.push(format!("  {name} → {env}"));
         }
     } else {
@@ -1060,6 +1104,25 @@ fn cmd_login(_state: &mut AppState, _settings: &mut SettingsManager, args: &str)
                 .unwrap_or(false);
             let status = if present { "✓ set" } else { "✗ not set" };
             out.push(format!("{name}: {env}  {status}"));
+        }
+        // 有些 provider 还差一个 base URL —— 密钥之外必须给地址。
+        for (name, _) in &matched {
+            let Some(entry) = nini_ai::provider_registry::find(name) else {
+                continue;
+            };
+            if !entry.needs_custom_base_url {
+                continue;
+            }
+            // `openai-compat` 读的是 `OPENAI_BASE_URL`；其余按注册表的约定
+            // `{PROVIDER}_BASE_URL`（也可写进 `models.json`）。
+            let base_env = if entry.id == "openai-compat" {
+                "OPENAI_BASE_URL".to_string()
+            } else {
+                format!("{}_BASE_URL", entry.id.to_uppercase().replace('-', "_"))
+            };
+            out.push(format!(
+                "{name} also needs a base URL: set {base_env} (or put it in models.json)"
+            ));
         }
         out.push(String::new());
         out.push("To set a credential, exit nini and run:".to_string());
@@ -1087,26 +1150,17 @@ fn cmd_logout(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     // user the exact shell command to unset them. That is what this
     // does now.
     let provider_arg = args.trim();
-    // Map provider name → env var (Pi's mapping is in
-    // `~/.nini/agent/auth.json`; we keep an explicit table).
-    const KNOWN: &[(&str, &str)] = &[
-        ("anthropic", "ANTHROPIC_API_KEY"),
-        ("openai", "OPENAI_API_KEY"),
-        ("openai-responses", "OPENAI_API_KEY"),
-        ("openai-compat", "OPENAI_API_KEY"),
-        ("google", "GOOGLE_API_KEY"),
-        ("mistral", "MISTRAL_API_KEY"),
-        ("cohere", "COHERE_API_KEY"),
-        ("deepseek", "DEEPSEEK_API_KEY"),
-        ("groq", "GROQ_API_KEY"),
-        ("together", "TOGETHER_API_KEY"),
-    ];
+    // 清单来自 `nini_ai::provider_registry`（与 `/login` 同源，R11）——
+    // 之前这里写死的 10 个 provider 早于实现，会漂移。
+    let known: Vec<(&'static str, &'static str)> = nini_ai::provider_registry::all()
+        .map(|e| (e.id, e.api_key_env))
+        .collect();
     // `openai` / `openai-responses` / `openai-compat` all map to the same
     // variable. v0.9.2 (P0-5): dedupe, or a bare `/logout` printed
     // "OPENAI_API_KEY" three times.
     let to_check: Vec<&str> = if provider_arg.is_empty() {
         let mut seen = std::collections::BTreeSet::new();
-        KNOWN
+        known
             .iter()
             .map(|(_, env)| *env)
             .filter(|env| seen.insert(*env))
@@ -1114,7 +1168,7 @@ fn cmd_logout(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     } else {
         let p = provider_arg.to_lowercase();
         let mut seen = std::collections::BTreeSet::new();
-        KNOWN
+        known
             .iter()
             .filter(|(name, _)| *name == p.as_str())
             .map(|(_, env)| *env)
@@ -1124,8 +1178,14 @@ fn cmd_logout(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
     if to_check.is_empty() {
         return CommandResult::output(vec![
             format!("logout: unknown provider {provider_arg:?}"),
-            "known: anthropic, openai, openai-responses, openai-compat, google, mistral, cohere, deepseek, groq, together"
-                .to_string(),
+            format!(
+                "known: {}",
+                known
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         ]);
     }
     let mut present: Vec<&str> = Vec::new();
@@ -1796,6 +1856,8 @@ fn cmd_hotkeys(
             OpenSearch => "search the transcript",
             OpenCommandPalette => "open the command palette",
             OpenExternalEditor => "edit input in $EDITOR",
+            CopyLastAssistant => "copy last response",
+            Suspend => "suspend to background",
             Noop => "(no binding)",
             other => {
                 // A new action must not silently vanish from /hotkeys.

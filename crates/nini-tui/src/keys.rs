@@ -209,6 +209,17 @@ pub enum KeyAction {
     /// editor ($VISUAL / $EDITOR / nano / vi) for multi-line
     /// editing (F020). Ctrl+G is the standard binding.
     OpenExternalEditor,
+    /// 复制最后一条助手消息到系统剪贴板（Pi 的 `app.message.copy`，Ctrl+X）。
+    ///
+    /// nini 的剪贴板**只有写、没有读**（`clipboard.rs` 里只有 `copy`），
+    /// 所以只做「复制最后一条」，不做 Pi 的选区复制（`tui.input.copy`）。
+    CopyLastAssistant,
+    /// 挂起到后台（Pi 的 `app.suspend`，Ctrl+Z）。
+    ///
+    /// Unix 上把**进程组**挂起（SIGTSTP），被 SIGCONT 唤醒后回来；
+    /// Windows 上不支持 —— 与 Pi 的说法一致（"Suspend to background is
+    /// not supported on Windows"）。
+    Suspend,
     /// Unhandled (no binding matched).
     Noop,
 }
@@ -451,10 +462,26 @@ pub fn default_keymap() -> Vec<KeyBinding> {
             key: Key::new(KeyCode::End, KeyModifiers::SHIFT),
             action: ScrollToBottom,
         },
-        // Clear input
+        // Ctrl+U → 删到行首（Pi 的 `tui.editor.deleteToLineStart`，
+        // `tui/keybindings.ts:132`）。
+        //
+        // 这一格此前绑的是 `ClearInput`（清空**整个**输入框），而 nini 里
+        // 早就有 `KillToLineStart` 动作却**没有绑定**——R14 把它对齐到 Pi：
+        // 键不变，语义改成 Pi 的语义。
         KeyBinding {
             key: Key::new(KeyCode::Char('u'), ctrl),
-            action: ClearInput,
+            action: KillToLineStart,
+        },
+        // Ctrl+X → 复制最后一条助手消息（Pi 的 `app.message.copy`，
+        // `ui/keybindings.ts:130`）。
+        KeyBinding {
+            key: Key::new(KeyCode::Char('x'), ctrl),
+            action: CopyLastAssistant,
+        },
+        // Ctrl+Z → 挂起到后台（Pi 的 `app.suspend`，`ui/keybindings.ts:96`）。
+        KeyBinding {
+            key: Key::new(KeyCode::Char('z'), ctrl),
+            action: Suspend,
         },
         // Tab: accept completion if popup visible, otherwise insert literal tab.
         // Note: the runtime checks completion.is_some() and routes to

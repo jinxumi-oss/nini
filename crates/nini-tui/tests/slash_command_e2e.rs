@@ -964,45 +964,48 @@ fn clone_command_without_session_returns_error() {
     }
 }
 
+/// R10：`/clone` 对齐 Pi 的 `handleCloneCommand`
+/// （references/pi-0.85.1/src/ui/interactive-mode.ts:5186）——
+/// fork-at-leaf → 写分支文件 → **切到新 session**。
+///
+/// 这条测试原来断言的是「复制出一个 `-clone-` 兄弟文件」，那是旧行为：
+/// 产物有了，**当前会话没切**，用户还得自己 `/resume`。
 #[test]
-fn clone_command_with_session_duplicates_file() {
-    use std::io::Write;
-    let mut state = AppState::new("test-model");
-    let mut settings = SettingsManager::default();
-    // Create a temp session file.
+fn clone_command_switches_to_the_new_session() {
     let tmp = tempfile::tempdir().unwrap();
-    let session_path = tmp.path().join("session-test.jsonl");
-    {
-        let mut f = std::fs::File::create(&session_path).unwrap();
-        writeln!(f, "{{\"type\":\"session\"}}").unwrap();
-    }
-    state.session_state.session_path = Some(session_path.clone());
+    let (mut state, _keep) = state_with_session(tmp.path());
+    let mut settings = SettingsManager::default();
+    state.push_user("first".to_string());
+    state.push_assistant("a1".to_string());
+    let original = state
+        .session_state
+        .session_path
+        .clone()
+        .expect("the fixture session has a path");
 
     let r = dispatch(&mut state, &mut settings, CommandId::Clone, "");
-    match r.outcome {
-        CommandOutcome::Output(lines) => {
-            assert!(
-                lines.iter().any(|l| l.contains("cloned to")),
-                "expected clone confirmation, got: {lines:?}"
-            );
-        }
+    let lines = match r.outcome {
+        CommandOutcome::Output(lines) => lines,
         _ => panic!("expected Output"),
-    }
-    // The clone file should exist as a sibling.
-    let parent = session_path.parent().unwrap();
-    let clones: Vec<_> = std::fs::read_dir(parent)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .contains("session-test-clone-")
-        })
-        .collect();
-    assert_eq!(
-        clones.len(),
-        1,
-        "expected exactly 1 clone file, got {clones:?}"
+    };
+    assert!(
+        lines.iter().any(|l| l.contains("cloned to new session")),
+        "expected clone confirmation, got: {lines:?}"
+    );
+
+    let new_path = state
+        .session_state
+        .session_path
+        .clone()
+        .expect("/clone must leave a current session");
+    assert_ne!(
+        new_path, original,
+        "/clone must switch the current session to the new file"
+    );
+    assert!(
+        new_path.exists(),
+        "the cloned session file must exist: {}",
+        new_path.display()
     );
 }
 

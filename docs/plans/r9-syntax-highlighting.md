@@ -6,6 +6,10 @@
 > 权威：决策本身属 owner（`docs/GOALS.md` §7 的决策台账）；本文件只提供**证据**
 > 与**选项**，不替 owner 拍板。
 > 机器数据：`scripts/parity-gap.py --json`（台账）、`scripts/parity-gap.py`（人读表）。
+>
+> **2026-11-05 更新**：owner 已拍板 **R9 本轮不做**（结论见 §4.4 与 §6）。
+> 本轮补了三件当初没测的事（§4：槽位契约 / 工作量落点 / 可验证边界）；
+> §3 的体积实测数字与方法论**原样保留**——它们是对的，只是不构成做不做的决定性理由。
 
 ---
 
@@ -92,7 +96,58 @@ registry cache（离线不可构建）。
 
 ---
 
-## 4. 三个选项（**不是决定**）
+## 4. 本轮复核：三件决策包当时没测的事
+
+本节是 2026-11-05 的复核。§1–§3 回答的是「**体积多大**」；下面三件事回答的是
+「**槽位对不对得上**」「**工作量落在哪**」「**做完能验证到什么程度**」。
+
+### 4.1 槽位契约成立：Pi 的 9 个槽名与 nini 的 `COLOR_NAMES` 完全一致
+
+| 事实 | 证据 |
+|---|---|
+| Pi 侧只有这 9 个 `syntax*` 槽 | 本机同版本安装包 `…/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js`：`grep -o "syntax[A-Z][a-zA-Z]*"` 去重 = **9 个**：`syntaxComment` `syntaxFunction` `syntaxKeyword` `syntaxNumber` `syntaxOperator` `syntaxPunctuation` `syntaxString` `syntaxType` `syntaxVariable`（**来源是安装包不是快照**——见 §4.3） |
+| nini 侧也是这 9 个 | `crates/nini-tui/src/theme.rs` 的 `COLOR_NAMES`（`// === Syntax (9)` 段）：**同样 9 个名字**，不多不少 |
+| 结论 | 两边**集合完全相同** → 「把高亮输出落到 Pi 的这 9 个槽上」在**键名层面没有障碍**。§2 说 B7 是真差距，指的就是这件事 |
+
+### 4.2 工作量的大头不在体积，在 **scope → 槽**的映射表
+
+- §3 的三个数字（**+0.63 MiB / +0.90 MiB / +0.003 MiB**）**只覆盖体积**：它们回答的是
+  「引 syntect 之后二进制变大多少」，**没有**回答「高亮要写多少行代码」。
+- syntect **自带主题**、输出的是**它自己的颜色**（TextMate 语法的 scope → 颜色）。
+  要落到 Pi 的那 9 个槽上，必须**写一张 scope → 槽的映射表**：把 syntect 的 scope 名
+  （`entity.name.function`、`string.quoted`、`constant.numeric` 那一族）**逐条**归到
+  Pi 的 9 个槽之一。**这张表就是主要工作量。**
+- 参考量：Pi 自己那张表是 **20 行 scope → 颜色槽**的映射
+  （安装包 `theme.js:800-819`：19 行落进那 9 个 `syntax*` 槽，`meta` 落进 `muted`）。
+  Pi 用的是 **highlight.js** 的 scope 名（`keyword` / `comment` / `string` / `number` …），
+  syntect 用的是 **TextMate** 的 scope 名——**两套词表不是一一对应**，映射要一条条做，
+  而且**每换一套语法/主题就要重做一遍**。
+- 所以：**体积已知，工作量未知**。把「+0.63 MiB」当成这件事的全部成本，
+  是把**第二半**当成了全部。
+
+### 4.3 可验证边界：Pi 的高亮实现不在快照里，「逐行对齐 Pi」在仓库内**不可验证**
+
+| 事实 | 证据 |
+|---|---|
+| 快照里 Pi 从 `../../utils/syntax-highlight.ts` import | `references/pi-0.85.1/src/ui/interactive-mode.ts:110` `import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";`（调用点 `:1010`） |
+| 快照的 `src/` 里**没有 `utils/`** | `references/pi-0.85.1/src/` 只有 `api / core / ext / loop / provider / session / tools-t1 / tools-t2 / tui / ui` 十个目录，**没有 `utils`** |
+| 结论 | Pi 的高亮实现（`utils/syntax-highlight.ts`）与那张 scope 映射表（`theme.js:800-819`）**都只在安装包里**。所以 nini 若引 syntect，**能对齐的只有「槽位契约」这一层**（9 个槽各能出对应颜色）；**「与 Pi 的着色输出逐行一致」在仓库内无法验证**——对照物不在 `references/` 里 |
+
+这不是 nini 的缺陷，是**快照是子集**的既有后果（与 `docs/plans/owner-decision-packs.md`
+§0.1b 写的是同一件事）。
+
+### 4.4 结论（owner 已拍板，2026-11-05）
+
+1. **本轮不引依赖**：不引 syntect，也不引任何高亮引擎。§3 的数字保留存档——
+   它说明体积**不是**拦路虎，但体积从来不是这一轮的决定性理由。
+2. **台账 B7 的判据改精确**：不是「与 Pi 逐字符/逐行一致」（在仓库内不可验证，§4.3），
+   而是「**9 个 `syntax*` 槽各能出对应颜色**」（§4.1）。
+3. **将来若要做，工作量的大头是 scope → 槽的映射表**，不是体积；体积侧已经有数
+   （+0.63 MiB）。
+
+---
+
+## 5. 三个选项（2026-11-02 当时未决，**留痕**）
 
 | 选项 | 做法 | 代价 | 影响面 | 台账怎么变 |
 |---|---|---|---|---|
@@ -102,7 +157,16 @@ registry cache（离线不可构建）。
 
 ---
 
-## 5. 建议（**实现者不自行决定**）
+## 6. 结论（owner 已拍板，2026-11-05）
+
+**拍板结果：R9 本轮不做（选项 A 的口径，但槽不删、只标注）。**
+
+- 不引 syntect、不引任何高亮引擎；9 个 `syntax*` 槽**保留**（删槽会静默丢弃用户
+  `theme.json` 里的对应值，见 `crates/nini-tui/src/theme.rs` 的 `colors.retain(...)`）。
+- 台账 B7 的判据改成「**9 个 `syntax*` 槽各能出对应颜色**」（理由见 §4.1–§4.4）。
+- 将来若要做：**先写 scope → 槽的映射表**（§4.2），不是先解决体积（体积已有数，§3）。
+
+**原推荐（2026-11-02 的倾向，留痕，owner 未采纳）**：
 
 从工程事实出发，倾向 **B（做）**，理由三条：
 
@@ -126,7 +190,7 @@ registry cache（离线不可构建）。
 
 ---
 
-## 6. 怎么复算
+## 7. 怎么复算
 
 ```console
 $ python3 scripts/parity-gap.py --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print([g["id"] for g in d["gaps"] if g["status"]=="blocked-owner"])'
@@ -136,3 +200,8 @@ $ python3 scripts/parity-gap.py --json | python3 -c 'import json,sys; d=json.loa
 B7 的 `exit_criterion` 写着：「先由脚本给出『引入 synctect 前后的二进制体积
 增量』数字，owner 拍板 R9 后 crates/nini-tui/tests/ 下 9 个 syntax* 槽至少有
 1 条 oracle 通过」——**第一半已经完成**（§3 的实测数字），第二半等 owner。
+
+**2026-11-05**：owner 已拍板（§4.4 / §6）。**第二半的判据随之改精确**：不再是
+「至少有 1 条 oracle 通过」，而是「**9 个 `syntax*` 槽各能出对应颜色**」——
+且这一层**在仓库内可验证**（槽名两边一致，§4.1），不像「与 Pi 逐行对齐」那样
+对照物在快照之外（§4.3）。台账 `scripts/parity-gaps.json` 的 `B7` 侧由 owner 更新。

@@ -15,6 +15,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use nini_ai::fixture::{FixtureTurn, ProgrammedProvider};
+use nini_ai::provider_registry::{
+    self, ProviderEntry, API_ANTHROPIC_MESSAGES, API_OPENAI_COMPLETIONS, API_OPENAI_RESPONSES,
+};
 use nini_core::config_value::resolve_config_value_detailed;
 use nini_core::provider::{Provider, Usage};
 use nini_core::settings::{ModelsJson, ProviderConfig};
@@ -172,6 +175,92 @@ const BUILTINS: &[(&str, Builtin)] = &[
     ),
 ];
 
+// ---------------------------------------------------------------------------
+// R5：Pi 的 provider **薄壳**
+// ---------------------------------------------------------------------------
+//
+// Pi 0.85.1 的 `builtinProviders()` 有 40 个 provider，但协议方言高度集中：
+// 6 个 nini 已原生实现，5 个需要新协议或 OAuth（本轮不做），剩下 **28 个**
+// 用的都是 nini **已经实现**的方言 —— 缺的只是「名字 → base URL + 密钥环境
+// 变量」这条映射。权威表在 `nini_ai::provider_registry`（只读）。
+//
+// 所以「补齐 provider」的成本不在协议，在配置。
+
+/// 薄壳的 base URL 覆盖变量名：`{ID}_BASE_URL`（`-` 换成 `_`，大写）。
+///
+/// 例：`together` → `TOGETHER_BASE_URL`，`cloudflare-ai-gateway` →
+/// `CLOUDFLARE_AI_GATEWAY_BASE_URL`。
+fn base_url_env_var(id: &str) -> String {
+    format!("{}_BASE_URL", id.replace('-', "_").to_uppercase())
+}
+
+/// 解析一个薄壳的 base URL。
+///
+/// 顺序：
+///
+///   1. `{ID}_BASE_URL` 环境变量（用户指向网关 / 代理的既有约定）；
+///   2. 表里的默认 base URL；
+///   3. 都没有 → **显式拒绝**，说清楚缺什么、怎么给。
+///
+/// 第 3 步不是「fallback 到某个猜的 host」：Pi 那几个 provider 的 baseUrl 里
+/// 带 `{CLOUDFLARE_ACCOUNT_ID}` 之类的占位符，静态表填不了，猜一个 URL 只会
+/// 把请求发到错误的地方。
+pub fn resolve_shell_base_url(entry: &ProviderEntry) -> Result<String> {
+    let var = base_url_env_var(entry.id);
+    if let Ok(base) = std::env::var(&var) {
+        let base = base.trim();
+        if !base.is_empty() {
+            return Ok(base.to_string());
+        }
+    }
+    if let Some(base) = entry.base_url {
+        return Ok(base.to_string());
+    }
+    anyhow::bail!(
+        "provider {id} needs a base URL: set {var}=<url>, or declare \"{id}\" in your models.json with a baseUrl",
+        id = entry.id,
+        var = var,
+    )
+}
+
+/// 用薄壳的方言对应的实现构造 provider。
+///
+/// 三个方言的实现都是 nini 已经有的（`openai_compat` / `anthropic` /
+/// `openai_responses`），所以这里没有新协议，只有接线。
+///
+/// OpenAI 兼容方言额外带上 [`nini_ai::openai_compat::detect_compat`] 推导出来
+/// 的 wire 差异：OpenAI 兼容生态不统一，DeepSeek / Together / Zai / Moonshot
+/// 收 `max_tokens`，其中一批还拒绝 `store` —— 照抄 OpenAI 的拼写会失败。
+fn build_thin_shell(
+    entry: &ProviderEntry,
+    base_url: String,
+    api_key_override: Option<&str>,
+) -> Result<Arc<dyn Provider>> {
+    let api_key = resolve_api_key(api_key_override, entry.api_key_env, entry.id)?;
+    match entry.api {
+        API_OPENAI_COMPLETIONS => {
+            let compat = nini_ai::openai_compat::detect_compat(entry.id, &base_url);
+            Ok(Arc::new(
+                nini_ai::openai_compat::OpenAiCompatProvider::new(base_url, api_key)
+                    .with_compat(compat),
+            ))
+        }
+        API_ANTHROPIC_MESSAGES => Ok(Arc::new(
+            nini_ai::anthropic::AnthropicProvider::new(api_key).with_base_url(base_url),
+        )),
+        API_OPENAI_RESPONSES => Ok(Arc::new(
+            nini_ai::openai_responses::OpenAiResponsesProvider::new(api_key)
+                .with_base_url(base_url),
+        )),
+        other => anyhow::bail!("No API provider registered for api: {other}"),
+    }
+}
+
+/// nini 认识的 provider 名字（原生实现 + 薄壳）。
+fn known_provider_ids() -> Vec<&'static str> {
+    provider_registry::all().map(|e| e.id).collect()
+}
+
 /// The provider configuration a `models.json` entry resolves to.
 #[derive(Debug)]
 struct ResolvedProvider {
@@ -324,13 +413,25 @@ fn resolve_credential_with<F: Fn(&str) -> Option<String>>(
     // The built-in's own environment variable: the last resort before
     // `No API key found for`.
     let from_builtin_env = || {
-        builtin.and_then(|b| {
-            b.key_envs
-                .iter()
-                .find_map(|var| env(var))
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
+        builtin
+            .and_then(|b| {
+                b.key_envs
+                    .iter()
+                    .find_map(|var| env(var))
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            // R5: 薄壳（Pi 的 provider 名，但不是 nini 原生实现的那些）也有
+            // 自己的密钥环境变量（表在 `nini_ai::provider_registry`）。用户在
+            // `models.json` 里声明了一个薄壳却没写 `apiKey` 时，Pi 仍会去找
+            // 那个 provider 的环境变量，nini 也要找得到。
+            .or_else(|| {
+                provider_registry::find(id)
+                    .filter(|e| provider_registry::is_thin_shell(e.id))
+                    .and_then(|e| env(e.api_key_env))
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
     };
 
     match api_key_override {
@@ -428,10 +529,22 @@ fn build_models_json_provider(
 ) -> Result<Arc<dyn Provider>> {
     let resolved = resolve_models_json_provider(id, config, api_key_override)?;
     match resolved.api.as_str() {
-        "openai-completions" => Ok(Arc::new(nini_ai::openai_compat::OpenAiCompatProvider::new(
-            resolved.base_url,
-            resolved.api_key,
-        ))),
+        "openai-completions" => {
+            // R5: 薄壳在 `models.json` 里也按同一套 wire 差异走（Pi 的
+            // `detectCompat` 判定的是 provider 名 + base URL，两处都一样）。
+            let compat = if provider_registry::is_thin_shell(id) {
+                nini_ai::openai_compat::detect_compat(id, &resolved.base_url)
+            } else {
+                nini_ai::openai::OpenAiCompat::default()
+            };
+            Ok(Arc::new(
+                nini_ai::openai_compat::OpenAiCompatProvider::new(
+                    resolved.base_url,
+                    resolved.api_key,
+                )
+                .with_compat(compat),
+            ))
+        }
         "anthropic-messages" => Ok(Arc::new(
             nini_ai::anthropic::AnthropicProvider::new(resolved.api_key)
                 .with_base_url(resolved.base_url),
@@ -507,7 +620,12 @@ fn resolve_api_key(explicit: Option<&str>, env_var: &str, provider: &str) -> Res
 /// the agent directory — never the project-level one). A provider it
 /// declares wins over the built-in of the same name, which is what Pi
 /// does: the file's `baseUrl` and `apiKey` are the ones that are used.
-pub(crate) fn build_provider(
+///
+/// R5: the 28 thin shells (Pi's provider names whose protocol nini already
+/// implements) are built from the table in `nini_ai::provider_registry`.
+/// Their base URL comes from `{ID}_BASE_URL` or the table, their key from
+/// the table's environment variable.
+pub fn build_provider(
     provider: &str,
     turns: Vec<Vec<FixtureTurn>>,
     fallback_keys: &[String],
@@ -522,6 +640,28 @@ pub(crate) fn build_provider(
         if let Some(config) = models.providers.get(provider) {
             return build_models_json_provider(provider, config, api_key_override);
         }
+    }
+    // R5: Pi 的 28 个「薄壳」provider —— 方言 nini 已经实现，缺的只是
+    // 「名字 → base URL + 密钥环境变量」这条映射（表在
+    // `nini_ai::provider_registry`）。
+    //
+    // 这一段在 `match provider` **之前**：薄壳的名字（`together`、`zai`……
+    //）都不与原有的分支重名，但它们必须走自己的分支，而不能落进
+    // `other =>`（unknown provider → exit 2）。
+    if provider_registry::is_thin_shell(provider) {
+        let entry = provider_registry::find(provider)
+            .expect("薄壳表里有这个 provider（is_thin_shell 刚问过）");
+        let base_url = match resolve_shell_base_url(entry) {
+            Ok(base) => base,
+            Err(e) => {
+                // 缺 base URL 是**显式拒绝**：说清楚是哪个 provider、缺什么、
+                // 怎么给，然后 exit 2。不接受静默失败，也不接受拿一个猜的
+                // URL 去请求。
+                eprintln!("nini: {e}");
+                std::process::exit(2);
+            }
+        };
+        return build_thin_shell(entry, base_url, api_key_override);
     }
     match provider {
         "fixture" => Ok(Arc::new(ProgrammedProvider::from_turns(turns))),
@@ -618,7 +758,24 @@ pub(crate) fn build_provider(
             Ok(Arc::new(provider))
         }
         other => {
-            eprintln!("nini: unknown provider: {other}");
+            // 两类不同的失败，两句不同的提示：
+            //
+            //   * 「完全没听过这个 provider」——这里。
+            //   * 「这个 provider 需要你补 base URL」——薄壳分支自己说
+            //     （`resolve_shell_base_url`），它不会走到这里。
+            //
+            // 所以这句说的是「nini 不认识这个名字」，并给出两条真正的出路。
+            // **一次 eprintln!** 而不是三次：多行诊断在终端上与三行无异，
+            // 但「往 TUI 正在画的屏幕上写了几处」这个数字是有人守的
+            // （`crates/nini-tui/tests/no_terminal_writes.rs` 的白名单），
+            // 而白名单的价值在于每一条都值得看一眼，不在于数字大。
+            eprintln!(
+                "nini: unknown provider: {other}\n\
+                 nini: nini knows these providers: {}\n\
+                 nini: to use another endpoint, declare it in your models.json \
+                 (a \"providers\" entry with \"baseUrl\" and \"api\").",
+                known_provider_ids().join(", ")
+            );
             std::process::exit(2);
         }
     }

@@ -9,7 +9,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.16.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1997%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-2043%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -68,7 +68,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **1997 unit + integration tests**, including property-based SSE fuzz and
+- **2043 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -244,6 +244,27 @@ You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.
 
 ## Known limitations (as of v0.16.0)
+
+**Deliberate scope decisions** (owner-set, 2026-11-05) — these are *not* bugs
+and are not waiting for a fix:
+
+- **No syntax highlighting.** Code blocks render unstyled. Pi highlights them;
+  nini does not. The blocker is not size (measured: syntect + fancy-regex is
+  +0.63 MiB, onig +0.90 MiB) but the **scope→theme-slot mapping table**, and the
+  fact that Pi's highlighter (`src/utils/syntax-highlight.ts`) is **not in the
+  reference snapshot**, so line-by-line parity could not be verified from this
+  repo. The nine `syntax*` theme slots are kept reserved because their names are
+  Pi's own (`docs/plans/r9-syntax-highlighting.md` §4).
+- **Extensions are out of parity scope.** Pi loads TypeScript extensions through
+  `jiti`; `crates/nini-ext` is a `dlopen` cdylib with no shared execution model.
+  Wiring it would not work, so it is kept documented as NOT WIRED rather than
+  half-connected (`docs/GOALS.md` §4 R6/R11).
+- **Mermaid blocks are a placeholder, not a diagram.** nini renders
+  `◇ mermaid · <kind>` plus the source lines. Real diagrams need a layout engine;
+  Pi gets one from an npm package whose Rust upstream is not available here.
+  There is deliberately **no `markdown.mermaid` setting**: with only a
+  placeholder, `final` and `streaming` would behave identically, and a setting
+  that does nothing is worse than no setting (`docs/GOALS.md` §4 R12).
 
 Verified against this binary, not carried over from an older README.
 The project's goal and its current status live in

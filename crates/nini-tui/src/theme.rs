@@ -23,7 +23,10 @@
 //! }
 //! ```
 //!
-//! Unknown color names are kept at their default value. Unknown JSON keys
+//! Unknown color names are dropped. The six legacy nini-only names
+//! ([`LEGACY_SLOT_NAMES`]) are dropped **and reported** — see
+//! [`Theme::ignored_slots`] — because a user who wrote one of them into
+//! `theme.json` deserves to be told it is no longer read. Unknown JSON keys
 //! are ignored. Color values accept `#RGB`, `#RRGGBB`, and `#RRGGBBAA`.
 
 use std::collections::HashMap;
@@ -125,9 +128,13 @@ fn color_to_sgr(c: Color, is_bg: bool) -> String {
 /// we expose all of them so Markdown / Tool / Message / Editor / Diff / Syntax
 /// rendering can use the same names as Pi's `theme.fg(...)` calls.
 ///
-/// Legacy nini-only slots (`background`, `foreground`, `info`, `header`,
-/// `code`, `link`) are kept for back-compat; they alias to Pi-equivalent
-/// slots in the palettes.
+/// v0.11 (R13): the six legacy nini-only slots (`background`, `foreground`,
+/// `info`, `header`, `code`, `link`) are **gone**. Pi has no such slots and
+/// nini's own code never read one of them, so a user could name a colour in
+/// `theme.json` and see nothing happen. Their names live on in
+/// [`LEGACY_SLOT_NAMES`] — not as slots, but as the list of keys the parser
+/// records, so the UI can say "these are ignored" instead of dropping them
+/// without a word.
 pub const COLOR_NAMES: &[&str] = &[
     // === Core UI (10) — mirrors Pi ===
     "accent",
@@ -191,14 +198,23 @@ pub const COLOR_NAMES: &[&str] = &[
     "thinkingMax",
     // === Bash mode (1) ===
     "bashMode",
-    // === Legacy nini-only slots (5) — keep for back-compat ===
-    "background",
-    "foreground",
-    "info",
-    "header",
-    "code",
-    "link",
 ];
+
+/// The colour keys nini used to accept and no longer reads.
+///
+/// v0.11 (R13). These six are **not** in [`COLOR_NAMES`] any more: Pi has
+/// no such slots, and nini's production code never read one of them — they
+/// were nini's own invention, kept "for back-compat" with a palette that
+/// aliased them onto Pi slots.
+///
+/// They are listed here because deleting them from `COLOR_NAMES` has a
+/// consequence the user can see: [`Theme::parse`] filters a user's
+/// `theme.json` through `COLOR_NAMES`, so a key that is not in the list is
+/// dropped. Dropping it silently would mean a user edits `theme.json`,
+/// sees no change, and has no way to learn why. So the parser records the
+/// names it dropped (see [`Theme::ignored_slots`]) and the UI says so.
+pub const LEGACY_SLOT_NAMES: &[&str] =
+    &["background", "code", "foreground", "header", "info", "link"];
 
 /// A theme is just a name plus a per-color palette.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -207,6 +223,17 @@ pub struct Theme {
     pub name: String,
     #[serde(default = "default_palette")]
     pub colors: HashMap<String, String>,
+    /// 用户主题文件里出现、但 nini 已经不再使用的旧颜色键。
+    ///
+    /// v0.11 (R13)。这些键不在 [`COLOR_NAMES`] 里，所以 [`Theme::parse`]
+    /// 的过滤器会把它们从 `colors` 里丢掉。丢掉之前先把名字记在这里 ——
+    /// 否则用户在 `theme.json` 里写了一个颜色键却什么都没发生，而且不会
+    /// 有人告诉他为什么。UI 用这个列表说一句"这些键已忽略"。
+    ///
+    /// 不参与序列化：它是**读**用户文件时得到的信息，不是主题的一部分，
+    /// 写回 `theme.json` 时不该出现。
+    #[serde(skip)]
+    pub ignored_slots: Vec<String>,
 }
 
 fn default_theme_name() -> String {
@@ -222,6 +249,7 @@ impl Default for Theme {
         Self {
             name: "dark".to_string(),
             colors: dark_palette(),
+            ignored_slots: Vec::new(),
         }
     }
 }
@@ -232,6 +260,7 @@ impl Theme {
         Self {
             name: "dark".to_string(),
             colors: dark_palette(),
+            ignored_slots: Vec::new(),
         }
     }
 
@@ -240,6 +269,7 @@ impl Theme {
         Self {
             name: "light".to_string(),
             colors: light_palette(),
+            ignored_slots: Vec::new(),
         }
     }
 
@@ -317,6 +347,10 @@ impl Theme {
 
     /// Parse a theme from a JSON string. Unknown top-level keys and
     /// unknown color names are ignored.
+    ///
+    /// v0.11 (R13): 旧的 nini 自创色键（[`LEGACY_SLOT_NAMES`]）也算
+    /// “未知色键”，会被过滤器丢掉 —— 但它们的名字被记在
+    /// [`Theme::ignored_slots`] 里，好让 UI 告诉用户"这几个键不再被使用"。
     pub fn parse(s: &str) -> Result<Self, String> {
         let raw: serde_json::Value =
             serde_json::from_str(s).map_err(|e| format!("invalid theme JSON: {e}"))?;
@@ -328,6 +362,7 @@ impl Theme {
             .and_then(|v| v.as_str())
             .unwrap_or("dark")
             .to_string();
+        let mut ignored_slots: Vec<String> = Vec::new();
         let mut colors = match obj.get("colors") {
             Some(v) => {
                 let raw_colors = v
@@ -338,6 +373,9 @@ impl Theme {
                     let s = v
                         .as_str()
                         .ok_or_else(|| format!("color \"{k}\" must be a string"))?;
+                    if LEGACY_SLOT_NAMES.contains(&k.as_str()) {
+                        ignored_slots.push(k.clone());
+                    }
                     out.insert(k.clone(), s.to_string());
                 }
                 out
@@ -347,7 +385,30 @@ impl Theme {
         // Drop entries that aren't in COLOR_NAMES — they cannot influence
         // the UI but would inflate the file on re-save.
         colors.retain(|k, _| COLOR_NAMES.contains(&k.as_str()));
-        Ok(Self { name, colors })
+        // 固定的顺序：提示里列出来的键名每次都一样，测试也就不用猜。
+        ignored_slots.sort();
+        Ok(Self {
+            name,
+            colors,
+            ignored_slots,
+        })
+    }
+
+    /// 用户主题文件里被 nini 忽略的旧键，以及要显示给用户的话。
+    ///
+    /// `None` 表示没有可提示的键（内置主题、或者用户的文件里没有旧键）。
+    ///
+    /// 措辞是"已忽略"而不是"错误"：这些键是 nini 早期版本自创的（Pi 没有），
+    /// 用户照着旧文档写进 `theme.json` 是很自然的事，nini 只是不再读它们。
+    /// 两行是为了在 80 列的终端里也读得完。
+    pub fn ignored_slot_notice(&self) -> Option<String> {
+        if self.ignored_slots.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "note: theme.json 里的旧颜色键已不再被 nini 使用，已忽略\n  {} —— nini 早期版本自创，Pi 没有",
+            self.ignored_slots.join(", ")
+        ))
     }
 
     /// Merge a partial theme on top of `self`. The other theme's `colors`
@@ -357,14 +418,22 @@ impl Theme {
         for (k, v) in other.colors {
             self.colors.insert(k, v);
         }
+        // v0.11 (R13): 被忽略的旧键也跟着走 —— 合并进来的那份主题同样
+        // 读过用户的文件，同样欠用户一句"这几个键我不再读了"。
+        for k in other.ignored_slots {
+            if !self.ignored_slots.contains(&k) {
+                self.ignored_slots.push(k);
+            }
+        }
+        self.ignored_slots.sort();
         if other.name != "dark" || !self.colors.is_empty() {
             self.name = other.name;
         }
     }
 
     /// Resolve a color slot name to a ratatui `Color`. Falls back to
-    /// Foreground (or Background for `theme.background`) when the slot is
-    /// unset or the stored value cannot be parsed.
+    /// the slot's default colour when the slot is unset or the stored
+    /// value cannot be parsed.
     pub fn color(&self, name: &str) -> Color {
         let raw = self.colors.get(name).map(String::as_str).unwrap_or("");
         parse_color(raw).unwrap_or_else(|| default_color(name))
@@ -446,6 +515,38 @@ impl Theme {
     }
 }
 
+/// thinking 档位 → 颜色槽名。
+///
+/// v0.11 (R13)。Pi 把 thinking 档位接到编辑器的边框颜色上
+/// （`references/pi-0.85.1/src/ui/interactive-mode.ts:4166-4172`）：
+///
+/// ```ts
+/// private updateEditorBorderColor(): void {
+///     if (this.isBashMode) {
+///         this.editor.borderColor = theme.getBashModeBorderColor();
+///     } else {
+///         const level = this.session.thinkingLevel || "off";
+///         this.editor.borderColor = theme.getThinkingBorderColor(level);
+///     }
+/// }
+/// ```
+///
+/// 档位名跟 Pi 的 `ThinkingLevel` 一样（`off|minimal|low|medium|high|xhigh|max`），
+/// 槽名是 Pi 主题里的七个 `thinking*`。认不出来的档位返回 `None`，调用方
+/// 退回自己的默认色 —— 一个拼错的档位不该让整个外框没颜色。
+pub fn thinking_border_slot(level: &str) -> Option<&'static str> {
+    match level.trim() {
+        "off" => Some("thinkingOff"),
+        "minimal" => Some("thinkingMinimal"),
+        "low" => Some("thinkingLow"),
+        "medium" => Some("thinkingMedium"),
+        "high" => Some("thinkingHigh"),
+        "xhigh" => Some("thinkingXhigh"),
+        "max" => Some("thinkingMax"),
+        _ => None,
+    }
+}
+
 /// Slots that get a BOLD modifier by default when `fg_style` is called.
 /// Mirrors the "weightier" set in Pi's themes (status pills, accent text,
 /// tool results).
@@ -457,8 +558,6 @@ fn is_emphatic(name: &str) -> bool {
             | "success"
             | "error"
             | "warning"
-            | "info"
-            | "header"
             | "toolTitle"
             | "customMessageLabel"
             | "mdHeading"
@@ -472,23 +571,22 @@ fn is_emphatic(name: &str) -> bool {
 fn default_color(name: &str) -> Color {
     match name {
         // Core UI
-        "accent" | "border" | "borderAccent" | "info" => Color::Cyan,
+        "accent" | "border" | "borderAccent" => Color::Cyan,
         "borderMuted" | "dim" | "muted" | "thinkingText" => Color::DarkGray,
         "success" | "bashMode" => Color::Green,
         "warning" => Color::Yellow,
         "error" => Color::Red,
-        "text" | "header" => Color::White,
+        "text" => Color::White,
         // Backgrounds
-        "background" => Color::Black,
         "selectedBg" | "scrollbarThumb" | "searchMatchBg" | "userMessageBg" | "customMessageBg"
         | "toolPendingBg" | "toolSuccessBg" | "toolErrorBg" => Color::DarkGray,
         "searchMatchText" | "userMessageText" | "customMessageText" | "toolOutput" => Color::White,
         "customMessageLabel" | "toolTitle" => Color::Cyan,
         // Markdown
         "mdHeading" => Color::Yellow,
-        "mdLink" | "link" => Color::Blue,
+        "mdLink" => Color::Blue,
         "mdLinkUrl" => Color::DarkGray,
-        "mdCode" | "code" => Color::Magenta,
+        "mdCode" => Color::Magenta,
         "mdCodeBlock" => Color::Green,
         "mdCodeBlockBorder" | "mdQuote" | "mdQuoteBorder" | "mdHr" => Color::DarkGray,
         "mdListBullet" => Color::Cyan,
@@ -506,8 +604,6 @@ fn default_color(name: &str) -> Color {
         // Thinking borders
         "thinkingOff" | "thinkingMinimal" | "thinkingLow" | "thinkingMedium" | "thinkingHigh"
         | "thinkingXhigh" | "thinkingMax" => Color::Magenta,
-        // Legacy
-        "foreground" => Color::White,
         _ => Color::White,
     }
 }
@@ -659,13 +755,6 @@ fn dark_palette() -> HashMap<String, String> {
     m.insert("thinkingMax".into(), "#ff5fff".into());
     // Bash mode
     m.insert("bashMode".into(), "#b5bd68".into());
-    // Legacy nini-only slots — aliased to Pi-equivalents
-    m.insert("background".into(), "#1e1e1e".into());
-    m.insert("foreground".into(), "#d4d4d4".into());
-    m.insert("info".into(), "#9cdcfe".into());
-    m.insert("header".into(), "#ffffff".into());
-    m.insert("code".into(), "#8abeb7".into()); // alias of mdCode
-    m.insert("link".into(), "#81a2be".into()); // alias of mdLink
     m
 }
 
@@ -734,13 +823,6 @@ fn light_palette() -> HashMap<String, String> {
     m.insert("thinkingMax".into(), "#af005f".into());
     // Bash mode
     m.insert("bashMode".into(), "#588458".into());
-    // Legacy nini-only slots
-    m.insert("background".into(), "#fafafa".into());
-    m.insert("foreground".into(), "#1a1a1a".into());
-    m.insert("info".into(), "#1f5fa8".into());
-    m.insert("header".into(), "#000000".into());
-    m.insert("code".into(), "#5a8080".into());
-    m.insert("link".into(), "#547da7".into());
     m
 }
 
@@ -910,8 +992,10 @@ mod tests {
     fn dark_and_light_differ() {
         let d = Theme::dark();
         let l = Theme::light();
-        assert_ne!(d.color("background"), l.color("background"));
-        assert_ne!(d.color("foreground"), l.color("foreground"));
+        // v0.11 (R13): 原来这里断言的是 `background` / `foreground` ——
+        // 那两个自创槽已经从 `COLOR_NAMES` 里删掉了，它们的颜色也不再存在。
+        assert_ne!(d.color("text"), l.color("text"));
+        assert_ne!(d.color("accent"), l.color("accent"));
     }
 
     #[test]

@@ -34,3 +34,17 @@ workspace = true
 tempfile = { workspace = true }
 wiremock = { workspace = true }
 nini-tools = { path = "../nini-tools" }
+
+# R5：集成测试要直接调 `provider_factory::build_provider`，所以开了一个 lib
+# 目标（`src/lib.rs`）。它**只是 bin 的镜像**：bin 不链接它，可执行文件里仍是
+# `main.rs` 自己那份源码。
+#
+# `test = false` 是必须的，不是图省事：这个 lib 与 bin 编译的是**同一个**
+# `provider_factory.rs`，所以它的 `#[cfg(test)] mod tests`（27 条）本来就会
+# 跟着 bin 的测试跑一遍；不关掉 lib 的 test harness，那 27 条就会被**数两遍**，
+# 而 `README` 的测试数徽章与实测是**精确相等**的关系（`scripts/gate.sh`），
+# 重复计数会让那个数字失去意义。
+[lib]
+name = "nini_cli"
+path = "src/lib.rs"
+test = false

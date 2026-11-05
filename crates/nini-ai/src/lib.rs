@@ -41,6 +41,7 @@ pub mod anthropic;
 
 /// OpenAI Chat Completions provider.
 pub mod openai;
+pub mod provider_registry;
 
 /// OpenAI Responses API provider.
 pub mod openai_responses;

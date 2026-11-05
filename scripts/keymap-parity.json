@@ -206,6 +206,12 @@
     "PasteImage": [
       "clipboard-paste"
     ],
+    "CopyLastAssistant": [
+      "copy-last"
+    ],
+    "Suspend": [
+      "suspend"
+    ],
     "Noop": []
   },
   "map": [
@@ -309,10 +315,10 @@
     },
     {
       "pi": "tui.editor.deleteToLineStart",
-      "nini": "ClearInput",
+      "nini": "KillToLineStart",
       "keys": "same",
-      "class": "clear-input",
-      "note": "**语义不同**：Pi 的 Ctrl+u 是「删到行首」，nini 的 Ctrl+u 是「清空整个输入框」"
+      "class": "delete-to-start",
+      "note": "R14 对齐：Ctrl+U 从「清空整个输入框」改成 Pi 的「删到行首」——nini 的 `KillToLineStart` 动作本来就在，只是没人绑"
     },
     {
       "pi": "tui.editor.deleteToLineEnd",
@@ -407,10 +413,10 @@
     },
     {
       "pi": "app.suspend",
-      "nini": null,
-      "keys": "n/a",
+      "nini": "Suspend",
+      "keys": "same",
       "class": "suspend",
-      "note": "nini 没有「挂起到后台」"
+      "note": "R14 补上：Ctrl+Z 挂起到后台（Unix 上给进程组发 SIGTSTP；Windows 上像 Pi 一样明确拒绝）"
     },
     {
       "pi": "app.thinking.cycle",
@@ -463,10 +469,10 @@
     },
     {
       "pi": "app.message.copy",
-      "nini": null,
-      "keys": "n/a",
+      "nini": "CopyLastAssistant",
+      "keys": "same",
       "class": "copy-last",
-      "note": "nini 没有「复制上一条助手消息」的键"
+      "note": "R14 补上：Ctrl+X 复制最后一条助手消息；nini 的剪贴板只有写没有读，所以只做「复制最后一条」，不做选区复制"
     },
     {
       "pi": "app.message.followUp",
@@ -534,16 +540,12 @@
   ],
   "divergences": [
     {
-      "pi": "tui.editor.deleteToLineStart",
-      "reason": "Pi 的 Ctrl+u 删到行首，nini 清空输入框——nini 里有 KillToLineStart 动作但**没有绑定**，改键即可对齐"
-    },
-    {
       "pi": "app.clear",
-      "reason": "Pi 的 Ctrl+c 先清空输入框再退出，nini 的 Ctrl+c 中止回合；nini 的 Quit 走 Ctrl+D（与 Pi 一致）"
+      "reason": "Pi 的 Ctrl+c 是「先清空输入框、再按退出」，nini 的 Ctrl+c 是「中止回合」——**本轮不改**：nini 的退出已经由 Ctrl+D 覆盖（与 Pi 一致），而「中止回合」对终端用户更实用"
     },
     {
       "pi": "app.thinking.toggle",
-      "reason": "Pi 的 Ctrl+t 显隐 thinking 块，nini 的 Ctrl+t 提高 thinking 档位——nini 没有「显隐 thinking 块」这个动作"
+      "reason": "Pi 的 Ctrl+t 是「显隐 thinking 块」，nini 的 Ctrl+t 是「提高 thinking 档位」——thinking 档位是 nini 的一等设置（没有别的键能调）；「显隐 thinking 块」在 nini 属于**新功能**而不是 parity 修复，本轮不做"
     }
   ],
   "exempt": [

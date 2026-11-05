@@ -574,8 +574,17 @@ impl InputBuffer {
         self.cursor = new_pos.min(self.text.len());
     }
 
+    /// 删到**行首**（Pi 的 `tui.editor.deleteToLineStart`，Ctrl+U）。
+    ///
+    /// 此前这里删到的是 `prev_word_boundary`——那是**上一个词**的边界
+    /// （readline 的 `unix-word-rubout`），不是行首：多行输入里它会跨过
+    /// 换行把上一行的词一起删掉。这个动作在 R14 之前**没有任何键绑定**
+    /// （Ctrl+U 走的是 `ClearInput`），所以改它不动任何既有行为。
     pub fn kill_to_line_start(&mut self) {
-        let prev = prev_word_boundary(&self.text, self.cursor);
+        let prev = self.text[..self.cursor]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
         let killed = self.text[prev..self.cursor].to_string();
         if !killed.is_empty() {
             self.push_kill(killed);
@@ -893,15 +902,6 @@ fn next_char_boundary(s: &str, pos: usize) -> usize {
         i += 1;
     }
     i
-}
-
-fn prev_word_boundary(s: &str, pos: usize) -> usize {
-    if pos == 0 {
-        return 0;
-    }
-    let prefix = &s[..pos];
-    let trimmed = prefix.trim_end_matches(|c: char| !c.is_whitespace());
-    trimmed.trim_end_matches(|c: char| c.is_whitespace()).len()
 }
 
 /// What the TUI is currently doing.

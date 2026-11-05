@@ -152,9 +152,11 @@ const STDERR_WHITELIST: &[(&str, usize, &str)] = &[
     ),
     (
         "crates/nini-cli/src/provider_factory.rs",
-        1,
-        "an unknown provider is reported and the process exits(2) before \
-         the TUI starts",
+        2,
+        "both are pre-TUI refusals that exit(2) before the TUI starts: an \
+         unknown provider, and a thin-shell provider whose base URL is a Pi \
+         placeholder the static table cannot fill (cloudflare-*). Each is one \
+         eprintln! so the count stays small enough to be read",
     ),
     (
         "crates/nini-tools/src/operations.rs",

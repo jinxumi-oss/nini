@@ -95,7 +95,7 @@ v0.9.2 一整版都在清这个。
 
 ---
 
-## 2. 当前状态（2026-11-05，v0.16.0 已发布 + 一轮未发布的收尾）
+## 2. 当前状态（2026-11-05，v0.16.0 已发布 + 两轮未发布的收尾）
 
 > 数字以脚本/实测为准，来源写在「证据」列。**手工数字会过期**——本表在每次改动后重算。
 
@@ -107,8 +107,9 @@ v0.9.2 一整版都在清这个。
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
 | 行为 oracle | **符号引用全部可解析（drift=0）**；台账的 `nini_state` **每条都能 grep 到代码符号**（`crates/nini-core/tests/ledger_anchors.rs`）；行为层 **Pi 侧可执行对照物 ≥1**（真 Pi 0.85.1 录制的会话） | `python3 scripts/pi-oracle-lock.py --verify-refs`；`crates/nini-tui/tests/behavior_parity.rs` | 其余 oracle 仍只断言 nini 侧（依据已是机器可解析的符号引用，不再依赖行号）——**C1 已闭**，剩下的覆盖度是另一件事 |
 | 行号引用 | 过渡引用保留，且必须仍能解析到代码行 | `python3 scripts/pi-line-refs.py --json` | 无（0.84.2 → 0.85.1 的漂移结论见 `docs/pi-version-delta-0.84.2-to-0.85.1.md`） |
-| Provider | **9 个原生实现（7 个品牌）+ `models.json` 其余**（用户声明的模型现在**能被 nini 读懂**：见 v0.10.9） | `provider_factory.rs`；Pi 侧实测 `pi-ai/dist/providers/all.js` 的 `builtinProviders()` | **Pi 0.84.2 内置 40 个**（旧文档写 51，是错的）—— **R5 待 owner 决策**，实现者不自行扩范围 |
-| 差距台账 | **56 条**（A 9 / B 37 / C 5 / D 5），open 1、fixed 40、fake 6、blocked-owner 9、可机器判定 43 | `python3 scripts/parity-gap.py --json` | 差距表不再手工维护；`fake` = 伪差距（描述失真或产品原则差异，不是待修的缺口）—— 2026-11-02 关掉 **4 条真差距**（B4a `!cmd` 流式可中止、B20 工具「执行开始」事件的时机、D1 三个符号接线、B8 mermaid 的明确降级占位），新登记 **B22**（mermaid 的**真图**渲染仍未做——缺布局引擎，且 Pi 的渲染实现不在快照里）与 **B23**（`/export` 默认省略 thinking 是有意的产品决定，但注释承诺的 `--include-thinking` flag 此前根本不存在，v0.16 补上）；**2026-11-05 复核**：台账有 **6 条**（B21/B22/B24/B25/C3/C4）的 `status` 写着 `open`，而它们**自己的 `exit_criterion` 就写着「要先有 owner 决策」**——字段与判据打架，已改挂决策号并转为 `blocked-owner`（C3→R5，B21/C4→R11，B22→R12，B24→R13，B25→R14）；**open 只剩 D5**（它的判据明写「在此之前本条保持 open」）。**结论：现在没有一条待办是「拿到键盘就能做完」的**——10 条待办全部卡在 owner 决策或缺承载主体；其中 **B24**（18 个主题槽悬空 + 一处读不存在的槽）与 **B25**（三处键位语义分叉 + 5 个 Pi 有 nini 无的键）是 v0.16 之后第一轮 TUI 工作新登记的；v0.16 之后的 provider/agent 层关掉 **4 条真差距**（**B27** HTTP 错误体被丢弃、**B28** HTTP 400 不触发压缩重试、**B29** 空 user 消息被序列化成空串、**B30** HTTP 路径不重试瞬时错误），新登记 **B31**（供应商错误码通道是 nini 独有的增强，Pi 同样识别不了讯飞的 10907 → **伪差距**，但要人来养）；同一轮工作的**独立审查**又关掉 **2 条真差距**（**B32** 溢出恢复的一次性上限永不复位——Pi 在成功的一轮后会复位、**B33** Anthropic 侧 assistant 轮的空白 text 未过滤——Pi 同样过滤） |
+| Provider | **9 个原生实现 + 28 个薄壳（Pi 的 provider id 直接可用）= 37 个 `--provider` 名字**，外加 `models.json` 声明任意端点 | `provider_factory.rs`；Pi 侧实测 `pi-ai/dist/providers/all.js` 的 `builtinProviders()` | **Pi 0.84.2 内置 40 个**（旧文档写 51，是错的）—— **R5 待 owner 决策**，实现者不自行扩范围 |
+| 差距台账 | **56 条**（A 9 / B 37 / C 5 / D 5），**open 1、fixed 45、fake 10、blocked-owner 0**、可机器判定 43 | `python3 scripts/parity-gap.py --json` | 差距表不再手工维护；`fake` = 伪差距（描述失真或产品原则差异，不是待修的缺口）—— 2026-11-02 关掉 **4 条真差距**（B4a `!cmd` 流式可中止、B20 工具「执行开始」事件的时机、D1 三个符号接线、B8 mermaid 的明确降级占位），新登记 **B22**（mermaid 的**真图**渲染仍未做——缺布局引擎，且 Pi 的渲染实现不在快照里）与 **B23**（`/export` 默认省略 thinking 是有意的产品决定，但注释承诺的 `--include-thinking` flag 此前根本不存在，v0.16 补上）；**2026-11-05 上午复核**：台账有 **6 条**（B21/B22/B24/B25/C3/C4）的 `status` 写着 `open`，而它们**自己的 `exit_criterion` 就写着「要先有 owner 决策」**——字段与判据打架，改挂决策号并转为 `blocked-owner`。
+**2026-11-05 下午：owner 拍板了全部 8 个决策，台账关账** —— `blocked-owner` 归零，只剩 **D5 一条 open**（它的判据本来就写着「本轮不实现，在此之前保持 open」）。拍板与落地：**R5** = 补 28 个 provider 薄壳（不做 4 个新协议 + 1 个 OAuth）；**R10** = `/clone` 对齐 Pi（fork-at-leaf + 切 session，无参数）；**R11** = 不做扩展运行时，关账；**R12** = 不做 mermaid 真图；**R13** = 接 thinking×7 + 删 legacy×6 并显式提示；**R14** = `Ctrl+U`/`Ctrl+X`/`Ctrl+Z` 三项（`Ctrl+C`/`Ctrl+T` 保留 nini 语义并登记理由）；**R9** = 本轮不做语法高亮、判据改成「9 个槽各能出对应颜色」；**R4** = 不做凭据存储，保持 env-var-only。决策材料与留痕见 [`plans/owner-decision-packs.md`](./plans/owner-decision-packs.md)；其中 **B24**（18 个主题槽悬空 + 一处读不存在的槽）与 **B25**（三处键位语义分叉 + 5 个 Pi 有 nini 无的键）是 v0.16 之后第一轮 TUI 工作新登记的；v0.16 之后的 provider/agent 层关掉 **4 条真差距**（**B27** HTTP 错误体被丢弃、**B28** HTTP 400 不触发压缩重试、**B29** 空 user 消息被序列化成空串、**B30** HTTP 路径不重试瞬时错误），新登记 **B31**（供应商错误码通道是 nini 独有的增强，Pi 同样识别不了讯飞的 10907 → **伪差距**，但要人来养）；同一轮工作的**独立审查**又关掉 **2 条真差距**（**B32** 溢出恢复的一次性上限永不复位——Pi 在成功的一轮后会复位、**B33** Anthropic 侧 assistant 轮的空白 text 未过滤——Pi 同样过滤） |
 | 能力面投入 | — | 自 v0.9.1（2026-10-05，`f01f0a5`）起：`nini-tui` 净 **+11214 行**、`nini-ai` 净 **+1891 行**；提交数 `nini-tui` 185 / `nini-core` 105 / `nini-ai` 31（自 2026-10-12 起：92 / 49 / 7） | 单侧化仍在（行数比 5.9x），但**「`nini-ai` 最后一次提交停在 10-12」这句已过期**——本轮 provider/agent 层的工作把它推到 2026-11-05，见 §3 |
 
 ---
@@ -141,14 +142,14 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 
 | # | 决策 | 现状 | 阻塞什么 |
 |---|---|---|---|
-| R4 | nini 是否自建凭据存储（`~/.nini/agent/`），是否可选复用 Pi | 待决。`6abadd9` 已整体回滚过一次，回滚理由是产品判断而非技术障碍 | auth 层全部工作 |
-| R5 | 是否把 provider 补齐到 Pi 全集（**Pi 0.84.2 实测 40 个**；旧文档写 51 是错的） | 待决。决策包见 [`plans/owner-decision-packs.md`](./plans/owner-decision-packs.md) §2 | 阻塞 B9（provider 覆盖面）、C3（投入单侧化） |
-| **R9** | 语法高亮做不做（**体积已实测，不是当初估的 +2–5 MB**：syntect+fancy-regex **+0.63 MiB**（6.63 → 7.28 MiB，+14 crate），onig 版 +0.90 MiB，自研 +0.003 MiB 但语法质量远不如）；决策包见 [`plans/r9-syntax-highlighting.md`](./plans/r9-syntax-highlighting.md) | 待决（数字已修正） | 阻塞 `parity-with-pi.md` B7 |
-| **R10** | `/clone` 改为"切到新分支"会改变用户现有行为 | 待决。**Pi 的 `/clone` 没有参数**（`references/pi-0.85.1/src/ui/interactive-mode.ts:5186` 的 `handleCloneCommand(): Promise<void>` 无参，`:3039` 分发时也不传参）——台账此前写「接受 session-id 参数」是写错了，不是缺口 | 阻塞 B1 |
-| **R11** | 要不要做 Pi 兼容的**扩展运行时**，以及它由谁承载 | 待决（R6 只证伪了 `nini-ext` 的技术路径——dlopen 加载不了 TS；**产品上要不要做仍是开放的**）。决策包见 [`plans/owner-decision-packs.md`](./plans/owner-decision-packs.md) §3 | 阻塞 B21（工具级 `executionMode` 无声明通道）、C4（扩展层能力缺口） |
-| **R12** | mermaid **真图**渲染引不引布局引擎 | 待决。Pi 0.85.1 用的是 npm 包 `grok-mermaid` 0.2.2（其 Rust 源码 `xai-org/grok-build` 本机不可得、许可未查）。决策包见 [`plans/owner-decision-packs.md`](./plans/owner-decision-packs.md) §4 | 阻塞 B22 |
-| **R13** | 主题槽接线策略：nini 要不要边框 UI、`customMessage` 走哪条路、legacy 槽删还是留 | 待决。**2026-11-05 复算**：61 个槽里 **27 个零读取**（= 9 个 `syntax*` 归 B7 + **18 个**归本条），口径与复算命令写在台账 B24 的 `nini_state` 里。决策包见 [`plans/owner-decision-packs.md`](./plans/owner-decision-packs.md) §5 | 阻塞 B24 |
-| **R14** | 键位语义与 Pi 对齐的口径：按 Pi 改，还是在 `scripts/keymap-parity.json` 的 `divergences` 里写明理由 | 待决（改键是用户可见行为变更）。决策包见 [`plans/owner-decision-packs.md`](./plans/owner-decision-packs.md) §6 | 阻塞 B25 |
+| R4 | nini 是否自建凭据存储（`~/.nini/agent/`），是否可选复用 Pi | **已拍板（2026-11-05）：不做**，保持 env-var-only。这是**有意的产品决定**（不是待决）：nini 的「无账户、无云、无遥测」与自建凭据存储不相容 | 不再阻塞任何工作 |
+| R5 | 是否把 provider 补齐到 Pi 全集 | **已拍板（2026-11-05）：补 28 个薄壳**（Pi 的 39 个有目录的 provider 里，6 个已原生实现、5 个明确不做）。**成本不在协议、在配置**：28 个用的都是 nini 已实现的方言。26 个可直接 `--provider <id>`，2 个（cloudflare-*）需用户给 base URL | B9、C3 → fixed |
+| **R9** | 语法高亮做不做 | **已拍板（2026-11-05）：本轮不做**。体积早已实测（syntect+fancy-regex +0.63 MiB / onig +0.90 / 自研 +0.003），但本轮复核发现真正的大头是**scope→槽的映射表**（决策包当时只测了体积），且 **Pi 的高亮实现不在快照里**（`src/utils/` 整个目录缺失）→ 逐行对齐不可验证。9 个 `syntax*` 槽**保留**为契约位；B7 的判据改成「9 个槽各能出对应颜色」。见 [`plans/r9-syntax-highlighting.md`](./r9-syntax-highlighting.md) §4 | B7 已关账 |
+| **R10** | `/clone` 改为"切到新分支"会改变用户现有行为 | **已拍板（2026-11-05）：对齐 Pi**——取 session 树叶子 → fork-at-leaf → 切到新 session → 清空编辑器，**不带参数**。能力本来就在 `cmd_fork` 里 | B1 → fixed |
+| **R11** | 要不要做 Pi 兼容的**扩展运行时**，以及它由谁承载 | **已拍板（2026-11-05）：不做，关账**。R6 已用源码证伪技术路径（Pi 加载 TS/`jiti`，`nini-ext` 是 dlopen cdylib，无共同执行模型）；README 明写「扩展工具不在 parity 范围内」 | B21、C4 → fake |
+| **R12** | mermaid **真图**渲染引不引布局引擎 | **已拍板（2026-11-05）：不做**。上游 Rust 源码不可得、许可未查、Pi 的渲染实现不在快照里；nini 保留**降级占位**并写进 known limitations。**`markdown.mermaid` 键也不接**——只有占位框时 `final` 与 `streaming` 两个取值等价，接了就是「打印成功但什么都没做」 | B22 → fake |
+| **R13** | 主题槽接线策略：nini 要不要边框 UI、`customMessage` 走哪条路、legacy 槽删还是留 | **已拍板（2026-11-05）：接 thinking×7 + 删 legacy×6 并把静默丢弃改成显式提示**；`customMessage×3`（通道堵在 R11）与 `border×2`（需要新的盒式 UI）**挂起**。`COLOR_NAMES` 61 → 55 | B24 → fixed |
+| **R14** | 键位语义与 Pi 对齐的口径 | **已拍板（2026-11-05）：做 `Ctrl+U`/`Ctrl+X`/`Ctrl+Z` 三项**；`Ctrl+C`（Pi「先清空再退」vs nini「中止回合」）与 `Ctrl+T`（Pi「显隐 thinking 块」vs nini「提高档位」）**保留 nini 语义**并登记理由；跳字符与选区复制**跳过** | B25 → fixed |
 | R6 | 扩展运行时 | **已被证伪**（Pi 加载 TS，`nini-ext` 是 `dlopen` cdylib，无共同执行模型）。`nini-ext` 556 行零调用点，保留并在 crate 头写明原因 | 无（结论已定，不要重开）——R11 是**产品层面**的新决策，不是重开 R6 |
 | — | 行为层对照物升级到 Pi 0.85.1 | 依赖外部条件：一台跑着 0.85.1 的机器 | `SPEC.lock.upgradeProcedure` |
 

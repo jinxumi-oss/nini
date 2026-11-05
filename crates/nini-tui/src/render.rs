@@ -1009,6 +1009,28 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         .items_skipped_from_bottom
         .store(items_skipped_from_bottom, Ordering::Relaxed);
 
+    // v0.11 (R13): 用户 theme.json 里的旧颜色键提示。
+    //
+    // 那六个 nini 自创的色键（`background` / `code` / `foreground` /
+    // `header` / `info` / `link`）被从 `COLOR_NAMES` 里删掉时，用户
+    // `theme.json` 里的同名键会被 `Theme::parse` 的过滤器**静默**丢掉 ——
+    // 用户改了颜色，屏幕上什么也没发生，还没人告诉他为什么。所以解析时把
+    // 键名记下来（`Theme::ignored_slots`），这里显示一句话。
+    //
+    // 画在 transcript 的头两行，而且只在用户还没说话时显示：冷启动时那里是
+    // 空的（欢迎卡居中，上面留了白），对话一开始提示就消失。所以它只出现
+    // 一次，不会每帧追加一行。
+    //
+    // 唯一的代价：启动时如果已经有别的提示行（比如 stderr 守卫收集到的），
+    // 横幅会盖住第一行。一条“你的主题键没被用上”的提示比一条被盖住的
+    // 提示更值得先看见。
+    let conversation_started = lines.iter().any(|l| matches!(l, TranscriptLine::User(_)));
+    if !conversation_started {
+        if let Some(notice) = theme.ignored_slot_notice() {
+            render_ignored_slot_notice(f, theme, &notice, area);
+        }
+    }
+
     // v0.8.4 (ux-001): welcome card for empty cold-start state.
     if visible_items.is_empty() && total_lines == 0 && state.input.text.is_empty() {
         render_welcome_card(f, theme, area);
@@ -1490,6 +1512,27 @@ fn render_welcome_card(f: &mut Frame, theme: &Theme, area: Rect) {
     f.render_widget(examples_widget, chunks[3]);
 }
 
+/// v0.11 (R13): 画一行（或几行）提示，说清用户 `theme.json` 里的哪些颜色键
+/// nini 已经不再使用。
+///
+/// 措辞是"已忽略"而不是"错误"：那些键是 nini 早期版本自创的（Pi 没有），
+/// 用户照着旧文档写进 `theme.json` 是很自然的事，nini 只是不再读它们。
+///
+/// 用 `warning` 槽：这是一条需要注意的信息，但不是失败。
+fn render_ignored_slot_notice(f: &mut Frame, theme: &Theme, notice: &str, area: Rect) {
+    let style = theme.fg_style("warning");
+    for (i, line) in notice.lines().enumerate() {
+        let y = area.y + i as u16;
+        if y >= area.bottom() {
+            break;
+        }
+        f.render_widget(
+            Paragraph::new(Span::styled(line.to_string(), style)),
+            Rect::new(area.x, y, area.width, 1),
+        );
+    }
+}
+
 fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     // v0.10.2: publish the prompt's inner width for vertical caret
     // motion. It is the only place the number exists, exactly as in Pi,
@@ -1567,10 +1610,33 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     // The slot is Pi's own (`bashMode`), already in nini's palette
     // (`theme.rs`: `"bashMode"`), so this is not an nini extension —
     // it is the one Pi theme slot nini had and never used.
+    //
+    // v0.11 (R13): bash 之外再看 thinking 档位。Pi 的同一个函数是三路的
+    // （`interactive-mode.ts:4166-4172`，`updateEditorBorderColor`）：
+    //
+    // ```ts
+    // if (this.isBashMode) {
+    //     this.editor.borderColor = theme.getBashModeBorderColor();
+    // } else {
+    //     const level = this.session.thinkingLevel || "off";
+    //     this.editor.borderColor = theme.getThinkingBorderColor(level);
+    // }
+    // ```
+    //
+    // nini 已经有输入框外框（就在这里），所以不需要新造 UI —— 只要把取色
+    // 的分支从两路扩成三路：bash mode → `bashMode`；否则按当前 thinking
+    // 档位 → 对应的 `thinking*` 槽（`off`→`thinkingOff`，…，
+    // `max`→`thinkingMax`，映射在 `theme::thinking_border_slot`）；两者都
+    // 不是（没有档位 / 档位认不出来）→ 原来的 `borderMuted`。
     let border_style = theme.fg_style(if state.is_bash_mode() {
         "bashMode"
     } else {
-        "borderMuted"
+        state
+            .model_state
+            .thinking_level
+            .as_deref()
+            .and_then(crate::theme::thinking_border_slot)
+            .unwrap_or("borderMuted")
     });
     if area.height >= 3 {
         // The frame is drawn by hand, not by ratatui's `Block`.

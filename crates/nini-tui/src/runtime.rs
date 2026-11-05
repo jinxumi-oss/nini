@@ -1236,7 +1236,15 @@ async fn run_loop(
                                 }
                             }
                         } else {
-                            handle_key(k, &shared, &agent_driver, done, event_tx.clone());
+                            handle_key(
+                                k,
+                                &shared,
+                                &agent_driver,
+                                done,
+                                event_tx.clone(),
+                                terminal,
+                                guard,
+                            );
                         }
                     }
                     Some(Ok(Event::Mouse(m))) => {
@@ -1838,6 +1846,122 @@ fn handle_external_editor_dance(
     let _ = terminal.clear();
 }
 
+/// Ctrl+X —— 复制最后一条助手消息（Pi 的 `app.message.copy`）。
+///
+/// 找法与 `/copy`（`commands/dispatch.rs#cmd_copy`）一致：反向遍历转录，
+/// 取最后一条 `TranscriptLine::AssistantText`。
+///
+/// 成功与失败**都要让用户看见**：
+/// - 成功：`(copied N bytes to clipboard)`；
+/// - 失败：把剪贴板给的原因**原样**说出来（nini 的剪贴板只有写没有读，
+///   无头环境里失败是常态，不是例外）；
+/// - 压根没有助手消息：说一句「没有可复制的」。
+fn copy_last_assistant(state: &mut AppState) {
+    let last = state
+        .transcript_state
+        .lines
+        .iter()
+        .rev()
+        .find_map(|l| match l {
+            TranscriptLine::AssistantText(s) => Some(s.clone()),
+            _ => None,
+        });
+    let Some(msg) = last else {
+        state.push_notice("(no assistant message to copy)".to_string());
+        return;
+    };
+    match crate::clipboard::copy(&msg) {
+        Ok(()) => state.push_notice(format!("(copied {} bytes to clipboard)", msg.len())),
+        Err(reason) => state.push_notice(format!("(copy failed: {reason})")),
+    }
+}
+
+/// Ctrl+Z —— 挂起到后台（Pi 的 `app.suspend`）。
+///
+/// 照 Pi 的 `interactive-mode.ts#handleCtrlZ`（约 4088 行）：
+/// 1. Windows 上**不做**——Pi 明确拒绝（"Suspend to background is not
+///    supported on Windows"），nini 同样拒绝并说明原因；
+/// 2. 离开 raw mode + alternate screen（终端回到普通状态，挂起期间用户
+///    用的是自己的 shell）；
+/// 3. 给**进程组**发 `SIGTSTP`（`kill(0, …)`，0 = 自己的进程组）——
+///    整个进程组停住，等 `SIGCONT` 把它叫醒；
+/// 4. 醒来后重新进入 raw mode + alternate screen，并**强制重绘一帧**
+///    （alternate screen 重新进入后是空的，而 ratatui 手里还记着旧帧，
+///    不强制重绘就会留下半张空屏）。
+///
+/// 收尾/恢复的顺序与外部编辑器那套 dance（`handle_external_editor_dance`）
+/// 一致：先用 `execute!` 直接写 stdout 离开屏幕，再关 raw mode；回来时反着来。
+fn suspend_to_background(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    guard: &mut Option<crate::terminal_guard::TerminalGuard>,
+    shared: &SharedState,
+) {
+    #[cfg(windows)]
+    {
+        // Pi 明确拒绝，nini 同样拒绝并说明原因。
+        let _ = (terminal, guard);
+        push_notice(
+            shared,
+            "Suspend to background is not supported on Windows".to_string(),
+        );
+        return;
+    }
+    #[cfg(not(windows))]
+    {
+        // 2. 离开 raw mode + alternate screen。
+        {
+            let mut stdout = stdout();
+            let _ = execute!(stdout, DisableMouseCapture);
+            let _ = execute!(stdout, LeaveAlternateScreen);
+            let _ = disable_raw_mode();
+            crate::signals::mark_alt_screen(false);
+            crate::signals::mark_raw_mode(false);
+            let _ = execute!(stdout, crossterm::cursor::Show);
+        }
+        // 转录屏已经不在了，诊断信息要落到**真实终端**上——与外部编辑器
+        // 同一套处理：摘掉守护进程，回来再装回去。
+        crate::terminal_guard::suspend_for_external_editor(guard);
+
+        // 3. 给**进程组**发 SIGTSTP（0 = 自己的进程组）。
+        //
+        // 进程在这里停住，直到 SIGCONT 把它叫醒；醒来后代码从下一行继续。
+        //
+        // SAFETY: `kill(2)` 只发信号，不触碰内存。
+        let failed = unsafe { libc::kill(0, libc::SIGTSTP) } != 0;
+        let reason = if failed {
+            Some(std::io::Error::last_os_error())
+        } else {
+            None
+        };
+
+        // 4. 醒了：先把守护进程装回来（转录屏马上又要有了，库里的 stderr
+        //    不能落到画面上），再重新进入 raw mode + alternate screen。
+        //
+        //    顺序与外部编辑器那套 dance 一致。
+        if let Err(e) = crate::terminal_guard::resume_after_external_editor(guard) {
+            push_notice(
+                shared,
+                format!("terminal guard not reinstalled after suspend: {e}"),
+            );
+        }
+        {
+            let mut stdout = stdout();
+            let _ = enable_raw_mode();
+            crate::signals::mark_raw_mode(true);
+            let _ = execute!(stdout, EnterAlternateScreen);
+            crate::signals::mark_alt_screen(true);
+            let _ = execute!(stdout, crossterm::cursor::Hide);
+            let _ = execute!(stdout, EnableMouseCapture);
+        }
+        // 强制重绘一帧：alternate screen 重新进入后是空的，ratatui 手里
+        // 还记着旧帧——不 `clear()` 就会留下半张空屏。
+        let _ = terminal.clear();
+        if let Some(e) = reason {
+            push_notice(shared, format!("suspend failed: {e}"));
+        }
+    }
+}
+
 /// Cycle to the next/previous model in `state.model_state.models_cycle`.
 /// Updates `state.model_state.model`, persists to settings.json, and updates status.
 fn cycle_model(state: &mut crate::state::AppState, direction: i32) {
@@ -1973,6 +2097,11 @@ fn handle_key(
     agent_driver: &AgentDriver,
     done: Arc<Notify>,
     event_tx: tokio::sync::watch::Sender<bool>,
+    // 挂起（Ctrl+Z）要动终端：离开/重进 alternate screen、强制重绘一帧。
+    // 只有运行循环才拿得到 `&mut Terminal` 与守护进程，所以这两个参数
+    // 跟着按键处理一路传下来。
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    guard: &mut Option<crate::terminal_guard::TerminalGuard>,
 ) {
     let mut state = lock_state(&shared);
     let key: Key = k.into();
@@ -2033,6 +2162,18 @@ fn handle_key(
                 state.ui_state.completion = None;
                 state.run_state.status = "open_selector:palette".to_string();
             }
+        }
+        KeyAction::CopyLastAssistant => {
+            // Ctrl+X —— 复制最后一条助手消息（Pi 的 `app.message.copy`）。
+            copy_last_assistant(&mut state);
+        }
+        KeyAction::Suspend => {
+            // Ctrl+Z —— 挂起到后台（Pi 的 `app.suspend`）。
+            //
+            // 挂起要动终端，所以先把状态锁放掉：挂起期间（进程停在
+            // SIGTSTP 上）整场对话不该被一把锁按住。
+            drop(state);
+            suspend_to_background(terminal, guard, &shared);
         }
         KeyAction::PasteImage => {
             // Try to read an image from the system clipboard. If found,
@@ -3939,6 +4080,26 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             if state.run_state.mode == RunMode::Editing {
                 state.ui_state.completion = None;
                 state.run_state.status = "open_selector:palette".to_string();
+            }
+        }
+        KeyAction::CopyLastAssistant => {
+            // Test path: same as the runtime path.
+            copy_last_assistant(state);
+        }
+        KeyAction::Suspend => {
+            // 挂起要动终端（离开/重进 alternate screen、回来后强制重绘一帧），
+            // 那是**交互式运行循环**才有的东西：这个 dispatch 点没有终端，
+            // 所以把「为什么不能挂起」说出来，而不是静默无事发生。
+            #[cfg(windows)]
+            {
+                // Pi 明确拒绝，nini 同样拒绝并说明原因。
+                state.push_notice("Suspend to background is not supported on Windows".to_string());
+            }
+            #[cfg(not(windows))]
+            {
+                state.push_notice(
+                    "(suspend to background is only available in the interactive TUI)".to_string(),
+                );
             }
         }
         KeyAction::OpenSearch => {

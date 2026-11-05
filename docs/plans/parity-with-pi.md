@@ -592,7 +592,7 @@ bash 执行全丢——`cmd_resume` 里那段 v0.8.9 之前的手写重建循环
 |---|---|---|---|
 | R4 | nini 是否自建凭据存储 | 待决（`6abadd9` 已整体回滚一次） | 整个 auth 层；`/login` 的 Pi 形态 |
 | R5 | provider 是否补齐到 Pi 全集 | 待决。**v3 实测：Pi 0.84.2 内置 40 个，nini 原生 9 个实现（7 个品牌）**，v2 文档写的「51 / 5」两个数都是错的 | `nini-ai` 的方向；B9、**C3** |
-| R9 | 语法高亮是否值得 +2–5 MB 体积 | 待决。**体积已实测**：syntect+fancy-regex **+0.63 MiB**、onig 版 +0.90 MiB、自研 +0.003 MiB（决策包见 `plans/r9-syntax-highlighting.md`） | B7 |
+| R9 | 语法高亮是否值得 +2–5 MB 体积 | **已拍板：本轮不做**；判据改成「9 个槽各能出对应颜色」。体积早已实测（syntect+fancy-regex +0.63 MiB / onig +0.90 / 自研 +0.003），但真正的大头是 **scope→槽映射**，且 **Pi 的高亮实现不在快照里**（`src/utils/` 整个目录缺失）→ 逐行对齐不可验证。见 `plans/r9-syntax-highlighting.md` §4 | B7 → fake |
 | R10 | `/clone` 改为「切到新分支」是否可接受 | 待决。**Pi 的 `/clone` 没有参数**（`references/pi-0.85.1/src/ui/interactive-mode.ts:5186` 的 `handleCloneCommand(): Promise<void>`） | B1 |
 | **R11** | 要不要做 Pi 兼容的**扩展运行时**、由谁承载 | 待决（R6 只证伪了 `nini-ext` 的技术路径；产品层面仍开放） | **B21**、**C4** |
 | **R12** | mermaid **真图**渲染引不引布局引擎 | 待决（Pi 0.85.1 用 npm 包 `grok-mermaid` 0.2.2） | **B22** |
