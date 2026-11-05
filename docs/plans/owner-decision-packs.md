@@ -17,6 +17,18 @@
 - 覆盖 6 个决策：**R5、R10、R11、R12、R13、R14**。
 - 每个决策下面都列了它**实际卡住哪些台账条目**。
 
+### 0.1b 证据从哪来（引用能不能复算）
+
+本文件的引用分两类，**能不能复算不一样**，先说清楚：
+
+| 类别 | 长什么样 | 能不能在仓库里复算 |
+|---|---|---|
+| **仓库内** | `crates/…`、`references/pi-0.85.1/…` | **能**——仓库里就有那个文件与那一行 |
+| **本机 Pi 安装包** | 标着「安装包」的 `theme.js:242`、`components/tree-selector.js:673`、`src/parse.ts:88`、`package.json:60` 等 | **不能**——这些文件只在**本机安装的 Pi** 里（`~/.nvm/versions/node/v*/lib/node_modules/@earendil-works/pi-coding-agent/`），**不在 `references/pi-0.85.1/` 快照里**。快照是本项目唯一可复算的对照物，所以这类的结论**只能作为旁证**，不作为判据 |
+
+写这一节是因为「引用了一个仓库里没有的文件」和「引用了一个仓库里有的文件」不是一回事：
+前者无法被第三方复算。后者（占绝大多数）都能。
+
 ### 0.2 它不是什么
 
 - 不是「实现者自行决定」的授权书。每一节的「推荐」都只是**从工程事实出发的倾向**；
@@ -90,7 +102,7 @@
 |---|---|---|---|
 | **A 不追平**，把「40」的口径改成「nini 覆盖 9 个原生 + models.json 其余」 | `scripts/parity-gaps.json`（`B9` 的 `nini_state`/`status`）、`docs/GOALS.md` §2 Provider 行 | **2 文件 × ~15 行** | 风险：34 个 Pi 品牌在 nini 里要手写 `models.json`（`api` 只能是那 3 个方言 → T4 那 6 家根本写不出来）；`C3` 的「provider 投入单侧化」继续存在，且没有任何 owner 决策解释它为什么不解决 |
 | **B 追平「能追平的那部分」**：只做 T2 的 22 家中**用户真正常用**的若干家（按 Pi 品牌逐个落薄壳），T3/T4 明确登记为不做 | `crates/nini-ai/src/<brand>.rs`（每家 ~70–90 行）、`crates/nini-cli/src/provider_factory.rs`（每家 ~10 行分支）、`crates/nini-core/data/model-catalog.json`（补模型条目）、`docs/GOALS.md` §4 | 每家 **≈ 1.5 文件 × ~90 行**；补 10 家 ≈ **15 文件 × ~900 行**；补满 22 家 ≈ **33 文件 × ~2 000 行** | 风险：①「哪些家常用」需要 owner 给名单，否则就是又一轮自选范围；② `models.json` 通道已能覆盖 T2 的 22 家（只差 baseUrl + key），薄壳的真实增量是**内置默认值与目录条目**，不是「能不能用」——收益比看上去小；③ 仍然差 8 家（T3 的 4 + T4 的 4 + Cloudflare 2），覆盖面叙事会变成「34/40」这种不好解释的数 |
-| **C 全追平 40** | 同 B，再加 OAuth 运行时（nini 目前**没有**任何 OAuth 代码）、6 个新方言的协议实现、Cloudflare 的 stream 层 | **不可估**：OAuth 一家 ≥ 1 文件 × ~300 行起，6 个方言按 `openai.rs`(1 524 行)/`anthropic.rs`(568 行)/`sse.rs`(488 行) 的量级，每个 ≈ **1–2 文件 × ~300–600 行** | 风险：与 nini「单文件、无运行时、只读环境变量拿凭据」的产品原则正面冲突（`crates/nini-cli/src/commands/dispatch.rs:1020-1024` 明确写了 nini 不在 TUI 里跑 OAuth）；`R4`（是否自建凭据存储）**本身也还没拍板**，C 与 R4 相互依赖 |
+| **C 全追平 40** | 同 B，再加 OAuth 运行时（nini 目前**没有**任何 OAuth 代码）、6 个新方言的协议实现、Cloudflare 的 stream 层 | **不可估**：OAuth 一家 ≥ 1 文件 × ~300 行起，6 个方言按 `openai.rs`(1 524 行)/`anthropic.rs`(568 行)/`sse.rs`(488 行) 的量级，每个 ≈ **1–2 文件 × ~300–600 行** | 风险：与 nini「单文件、无运行时、只读环境变量拿凭据」的产品原则正面冲突（`crates/nini-tui/src/commands/dispatch.rs:1018-1024` 明确写了 nini 不在 TUI 里跑 OAuth）；`R4`（是否自建凭据存储）**本身也还没拍板**，C 与 R4 相互依赖 |
 
 ### 1.3 推荐
 
