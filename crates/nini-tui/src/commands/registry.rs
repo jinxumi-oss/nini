@@ -201,29 +201,6 @@ pub fn by_name(name: &str) -> Option<&'static CommandDef> {
     REGISTRY.iter().find(|c| c.name == name)
 }
 
-/// Score one command against a `/<query>` prefix. Higher = better.
-///
-/// v0.8.4 (ux-001, regression-fix): restored from a v0.8 refactor that
-/// silently dropped the function. Currently unused — `complete()`
-/// returns the raw list in declaration order — but kept under
-/// `#[allow(dead_code)]` because the fuzzy-match design notes still
-/// reference this scoring formula and we may want it back when slash
-/// command search gets fuzzy matching.
-#[allow(dead_code)]
-fn score(def: &CommandDef, q: &str) -> i32 {
-    let name = def.name;
-    if name == q {
-        return 1000;
-    }
-    if name.starts_with(q) {
-        return 500 + (name.len() as i32 - q.len() as i32).abs();
-    }
-    if name.contains(q) {
-        return 100;
-    }
-    0
-}
-
 /// Rank `REGISTRY` by prefix / substring match against `query`.
 /// Returns at most `limit` results, highest-score first. For an
 /// empty query, returns ALL commands (the popup's scroll_offset
