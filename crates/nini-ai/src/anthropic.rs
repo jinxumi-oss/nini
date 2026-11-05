@@ -23,6 +23,8 @@ pub struct AnthropicProvider {
     client: Client,
     base_url: String,
     api_key: String,
+    /// provider 级 / model 级请求头与认证头配置。
+    overrides: crate::provider_overrides::HeaderOverrides,
 }
 
 impl AnthropicProvider {
@@ -35,6 +37,7 @@ impl AnthropicProvider {
             client: crate::error_body::http_client(),
             base_url: DEFAULT_BASE_URL.to_string(),
             api_key: api_key.into(),
+            overrides: crate::provider_overrides::HeaderOverrides::default(),
         }
     }
 
@@ -47,6 +50,32 @@ impl AnthropicProvider {
     /// Override the HTTP client (for testing).
     pub fn with_client(mut self, client: Client) -> Self {
         self.client = client;
+        self
+    }
+
+    /// 附加到**每个**请求上的自定义请求头。
+    ///
+    /// 多次调用会追加。应用顺序：provider 默认头 → provider 级自定义头
+    /// → model 级自定义头，同名头以后写的为准。
+    pub fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.overrides.headers.extend(headers);
+        self
+    }
+
+    /// 覆盖认证头的名字。默认是 `x-api-key: <key>`；设成
+    /// `auth_header("api-key")` 后变成 `api-key: <key>`（**不带 Bearer
+    /// 前缀**——Azure 的 `api-key`、Google 的 `x-goog-api-key` 都是裸值）。
+    pub fn with_auth_header(mut self, name: &'static str) -> Self {
+        self.overrides.auth_header = Some(name);
+        self
+    }
+
+    /// 按模型名的覆盖表（键是 `req.model` 的原样值）。
+    pub fn with_model_overrides(
+        mut self,
+        map: std::collections::BTreeMap<String, crate::provider_overrides::ModelOverride>,
+    ) -> Self {
+        self.overrides.model_overrides = map;
         self
     }
 }
@@ -69,16 +98,30 @@ impl Provider for AnthropicProvider {
         let client = self.client.clone();
         let base_url = self.base_url.clone();
         let api_key = self.api_key.clone();
+        // stream 是 `'static` 的，覆盖配置也要 clone 出来再捕获。
+        let overrides = self.overrides.clone();
 
         Box::pin(try_stream! {
             // Translate request
             let body = build_request_body(&req)?;
-            let url = crate::api_url::anthropic_messages_url(&base_url);
-            let mut response = client
-                .post(&url)
-                .header("x-api-key", &api_key)
-                .header("anthropic-version", API_VERSION)
-                .header("content-type", "application/json")
+            // model 级 base URL 覆盖 provider 自己的。
+            let base = match overrides.base_url_for(&req.model) {
+                Some(b) => b.to_string(),
+                None => base_url.clone(),
+            };
+            let url = crate::api_url::anthropic_messages_url(&base);
+            // 认证头：默认 `x-api-key: <key>`；设了名字就用那个名字发裸值。
+            let auth = match overrides.auth_header {
+                Some(name) => (name.to_string(), api_key.clone()),
+                None => ("x-api-key".to_string(), api_key.clone()),
+            };
+            let defaults = vec![
+                auth,
+                ("anthropic-version".to_string(), API_VERSION.to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ];
+            let headers = overrides.resolve(&req.model, &defaults);
+            let mut response = crate::provider_overrides::apply_headers(client.post(&url), &headers)
                 .body(body)
                 .send()
                 .await?;

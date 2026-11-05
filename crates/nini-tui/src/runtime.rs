@@ -2376,6 +2376,13 @@ fn handle_key(
                 QueueKind::FollowUp,
             );
         }
+        KeyAction::DequeueMessages => {
+            // Alt+Up —— 把排队的消息取回输入框（Pi 的 `app.message.dequeue`）。
+            //
+            // Pi: `interactive-mode.ts#handleDequeue` → `restoreQueuedMessagesToEditor()`
+            // （**不带** `{ abort: true }`：取回不中止回合）。
+            dequeue_messages(&mut state);
+        }
         KeyAction::Abort => match escape_action(&state) {
             EscapeAction::CloseCompletion => {
                 state.ui_state.completion = None;
@@ -4279,6 +4286,11 @@ pub fn apply_action(state: &mut AppState, key: Key) {
                 apply_action_submit(state);
             }
         }
+        KeyAction::DequeueMessages => {
+            // Alt+Up —— 把排队的消息取回输入框（Pi 的 `app.message.dequeue`）。
+            // 见 `handle_key` 里的同名分支。
+            dequeue_messages(state);
+        }
         KeyAction::Abort => match escape_action(state) {
             EscapeAction::CloseCompletion => {
                 // Cancel popup without changing input.
@@ -4539,6 +4551,36 @@ pub fn return_queue_to_editor(state: &mut AppState) -> usize {
     state.input.cursor = state.input.text.len();
     state.refresh_completion();
     count
+}
+
+/// 把排队的消息取回输入框（Pi 的 `app.message.dequeue`）。
+///
+/// Pi: `interactive-mode.ts#handleDequeue` → `restoreQueuedMessagesToEditor()`
+/// —— **不带** `{ abort: true }`。那个参数是 **Esc 中断回合**时用的
+/// （取回之后顺带 `agent.abort()`）；`app.message.dequeue` 只取回，
+/// **不**中止当前回合。
+///
+/// 语义与 Pi 逐字一致（`interactive-mode.ts#restoreQueuedMessagesToEditor`）：
+/// * **两个**队列都取（steer 在前、followUp 在后），用空行（`"\n\n"`）连接；
+/// * 接在输入框里**已有**的文字**前面**，两段里空白的部分被丢掉；
+/// * 队列取空（否则消息会被投递两次）。
+///
+/// 成功与失败都要给用户看一句话（Pi 的 `showStatus`）：nini 的对应物是
+/// 转录里的一行提示（Pi 的 `showStatus` 也是往聊天区加一行 dim 文字）
+/// **加上**状态栏——状态栏会被下一次事件覆盖，转录那一行不会。
+pub fn dequeue_messages(state: &mut AppState) -> usize {
+    let restored = return_queue_to_editor(state);
+    let message = if restored == 0 {
+        "No queued messages to restore".to_string()
+    } else {
+        format!(
+            "Restored {restored} queued message{} to editor",
+            if restored > 1 { "s" } else { "" }
+        )
+    };
+    state.push_notice(message.clone());
+    state.run_state.status = message;
+    restored
 }
 
 /// The one cache of user keybinding overrides.

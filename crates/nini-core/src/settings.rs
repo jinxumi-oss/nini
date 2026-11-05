@@ -407,8 +407,177 @@ pub struct ProviderConfig {
     /// and the missing item, nothing else.
     #[serde(default)]
     pub name: Option<String>,
+    /// Extra HTTP headers every request of this provider carries.
+    ///
+    /// Pi: `ProviderConfigSchema.headers?` — `Record<string, string>`
+    /// (`model-config.js:177`).
+    ///
+    /// Why nini needs it: a gateway that authenticates by a custom
+    /// header (`X-Api-Key`, `HTTP-Referer`, …) had no way to say so —
+    /// the key went out as `Authorization: Bearer`, and the gateway
+    /// answered 401. Not supporting it means such a provider is
+    /// **unreachable**, not merely inconvenient.
+    ///
+    /// **Known difference**: Pi resolves the header **values** as
+    /// configuration values (`resolveHeadersOrThrow`,
+    /// `provider-composer.js:311`), so `"$VAR"` and `"!cmd"` work there.
+    /// nini takes the values **literally** this round — nini does not run
+    /// a `!command` from a configuration file (the same rule the base URL
+    /// follows).
+    ///
+    /// Pi's spelling is `headers` — the same word, no alias needed.
+    #[serde(default)]
+    pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// The header the API key travels in.
+    ///
+    /// Pi: `ProviderConfigSchema.authHeader?` (`model-config.js:180`).
+    /// Pi's schema types it as a **boolean** (`Type.Boolean()`), and
+    /// `true` means "put the key in the `Authorization` header"
+    /// (`provider-composer.js:170-177`, `withConfiguredAuth` — with
+    /// the `Bearer ` prefix).
+    ///
+    /// nini reads **both** forms of the value:
+    ///
+    ///   * `true` / `false` → Pi's own form. nini's OpenAI dialects
+    ///     already put the key in `Authorization: Bearer <key>`, so
+    ///     Pi's `true` is what nini already does and the field changes
+    ///     nothing there;
+    ///   * a string → the header is **that name** (nini's own
+    ///     extension: it is what makes a provider that wants the key in
+    ///     `X-Api-Key` usable).
+    ///
+    /// A boolean is accepted because Pi's own files use it: a
+    /// `serde` that only understood the string form would drop the
+    /// **whole** `models.json` on a file Pi reads perfectly well.
+    ///
+    /// **Known difference**: Pi's `true` sends `Authorization: Bearer
+    /// <key>` on *every* dialect, while nini's Anthropic dialect keeps
+    /// its own `x-api-key`. nini's auth-header override sends a **bare**
+    /// value (no `Bearer ` prefix — Azure's `api-key` and Google's
+    /// `x-goog-api-key` are bare values), so Pi's exact
+    /// `Authorization: Bearer` form is not expressible; write
+    /// `"authHeader": "X-Api-Key"` to name a header of your own.
+    ///
+    /// The field name is nini's snake_case; `authHeader` is Pi's
+    /// spelling and is accepted as an alias.
+    #[serde(
+        default,
+        alias = "authHeader",
+        deserialize_with = "deserialize_auth_header"
+    )]
+    pub auth_header: Option<String>,
+    /// The wire-dialect switches of this provider.
+    ///
+    /// Pi: `ProviderConfigSchema.compat?` (`model-config.js:178`).
+    /// Pi's `compat` is a **union of three** schemas (OpenAI
+    /// completions / OpenAI responses / Anthropic messages,
+    /// `model-config.js:71-119`) with three dozen fields; nini reads
+    /// only the two that nini's own `OpenAiCompat` has — see
+    /// [`ProviderCompat`].
+    ///
+    /// Without it a user cannot say "this endpoint wants `max_tokens`,
+    /// not `max_completion_tokens`", and every request fails at the
+    /// server.
+    #[serde(default)]
+    pub compat: Option<ProviderCompat>,
     #[serde(default)]
     pub models: Vec<ModelConfig>,
+}
+
+/// Pi's `compat` object, as far as nini understands it.
+///
+/// Pi's `compat` is the union of three dialect schemas
+/// (`model-config.js:71-119`). nini implements **one** dialect
+/// descriptor — `nini_ai::openai::OpenAiCompat` — with **two**
+/// switches, and those two are exactly the two Pi's
+/// `OpenAICompletionsCompatSchema` has that nini also has:
+///
+///   * `maxTokensField` — `"max_completion_tokens"` (OpenAI's own) or
+///     `"max_tokens"` (the OpenAI-compatible ecosystem's);
+///   * `supportsStore` — whether `store: false` may be sent at all.
+///
+/// **What is not supported yet** (the fields are read and then
+/// ignored — the file still parses, the switch simply has no effect):
+///
+///   * the rest of `OpenAICompletionsCompatSchema`
+///     (`supportsDeveloperRole`, `supportsReasoningEffort`,
+///     `thinkingFormat`, `requiresToolResultName`, …): nini has no
+///     counterpart for them, so there is nothing to wire them to;
+///   * `OpenAIResponsesCompatSchema` and
+///     `AnthropicMessagesCompatSchema` — the two other dialects' compat
+///     objects. nini's `openai-responses` / `anthropic-messages`
+///     providers have no compat descriptor at all.
+///
+/// Unknown fields are **ignored** (serde is in lenient mode here, and
+/// that is deliberate: a file with a compat key nini does not know must
+/// not take the whole provider down with it).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ProviderCompat {
+    /// Which field carries the output-token budget.
+    ///
+    /// Pi: `OpenAICompletionsCompatSchema.maxTokensField?` —
+    /// `"max_completion_tokens"` or `"max_tokens"`
+    /// (`model-config.js:88`). Pi's spelling is camelCase; the
+    /// snake_case field name is nini's, and the camelCase spelling is
+    /// accepted as an alias.
+    ///
+    /// Not supported: any other value. Pi's schema admits exactly two
+    /// literals; nini ignores a third one rather than guessing.
+    #[serde(default, alias = "maxTokensField")]
+    pub max_tokens_field: Option<String>,
+    /// Whether `store: false` may be sent.
+    ///
+    /// Pi: `OpenAICompletionsCompatSchema.supportsStore?`
+    /// (`model-config.js:80`). A non-standard OpenAI-compatible
+    /// endpoint may reject the field outright, and the user's only way
+    /// to say so is this switch.
+    ///
+    /// Pi's spelling is camelCase; the snake_case field name is nini's,
+    /// and the camelCase spelling is accepted as an alias.
+    #[serde(default, alias = "supportsStore")]
+    pub supports_store: Option<bool>,
+}
+
+/// Read Pi's `authHeader`, which is a boolean in Pi and may also be a
+/// header name in nini.
+///
+/// Pi types it as `Type.Optional(Type.Boolean())`
+/// (`model-config.js:180`) and `true` means "the key goes in the
+/// `Authorization` header" (`provider-composer.js:170-177`). nini
+/// additionally accepts a string, naming the header explicitly.
+///
+/// Why a custom deserializer and not a plain `Option<String>`: a
+/// `"authHeader": true` in a file Pi reads perfectly well would fail a
+/// plain `String` deserializer, and **one bad value drops the whole
+/// file** — the provider, its base URL, its credential, all of it.
+fn deserialize_auth_header<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum AuthHeader {
+        /// nini's own form: the name of the header.
+        Name(String),
+        /// Pi's form: a flag.
+        Flag(bool),
+    }
+
+    match Option::<AuthHeader>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(AuthHeader::Name(name)) => Ok(Some(name)),
+        // Pi's `true` means "the key goes in the `Authorization` header"
+        // (`withConfiguredAuth`, `provider-composer.js:173-176`). nini's
+        // OpenAI dialects already do exactly that (`Authorization: Bearer
+        // <key>`), so it is a no-op there — and nini's auth-header
+        // override sends a **bare** value, which is not Pi's `Bearer `
+        // form, so it is not expressible for the Anthropic dialect
+        // either. Keeping the provider's own header is the closest
+        // thing nini can do.
+        Some(AuthHeader::Flag(true)) => Ok(None),
+        // `false` is Pi's "no, keep the provider's own header".
+        Some(AuthHeader::Flag(false)) => Ok(None),
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -434,6 +603,45 @@ pub struct ModelConfig {
     /// Input modalities ("text", "image").
     #[serde(default)]
     pub input: Option<Vec<String>>,
+    /// The model's display name.
+    ///
+    /// Pi: `ModelDefinitionSchema.name?` (`model-config.js:141`). Pi
+    /// falls back to the model id when it is absent
+    /// (`provider-composer.js:70`, `name: definition.name ?? definition.id`).
+    ///
+    /// Why nini needs it: the model list is what the user reads to
+    /// choose a model, and a catalogue of bare ids (`gpt-4o-2024-08-06`)
+    /// is not that.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The base URL **this model** talks to.
+    ///
+    /// Pi: `ModelDefinitionSchema.baseUrl?` (`model-config.js:143`).
+    /// Pi reads it as written — never as a configuration value, never
+    /// run as a command (`provider-composer.js:65`).
+    ///
+    /// Why nini needs it: one provider, several endpoints (a gateway
+    /// that routes different models to different hosts). Without it,
+    /// every model of the provider goes to the provider's own base URL
+    /// and the ones with a special route are unreachable.
+    ///
+    /// Pi's spelling is `baseUrl`; the snake_case field name is nini's,
+    /// and the camelCase spelling is accepted as an alias.
+    #[serde(default, alias = "baseUrl")]
+    pub base_url: Option<String>,
+    /// Extra HTTP headers **this model's** requests carry.
+    ///
+    /// Pi: `ModelDefinitionSchema.headers?` (`model-config.js:154`).
+    /// Pi merges them **over** the provider-level headers
+    /// (`rawModelHeaders`, `provider-composer.js:319-327`).
+    ///
+    /// Why nini needs it: the same "gateway authenticates by a custom
+    /// header" case, but per model — and the per-model value is the
+    /// one that must win when both declare the same header name.
+    ///
+    /// Pi's spelling is `headers` — the same word, no alias needed.
+    #[serde(default)]
+    pub headers: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[cfg(test)]

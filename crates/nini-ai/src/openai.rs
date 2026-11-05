@@ -43,6 +43,8 @@ pub struct OpenAiProvider {
     /// v0.10 (R2b): per-endpoint wire differences. OpenAI's own
     /// defaults; a compatible provider overrides them.
     pub compat: OpenAiCompat,
+    /// provider 级 / model 级请求头与认证头配置。
+    overrides: crate::provider_overrides::HeaderOverrides,
 }
 
 impl OpenAiProvider {
@@ -56,6 +58,7 @@ impl OpenAiProvider {
             base_url: DEFAULT_BASE_URL.to_string(),
             api_key: api_key.into(),
             compat: OpenAiCompat::default(),
+            overrides: crate::provider_overrides::HeaderOverrides::default(),
         }
     }
 
@@ -77,6 +80,33 @@ impl OpenAiProvider {
     /// Override the HTTP client.
     pub fn with_client(mut self, client: Client) -> Self {
         self.client = client;
+        self
+    }
+
+    /// 附加到**每个**请求上的自定义请求头。
+    ///
+    /// 多次调用会追加。应用顺序：provider 默认头 → provider 级自定义头
+    /// → model 级自定义头，同名头以后写的为准。
+    pub fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.overrides.headers.extend(headers);
+        self
+    }
+
+    /// 覆盖认证头的名字。默认是 `Authorization: Bearer <key>`；
+    /// 设成 `auth_header("api-key")` 后变成 `api-key: <key>`
+    /// （**不带 Bearer 前缀**——Azure 的 `api-key`、Google 的
+    /// `x-goog-api-key` 都是裸值）。
+    pub fn with_auth_header(mut self, name: &'static str) -> Self {
+        self.overrides.auth_header = Some(name);
+        self
+    }
+
+    /// 按模型名的覆盖表（键是 `req.model` 的原样值）。
+    pub fn with_model_overrides(
+        mut self,
+        map: std::collections::BTreeMap<String, crate::provider_overrides::ModelOverride>,
+    ) -> Self {
+        self.overrides.model_overrides = map;
         self
     }
 }
@@ -102,14 +132,30 @@ impl Provider for OpenAiProvider {
         // `Copy`, captured by value like the strings above: borrowing
         // `self.compat` inside the stream would pin the borrow for 'static.
         let compat = self.compat;
+        // 同理：stream 是 `'static` 的，新增的覆盖配置也要 clone 出来
+        // 再捕获，不能借用 `self`。
+        let overrides = self.overrides.clone();
 
         Box::pin(try_stream! {
             let body = build_request_body_for(&req, compat)?;
-            let url = crate::api_url::chat_completions_url(&base_url);
-            let mut response = client
-                .post(&url)
-                .bearer_auth(&api_key)
-                .header("content-type", "application/json")
+            // model 级 base URL 覆盖 provider 自己的。
+            let base = match overrides.base_url_for(&req.model) {
+                Some(b) => b.to_string(),
+                None => base_url.clone(),
+            };
+            let url = crate::api_url::chat_completions_url(&base);
+            // 认证头：默认 `Authorization: Bearer <key>`；设了名字就用那个
+            // 名字发裸值。
+            let auth = match overrides.auth_header {
+                Some(name) => (name.to_string(), api_key.clone()),
+                None => ("Authorization".to_string(), format!("Bearer {api_key}")),
+            };
+            let defaults = vec![
+                auth,
+                ("content-type".to_string(), "application/json".to_string()),
+            ];
+            let headers = overrides.resolve(&req.model, &defaults);
+            let mut response = crate::provider_overrides::apply_headers(client.post(&url), &headers)
                 .body(body)
                 .send()
                 .await?;

@@ -46,6 +46,9 @@ pub mod provider_registry;
 /// OpenAI Responses API provider.
 pub mod openai_responses;
 
+/// provider 级 / model 级的请求头与认证头配置。
+pub mod provider_overrides;
+
 /// Generic OpenAI-compat preset (any `/v1/chat/completions` endpoint).
 pub mod openai_compat;
 

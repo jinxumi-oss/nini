@@ -274,6 +274,12 @@ pub fn parse_action(name: &str) -> Option<KeyAction> {
         "ClearInput" => ClearInput,
         "ScrollUp" => ScrollUp,
         "ScrollDown" => ScrollDown,
+        // v0.17 (R14)：R14 新增的三个动作。不登记它们的后果很具体：
+        // `keybindings.json` 里写 `"action": "DequeueMessages"` 会被**静默
+        // 忽略**（`parse_action` 返回 None），用户以为改绑了，其实没有。
+        "CopyLastAssistant" => CopyLastAssistant,
+        "Suspend" => Suspend,
+        "DequeueMessages" => DequeueMessages,
         "Noop" => Noop,
         _ => return None,
     })
@@ -371,6 +377,23 @@ mod tests {
     fn parse_action_known() {
         assert!(matches!(parse_action("Quit"), Some(KeyAction::Quit)));
         assert!(matches!(parse_action("Submit"), Some(KeyAction::Submit)));
+    }
+
+    /// v0.17 (R14)：R14 新增的三个动作必须能被 `keybindings.json` 认出来。
+    ///
+    /// 不认的后果不是「报错」而是**静默忽略**——用户改了绑键，重启后行为
+    /// 一点没变，而没有任何东西会告诉他。
+    #[test]
+    fn the_r14_actions_can_be_rebound() {
+        assert!(matches!(
+            parse_action("CopyLastAssistant"),
+            Some(KeyAction::CopyLastAssistant)
+        ));
+        assert!(matches!(parse_action("Suspend"), Some(KeyAction::Suspend)));
+        assert!(matches!(
+            parse_action("DequeueMessages"),
+            Some(KeyAction::DequeueMessages)
+        ));
     }
 
     #[test]

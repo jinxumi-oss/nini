@@ -619,7 +619,7 @@ D5 一条**，它的判据明写「在此之前本条保持 open」。
 | 本文件 | **active**：功能面 parity 的唯一执行细则（v3） |
 | `plans/input_interrupt_parity.md` | 本文件 W1 的展开；§8.8 状态字段已按实际修正（C2） |
 | `plans/v0.10-pi-parity-refactor.md` | R1–R8 历史路线，**只读** |
-| `plans/r2a-compaction-persistence.md` | W1/A2 的前置依赖 |
+| `plans/r2a-compaction-persistence.md` | **shipped**（2026-11-05 复核）：A1–A4 与 §0 的 P0.1/P0.2 全部交付；它曾长期被标成 `active/blocked`，而阻塞它的两个 P0 早已被修掉——计划文档的 status 字段不会自己更新，其读者会拿它当事实 |
 | `plans/owner-decision-packs.md` | **active**：R5/R10/R11/R12/R13/R14 的一页纸决策材料（只提供事实与选项，不替 owner 决定） |
 | `plans/v0.6*`–`v0.9.2*`、`tui-*.md` | frozen，不再追加 |
 

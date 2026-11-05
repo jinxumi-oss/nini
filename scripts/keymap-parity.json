@@ -96,6 +96,9 @@
     "FollowUp": [
       "followup"
     ],
+    "DequeueMessages": [
+      "dequeue"
+    ],
     "Abort": [
       "interrupt",
       "select-cancel",
@@ -483,10 +486,10 @@
     },
     {
       "pi": "app.message.dequeue",
-      "nini": null,
-      "keys": "n/a",
+      "nini": "DequeueMessages",
+      "keys": "same",
       "class": "dequeue",
-      "note": "nini 没有「把排队的消息取回编辑器」的键"
+      "note": "键与 Pi 相同（Alt+Up；Pi 的 Windows 键位是 Alt+Q）。语义与 Pi 的 restoreQueuedMessagesToEditor 一致：两个队列（steer 在前、followUp 在后）一起取回、用空行连接、接在输入框原有文字的前面、队列清空。差别：Pi 的 handleDequeue 走 showStatus（聊天区一行 dim 文字），nini 走状态栏 + 转录一行提示；Pi 的 restoreQueuedMessagesToEditor({abort:true}) 是 Esc 中断回合用的那条，nini 的 DequeueMessages 不中止回合（对应 Pi 不带 abort 的那一支）"
     },
     {
       "pi": "app.clipboard.pasteImage",

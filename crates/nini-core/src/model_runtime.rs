@@ -303,9 +303,10 @@ pub fn user_model_specs(cfg: &crate::settings::ModelsJson) -> Vec<ModelSpec> {
             }
             out.push(ModelSpec {
                 id: full.clone(),
-                // Pi shows the model's own name; a `models.json` entry
-                // carries none, so the id is the honest label.
-                name: full.clone(),
+                // Pi shows the model's own name. A `models.json` entry may
+                // now carry one (`ModelConfig::name`); when it does, that
+                // is the label — otherwise the id is the honest one.
+                name: m.name.clone().unwrap_or_else(|| full.clone()),
                 // The provider's declared wire format. It is carried for
                 // display only — nothing in nini branches on it.
                 api: pc

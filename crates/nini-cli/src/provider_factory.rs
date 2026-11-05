@@ -20,7 +20,10 @@ use nini_ai::provider_registry::{
 };
 use nini_core::config_value::resolve_config_value_detailed;
 use nini_core::provider::{Provider, Usage};
-use nini_core::settings::{ModelsJson, ProviderConfig};
+use nini_core::settings::{ModelsJson, ProviderCompat, ProviderConfig};
+
+use nini_ai::openai::{MaxTokensField, OpenAiCompat};
+use nini_ai::provider_overrides::ModelOverride;
 
 /// A provider that the user's own `models.json` declares but does not
 /// configure completely.
@@ -267,6 +270,23 @@ struct ResolvedProvider {
     api: String,
     base_url: String,
     api_key: String,
+    /// Provider-level request headers (`headers` in `models.json`).
+    ///
+    /// Pi: `ProviderConfigSchema.headers?` (`model-config.js:177`).
+    /// Every request of this provider carries them.
+    headers: Vec<(String, String)>,
+    /// The header the API key travels in (`authHeader` in `models.json`).
+    ///
+    /// `None` = the provider's own default (`Authorization: Bearer` for the
+    /// OpenAI dialects, `x-api-key` for Anthropic).
+    auth_header: Option<&'static str>,
+    /// Per-model overrides, keyed by the model id (`models[]` in
+    /// `models.json`).
+    ///
+    /// Pi resolves the override by the model id
+    /// (`rawModelHeaders`, `provider-composer.js:319-327`), so the key is
+    /// `req.model` verbatim.
+    model_overrides: std::collections::BTreeMap<String, ModelOverride>,
 }
 
 /// Look up what nini knows about a provider it ships with.
@@ -285,15 +305,166 @@ fn first_model_id(config: &ProviderConfig) -> Option<&str> {
     config.models.iter().find_map(|model| model.id.as_deref())
 }
 
+/// 这个 provider 的**缺省 api**（`models.json` 省略 `api` 时用）。
+///
+/// Pi 的口径：命中内置 provider 时 api **有缺省值**（来自 Pi 的内置目录）
+/// —— `provider-composer.js:52` 读的就是那一行 `defaults?.api`；只有
+/// **自定义** provider 才必须写 `api`。
+///
+/// nini 的查表顺序：
+///
+///   1. nini 自己的 9 个原生实现 —— 用 `BUILTINS` 里的方言；
+///   2. Pi 的 28 个薄壳 —— 用 `provider_registry` 表里的方言；
+///   3. 其它（用户自己起的名字）—— **没有**缺省，必须写 `"api"`。
+///
+/// 1 与 2 不能互换：注册表里 `openai` 的方言是 `openai-responses`，而 nini 的
+/// `openai` 说的是 `openai-completions`（`BUILTINS` 的口径，也是
+/// `provider_factory.rs` 里 `openai` 分支实际用的那个实现）。
+fn default_api_of(id: &str) -> Option<&'static str> {
+    if let Some(builtin) = builtin_of(id) {
+        return Some(builtin.api);
+    }
+    thin_shell_entry_of(id).map(|entry| entry.api)
+}
+
+/// A thin shell's registry entry — one of Pi's provider names whose
+/// protocol nini already implements (the table in
+/// `nini_ai::provider_registry`).
+fn thin_shell_entry_of(id: &str) -> Option<&'static ProviderEntry> {
+    provider_registry::find(id).filter(|entry| provider_registry::is_thin_shell(entry.id))
+}
+
+/// provider 级请求头（`models.json` 的 `headers`）。
+///
+/// 值**照抄**，不解析成配置值：Pi 用 `resolveHeadersOrThrow` 解析
+/// （`provider-composer.js:311`），本轮 nini 不做——`!command` 在 nini 的
+/// 其它地方（base URL）被明确拒绝执行，头值也不该例外。
+///
+/// **已知差异**（记在案）：Pi 的头值支持 `$VAR` / `!cmd`，nini 把它们当
+/// 普通字符串发出去。
+fn provider_headers_of(config: &ProviderConfig) -> Vec<(String, String)> {
+    config
+        .headers
+        .iter()
+        .flatten()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+/// model 级覆盖表：按 `models[].id` 组装。
+///
+/// Pi 的 model 级头与 base URL 是**按模型 id** 查表的
+/// （`rawModelHeaders`，`provider-composer.js:319-327`；model 级的
+/// `baseUrl` 走 `modelFromJson`，`provider-composer.js:65`），所以这里的键
+/// 就是模型 id 本身（也就是 `req.model` 的原样值）。
+fn model_overrides_of(
+    config: &ProviderConfig,
+) -> std::collections::BTreeMap<String, ModelOverride> {
+    let mut map = std::collections::BTreeMap::new();
+    for model in &config.models {
+        let Some(id) = model
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let mut entry = ModelOverride::default();
+        if let Some(headers) = &model.headers {
+            entry.headers = headers
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+        }
+        if let Some(base_url) = model
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            entry.base_url = Some(base_url.to_string());
+        }
+        map.insert(id.to_string(), entry);
+    }
+    map
+}
+
+/// 把 `models.json` 的 `authHeader` 变成 provider builder 要的 `&'static str`。
+///
+/// provider 侧的覆盖表（`nini_ai::provider_overrides::HeaderOverrides`）存的是
+/// `&'static str`，而头名是运行时从 JSON 读出来的。这里**泄漏**一次：一个
+/// 进程里构造不了几个 provider，每个泄漏几十字节，换来的是不必在 provider
+/// 侧再复制一份所有权。
+fn leak_header_name(name: &str) -> &'static str {
+    Box::leak(name.to_string().into_boxed_str())
+}
+
+/// 这个 provider 的 wire 方言差异。
+///
+/// 顺序：
+///
+///   1. **推导**（`detect_compat`：按 provider 名 + base URL 判断）——
+///      薄壳必须走这一步（Together / DeepSeek / Z.ai …）；
+///   2. **用户写的**（`models.json` 的 `compat`）叠在上面。
+///
+/// 第 2 步只认 nini 建模了的两个开关（`maxTokensField` /
+/// `supportsStore`）；`compat` 里的其余字段读进来了，但没有对应物，忽略
+/// （见 `nini_core::settings::ProviderCompat` 的说明）。
+///
+/// **只对 `openai-completions` 有意义**：Pi 的 `compat` 是三个方言的并集，
+/// 而 nini 只有 OpenAI Chat Completions 这一套方言描述符
+/// （`nini_ai::openai::OpenAiCompat`）。
+fn compat_for(id: &str, base_url: &str, compat: Option<&ProviderCompat>) -> OpenAiCompat {
+    let base = if provider_registry::is_thin_shell(id) {
+        nini_ai::openai_compat::detect_compat(id, base_url)
+    } else {
+        OpenAiCompat::default()
+    };
+    let Some(compat) = compat else {
+        return base;
+    };
+    let mut out = base;
+    match compat.max_tokens_field.as_deref() {
+        Some("max_tokens") => out.max_tokens_field = MaxTokensField::MaxTokens,
+        Some("max_completion_tokens") => out.max_tokens_field = MaxTokensField::MaxCompletionTokens,
+        // Pi's schema admits exactly these two literals
+        // (`model-config.js:88`); anything else is not a switch nini knows.
+        _ => {}
+    }
+    if let Some(supports_store) = compat.supports_store {
+        out.supports_store = supports_store;
+    }
+    out
+}
+
 /// Resolve the endpoint a `models.json` entry names.
 ///
 /// The chain, in order:
 ///
-///   * **api**: the file's `api`, else the built-in's api, else
+///   * **api**: the file's `api`, else the built-in's api (nini's own
+///     nine natives, then Pi's twenty-eight thin shells), else
 ///     `no "api" specified`;
 ///   * **base URL**: the file's `baseUrl`, else the `*_BASE_URL`
 ///     variable the built-in branch reads, else the built-in's default
 ///     host, else `"baseUrl" is required`.
+///
+/// **The api default (D5, Pi's rule).** Pi fills the api in from its
+/// own catalogue when the provider is a known one
+/// (`provider-composer.js:52`, `defaults?.api`); only a **custom**
+/// provider has to spell it out. nini does the same: an entry that
+/// omits `api` and names a provider nini knows builds with that
+/// provider's api. An entry that omits `api` and names a provider nini
+/// does **not** know is refused, with a sentence that says the `api`
+/// must be written — never a guess.
+///
+/// **The base URL order for a thin shell**: the file's `baseUrl` beats
+/// the `{ID}_BASE_URL` environment variable, which beats the
+/// registry's default host. The file is the most specific statement of
+/// the three (it names one provider, in one file, on this machine), the
+/// environment variable is next (it is the existing way to point nini
+/// at a gateway), and the registry's default is the last resort (it is
+/// Pi's own default host, and for a few providers there is none).
 ///
 /// The base URL is taken **literally**. Pi resolves configuration
 /// values only for credentials and headers (`provider-composer.js:241`
@@ -316,15 +487,17 @@ fn resolve_endpoint(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| builtin.map(|b| b.api.to_string()))
+        .or_else(|| default_api_of(id).map(str::to_string))
         .ok_or_else(|| ModelsJsonProviderError {
             cause: None,
             detail: match first_model_id(config) {
                 Some(model) => format!(
-                    "Provider {id}, model {model}: no \"api\" specified. Set at provider or model level."
+                    "Provider {id}, model {model}: no \"api\" specified. Set at provider or model level. \
+                     nini has no built-in default api for {id}, so \"api\" must be set."
                 ),
                 None => format!(
-                    "Provider {id}: no \"api\" specified. Set at provider or model level."
+                    "Provider {id}: no \"api\" specified. Set at provider or model level. \
+                     nini has no built-in default api for {id}, so \"api\" must be set."
                 ),
             },
         })?;
@@ -360,14 +533,40 @@ fn resolve_endpoint(
                     },
                 }
             }
-            None => {
-                return Err(ModelsJsonProviderError {
-                    cause: None,
-                    detail: format!(
-                        "Provider {id}: \"baseUrl\" is required when defining custom models."
-                    ),
-                })
-            }
+            None => match thin_shell_entry_of(id) {
+                // A thin shell (one of Pi's provider names nini speaks
+                // natively) declared in `models.json`: the file's
+                // `baseUrl` has already been ruled out above, so the
+                // environment variable and the registry's default host
+                // are what is left.
+                Some(entry) => {
+                    let var = base_url_env_var(entry.id);
+                    let from_env = std::env::var(&var)
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    match from_env.or_else(|| entry.base_url.map(str::to_string)) {
+                        Some(base) => base,
+                        None => {
+                            return Err(ModelsJsonProviderError {
+                                cause: None,
+                                detail: format!(
+                                    "Provider {id}: \"baseUrl\" is required when defining custom models. \
+                                     Set {var}=<url> or write \"baseUrl\" in your models.json."
+                                ),
+                            })
+                        }
+                    }
+                }
+                None => {
+                    return Err(ModelsJsonProviderError {
+                        cause: None,
+                        detail: format!(
+                            "Provider {id}: \"baseUrl\" is required when defining custom models."
+                        ),
+                    })
+                }
+            },
         },
     };
 
@@ -381,6 +580,14 @@ fn resolve_endpoint(
 /// `!cmd` mean what they mean in Pi — then the environment variable the
 /// built-in provider reads, and finally Pi's
 /// `No API key found for`.
+///
+/// **Pi's order has one step more** (`provider-composer.js:225-243`):
+/// a **stored credential** first, then the file's `apiKey`, then the
+/// built-in provider's environment variable. nini has **no credential
+/// store** (R4's decision: nini does not keep credentials), so the
+/// first step does not exist here and the order is
+/// `--api-key` → the file's `apiKey` → the built-in's environment
+/// variable.
 ///
 /// A credential that is **configured but unreadable** is an error, not a
 /// fallback: Pi resolves it with `resolveConfigValueOrThrow`
@@ -492,6 +699,14 @@ fn resolve_models_json_provider(
         api,
         base_url,
         api_key,
+        headers: provider_headers_of(config),
+        auth_header: config
+            .auth_header
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(leak_header_name),
+        model_overrides: model_overrides_of(config),
     })
 }
 
@@ -522,6 +737,11 @@ pub(crate) fn models_json_warnings(models: &ModelsJson) -> Vec<String> {
 ///
 /// The `api` decides which implementation speaks to it. nini implements
 /// three of Pi's apis; the rest are reported the way Pi reports them.
+///
+/// The provider-level and per-model settings from the file are attached
+/// here (`headers`, `authHeader`, `compat`, and the per-model `headers`
+/// / `baseUrl`), because this is the one place where the file's entry
+/// and the provider object meet.
 fn build_models_json_provider(
     id: &str,
     config: &ProviderConfig,
@@ -531,28 +751,44 @@ fn build_models_json_provider(
     match resolved.api.as_str() {
         "openai-completions" => {
             // R5: 薄壳在 `models.json` 里也按同一套 wire 差异走（Pi 的
-            // `detectCompat` 判定的是 provider 名 + base URL，两处都一样）。
-            let compat = if provider_registry::is_thin_shell(id) {
-                nini_ai::openai_compat::detect_compat(id, &resolved.base_url)
-            } else {
-                nini_ai::openai::OpenAiCompat::default()
-            };
-            Ok(Arc::new(
-                nini_ai::openai_compat::OpenAiCompatProvider::new(
-                    resolved.base_url,
-                    resolved.api_key,
-                )
-                .with_compat(compat),
-            ))
+            // `detectCompat` 判定的是 provider 名 + base URL，两处都一样），
+            // 而用户在文件里写的 `compat` 叠在上面。
+            let compat = compat_for(id, &resolved.base_url, config.compat.as_ref());
+            // `nini_ai::openai_compat::OpenAiCompatProvider` 只是
+            // `OpenAiProvider` 的一层壳（`openai_compat.rs:10-21`），而三个
+            // 覆盖 builder（`with_headers` / `with_auth_header` /
+            // `with_model_overrides`）长在内层那个上，所以这里直接用内层。
+            let mut provider = nini_ai::openai::OpenAiProvider::new(resolved.api_key)
+                .with_base_url(resolved.base_url)
+                .with_compat(compat)
+                .with_headers(resolved.headers)
+                .with_model_overrides(resolved.model_overrides);
+            if let Some(name) = resolved.auth_header {
+                provider = provider.with_auth_header(name);
+            }
+            Ok(Arc::new(provider))
         }
-        "anthropic-messages" => Ok(Arc::new(
-            nini_ai::anthropic::AnthropicProvider::new(resolved.api_key)
-                .with_base_url(resolved.base_url),
-        )),
-        "openai-responses" => Ok(Arc::new(
-            nini_ai::openai_responses::OpenAiResponsesProvider::new(resolved.api_key)
-                .with_base_url(resolved.base_url),
-        )),
+        "anthropic-messages" => {
+            let mut provider = nini_ai::anthropic::AnthropicProvider::new(resolved.api_key)
+                .with_base_url(resolved.base_url)
+                .with_headers(resolved.headers)
+                .with_model_overrides(resolved.model_overrides);
+            if let Some(name) = resolved.auth_header {
+                provider = provider.with_auth_header(name);
+            }
+            Ok(Arc::new(provider))
+        }
+        "openai-responses" => {
+            let mut provider =
+                nini_ai::openai_responses::OpenAiResponsesProvider::new(resolved.api_key)
+                    .with_base_url(resolved.base_url)
+                    .with_headers(resolved.headers)
+                    .with_model_overrides(resolved.model_overrides);
+            if let Some(name) = resolved.auth_header {
+                provider = provider.with_auth_header(name);
+            }
+            Ok(Arc::new(provider))
+        }
         other => Err(ModelsJsonProviderError {
             cause: None,
             detail: format!("No API provider registered for api: {other}"),

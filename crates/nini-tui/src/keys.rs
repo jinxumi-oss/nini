@@ -154,6 +154,16 @@ pub enum KeyAction {
     /// 进 **followUp** 队列，等这一轮结束再做；而 Enter 进 **steer** 队列，
     /// 插进当前这一轮（`interactive-mode.ts#setupEditorSubmitHandler`）。
     FollowUp,
+    /// 把排队的消息取回输入框（Pi 的 `app.message.dequeue`）。
+    ///
+    /// Pi: `interactive-mode.ts#handleDequeue` → `restoreQueuedMessagesToEditor`
+    /// —— **两个**队列（steer + followUp）一起取回，顺序是 steer 在前、
+    /// followUp 在后，用空行连接；接在输入框里**已有**的文字**前面**；
+    /// 取回后队列清空（否则消息会被投递两次）。
+    ///
+    /// 默认键：Alt+Up（Pi 的 `ui/keybindings.ts` 里 `app.message.dequeue`
+    /// 的默认键 `alt+up`；Windows 上是 `alt+q`）。
+    DequeueMessages,
     /// Abort / cancel current operation.
     Abort,
     /// Quit the TUI.
@@ -253,6 +263,16 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         KeyBinding {
             key: Key::enter().with_modifiers(KeyModifiers::ALT),
             action: FollowUp,
+        },
+        // Alt+Up → 把排队的消息取回输入框。Pi: `app.message.dequeue`
+        // （`ui/keybindings.ts:138`，默认键 `alt+up`，Windows 上是 `alt+q`）。
+        //
+        // nini 此前**没有**这个入口：排队的消息只能等它被投递，用户改主意时
+        // 取不回来。这个键与 nini 现有的键不冲突（Alt+Enter 是 followUp，
+        // Alt+d / Alt+y 是 kill/yank-pop，Alt+Up 此前空着）。
+        KeyBinding {
+            key: Key::new(KeyCode::Up, KeyModifiers::ALT),
+            action: DequeueMessages,
         },
         // Abort / quit
         KeyBinding {

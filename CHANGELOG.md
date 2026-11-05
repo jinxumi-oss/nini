@@ -1,6 +1,6 @@
 ## Unreleased — TUI 的键位/浮层 oracle + provider 层的四个真缺陷：错误体被丢弃、HTTP 400 不压缩重试、空 content 被序列化成空串、瞬时错误不重试；外加一次独立审查（2 Critical + 9 Warning）
 
-2043 tests, all green.
+2074 tests, all green.
 
 这一轮不是发布，是 **v0.16.0 之后的两次工作合流**：前半是 TUI 的对照 oracle
 （第 1–4 节），后半是一次**线上故障的复盘**（第 5–13 节）——用户的 provider 是
@@ -208,6 +208,70 @@ baseUrl 带 `{CLOUDFLARE_ACCOUNT_ID}` 占位符，静态表填不了 → 必须�
 **lib 目标**（`src/lib.rs`）给集成测试用，它与 bin 编的是**同一份**
 `provider_factory.rs` —— 所以 `[lib] test = false` 是必须的：不关掉，那 27 条
 单测会被**数两遍**，而 README 的徽章与实测是**精确相等**的关系。
+
+### 4d. 声明的东西要真的生效：provider/model 级配置的承载点（D5）+ 取回排队消息
+
+**这一轮处理两件事**：把「用户声明了但被 serde 丢掉」的东西接上，以及把 nini 少的一个
+键位补上。**先说一个决定载体形状的实测**：`nini_core::provider::Request` 有 **30 个构造点**、
+**没有一个**用 `..Default::default()`，其中 20 个在 oracle/测试文件里——给 `Request` 加字段会
+**打破 20 个 oracle 的构造点**，而项目的纪律是「oracle 只能引用修复前后都存在的 API」。
+**所以载体必须落在 provider 构造上，不能落在请求上。**
+
+# 一、D5 的可实施部分：provider/model 级配置
+
+| 字段 | Pi 的拼写 | 载体 |
+|---|---|---|
+| provider 级 `headers` | `headers` | `crates/nini-ai/src/provider_overrides.rs` 的 `HeaderOverrides` |
+| provider 级 `authHeader` | `authHeader` | 同上（覆盖认证头的名字，发**裸值**） |
+| provider 级 `compat` | `compat` | `crates/nini-core/src/settings.rs` 的 `ProviderCompat` |
+| model 级 `name` / `baseUrl` / `headers` | `name` / `baseUrl` / `headers` | `ModelOverride`（按 `models[].id` 组表） |
+
+三个 provider（openai / anthropic / openai_responses）各加 `with_headers` /
+`with_auth_header` / `with_model_overrides` 三个 builder，**语义由同一份代码保证**
+（`HeaderOverrides::resolve`），不是三份实现各自对齐。
+
+**合并顺序照 Pi**（`provider-composer.js:162-169` 的 `{...auth.headers, ...headers}`）：
+provider 默认头 → provider 级自定义头 → model 级自定义头，同名（大小写不敏感）后者覆盖前者。
+
+**两个 Pi 的细节被接住了**：
+
+* Pi 的 `authHeader` 在 schema 里是**布尔**（`authHeader: true` = `Authorization: Bearer`），
+  只认字符串会让那种文件**整个被丢掉**。所以反序列化器两种形态都收：`true/false` 保持
+  provider 自己的头，字符串则是头名。
+* `models.json` **省略 `api`** 时的缺省值，现在按 Pi 的口径：命中 nini 的 9 个原生实现或
+  Pi 的 28 个薄壳就用表里的方言；**自定义名字显式拒绝**并点名「必须写 `api`」。
+
+# 二、R14 的最后一项：把排队的消息取回编辑器（`app.message.dequeue`）
+
+nini 的 agent loop 有两个队列（`steer` 与 `followUp`），但**没有取回的入口**——用户改主意时
+取不回来。Pi 的键是 **`Alt+Up`**（Windows `Alt+Q`），nini 的 `Alt+Up` 本来空着，所以键与 Pi 一致。
+
+实现**复用**了既有的 `return_queue_to_editor`（它已经实现了 Pi 的合并语义：两个队列都取、
+steer 在前、`\n\n` 连接、排在编辑器原有文字**之前**、纯空白部分丢弃、队列清空、光标落在末尾、
+**不**中止当前回合——Pi 的 `{abort:true}` 是 Esc 那条路，不是这条）。成功与失败都给用户看，
+用的是 Pi 的原话。
+
+# 三、顺带修掉的一个**静默**坑
+
+R14 新增的三个动作（`CopyLastAssistant` / `Suspend` / `DequeueMessages`）**没登记**进
+`keybindings_manager::parse_action`。后果不是报错而是**静默忽略**：用户在
+`keybindings.json` 里写 `"action": "DequeueMessages"`，`parse_action` 返回 `None`，
+用户以为改绑了，重启后行为一点没变，而**没有任何东西会告诉他**。已登记并加了 oracle。
+
+# 四、计划文档的 status 字段曾经与事实不符（r2a）
+
+`docs/plans/r2a-compaction-persistence.md` 长期写着「A2 blocked by P0」，而它 §0 的两个 P0
+**早已被修掉**：真实 session 文件里 `parentId` 是**链式**的、`toolCall`/`toolResult` 行数实测
+27–213；`/compact` 与自动压缩都走 session 层（`session_compact` → `Session::compact` →
+`append_compaction`）；resume 的转录由 `build_context_entries` 重建。
+
+**A1–A4 全部交付**，包括 A3（阈值压缩走 session hook 而不是就地改内存；`AgentEvent::Compacted`
+被**保留**——它从「没人消费的空信号」变成了「session 层压缩的可观察契约」，被 4 个测试文件断言）。
+
+这份文档现在补了 §5，把「计划文档的 status 字段一旦写下就不会自己更新；它的读者会拿它当事实」
+写成了教训。`docs/GOALS.md` §6 与 `docs/plans/parity-with-pi.md` §8 的台账行同步订正。
+
+**测试数 2043 → 2074**（+31）。
 
 ### 5. 线上一次 400：长任务直接死掉，零信息
 

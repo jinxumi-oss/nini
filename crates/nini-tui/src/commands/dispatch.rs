@@ -1820,6 +1820,8 @@ fn cmd_hotkeys(
             Submit => "send input",
             Newline => "insert newline",
             FollowUp => "queue a follow-up message",
+            // Pi 的 `app.message.dequeue`：把排队的消息取回输入框。
+            DequeueMessages => "restore queued messages to the editor",
             Abort => "abort the run / dismiss overlay",
             Quit => "quit (press twice)",
             MoveLeft => "cursor left",

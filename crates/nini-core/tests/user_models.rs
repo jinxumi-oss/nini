@@ -113,6 +113,9 @@ fn a_catalog_model_is_overridden_not_duplicated() {
         max_tokens: None,
         reasoning: None,
         input: None,
+        name: None,
+        base_url: None,
+        headers: None,
     });
 
     // It is not a *user* model (the catalog knows it), so it is not listed
