@@ -7,7 +7,7 @@
 
 [English](README.md) | **简体中文**
 
-[![Status](https://img.shields.io/badge/status-v0.16.0-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v0.17.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-2074%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
@@ -224,7 +224,7 @@ nini 读写与 Pi v0.85.1 完全相同的文件格式：
 你可以在一个终端跑 `nini -p`、另一个终端跑 `pi`——两边写的是同一种
 session JSONL。
 
-## 已知限制（截至 v0.16.0）
+## 已知限制（截至 v0.17.0）
 
 **有意的范围决定**（owner 于 2026-11-05 拍板）——它们**不是缺陷**，也不在等待修复：
 

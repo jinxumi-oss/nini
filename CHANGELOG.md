@@ -1,12 +1,21 @@
-## Unreleased — TUI 的键位/浮层 oracle + provider 层的四个真缺陷：错误体被丢弃、HTTP 400 不压缩重试、空 content 被序列化成空串、瞬时错误不重试；外加一次独立审查（2 Critical + 9 Warning）
+## v0.17.0 — provider/model 级配置真的生效（D5）+ 取回排队消息（R14）+ 计划状态订正
 
 2074 tests, all green.
 
-这一轮不是发布，是 **v0.16.0 之后的两次工作合流**：前半是 TUI 的对照 oracle
-（第 1–4 节），后半是一次**线上故障的复盘**（第 5–13 节）——用户的 provider 是
-讯飞星辰 MaaS，跑一个长任务（`cargo test` 跑了 218 秒、上下文累积很大）之后，
-nini 报 `[error] provider error: api error (400): request failed: 400 Bad Request`
-——**零信息**，任务直接死掉。
+这一版做三件事，**都是把「说出去的比做到的多」纠回来**：
+
+1. **D5 的可实施部分：用户写在 `models.json` 里的 provider/model 级字段，此前被 serde 直接丢掉**，
+   现在真正接到请求上。载体落在 **provider 构造**上（不在 `Request` 上，理由见下）。
+2. **R14 的最后一项：把排队的消息取回编辑器**（`app.message.dequeue`，Pi 的 `Alt+Up`）。
+3. **订正一份计划的 status 字段**：`docs/plans/r2a-compaction-persistence.md` 长期写着
+   「A2 blocked by P0」，而它 §0 的两个 P0 **早已被修掉**；A1–A4 全部交付，其中 A3 的
+   `AgentEvent::Compacted` 被**保留**（它从「没人消费的空信号」变成了「session 层压缩的可观察
+   契约」，4 个测试文件断言它）——这是比原计划更好的设计。
+
+**载体为什么落在 provider 构造上，而不是请求上**：`nini_core::provider::Request` 有 **30 个构造点**、
+**没有一个**用 `..Default::default()`，其中 **20 个在 oracle/测试文件里**。给 `Request` 加字段会
+**打破 20 个 oracle 的构造点**，而项目的纪律是「oracle 只能引用修复前后都存在的 API；接口会变的
+修复，oracle 必须走签名不变的更高层入口」。所以载体落在 provider 上，`Provider` trait **一行未改**。
 
 测试数 1878 → **1997**：TUI 轮 +14，本轮主体 +73（新增测试文件
 `crates/nini-core/tests/overflow_http_400.rs`（10 条）、
@@ -19,6 +28,16 @@ nini 报 `[error] provider error: api error (400): request failed: 400 Bad Reque
 `crates/nini-ai/tests/anthropic_blank_blocks.rs`（5 条）、
 `crates/nini-ai/tests/error_body_timeout.rs`（3 条），
 外加 `agent.rs` / `overflow.rs` / `anthropic.rs` / `error_body.rs` 里的单元测试）。
+
+## Unreleased — TUI 的键位/浮层 oracle + provider 层的四个真缺陷：错误体被丢弃、HTTP 400 不压缩重试、空 content 被序列化成空串、瞬时错误不重试；外加一次独立审查（2 Critical + 9 Warning）
+
+2074 tests, all green.
+
+这一轮不是发布，是 **v0.16.0 之后的两次工作合流**：前半是 TUI 的对照 oracle
+（第 1–4 节），后半是一次**线上故障的复盘**（第 5–13 节）——用户的 provider 是
+讯飞星辰 MaaS，跑一个长任务（`cargo test` 跑了 218 秒、上下文累积很大）之后，
+nini 报 `[error] provider error: api error (400): request failed: 400 Bad Request`
+——**零信息**，任务直接死掉。
 
 ### 1. 键位语义层对照：从「屏幕取真相」换成「源码取真相」
 

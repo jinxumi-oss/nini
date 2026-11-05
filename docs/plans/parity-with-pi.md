@@ -451,7 +451,39 @@ B21 与 C4 缺一个**运行时扩展系统**（承载主体），B22 缺一个*
 C3/D5 与 B9 是 **provider 覆盖面与字段**（R5 待拍板），B1 是 `/clone` 的语义
 （R10），B7 是语法高亮（R9）。每一缺什么写在台账的 `nini_state` 里。
 
-### TUI 第一轮（v0.16.0 之后，未发布）—— 把「作者认为 Pi 长这样」变成「实测」
+**v0.17 这一轮（2026-11-05 ~ 11-06，随 v0.17.0 一起发布）**：
+
+* **D5 的可实施部分**：`models.json` 里写的 provider/model 级字段此前**被 serde 直接丢掉**，现在接到请求上。
+  载体落在 **provider 构造**上——`nini_core::provider::Request` 有 30 个构造点、**没有一个**用
+  `..Default::default()`，其中 **20 个在 oracle/测试文件里**；给 `Request` 加字段会**打破 20 个
+  oracle 的构造点**，违反「oracle 只能引用修复前后都存在的 API」。`Provider` trait 一行未改。
+  三个 provider 共用一份 `HeaderOverrides::resolve`（不是三份实现各自对齐），合并顺序照 Pi：
+  **provider 默认头 → provider 级 → model 级**，同名（大小写不敏感）后者覆盖。
+  **两个 Pi 细节接住**：`authHeader` 在 Pi 的 schema 里是**布尔**（只认字符串会让那种文件整个被丢掉）、
+  省略 `api` 时按 Pi 口径回退（自定义名字显式拒绝并点名 `api`）。
+  **接线时发现的一个真坑**：注册表的 9 个「原生」条目不能当缺省 api——它的方言是 Pi 的
+  `openai-responses`/`google-generative-ai`/`mistral-conversations`，而 nini 的 `openai`/`google`/
+  `mistral` 说的是 `openai-completions`，照抄会让这三个 provider **建不起来** → 另有一张表。
+* **R14 的最后一项**：`Alt+Up`（Pi 的键，nini 本来空着）→ 新动作 `DequeueMessages` → 复用既有的
+  `return_queue_to_editor`（它已实现 Pi 的合并语义），反馈用 Pi 的原话。
+* **顺带修掉一个静默坑**：R14 新增的三个动作没登记进 `keybindings_manager::parse_action` →
+  用户在 `keybindings.json` 里写它们会被**静默忽略**（`parse_action` 返回 None，以为改绑了
+  其实没变，且没有任何东西会告诉他）。已登记并加 oracle。
+* **订正 r2a 的计划状态**：它 §0 的两个 P0 **早已被修掉**（真实 session 文件里 `parentId` 链式、
+  `toolCall`/`toolResult` 行数 27–213；`/compact` 与自动压缩走 `session_compact` → `Session::compact`
+  → `append_compaction`；resume 的转录由 `build_context_entries` 重建；A3 的阈值压缩走 session hook，
+  `AgentEvent::Compacted` **保留**——从「空信号」变成「session 层压缩的可观察契约」）。该文档补了
+  §5，把「**计划文档的 status 字段一旦写下就不会自己更新；读者会拿它当事实**」写成教训；
+  `GOALS.md` §6 与 `parity-with-pi.md` §8 的台账行同步订正。
+* **台账**：56 条，条数与 v0.16 之后相同（本轮改的是 D5 的 `nini_state`/`oracle` 与 B25 的映射，
+  `map` 里 `nini: null` 从 4 降到 3，每条有 note）。D5 **收窄而不是关掉**：已交付的写进 `nini_state`
+  与 `oracle`，**仍缺的**（`oauth`（不做，R4）、`modelOverrides`、model 级 `api`/`cost`/
+  `samplingParams`/`thinkingLevelMap`、口径差异 ②）留在 `open`。
+* **测试数 2043 → 2074**（本轮 +31）。
+* 前后快照在 `docs/parity-snapshots/2026-11-05-v0.16-before-v0.17.json` 与
+  `docs/parity-snapshots/2026-11-06-v0.17-after.json`。
+
+### TUI 第一轮（v0.16.0 之后，随 v0.17.0 发布）—— 把「作者认为 Pi 长这样」变成「实测」
 
 上一轮的结论是：nini 的 TUI **不缺功能，缺可判定的对照**。这一轮把三件事做掉。
 
@@ -478,7 +510,7 @@ bash 执行全丢——`cmd_resume` 里那段 v0.8.9 之前的手写重建循环
 积累一条假 assistant 消息，并在转录里粘连进最后一条 assistant 文本）。
 判据：`cargo test -p nini-tui --test resume_rebuild` 退出 0（6 条，含两种变异各自变红）。
 
-### provider/agent 层第一轮（v0.16.0 之后，未发布）—— 一次线上 400 把长任务打死
+### provider/agent 层第一轮（v0.16.0 之后，随 v0.17.0 发布）—— 一次线上 400 把长任务打死
 
 线上现象：用户的 provider 是讯飞星辰 MaaS（`~/.nini/agent/models.json` 的 `xfyun`，
 `api = openai-completions`，baseUrl 以 `/v2` 结尾，模型 `spark-x2.6`）。跑一个长任务
