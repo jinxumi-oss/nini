@@ -1,8 +1,24 @@
-## Unreleased — TUI：键位语义层对照 oracle + 五个浮层的帧级 oracle + 两个真缺陷
+## Unreleased — TUI 的键位/浮层 oracle + provider 层的四个真缺陷：错误体被丢弃、HTTP 400 不压缩重试、空 content 被序列化成空串、瞬时错误不重试；外加一次独立审查（2 Critical + 9 Warning）
 
-1878 tests, all green.
+1997 tests, all green.
 
-这一轮不是发布（v0.16.0 之后的第一轮 TUI 工作），下面是三件事。
+这一轮不是发布，是 **v0.16.0 之后的两次工作合流**：前半是 TUI 的对照 oracle
+（第 1–4 节），后半是一次**线上故障的复盘**（第 5–13 节）——用户的 provider 是
+讯飞星辰 MaaS，跑一个长任务（`cargo test` 跑了 218 秒、上下文累积很大）之后，
+nini 报 `[error] provider error: api error (400): request failed: 400 Bad Request`
+——**零信息**，任务直接死掉。
+
+测试数 1878 → **1997**：TUI 轮 +14，本轮主体 +73（新增测试文件
+`crates/nini-core/tests/overflow_http_400.rs`（10 条）、
+`crates/nini-core/tests/provider_http_retry.rs`（9 条）、
+`crates/nini-ai/tests/error_body_wire.rs`（13 条，wiremock 端到端）、
+`crates/nini-ai/tests/openai_empty_user_message.rs`（11 条），
+外加 `error_body.rs` / `overflow.rs` / `fallback.rs` / `api_url.rs` 里的单元测试），
+**独立审查后的修复 +32**（第 13 节：`overflow_http_400.rs` 10 → 19 条，
+新增 `crates/nini-core/tests/overflow_recovery_parity.rs`（6 条）、
+`crates/nini-ai/tests/anthropic_blank_blocks.rs`（5 条）、
+`crates/nini-ai/tests/error_body_timeout.rs`（3 条），
+外加 `agent.rs` / `overflow.rs` / `anthropic.rs` / `error_body.rs` 里的单元测试）。
 
 ### 1. 键位语义层对照：从「屏幕取真相」换成「源码取真相」
 
@@ -11,8 +27,8 @@
 §5.4 自己记着这件事。
 
 于是换了一条路：**Pi 的键位表在源码里**
-（`references/pi-0.85.1/src/ui/keybindings.ts` 的 `KEYBINDINGS` 90 个 id +
-`src/tui/keybindings.ts` 的 `TUI_KEYBINDINGS` 47 个 + `interactive-mode.ts` 的
+（`references/pi-0.85.1/src/ui/keybindings.ts` 的 `KEYBINDINGS` 47 个 id +
+`src/tui/keybindings.ts` 的 `TUI_KEYBINDINGS` 47 个（**两个文件去重后共 90 个**）+ `interactive-mode.ts` 的
 `handleHotkeysCommand` 模板），nini 的键位表也在源码里
 （`crates/nini-tui/src/keys.rs` 的 `default_keymap`）。
 
@@ -70,6 +86,428 @@ oracle**，其中 `command_palette.rs`（Ctrl+Shift+K）**全仓零测试引用*
 完整证据、三个选项与各自的代价在
 [`docs/plans/r9-syntax-highlighting.md`](./docs/plans/r9-syntax-highlighting.md)。
 **决策仍是 owner 的**：实现者不替 owner 拍板。
+
+### 4a. R（resume）：`/resume` 重建 transcript 的三处失真（B26）
+
+**是什么**。`/resume <n>` 加载会话之后，`crates/nini-tui/src/commands/dispatch.rs`
+的 `cmd_resume` 里有一段 **v0.8.9 之前的手写重建循环**：先 `ts.lines.clear()`，
+再遍历 `guard.entries`，只取 `ContentBlock::Text` 块，用 `push_user` /
+`push_assistant` 把消息重新压回去。它把 `session_load` 刚刚用 **live context**
+建好的 transcript **覆盖**成了一份更差的纯文本副本。
+
+**为什么是缺陷**（三处后果）：
+
+① **工具调用 / 工具结果 / bash 执行全丢** —— 手写循环只认文本块，一个编码会话
+resume 回来变成一段散文。屏幕上显示的东西，与模型下一轮真正看到的 live context
+不是同一份。
+② **确认行 `(loaded session <id>)` 用 `push_assistant` 写进了 session 文件** ——
+它成了会话历史里的一条真 assistant 消息，于是**每次 resume 都积累一条假消息**。
+③ **同一条确认行因 `push_assistant` 的 same-turn 合并，粘连进最后一条 assistant
+文本** —— 在 transcript 里和 `/export` 里，它都成了模型消息的一部分。
+
+**根因只有一处**：A4（`6683f36`）给 `session_load` 加了
+`transcript_from_context()`，它渲染的是 **live context**（工具、bash、错误轮、
+compaction 摘要）；手写循环是 A4 之前的残留。文本恰好全对，所以 A4 的测试没抓到。
+
+**顺带更正一个探针结论**：计划文档早期写的「每条消息重复两遍」**不成立** ——
+重建循环期间 session 已被 `.take()` 掉，`push_user` / `push_assistant` 只写
+transcript、不写 session。真实后果是上面那三条，**不是重复**。
+
+**修法**。**删**掉那 40 行手写循环（**删，不是重写**——它本该产生的正确结果
+`session_load` 已经产生了）；确认行改 `push_notice`（TUI 自己说的话，只进
+transcript 不进 session）；skipped 提示改 `push_stop_notice`（它要说的正是
+「内联在受影响内容旁边」这件事）；`/session` 补报 `session_path`。
+
+**oracle**：`crates/nini-tui/tests/resume_rebuild.rs` 共 **6 条** —— resume 后
+transcript 里有 ToolCall / ToolResult；resume 后 session 文件与 resume 前
+**逐字节相同**；确认行是独立的 `Notice` 行、不与 assistant 文本粘连；bash 执行
+resume 后仍在；skipped > 0 → `StopNotice` 且不进文件；`/session` 报告
+`session_path`。两种变异注入各自变红：① 把 `push_notice` 改回 `push_assistant`
+→ 红；② 恢复手写重建循环 → 红。计划文档与探针 P1–P5 的实测表在
+[`docs/plans/r-resume-transcript-rebuild.md`](./docs/plans/r-resume-transcript-rebuild.md)。
+
+### 4b. TUI：浮层里的滚轮此前是死操作
+
+**是什么**。两处，各自独立，都在 `crates/nini-tui/src/runtime.rs`：
+
+① **selector 打开时滚轮被就地丢弃** —— 事件循环此前 overlay 一开就 `return false`，
+所有鼠标事件不落任何地方，于是模型选择器这类列表里的滚轮是**死操作**。
+② **completion 弹窗没有鼠标输入路径** —— 它是纯键盘驱动的（Up / Down），
+`handle_mouse` 里从没有把滚轮接到它身上，弹窗里的滚轮同样无效。
+
+**为什么是缺陷**。浮层是**模态**的：它盖住转录并接管指针。此时滚轮既不滚转录
+（被浮层挡住，用户看不见结果），也不滚浮层（没人接这个事件）——用户唯一能得出的
+结论是「这个界面卡住了」。
+
+**修法**。① **selector**：事件循环把 `ScrollUp` / `ScrollDown` 翻译成
+`KeyCode::Up` / `KeyCode::Down` 交给 `handle_selector_key` —— **不新增一套鼠标语义**，
+复用键盘那条路径（同一个函数、同一份边界与回绕处理，两条路径不会各自漂）。
+② **completion**：`handle_mouse` 在弹窗存在时把滚轮接到 `popup.select_up()` /
+`popup.select_down()` 并 `return true`（事件已消费，不再往下滚转录）。
+
+**顺带清掉一处死代码**：`handle_mouse` 里原本有
+`if state.ui_state.selector.is_some()` 分支，但 **`ui_state.selector` 从来没被写过**
+（活的 selector 在 `run_loop` 的 `active_selector` 里）——所以那个分支只对
+completion 弹窗生效。改成显式注释说明真实的接线位置，免得下次有人以为在改
+selector 的鼠标。
+
+**oracle**：`crates/nini-tui/tests/mouse_overlay_wheel.rs` 共 **4 条** —— 弹窗里
+滚轮下移选中项、上移选中项、到边界回绕、以及**弹窗打开时滚轮不滚转录**（断言
+`scroll_offset` 一字不变）。selector 那条路径由事件循环的翻译逻辑覆盖：
+`ScrollUp` / `ScrollDown` 经 `handle_selector_key` 走的就是真的按 Up / Down 那条
+路径，不需要第二套鼠标断言。
+
+**这条不进台账**。`scripts/parity-gaps.json` 记的是「与 Pi 的差距」，而这是 nini
+**自己的可用性缺陷**（不存在对标的 Pi 行为可抄）。登记原则的原文在
+[`docs/plans/parity-with-pi.md`](./docs/plans/parity-with-pi.md)：nini 自己的
+正确性问题**不登记进台账**，塞进去会让那张表失去意义。所以它只出现在这里。
+
+### 5. 线上一次 400：长任务直接死掉，零信息
+
+**现象**。用户的 provider 是讯飞星辰 MaaS（`~/.nini/agent/models.json` 的 `xfyun`，
+`api = openai-completions`，baseUrl = `https://maas-api.cn-huabei-1.xf-yun.com/v2`，
+model = `spark-x2.6`，contextWindow 1048576）。跑一个长任务（`cargo test` 跑了
+218 秒、上下文累积很大）之后，nini 报：
+
+```text
+[error] provider error: api error (400): request failed: 400 Bad Request
+```
+
+**零信息**，任务直接死掉。
+
+**根因不是一处**，是**四个缺陷叠加**（第 6–9 节逐条拆开），另有两件顺手修的
+（第 10 节）。四个缺陷里，**只有最后一个是致命的**：HTTP 400 从不触发上下文溢出
+压缩重试（缺陷 ④）——其余三个决定的是「为什么这条错误这么难查」。
+
+**黑盒对照**（mock 讯飞服务器：第一次返回真实的 400
+`{"error":{"code":10907,"message":"Bad Request"}}`，之后返回正常 SSE；跑编译出来的
+二进制）：
+
+| | 请求数 | 请求路径 | 结果 | 退出码 |
+|---|---|---|---|---|
+| 修复前（HEAD `e2a4299`） | 1 | `/v2/**v1**/chat/completions` | `api error (400): request failed: 400 Bad Request` | 1 |
+| 修复后 | 2 | `/v2/chat/completions` | `OK`（自动压缩重试后交付） | 0 |
+
+### 6. 缺陷 ①：`baseUrl` 的版本段被改写（这一条已有条目，这里补上「它为什么是本次故障的一半」）
+
+**现象**：请求路径是 `/v2/v1/chat/completions`——路径本身就是错的。
+
+**根因**：`crates/nini-ai/src/api_url.rs` 的 `chat_completions_url` 只认 `/v1` 结尾，
+别的结尾一律被改写成 `.../v1/chat/completions`。OpenAI SDK 是**字符串拼接**
+（`baseURL + '/' + 'chat/completions'`），base 里带的版本就是请求要走的版本。
+
+**改法**：末段是 `v` + 数字（`v1` / `v2` / `v3`）就保留它；`v1beta` 与 `vertex`
+**不是**版本段，仍走默认 —— 这条规则要认的是用户特意写下的版本，不是去猜一个。
+
+**断言**：`api_url.rs` 新增 2 条单元测试（文件内共 12 条），逐条钉住「`/v2` / `/v3`
+保留」与「`v1beta` / `vertex` / `v` / `v2beta/chat` 不算版本段」。
+
+> 这一条的完整记录在下面那个 Unreleased 段（`baseUrl` 的版本段不再被改写成 `/v1`），
+> 此处只补它在本次故障里的位置：**请求连对了地方，400 才是真的 400**——否则连
+> 「服务端说了什么」都无从谈起。
+
+### 7. 缺陷 ②：HTTP 错误响应体被整个丢弃
+
+**现象**：三个 provider 的非 2xx 分支只做 `format!("request failed: {}", status)`，
+服务端 body（真正的原因）被扔掉。用户看到的是**零信息**，而且——
+
+**根因还有第二层**：`crates/nini-core/src/overflow.rs` 的 `is_context_overflow()` 靠
+**错误文本**匹配（`OVERFLOW_PATTERNS`），文本没了 → **上下文溢出永远识别不出来**。
+这不是两个独立的 bug，是同一个 bug 的两副面孔：丢掉 body 既让人看不见原因，也让
+机器看不见原因。
+
+**Pi 的证据**（这一版的所有形状都照着 Pi 0.85.1 抄）：Pi 自己的错误格式就把服务端
+原文与供应商错误码放进错误消息 ——
+`references/pi-0.85.1/src/api/pi-messages.ts#formatPiMessagesResponseError` 拼成
+`${status} ${statusText}: ${message} (${code})`，同文件的
+`#createPiMessagesResponseError` 还把原始 body 留作诊断（截到 8192 字节）。
+**Pi 从不把 body 扔掉**：错误消息本身就是判据（nini 的 `overflow.rs` 顶部注释引的
+`pi-ai/src/utils/overflow.ts:134-162`，Case 1 就是「在错误原文里匹配 overflow 词」）。
+
+**改法**：新增 `crates/nini-ai/src/error_body.rs` ——
+
+* 有界读取 body（**8 KiB**，坏服务器不能把 nini 撑爆）；
+* 提取结构化错误消息（`{"error":{"message","code"}}` / 顶层 `message` / `msg` /
+  `detail` / 纯文本）；
+* **保留数字或字符串错误码**（`10907` 与 `context_length_exceeded` 都要）；
+* 剥 HTML（网关的 502 页面不是错误消息，是页面）、脱敏 `sk-…` 凭证、限长 4096 字节。
+
+最终格式：`request failed: 400 Bad Request: Bad Request (code 10907)`。
+`fallback` 的 `kind_of()` 摘要也从 `HTTP 400` 改成
+`HTTP 400: Bad Request (code 10907)`——原来那里把原因**二次丢弃**了。
+
+**断言**：`crates/nini-ai/tests/error_body_wire.rs`（13 条，wiremock 端到端：
+结构化原文 / 数字码 / 字符串码 / 纯文本 / HTML 页 / 空 body / 二进制 body /
+凭证脱敏 / 长度上限），`error_body.rs` 的 22 条单元测试，`fallback.rs` 新增 3 条
+（`kind_of` 保留原因、不复活提示、无原因时保持短式）。
+
+### 8. 缺陷 ③：空文本 user 消息被序列化成 `content: ""`
+
+**现象**：讯飞对空 content 返回 400 `{"error":{"code":10005,"message":"invalid request"}}`，
+整轮丢掉。
+
+**根因**：nini 把 content block 塌成字符串，于是造出了一个 **Pi 永远不会产生的形状**。
+Pi 的 user content **永远是 block / parts 数组**：
+
+* `references/pi-0.85.1/src/api/openai-completions.ts#convertMessages`（`:1233-1259`）：
+  user content 是 content-parts 数组，从不产生裸空串；
+* 同文件 `:1363-1372`：没有内容也没有 tool_calls 的 assistant 轮**被丢弃**；
+* 同文件 `:1394-1396`：空 tool result → `"(no tool output)"`；
+* `references/pi-0.85.1/src/api/anthropic-messages.ts#convertMessages`（`:1264-1268`）：
+  空 user 轮**整轮丢弃**；
+* `references/pi-0.85.1/src/api/openai-responses-shared.ts#convertResponsesMessages`（`:206`）：
+  没有 block 的 user 消息**整条丢弃**。
+
+**改法**（三条路径各按 Pi 的那一条来）：
+
+| 路径 | 做法 | 为什么不是别的做法 |
+|---|---|---|
+| OpenAI 兼容 | 空 user 轮保留但发成 `" "`（`EMPTY_USER_CONTENT`） | 丢掉轮次会改消息条数，甚至撞上「`messages` 不能为空」的另一个 400；实测讯飞对 `"   "` 返回 200 |
+| Anthropic | 空 user 轮**丢弃** | Pi 就是这么做的（`content: []` 在 Anthropic 侧是 400） |
+| Responses | 无 block 的 user 消息**丢弃** | Pi 就是这么做的（`:206`） |
+
+顺带对齐了两处：空 tool result → `"(no tool output)"`；无内容且无 tool_calls 的
+assistant 轮 → 丢弃（Pi `:1363-1372` 原话：「Some providers require 'either content
+or tool_calls, but not none'」）。
+
+**断言**：`crates/nini-ai/tests/openai_empty_user_message.rs`（11 条）。
+
+### 9. 缺陷 ④：HTTP 400 从不触发上下文溢出压缩重试 —— **「长任务必死」的直接原因**
+
+**根因**：agent loop 有三条错误出口，而**所有 provider 的 HTTP 非 2xx 都走第三条**：
+
+| 出口 | 溢出判定 | 瞬时重试 |
+|---|---|---|
+| `Some(Ok(StreamEvent::MessageStop { .. }))` | 有（只看 usage） | — |
+| `Some(Ok(StreamEvent::Error { message }))` | 有（看文本） | 有 |
+| `Some(Err(e))` ← **所有 provider 的非 2xx 都走这条** | **无** | **无** |
+
+→ 真实世界的 400 **永远不经过任何恢复逻辑**。（HTTP 200 但 SSE 里带 error 才走第二条。）
+上下文超限恰恰就是 HTTP 400 到达的，所以长任务一超窗就死。
+
+**改法**：
+
+* 抽出公共方法 `recover_from_overflow(...)`，把 MessageStop 分支、StreamEvent::Error
+  分支、**新增的 HTTP 分支三处统一**到一套压缩重试语义（一次性上限、
+  `begin_auto_compaction()` / `end_auto_compaction()`、
+  `AgentPhase::Compacting{reason:"overflow"}`、`retry_after_compaction`）。
+  三份拷贝迟早会漂（此前那两份**已经**漂了：一个查了压缩取消、另一个没查；一个先
+  发 `Compacted` 再清标志、另一个先清标志再发）——所以这次是**合并**，不是**复制**。
+* HTTP 分支里「pop 掉失败的 assistant 轮」必须**条件化**：HTTP 错误不产生 assistant
+  消息，无条件 pop 会删掉真实的一轮历史。
+
+**Pi 的证据**：Pi 的压缩重试在
+`references/pi-0.85.1/src/session/agent-session.ts#_checkCompaction` →
+`#_runAutoCompaction("overflow")`，一次性上限是 `_overflowRecoveryAttempted`。
+而 Pi 的判定第一条（`pi-ai/src/utils/overflow.ts:134-162` 的 Case 1）是**在错误原文里
+匹配 overflow 词** —— 原文在，Case 1 才可能命中。nini 之前把 body 扔了（缺陷 ②），
+于是这一条在 nini 侧**恒不命中**。
+
+#### 9.1 讯飞 10907：一个自然语言 pattern 永远识别不出来的溢出
+
+**这是本轮最关键的事实**：讯飞（讯飞星火 MaaS）的上下文超限 body 是
+
+```json
+{"error":{"code":10907,"message":"Bad Request"}}
+```
+
+**一个 overflow 词都没有**。现有 `OVERFLOW_PATTERNS`（Pi 逐字抄来的那 9 个词）的
+命中率是 **0%**。同一句 `Bad Request` 还对应另外两个码：`10005`（参数非法）与
+`10404`（模型不可用）——纯靠自然语言**永远分不开**。
+
+所以 `crates/nini-core/src/overflow.rs` 新增了**供应商错误码通道**
+（`OverflowSignals` / `VENDOR_ERROR_CODES` / `lookup_vendor_code` /
+`extract_vendor_error_code`）。码表（实测 / 文档来源）：
+
+| vendor | code | 判定 |
+|---|---|---|
+| iFlytek | 10907 | **Overflow**（上下文超限，实测 2026-11） |
+| iFlytek | 10005 | NotOverflow（invalid request，参数非法，实测） |
+| iFlytek | 10404 | NotOverflow（No Available Source，模型不可用，实测） |
+| OpenAI | context_length_exceeded | **Overflow** |
+| OpenAI | invalid_api_key / model_not_found / insufficient_quota | NotOverflow |
+| Anthropic | request_too_large | **Overflow** |
+| Anthropic | invalid_api_key / overloaded_error | NotOverflow |
+| Google | RESOURCE_EXHAUSTED | NotOverflow（是配额 429，压缩会白丢历史） |
+
+判定必须**保守**：不在表里的码一律「什么都不说」；`NotOverflow` 也不否决服务端原文
+自己的说法；被限流的请求（429 / 529 / 503）**永远不是**溢出。
+旧签名 `is_context_overflow(...)` 保留并委托到新函数（向后兼容）。
+**Pi 的两个 pattern 列表原样不动** —— 那是 Pi 的东西，本表是**多出来的**通道。
+
+**断言**：`crates/nini-core/tests/overflow_http_400.rs`（10 条：HTTP 400 走压缩
+生命周期并重试；10907 被认成溢出；10005 / 10404 **不得**被认成溢出；被限流的请求仍
+不是溢出；非溢出的 400 保留服务端原文并附上行动建议；恢复只做一次），
+`overflow.rs` 新增 7 条单元测试（文件内共 12 条）。
+
+### 10. 顺手修的两件：瞬时错误不重试；提示语分层
+
+**瞬时错误**。`Some(Err(e))` 分支此前**一次都不重试**：429 / 500 / 502 / 503 / 504 /
+529 死在第一次 —— 而这个文件自己写着「529 与 503 一样瞬时」。补上
+`is_transient_status()`（408 / 429 / 全部 5xx 含 529）与
+`is_transient_provider_error(status, text)`：**状态码已知则状态码拍板**；仅
+`status == 0` 的网络级失败才回落到文本判定 `is_retryable_error`。
+4xx **不重试** —— 即使 body 里写着 "timeout"（那是客户端要改的请求，重发只是烧
+重试预算）；5xx / 429 / 408 **一律重试** —— 即使 body 是空的（空 body 正是 503 最
+常见的形状）。两条错误出口共用 `begin_transient_retry(...)`。
+
+**提示语分层**。provider 层只放**事实**（状态码 + 服务端原文 + 错误码），
+**不猜原因**；agent 层放**行动建议**（`/compact`、缩小任务、换大窗口模型）。原先两层
+各加一段提示：既重复，又**误导** —— provider 那段把上下文超限说成「空 user message /
+model id 错」，而线上那次 400 的真实原因恰恰是上下文超限（讯飞 10907）。
+
+**断言**：`crates/nini-core/tests/provider_http_retry.rs`（9 条）。
+
+### 11. 差距台账的变化
+
+台账从 49 条变成 56 条：`open` 7 → 7，`fixed` 34 → 40，`fake` 5 → 6，
+`blocked-owner` 3 → 3，可机器判定 36 → 43。（「更新前」= HEAD `e2a4299` 加上上一轮
+未提交的 **B26**；HEAD 本身是 48 条 / open 7 / fixed 33 / fake 5 / blocked-owner 3 /
+可机器判定 35。）
+
+| | 总数 | open | fixed | fake | blocked-owner | 可机器判定 |
+|---|---|---|---|---|---|---|
+| 更新前 | 49 | 7 | 34 | 5 | 3 | 36 |
+| 更新后 | 56 | 7 | 40 | 6 | 3 | 43 |
+| 本轮文档收尾后 | 56 | 1 | 40 | 6 | 9 | 43 |
+
+「本轮文档收尾后」这一行是收尾时才落的：6 条原本 `status=open` 的条目
+（B21 / B22 / B24 / B25 / C3 / C4）**自己的 `exit_criterion` 就写着「要先有 owner
+决策」**——状态字段与自己的判据互相打架，那本身就是一条要修的缺陷。已改成
+`blocked-owner` 并各自挂上决策号（C3 → **R5**；B21 / C4 → **R11**；B22 → **R12**；
+B24 → **R13**；B25 → **R14**）。**open 只剩 D5**，因为它的 `exit_criterion` 明写
+「在此之前本条保持 open」。总数不变（56），变的只是状态口径。
+
+（A 类仍是 9 条 —— **只减不增**；本轮新增的七条全在 B 类。）
+
+| id | 状态 | 是什么 |
+|---|---|---|
+| **B27** | fixed | HTTP 错误响应体被整个丢弃（§7） |
+| **B28** | fixed | HTTP 400 从不触发上下文溢出压缩重试（§9） |
+| **B29** | fixed | 空文本 user 消息被序列化成 `content: ""`（§8） |
+| **B30** | fixed | HTTP 路径不重试瞬时错误（§10） |
+| **B31** | fake | 供应商错误码通道是 **nini 独有**的能力 —— Pi 同样识别不了讯飞的 10907，所以它不是「补 Pi 的欠账」，而是有意增强；登记为伪差距是为了说清它**要人来养**（厂商改码就得改表） |
+| **B32** | fixed | 溢出恢复的一次性上限**永不复位**：Pi 在成功的 assistant 轮之后复位（§13 的 W5） |
+| **B33** | fixed | Anthropic 侧 assistant 轮的空白 text 未过滤：nini 会发出 Anthropic 会拒的形状（§13 的 W6） |
+| **A2** | fixed（更正） | 此前写「**两条**溢出路径都发 Compacting 相位」——台账写窄了：agent loop 共有**三条**错误出口，第三条（HTTP 错误出口）**从未**有压缩生命周期，长任务在它上面直接死掉。标题与 oracle 随之更正 |
+
+`B27`–`B30` 都是**真差距**（Pi 有 / nini 无，或两边行为不一致），不是伪差距。
+每一条的 `nini_state` 都指向真实存在的代码符号（`crates/nini-core/tests/ledger_anchors.rs`
+守着这条规矩），判据都是**一条命令 + 一个退出码**。
+
+### 12. 这一版没有解决的 / 留给 owner 的
+
+* **B31 的码表要人来养。** 供应商改码就得改表，而 Pi 那边不用管 —— 这是 nini 独有的
+  维护负担。本轮只登记，不做「自动发现错误码」这种过度设计。
+* **`request_too_large`（Anthropic）与 `context_length_exceeded`（OpenAI）没有在本轮
+  实测**，码表里标的是**文档来源**。等哪天真的撞上，再补实测记录。
+* **讯飞 10907 的判定只在实测里成立过一次**（2026-11）。厂商改语义（把 10907 挪作
+  他用）不会有任何测试变红 —— 这是**外部依赖的漂移风险**，只能靠人盯。
+* **`baseUrl` 的版本段规则目前只覆盖 OpenAI 兼容路径**（`chat_completions_url`）。
+  Anthropic / Responses 两条路径的版本段仍按各自 SDK 的拼接口径处理（`/v1/messages`
+  等），本轮**没有**动它们 —— 它们不是这次的故障面，且 Pi 那边同样是固定拼接。
+* **owner 决策一条都没有新增。** 这一轮不需要 owner 拍板：B7（语法高亮）、B9
+  （provider 覆盖面）、D5（provider/model 级字段）仍是 `blocked-owner`，状态未变。
+* **独立审查留下一条没修的（W8）：厂商错误码查表不看厂商。**
+  `crates/nini-core/src/overflow.rs` 的 `lookup_vendor_code` 只比**码值**，不看这个
+  错误来自哪个 provider —— 所以**别的厂商**拿 `10907` 报一个与上下文毫无关系的错时，
+  nini 会照样压缩历史。要修得让 provider 层把厂商身份一路带下来（表从「一维码表」
+  变成「按厂商选表」），那是另一轮的事；本轮刻意不做这种过度设计，**如实记在这里**。
+
+### 13. 独立审查后的修复：2 个 Critical、9 个 Warning，外加一次端到端回归
+
+上一节的主体修复写完之后，另有一个 agent 做了一次**独立审查**（它实际做了变异验证：
+把实现改坏，看断言会不会红）。它抓到了 2 个 Critical 与 9 个 Warning——其中两个
+Critical 都是**「本轮要修的 bug 被原样装回去，而测试仍然全绿」**，这类缺陷比没写
+测试更坏，因为它让人以为这里有保护。测试数 1965 → **1997**（+32）。
+
+#### 13.1 Critical ①：「裸 5 位数字回落」误判溢出
+
+`crates/nini-core/src/overflow.rs` 的 `extract_vendor_error_code` 有一级兜底正则
+`\b(\d{5})\b`：它把错误消息里**恰好等于码表数值**的 5 位数字当成厂商错误码。
+
+实测：`invalid request id 10907` → 被读成讯飞的上下文溢出码 → 判成上下文溢出 →
+**真的压缩历史并落盘** → 压缩后重发**同样被拒** → 服务端真正的原话（"invalid
+request id"）被固定句覆盖掉。
+
+修法：只认**带 label** 的码——`(code 10907)` / `"code":10907` / `code=10907`；
+删掉裸数字与无 label 括号两级兜底。
+
+**关键证据**：那两级兜底**对主路径是多余的** —— provider 层本来就渲染成
+`(code 10907)`，删掉后 10/10 测试仍全绿。也就是说，它们从头到尾只制造过假阳性，
+一次真阳性都没有。
+
+#### 13.2 Critical ②：测试没钉住「压缩后重试用的是压缩后的历史」
+
+原实现只断言 provider 被调用了 2 次，而测试用的 provider 把 `Request` 整个丢掉 →
+把 `self.messages = result.messages.clone();` **原样改坏**（即把本轮要修的 bug 装
+回去）后，**19 条测试仍全绿**。
+
+修法：provider 记录每次请求的**消息内容**（按角色 + 块渲染成一条字符串），断言第二份
+请求与第一份**不是同一份历史**（`the_retry_carries_a_different_history`）。实测：把
+实现改坏之后，该文件 6 条变红。
+
+#### 13.3 审查报出的 9 个 Warning
+
+| | 是什么 | 修了什么 |
+|---|---|---|
+| **W1** | **5xx 也会触发压缩**：500 / 502 / 504 不在 `NON_OVERFLOW_PATTERNS` 里 → 服务端故障被当成上下文溢出 → **改写历史** | 按**状态码分流**：400 / 413 查溢出；408 / 429 / 5xx 走瞬时重试；其它 4xx 直接报错；`status == 0`（网络级失败）才走文本判定 |
+| **W2** | **读错误体没有时间上限**（**新引入的行为回退** —— 修复前不读 body、错误立刻返回）：`Client::new()` 默认无 timeout，`response.chunk().await` 无 deadline，服务端返回 400 但不结束 body → 请求**永久挂死**（实测挂住 > 30s） | `tokio::time::timeout(3s, …)` 包住读体，超时降级成普通的 `request failed: 400`；client 加 `connect_timeout(10s)`；**刻意不设**客户端级总超时 —— 那会杀掉 SSE 流式响应 |
+| **W3** | 恢复失败分支丢掉服务端原话 | 拼上 `(server said: …)` |
+| **W4** | 400 在转录里显示两遍（`AgentEvent::Error` + 终态 `Err` 各一份，TUI 又把相邻行合并） | 只报一次（留终态 `Err` 那一份） |
+| **W5** | `overflow_recovery_attempted` 永不复位：Pi（`references/pi-0.85.1/src/session/agent-session.ts:697-699`）在成功的 assistant 轮后复位，nini 没有 → 长任务里第二次溢出就不肯再压了 | 按 Pi 复位（登记为台账 **B32**） |
+| **W6** | Anthropic 侧 assistant 轮的空白 text 未过滤（Pi 在 `references/pi-0.85.1/src/api/anthropic-messages.ts:1276-1330` 对 assistant 轮同样 `if (block.text.trim().length === 0) continue;`，`blocks.length === 0` 则整轮丢弃）。nini 只过滤了 user 轮 → 会发出 `{"role":"assistant","content":[{"type":"text","text":""}]}` 这种 Anthropic 会拒的形状 | assistant 轮也过滤（`tool_use` / `tool_result` 永不被过滤）（登记为台账 **B33**） |
+| **W7** | `{"code":10907}` 这种 body 丢码 | 消息找不到时回落到顶层 code，并保持 `(code X)` 形态 |
+| **W8** | 厂商码查表**不看厂商** | **没修**（见第 12 节的「留给 owner 的」） |
+| **W9** | fallback 耗尽摘要被二次解析成溢出码 | 只从 `ProviderError::Api` 读厂商码 |
+
+#### 13.4 端到端 e2e 抓到的、审查没抓到的回归（这一条是本轮最有价值的部分）
+
+修 Critical ② 时引入的「压缩后历史**必须变小**才允许重试」这个硬否决是**错判据**：
+摘要在历史**极小**时可能比原文**更长**。实测（mock 讯飞 400/10907）：
+
+| | mock 收到请求数 | 退出码 | 输出 |
+|---|---|---|---|
+| 带错判据的版本 | 1 | 1 | `… did not make it smaller (5 → 83 bytes) …` |
+| 修正后 | 2 | 0 | 正常交付 |
+
+→ 「压缩没生效」的正确判据是**压缩前后的历史内容逐字相同**（内容指纹，忽略
+timestamp），不是「变小了」。修正后新增小历史场景的回归测试
+（`a_small_history_is_still_compacted_and_retried`：压缩后的历史**更长**，仍然必须
+重试）。
+
+#### 13.5 这一轮新增/改写的断言
+
+* `crates/nini-core/tests/overflow_http_400.rs`：10 → **19 条**
+* `crates/nini-core/tests/overflow_recovery_parity.rs`（**新增**，6 条）
+* `crates/nini-ai/tests/anthropic_blank_blocks.rs`（**新增**，5 条）
+* `crates/nini-ai/tests/error_body_timeout.rs`（**新增**，3 条）
+* `crates/nini-core/src/agent.rs` / `crates/nini-core/src/overflow.rs` /
+  `crates/nini-ai/src/anthropic.rs` / `crates/nini-ai/src/error_body.rs` 的单元测试
+
+#### 13.6 台账
+
+本轮审查里**两条**是真差距（Pi 有、nini 无），关掉并登记：**B32**（§13.3 的 W5）与
+**B33**（§13.3 的 W6）。其余的审查项是 **nini 自己的正确性问题**，不是与 Pi 的差距，
+因此**不登记** —— 台账记的是「与 Pi 的差距」，把内部健壮性改进塞进去会让这张表失去
+意义。台账 54 → 56 条，`fixed` 38 → 40，可机器判定 41 → 43。
+
+## Unreleased — `baseUrl` 的版本段不再被改写成 `/v1`；`--model` 认环境变量
+
+**`chat_completions_url` 认得任何版本段了**（`crates/nini-ai/src/api_url.rs`）。此前只有
+`/v1` 被当作「base 已经带版本」，别的结尾一律被改写成 `.../v1/chat/completions`。
+OpenAI SDK 是**字符串拼接**（`baseURL + '/' + 'chat/completions'`），base 里带的版本
+就是请求要走的版本 —— 于是用户照着自己网关的文档写 `.../v2`，请求却被发到了
+`.../v2/v1/chat/completions`，一个 404，且没有任何提示说 URL 被改写过。
+
+规则现在是：末段是 `v` + 数字（`v1` / `v2` / `v3`）就保留它，不是就照旧补 `/v1`。
+`v1beta` 与 `vertex` **不是**版本段，仍然走默认 —— 这条规则要认的是用户特意写下的
+版本，不是去猜一个。
+
+**`--model` 认 `NINI_MODEL`**（`crates/nini-cli/src/main.rs`），与 `--provider` 的
+`NINI_PROVIDER` 对称。此前 provider 能从环境变量选，模型不能：裸跑 `nini` 时
+`--model` 的默认值总是赢过 settings 文件，用户自己的 provider 没有一条路能让
+`nini` 开口说它的话。
 
 ## v0.16.0 — 把台账里剩下的三条真差距关掉：`!cmd` 边跑边出、工具「执行开始」的时机、三个符号的接线
 

@@ -457,7 +457,7 @@ C3/D5 与 B9 是 **provider 覆盖面与字段**（R5 待拍板），B1 是 `/cl
 
 | 交付 | 是什么 | 判据 |
 |---|---|---|
-| **键位语义层对照** | 屏幕级对照（`scripts/tui-oracle.py`）提取器不可用（§5.4），于是换一条路：**从源码取真相**——Pi 的 `KEYBINDINGS`（90 个 binding id）逐条对 nini 的 `default_keymap()`。契约在 `scripts/keymap-parity.json`（唯一数据源），判定在 `scripts/keymap-parity.py` | `python3 scripts/keymap-parity.py` 退出 0（**新增门禁项**：gate 的链④ + CI 的 parity job）；`cargo test -p nini-tui --test keymap_parity` 退出 0（5 条，含**四种改坏方式各自变红**） |
+| **键位语义层对照** | 屏幕级对照（`scripts/tui-oracle.py`）提取器不可用（§5.4），于是换一条路：**从源码取真相**——Pi 的 `KEYBINDINGS`（47 个 binding id）+ `TUI_KEYBINDINGS`（47 个，**去重后共 90 个**）逐条对 nini 的 `default_keymap()`。契约在 `scripts/keymap-parity.json`（唯一数据源），判定在 `scripts/keymap-parity.py` | `python3 scripts/keymap-parity.py` 退出 0（**新增门禁项**：gate 的链④ + CI 的 parity job）；`cargo test -p nini-tui --test keymap_parity` 退出 0（5 条，含**四种改坏方式各自变红**） |
 | **五个浮层的帧级 oracle** | `model` / `settings` / `trust` / `help` / `palette` 此前没有帧级 oracle，`command_palette.rs` 全仓零测试引用 | `cargo test -p nini-tui --test selector_palette_frame --test selector_model_frame --test selector_settings_frame --test selector_trust_frame --test help_overlay_frame` 退出 0（22 条） |
 | **两个真缺陷** | ① 浮层面板只清样式不清符号 → 转录从面板空行里透出文字（v0.5 时代的缺陷，注释一直声称已防住）；② 欢迎卡片读 `theme.fg_style("keyHint")`——**一个不存在的槽** → 落到默认色 = 白色 + 粗体 | 前者由 `the_panel_covers_the_transcript_it_sits_on` 钉住（去掉 `set_symbol` → 红）；后者由 `the_example_keys_use_a_theme_slot_that_exists` 钉住（**按颜色**断言，改回 `keyHint` → 红） |
 
@@ -465,11 +465,82 @@ C3/D5 与 B9 是 **provider 覆盖面与字段**（R5 待拍板），B1 是 `/cl
 决策包见 [`r9-syntax-highlighting.md`](./r9-syntax-highlighting.md)；同时查清
 **Pi 的终端确实做语法高亮**且用的正是那 9 个 `syntax*` 槽 → B7 是**真差距**。
 
-**新登记**：**B24**（16 个主题槽悬空 + `keyHint` 读不存在的槽；legacy×6 是 nini
+**新登记**：**B24**（18 个主题槽悬空 + `keyHint` 读不存在的槽；legacy×6 是 nini
 自创的已死 schema，删槽会**静默丢弃用户 theme.json 的值**，所以不是能顺手做的
 清理）、**B25**（三处键位语义分叉：`Ctrl+T` 显隐 thinking 块 vs 档位 +、
 `Ctrl+U` 删到行首 vs 清空输入框、`Ctrl+C` 清空/退出 vs 中止回合；另有 5 个 Pi
 的键位 nini 没有）。**改键是用户可见的行为变更，本轮只登记不改**。
+
+**再登记并关掉**：**B26**（`/resume` 重建 transcript 的三处失真：工具调用 / 工具结果 /
+bash 执行全丢——`cmd_resume` 里那段 v0.8.9 之前的手写重建循环只取文本块，还把
+`session_load` 刚建好的 live-context 副本**覆盖**成更差的纯文本副本；确认行
+`(loaded session <id>)` 用 `push_assistant` 写进了 session 文件，于是每次 resume
+积累一条假 assistant 消息，并在转录里粘连进最后一条 assistant 文本）。
+判据：`cargo test -p nini-tui --test resume_rebuild` 退出 0（6 条，含两种变异各自变红）。
+
+### provider/agent 层第一轮（v0.16.0 之后，未发布）—— 一次线上 400 把长任务打死
+
+线上现象：用户的 provider 是讯飞星辰 MaaS（`~/.nini/agent/models.json` 的 `xfyun`，
+`api = openai-completions`，baseUrl 以 `/v2` 结尾，模型 `spark-x2.6`）。跑一个长任务
+（`cargo test` 跑了 218 秒、上下文累积很大）之后，nini 报
+`[error] provider error: api error (400): request failed: 400 Bad Request` ——
+**零信息**，任务直接死掉。
+
+这一轮把这件事拆成**四个叠加的缺陷**（+ 两个附带修的），并逐条变成可判定的断言。
+
+| 交付 | 是什么 | 判据 |
+|---|---|---|
+| **B27** | HTTP 错误响应体被整个丢弃：三个 provider 的非 2xx 分支只拼状态码，服务端原文与供应商错误码全丢 → 新增 `crates/nini-ai/src/error_body.rs`（有界读 body、提取结构化原文、保留错误码、剥 HTML、脱敏凭证）；`fallback` 的摘要不再二次丢弃原因 | `cargo test -p nini-ai --test error_body_wire` 退出 0（13 条）+ `error_body` 单元测试（22 条） |
+| **B28** | HTTP 400 从不触发上下文溢出压缩重试：agent loop 有三条错误出口，**所有** provider 的非 2xx 都走第三条（`Some(Err(e))`），而它既不判溢出也不重试 → 抽出 `recover_from_overflow`，三条出口统一到同一套压缩重试语义；`overflow.rs` 新增**供应商错误码通道**（`OverflowSignals` / `VENDOR_ERROR_CODES` / `lookup_vendor_code` / `extract_vendor_error_code`） | `cargo test -p nini-core --test overflow_http_400` 退出 0（10 条）+ `overflow` 单元测试（12 条） |
+| **B29** | 空文本 user 消息被序列化成 `content: ""`：讯飞回 400（code 10005）→ 按 Pi 0.85.1 的真实形状对齐（OpenAI 兼容发成 `" "`、Anthropic 丢弃空 user 轮、Responses 丢弃无 block 的 user 消息） | `cargo test -p nini-ai --test openai_empty_user_message` 退出 0（11 条） |
+| **B30** | HTTP 路径不重试瞬时错误：429 / 5xx / 529 死在第一次 → `is_transient_status` / `is_transient_provider_error` / `begin_transient_retry`，状态码已知则状态码拍板，4xx 一律不重试 | `cargo test -p nini-core --test provider_http_retry` 退出 0（9 条） |
+
+**关键事实（决定了 B28 的做法）**：讯飞的上下文超限 body 是
+`{"error":{"code":10907,"message":"Bad Request"}}` —— **一个 overflow 词都没有**，
+自然语言 pattern 的命中率是 **0%**。所以才必须有**结构化的供应商错误码通道**：
+`10907` = 溢出（压缩重试），`10005`（参数非法）/ `10404`（模型不可用）= **不是**溢出
+（压缩只会白丢历史）。
+
+**B31 登记为伪差距（fake）**：这条错误码通道是 **nini 独有**的能力——Pi 的溢出判定
+只有 stop_reason 与自然语言 pattern 两条通道，**Pi 同样识别不了讯飞的 10907**。
+所以它不是「补 Pi 的欠账」，而是有意增强；登记在此是为了说清它**要人来养**
+（厂商改码就得改表）。
+
+**黑盒对照**（mock 讯飞服务器：第一次返回真实的 400 `{"error":{"code":10907,...}}`，
+之后返回正常 SSE，跑编译出的二进制）：
+
+| | 请求数 | 请求路径 | 结果 | 退出码 |
+|---|---|---|---|---|
+| 修复前 | 1 | `/v2/**v1**/chat/completions` | `api error (400): request failed: 400 Bad Request` | 1 |
+| 修复后 | 2 | `/v2/chat/completions` | `OK`（自动压缩重试后交付） | 0 |
+
+**顺带更正既有条目**：**A2** 此前写「**两条**溢出路径都发 Compacting 相位」——那是台账
+写窄了：agent loop 共有**三条**错误出口，第三条（HTTP 错误出口）**从未**有压缩生命
+周期，长任务在它上面直接死掉。A2 的标题与 oracle 随之更正（第三条出口由
+`overflow_http_400.rs` 钉住）。
+
+### provider/agent 层第二轮（同一轮未发布工作的独立审查）
+
+上面那一轮写完之后，另有一个 agent 做了一次**独立审查**（它实际做了变异验证：把实现
+改坏，看断言会不会红）。审查抓到了 2 个 Critical、9 个 Warning，其中两个 Critical 都是
+**「本轮要修的 bug 被原样装回去，而测试仍然全绿」**——这类缺陷比没写测试更坏，因为它
+让人以为这里有保护。
+
+审查里有**两条**是真正的 Pi 对齐差距（Pi 有、nini 无），本轮关掉并登记：
+
+| 交付 | 是什么 | 判据 |
+|---|---|---|
+| **B32** | 溢出恢复的一次性上限**永不复位**：Pi 在成功的 assistant 轮之后复位 `_overflowRecoveryAttempted`（`references/pi-0.85.1/src/session/agent-session.ts:697-699`），nini 只置位不复位 → 长任务里第二次上下文溢出就被「恢复失败」拒绝 | `cargo test -p nini-core --test overflow_recovery_parity` 退出 0（6 条）；变异注入（删掉复位点）→ 该文件变红 |
+| **B33** | Anthropic 侧 **assistant 轮**的空白 text 未过滤：Pi 对 assistant 轮同样 `if (block.text.trim().length === 0) continue;` 且空则整轮丢弃（`references/pi-0.85.1/src/api/anthropic-messages.ts:1276-1330`），nini 只过滤 user 轮 → 会发出 `{"role":"assistant","content":[{"type":"text","text":""}]}` 这种 Anthropic 会拒的形状 | `cargo test -p nini-ai --test anthropic_blank_blocks` 退出 0（5 条）；变异注入（assistant 不参与过滤）→ 该文件变红 |
+
+其余的审查项（W1–W9 里剩下的、以及端到端抓到的那次回归）是 **nini 自己的正确性问题**，
+不是与 Pi 的差距，因此**不登记进台账**——台账记的是「与 Pi 的差距」，把 nini 的内部
+健壮性改进塞进去会让这张表失去意义。它们的完整记录在 `CHANGELOG.md` 的「独立审查后的
+修复」一节。
+
+**留了一条没修**（如实记录，不假装关掉）：厂商错误码查表**不看厂商**——`10907` 对别的
+厂商也可能被读成溢出。本轮不做「按厂商选表」这种过度设计，风险写进 CHANGELOG 的
+「留给 owner 的」。
 
 ---
 
@@ -520,10 +591,24 @@ C3/D5 与 B9 是 **provider 覆盖面与字段**（R5 待拍板），B1 是 `/cl
 | # | 决策 | 现状 | 阻塞什么 |
 |---|---|---|---|
 | R4 | nini 是否自建凭据存储 | 待决（`6abadd9` 已整体回滚一次） | 整个 auth 层；`/login` 的 Pi 形态 |
-| R5 | provider 是否补齐到 Pi 全集 | 待决。**v3 实测：Pi 0.84.2 内置 40 个，nini 原生 9 个实现（7 个品牌）**，v2 文档写的「51 / 5」两个数都是错的 | `nini-ai` 的方向；B9 |
-| R9 | 语法高亮是否值得 +2–5 MB 体积 | 待决 | B7 |
-| R10 | `/clone` 改为「切到新分支」是否可接受 | 待决 | B1 |
+| R5 | provider 是否补齐到 Pi 全集 | 待决。**v3 实测：Pi 0.84.2 内置 40 个，nini 原生 9 个实现（7 个品牌）**，v2 文档写的「51 / 5」两个数都是错的 | `nini-ai` 的方向；B9、**C3** |
+| R9 | 语法高亮是否值得 +2–5 MB 体积 | 待决。**体积已实测**：syntect+fancy-regex **+0.63 MiB**、onig 版 +0.90 MiB、自研 +0.003 MiB（决策包见 `plans/r9-syntax-highlighting.md`） | B7 |
+| R10 | `/clone` 改为「切到新分支」是否可接受 | 待决。**Pi 的 `/clone` 没有参数**（`references/pi-0.85.1/src/ui/interactive-mode.ts:5186` 的 `handleCloneCommand(): Promise<void>`） | B1 |
+| **R11** | 要不要做 Pi 兼容的**扩展运行时**、由谁承载 | 待决（R6 只证伪了 `nini-ext` 的技术路径；产品层面仍开放） | **B21**、**C4** |
+| **R12** | mermaid **真图**渲染引不引布局引擎 | 待决（Pi 0.85.1 用 npm 包 `grok-mermaid` 0.2.2） | **B22** |
+| **R13** | 主题槽接线策略：边框 UI / `customMessage` / legacy 槽删还是留 | 待决（复算：61 个槽，**27 个零读取** = 9 个 `syntax*` + **18 个**） | **B24** |
+| **R14** | 键位语义与 Pi 对齐的口径 | 待决（改键是用户可见行为变更） | **B25** |
 | — | clean-room 表述 vs 读 Pi 源码的方法论 | **待决（v3 新增）** | 见 §9 未闭合项 3 |
+
+**R5 / R10 / R11 / R12 / R13 / R14 的一页纸决策材料**（事实 + 选项表 + 工作量 + 推荐 +
+「owner 什么都不做的代价」）在 [`plans/owner-decision-packs.md`](./owner-decision-packs.md)；
+R9 的在 [`plans/r9-syntax-highlighting.md`](./r9-syntax-highlighting.md)。
+
+**2026-11-05：台账的 `status` 字段与自己的 `exit_criterion` 对齐**。此前 6 条条目
+（B21/B22/B24/B25/C3/C4）的 `status` 写着 `open`，而它们**自己的判据就写着「要先有
+owner 决策」**——字段与判据打架，读者无法判断哪条是真的能动手。已改挂决策号并转为
+`blocked-owner`（C3→R5，B21/C4→R11，B22→R12，B24→R13，B25→R14）。**现在 open 只剩
+D5 一条**，它的判据明写「在此之前本条保持 open」。
 
 ---
 
@@ -535,6 +620,7 @@ C3/D5 与 B9 是 **provider 覆盖面与字段**（R5 待拍板），B1 是 `/cl
 | `plans/input_interrupt_parity.md` | 本文件 W1 的展开；§8.8 状态字段已按实际修正（C2） |
 | `plans/v0.10-pi-parity-refactor.md` | R1–R8 历史路线，**只读** |
 | `plans/r2a-compaction-persistence.md` | W1/A2 的前置依赖 |
+| `plans/owner-decision-packs.md` | **active**：R5/R10/R11/R12/R13/R14 的一页纸决策材料（只提供事实与选项，不替 owner 决定） |
 | `plans/v0.6*`–`v0.9.2*`、`tui-*.md` | frozen，不再追加 |
 
 ---

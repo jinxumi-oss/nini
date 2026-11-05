@@ -72,7 +72,13 @@ ROUNDS = ("W0", "W1-A", "W1-B", "W1-C", "W2", "W3", "W4", "W5", "—",
           # 「执行开始」事件的时机）、D1（三个符号接线），以及新登记的 B22
           # （mermaid 的真图渲染仍未做）。
           "v0.16")
-DECISIONS = ("R4", "R5", "R9", "R10", "R11")
+# Decision numbers. R4/R5/R9/R10 predate this whitelist; R11-R14 were
+# added on 2026-11-05 because six gaps had been sitting in `open` while
+# their own `exit_criterion` said they needed an owner decision — the
+# status field and the criterion contradicted each other. They now use
+# the mechanism that already existed (`blocked-owner` +
+# `blocking_decision`), so no schema change was needed.
+DECISIONS = ("R4", "R5", "R9", "R10", "R11", "R12", "R13", "R14")
 
 # Every field a gap record must carry, with the type it must have.
 REQUIRED_FIELDS = {
