@@ -92,7 +92,13 @@ struct Args {
     /// without `--model` sent a model id no server has heard of and got
     /// a 404. The default is now a real model:
     /// `MiniMax-M2.7-highspeed`.
-    #[arg(long, default_value = DEFAULT_MODEL)]
+    ///
+    /// `NINI_MODEL` mirrors `NINI_PROVIDER`: the provider is chosen by
+    /// the environment when the flag is absent, and so is the model.
+    /// Without it there was no way to make a bare `nini` talk to a
+    /// user's own provider — the flag default always won over the
+    /// settings file, and the environment was the only layer left.
+    #[arg(long, env = "NINI_MODEL", default_value = DEFAULT_MODEL)]
     model: String,
 
     /// Comma-separated secondary API key(s) for automatic fallback.

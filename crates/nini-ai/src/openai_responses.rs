@@ -25,7 +25,10 @@ pub struct OpenAiResponsesProvider {
 impl OpenAiResponsesProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
+            // Bounded connect, **no** total timeout: a streaming
+            // response is supposed to stay open. See
+            // `crate::error_body::http_client`.
+            client: crate::error_body::http_client(),
             base_url: DEFAULT_BASE_URL.to_string(),
             api_key: api_key.into(),
         }
@@ -67,7 +70,7 @@ impl Provider for OpenAiResponsesProvider {
             // 1:1; tool use + tool result items use their Responses equivalents.
             let body = build_request_body(&req)?;
             let url = crate::api_url::responses_url(&base_url);
-            let response = client
+            let mut response = client
                 .post(&url)
                 .bearer_auth(&api_key)
                 .header("content-type", "application/json")
@@ -77,9 +80,14 @@ impl Provider for OpenAiResponsesProvider {
 
             let status = response.status();
             if !status.is_success() {
+                // v0.10 (fix): keep the server's explanation. See
+                // `crate::error_body` — the body used to be discarded,
+                // which made every failure look identical and hid the
+                // reason from `nini_core::overflow`.
+                let extracted = crate::error_body::extract_error_detail(&mut response).await;
                 Err(ProviderError::Api {
                     status: status.as_u16(),
-                    message: format!("request failed: {}", status),
+                    message: crate::error_body::compose_api_message(status, extracted),
                 })?;
             }
 
@@ -134,6 +142,18 @@ pub fn build_request_body(req: &Request) -> Result<String, ProviderError> {
                     })
                     .collect::<Vec<_>>()
                     .join("");
+                // v0.10 (fix): Pi skips a user message whose content array
+                // is empty (`openai-responses-shared.ts:206`: `if
+                // (content.length === 0) continue;`). nini sent an input
+                // item with an empty `input_text` instead.
+                //
+                // A user message that *has* a text block stays: Pi sends
+                // the block as it is (an empty text part included), so
+                // the turn is kept — the same rule as the OpenAI chat
+                // path.
+                if m.content.is_empty() {
+                    continue;
+                }
                 items.push(serde_json::json!({
                     "type": "message",
                     "role": "user",

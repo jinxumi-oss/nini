@@ -58,7 +58,19 @@ impl FallbackProvider {
 /// unreachable until the retryable branch recorded too.
 fn kind_of(err: &ProviderError) -> String {
     match err {
-        ProviderError::Api { status, .. } => format!("HTTP {status}"),
+        ProviderError::Api { status, message } => {
+            // v0.10 (fix): a bare "HTTP 400" threw away the reason a
+            // second time. The providers now carry the server's own
+            // explanation ("request failed: 400 Bad Request: prompt is
+            // too long"), and the fallback summary is the *last* place
+            // the user sees it — so the reason comes along.
+            let reason = brief_reason(message);
+            if reason.is_empty() {
+                format!("HTTP {status}")
+            } else {
+                format!("HTTP {status}: {reason}")
+            }
+        }
         ProviderError::Http(_) => "network/transport".to_string(),
         ProviderError::Io(_) => "I/O".to_string(),
         ProviderError::Sse(_) => "SSE parse".to_string(),
@@ -67,6 +79,33 @@ fn kind_of(err: &ProviderError) -> String {
         ProviderError::Json(_) => "json-parse".to_string(),
         ProviderError::NotImplemented(_) => "not-implemented".to_string(),
     }
+}
+
+/// The server's explanation, without the `request failed: <status>` prefix.
+///
+/// Returns an empty string when the message carries no reason (a stub
+/// provider's own wording, or a body-less failure), so the caller can
+/// keep the short form.
+fn brief_reason(message: &str) -> String {
+    const MAX: usize = 200;
+    let Some(rest) = message.strip_prefix("request failed: ") else {
+        return String::new();
+    };
+    // `rest` is "<status>: <reason>"; the reason is everything after the
+    // first ": ".
+    let Some((_, reason)) = rest.split_once(": ") else {
+        return String::new();
+    };
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return String::new();
+    }
+    if reason.chars().count() <= MAX {
+        return reason.to_string();
+    }
+    let mut out: String = reason.chars().take(MAX).collect();
+    out.push('…');
+    out
 }
 
 /// v0.7.5 — classify a ProviderError as retryable. 5xx and 429 from
@@ -349,6 +388,66 @@ mod tests {
         assert!(!is_retryable(&mk_401().unwrap_err()));
         assert!(!is_retryable(&ProviderError::Auth("bad key".into())));
         assert!(!is_retryable(&ProviderError::Json("garbage".into())));
+    }
+
+    /// The fallback summary must not throw the server's reason away a
+    /// second time.
+    ///
+    /// The providers now carry it ("request failed: 400 Bad Request:
+    /// prompt is too long"), but the summary used to print "HTTP 400"
+    /// and stop there — so the user of a *fallback* chain still learned
+    /// nothing about the actual cause.
+    #[test]
+    fn the_summary_keeps_the_servers_reason() {
+        let err = ProviderError::Api {
+            status: 400,
+            message: "request failed: 400 Bad Request: prompt is too long".to_string(),
+        };
+        assert_eq!(kind_of(&err), "HTTP 400: prompt is too long");
+    }
+
+    /// The summary repeats what the provider said — and only that.
+    ///
+    /// The provider layer states facts (status, the server's words, the
+    /// vendor's error code) and the agent layer states the advice. The
+    /// summary must not carry a third copy of either, and above all no
+    /// provider-side hint: the hint is gone from the message, so the
+    /// summary is clean by construction.
+    #[test]
+    fn the_summary_carries_the_facts_and_no_hint() {
+        let err = ProviderError::Api {
+            status: 400,
+            message: "request failed: 400 Bad Request: Bad Request (code 10907)".to_string(),
+        };
+        let summary = kind_of(&err);
+        assert_eq!(summary, "HTTP 400: Bad Request (code 10907)");
+        assert!(
+            !summary.contains("hint") && !summary.contains("the server rejected the request"),
+            "the summary must not resurrect a provider-side hint: {summary:?}"
+        );
+
+        let err = ProviderError::Api {
+            status: 400,
+            message: "request failed: 400 Bad Request".to_string(),
+        };
+        assert_eq!(kind_of(&err), "HTTP 400");
+    }
+
+    /// A failure with no reason (an empty body, or a provider that
+    /// speaks for itself) keeps the short form.
+    #[test]
+    fn the_summary_stays_short_without_a_reason() {
+        let err = ProviderError::Api {
+            status: 500,
+            message: "request failed: 500 Internal Server Error".to_string(),
+        };
+        assert_eq!(kind_of(&err), "HTTP 500");
+
+        let err = ProviderError::Api {
+            status: 500,
+            message: "internal".to_string(),
+        };
+        assert_eq!(kind_of(&err), "HTTP 500");
     }
 
     #[test]

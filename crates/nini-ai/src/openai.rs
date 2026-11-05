@@ -15,6 +15,26 @@ use std::pin::Pin;
 /// Default OpenAI API base URL.
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 
+/// What a user turn with no text goes out as.
+///
+/// `content: ""` is a 400 on several Chinese gateways (iFlytek answers
+/// `{"error":{"code":10005,"message":"invalid request"}}`), and it is
+/// not a shape Pi ever produces: Pi's agent builds user content as a
+/// block array and the OpenAI path sends it as a content-parts array
+/// (`openai-completions.ts:1233-1259`), never as an empty *string*.
+///
+/// A single space keeps the turn (Pi keeps it too), keeps the message
+/// count and the role order, and is accepted by the gateways that
+/// reject the empty string (measured against iFlytek: `"   "` → 200).
+const EMPTY_USER_CONTENT: &str = " ";
+
+/// What an empty tool result goes out as.
+///
+/// Pi: `hasText ? textResult : hasImages ? "(see attached image)" :
+/// "(no tool output)"` (`openai-completions.ts:1394-1396`). An empty
+/// string here is the same 400 as an empty user turn.
+const NO_TOOL_OUTPUT: &str = "(no tool output)";
+
 /// OpenAI provider implementation for `/v1/chat/completions`.
 pub struct OpenAiProvider {
     client: Client,
@@ -29,7 +49,10 @@ impl OpenAiProvider {
     /// Create a new OpenAI provider with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
+            // Bounded connect, **no** total timeout: a streaming
+            // response is supposed to stay open. See
+            // `crate::error_body::http_client`.
+            client: crate::error_body::http_client(),
             base_url: DEFAULT_BASE_URL.to_string(),
             api_key: api_key.into(),
             compat: OpenAiCompat::default(),
@@ -83,7 +106,7 @@ impl Provider for OpenAiProvider {
         Box::pin(try_stream! {
             let body = build_request_body_for(&req, compat)?;
             let url = crate::api_url::chat_completions_url(&base_url);
-            let response = client
+            let mut response = client
                 .post(&url)
                 .bearer_auth(&api_key)
                 .header("content-type", "application/json")
@@ -130,9 +153,15 @@ impl Provider for OpenAiProvider {
                     yield ev;
                 }
             } else {
+                // v0.10 (fix): the body used to be dropped here, so a
+                // 400 arrived as `request failed: 400 Bad Request` with
+                // the reason (`prompt is too long`, `invalid api key`,
+                // …) unread. The server's own text is what the user
+                // needs and what `nini_core::overflow` matches on.
+                let extracted = crate::error_body::extract_error_detail(&mut response).await;
                 Err(ProviderError::Api {
                     status: status.as_u16(),
-                    message: format!("request failed: {}", status),
+                    message: crate::error_body::compose_api_message(status, extracted),
                 })?;
             }
         })
@@ -821,13 +850,38 @@ impl<'a> OpenAiRequest<'a> {
                         })
                         .collect::<Vec<_>>()
                         .join("");
+                    // v0.10 (fix): an empty user turn must not go out as
+                    // `content: ""`. A number of Chinese gateways (iFlytek
+                    // Spark, for one) answer that with
+                    // `400 {"error":{"code":10005,"message":"invalid request"}}`
+                    // and the whole turn is lost.
+                    //
+                    // Pi never sends an empty *string* for a user message:
+                    // its agent builds user content as a **block array**
+                    // (`pi-agent-core/dist/agent.js`: `content = [{type:
+                    // "text", text: input}]`) and `convertMessages` turns
+                    // that into a content-parts array
+                    // (`openai-completions.ts:1233-1259`). So there is no
+                    // Pi wire shape for "a user turn with no text", and
+                    // nini's `content: ""` was never parity — it was an
+                    // artefact of collapsing the blocks into a string.
+                    //
+                    // The turn itself is kept (Pi keeps it too, as a parts
+                    // array): dropping it would change the message count
+                    // and could leave `messages: []`, which iFlytek
+                    // rejects with a *different* 400
+                    // ("cannot pass empty 'messages'"). A single space is
+                    // what iFlytek accepts for a blank turn (measured:
+                    // `"   "` → 200), and it keeps every tool_use /
+                    // tool_result pairing and every role order intact.
+                    let content: &'a str = if text.is_empty() {
+                        EMPTY_USER_CONTENT
+                    } else {
+                        Box::leak(text.into_boxed_str())
+                    };
                     messages.push(OpenAiMessage {
                         role: "user",
-                        content: if text.is_empty() {
-                            Some("")
-                        } else {
-                            Some(Box::leak(text.into_boxed_str()))
-                        },
+                        content: Some(content),
                         tool_calls: None,
                         tool_call_id: None,
                     });
@@ -862,6 +916,21 @@ impl<'a> OpenAiRequest<'a> {
                             _ => None,
                         })
                         .collect();
+                    // Pi drops an assistant turn that has neither text nor
+                    // tool calls: "Some providers require 'either content
+                    // or tool_calls, but not none'. Other providers also
+                    // don't accept empty assistant messages."
+                    // (`openai-completions.ts:1363-1372`). nini sent
+                    // `{"role": "assistant"}` — no content, no tool calls
+                    // — which is exactly the shape those providers
+                    // reject.
+                    //
+                    // Pi's test is on the *trimmed* text (it drops blank
+                    // text parts first, `:1270`), so a whitespace-only
+                    // turn is dropped as well.
+                    if text.trim().is_empty() && tcs.is_empty() {
+                        continue;
+                    }
                     messages.push(OpenAiMessage {
                         role: "assistant",
                         content: if text.is_empty() {
@@ -882,9 +951,20 @@ impl<'a> OpenAiRequest<'a> {
                         } = c
                         {
                             let role = "tool";
+                            // Pi: an empty tool result goes out as a
+                            // placeholder, never as an empty string:
+                            // `const toolResultText = hasText ? textResult
+                            // : hasImages ? "(see attached image)" : "(no
+                            // tool output)";`
+                            // (`openai-completions.ts:1394-1396`).
+                            let content: &'a str = if content.is_empty() {
+                                NO_TOOL_OUTPUT
+                            } else {
+                                content.as_str()
+                            };
                             messages.push(OpenAiMessage {
                                 role,
-                                content: Some(content.as_str()),
+                                content: Some(content),
                                 tool_calls: None,
                                 tool_call_id: Some(tool_use_id.as_str()),
                             });

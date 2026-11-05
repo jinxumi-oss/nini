@@ -19,6 +19,14 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// SSE parser and streaming types.
 pub mod sse;
 
+/// Reading a failed response's body into a short error message.
+///
+/// Shared by every provider: a non-2xx response used to yield
+/// `request failed: 400 Bad Request` with the server's explanation
+/// thrown away, which left the user (and the overflow detector) with
+/// nothing to act on.
+pub mod error_body;
+
 /// Endpoint URL construction, one function per dialect.
 ///
 /// v0.10 (M0): these were inline `format!` calls inside each `stream()`.

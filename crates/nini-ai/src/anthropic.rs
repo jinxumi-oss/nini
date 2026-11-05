@@ -29,7 +29,10 @@ impl AnthropicProvider {
     /// Create a new Anthropic provider with the given API key and default base URL.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
+            // Bounded connect, **no** total timeout: a streaming
+            // response is supposed to stay open. See
+            // `crate::error_body::http_client`.
+            client: crate::error_body::http_client(),
             base_url: DEFAULT_BASE_URL.to_string(),
             api_key: api_key.into(),
         }
@@ -71,7 +74,7 @@ impl Provider for AnthropicProvider {
             // Translate request
             let body = build_request_body(&req)?;
             let url = crate::api_url::anthropic_messages_url(&base_url);
-            let response = client
+            let mut response = client
                 .post(&url)
                 .header("x-api-key", &api_key)
                 .header("anthropic-version", API_VERSION)
@@ -82,9 +85,14 @@ impl Provider for AnthropicProvider {
 
             let status = response.status();
             if !status.is_success() {
+                // v0.10 (fix): keep the server's explanation. See
+                // `crate::error_body` — the body used to be discarded,
+                // which made every failure look identical and hid the
+                // reason from `nini_core::overflow`.
+                let extracted = crate::error_body::extract_error_detail(&mut response).await;
                 Err(ProviderError::Api {
                     status: status.as_u16(),
-                    message: format!("request failed: {}", status),
+                    message: crate::error_body::compose_api_message(status, extracted),
                 })?;
             }
 
@@ -279,7 +287,7 @@ struct AnthropicMessage<'a> {
     content: Vec<AnthropicContent<'a>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicContent<'a> {
     Text {
@@ -346,6 +354,68 @@ impl<'a> AnthropicRequest<'a> {
                     },
                 })
                 .collect();
+            // v0.10 (fix): Anthropic rejects a message with no content
+            // (`content: []` is a 400), and nini used to send exactly
+            // that for a user turn with no text.
+            //
+            // Pi's Anthropic path filters the blank text blocks out of a
+            // **user** turn and drops the turn when nothing is left
+            // (`anthropic-messages.ts:1264-1270`):
+            //
+            // ```text
+            // 1264  const filteredBlocks = blocks.filter((b) => {
+            // 1265      if (b.type === "text") {
+            // 1266          return b.text.trim().length > 0;
+            // 1267      }
+            // 1268      return true;
+            // 1269  });
+            // 1270  if (filteredBlocks.length === 0) continue;
+            // ```
+            //
+            // Pi does the same for an **assistant** turn (`:1276-1330`):
+            //
+            // ```text
+            // 1276  } else if (msg.role === "assistant") {
+            // 1277      const blocks: ContentBlockParam[] = [];
+            // 1279      for (const block of msg.content) {
+            // 1280          if (block.type === "text") {
+            // 1281              if (block.text.trim().length === 0) continue;
+            // 1282              blocks.push({ type: "text", text: sanitizeSurrogates(block.text) });
+            // 1321          } else if (block.type === "toolCall") {
+            // 1322              blocks.push({ type: "tool_use", id: block.id, name: block.name, input: … });
+            // 1328          }
+            // 1329      }
+            // 1330      if (blocks.length === 0) continue;
+            // ```
+            //
+            // The subtlety: Pi's `blocks` at `:1330` is the **filtered**
+            // array — the blank text block was already skipped at
+            // `:1281`. So an assistant turn that carries nothing but a
+            // blank text block is dropped **whole** by Pi, and nini used
+            // to keep it (`{"role":"assistant","content":[{"type":"text",
+            // "text":""}]}`) — a shape Anthropic rejects.
+            //
+            // The filter therefore applies to *both* roles, and it only
+            // ever touches **text** blocks: a `tool_use` / `tool_result`
+            // block is never blank-filtered, so an assistant turn that
+            // carries a tool call survives even when its text is empty
+            // (the tool_use / tool_result pairing must not break).
+            let content = match m.role {
+                Role::User | Role::Assistant => {
+                    let kept: Vec<AnthropicContent> = content
+                        .into_iter()
+                        .filter(|block| match block {
+                            AnthropicContent::Text { text } => !text.trim().is_empty(),
+                            _ => true,
+                        })
+                        .collect();
+                    if kept.is_empty() {
+                        continue;
+                    }
+                    kept
+                }
+                _ => content,
+            };
             messages.push(AnthropicMessage { role, content });
         }
         let tools: Vec<AnthropicTool> = req

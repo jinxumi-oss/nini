@@ -42,6 +42,11 @@
 //! below assert those exact strings, and say so, so the next reader does
 //! not "fix" a deliberate alignment.
 //!
+//! The OpenAI row is the one that generalises: the SDK concatenates
+//! `baseURL + '/' + 'chat/completions'`, so the version a base carries is
+//! the version that is called. `/v1` is the common case, not the only one,
+//! and a base that says `/v2` means `/v2`.
+//!
 //! # The one place nini was not equivalent
 //!
 //! `chat_completions_url` used to be
@@ -67,15 +72,47 @@
 
 /// The `chat/completions` endpoint for an OpenAI-compatible base URL.
 ///
-/// Mirrors the OpenAI SDK: a base already ending in `/v1` is not given a
-/// second one, and trailing slashes are insignificant.
+/// Mirrors the OpenAI SDK: a base already ending in a version segment is
+/// not given a second one, and trailing slashes are insignificant.
+///
+/// The SDK builds the URL by **string concatenation** —
+/// `this.baseURL + '/' + 'chat/completions'` (`openai-client.ts`) — so
+/// whatever version segment the base already carries is the version the
+/// request goes to. `https://api.openai.com/v1` yields
+/// `.../v1/chat/completions`, and `https://gw.internal/v2` yields
+/// `.../v2/chat/completions`.
+///
+/// Only `/v1` used to be recognised here, which turned every other
+/// version into a `/v1`: a user who wrote the version their gateway
+/// documents (`https://maas-api.cn-huabei-1.xf-yun.com/v2`, say) was
+/// sent to `.../v2/v1/chat/completions` — a 404 with no hint that the
+/// URL had been rewritten under them. The rule was a special case where
+/// the general one would do.
 pub fn chat_completions_url(base_url: &str) -> String {
     let base = base_url.trim_end_matches('/');
-    if base.ends_with("/v1") {
+    if ends_with_version_segment(base) {
         format!("{base}/chat/completions")
     } else {
         format!("{base}/v1/chat/completions")
     }
+}
+
+/// Whether the base URL's last path segment names an API version.
+///
+/// A version segment is a `v` followed by digits — `v1`, `v2`, `v3` —
+/// and nothing else. `v` alone is not a version, `v1beta` is not a
+/// version (it is a *different* path segment the gateway may well route
+/// somewhere else), and `vertex` is not a version despite starting with
+/// a `v`. The segment has to be exactly that shape: the rule exists to
+/// recognise a version the user wrote on purpose, not to guess at one.
+fn ends_with_version_segment(base: &str) -> bool {
+    let Some(last) = base.rsplit('/').next() else {
+        return false;
+    };
+    let Some(number) = last.strip_prefix('v') else {
+        return false;
+    };
+    !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// The `v1/messages` endpoint for an Anthropic base URL.
@@ -192,6 +229,47 @@ mod tests {
             assert!(
                 !url.contains("//v"),
                 "{base} -> {url} has a doubled separator"
+            );
+        }
+    }
+
+    // ---- chat completions: the version segment is the gateway's own ----
+
+    /// A base that names a version other than `/v1` keeps it.
+    ///
+    /// The OpenAI SDK concatenates (`baseURL + '/' + 'chat/completions'`),
+    /// so the version a base carries is the version that gets called.
+    /// Rewriting `.../v2` into `.../v2/v1` sends the request to an
+    /// endpoint the gateway never advertised.
+    #[test]
+    fn a_base_that_ends_in_another_version_keeps_it() {
+        assert_eq!(
+            chat_completions_url("https://maas-api.cn-huabei-1.xf-yun.com/v2"),
+            "https://maas-api.cn-huabei-1.xf-yun.com/v2/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url("https://gw.internal/openai/v3/"),
+            "https://gw.internal/openai/v3/chat/completions"
+        );
+    }
+
+    /// Only a `v` + digits segment is a version.
+    ///
+    /// `v1beta` is a path of its own and `vertex` is a word: neither is
+    /// a version the gateway asked for, and both must keep the `/v1`
+    /// default rather than be silently rewritten to a version segment.
+    #[test]
+    fn a_segment_that_is_not_a_version_gets_the_default() {
+        for base in [
+            "https://gw.internal/v1beta",
+            "https://gw.internal/vertex",
+            "https://gw.internal/v",
+            "https://gw.internal/v2beta/chat",
+        ] {
+            assert_eq!(
+                chat_completions_url(base),
+                format!("{base}/v1/chat/completions"),
+                "{base} was not recognised as a version segment"
             );
         }
     }

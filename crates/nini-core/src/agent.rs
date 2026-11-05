@@ -269,10 +269,247 @@ pub fn is_retryable_error(msg: &str) -> bool {
         || m.contains("overloaded")
 }
 
+/// Whether an HTTP status code is a *transient* (retryable) failure.
+///
+/// The status is the server's own verdict, and it is enough on its own:
+/// a 503 says "come back later", whatever the body happens to contain
+/// — an empty body, a Chinese error sentence, an HTML page from a
+/// reverse proxy. A 400 says "this request is wrong", and sending the
+/// same request again fails the same way.
+pub fn is_transient_status(status: u16) -> bool {
+    // 408 Request Timeout / 429 Too Many Requests: the request itself
+    // was fine, the server was busy or the caller was throttled.
+    matches!(status, 408 | 429)
+        // Every 5xx — 500, 502, 503, 504 … and 529, the code MiniMax's
+        // gateway returns while a model is saturated (exactly as
+        // transient as a 503).
+        || (500..=599).contains(&status)
+}
+
+/// Whether a provider failure may be retried.
+///
+/// Two signals, in this order:
+///
+/// * a **known** HTTP status decides on its own. A transient status
+///   (5xx, 429, 408) is retried *even when the body says nothing
+///   retryable* — an empty body is the most common shape of a 503, and
+///   a body in any language is not evidence that the failure is
+///   permanent. A non-transient status (any 4xx other than 429/408)
+///   is **not** retried, *even when the body contains a word like
+///   "timeout"*: a 400 whose body mentions an upstream timeout is still
+///   a request this client has to fix, and resending it unchanged only
+///   burns the retry budget;
+/// * a **missing** status (`0` — a network-level failure, or an SSE
+///   error that never carried an HTTP code) leaves only the text, and
+///   then [`is_retryable_error`] decides.
+pub fn is_transient_provider_error(status: u16, text: &str) -> bool {
+    if status == 0 {
+        // No status to judge by: the text is all there is.
+        return is_retryable_error(text);
+    }
+    is_transient_status(status)
+}
+
+/// The HTTP status and the readable text of a provider error.
+///
+/// `ProviderError::Api` carries both. Every other variant has no status
+/// of its own, so it is reported as `0` — "unknown", not "no status".
+///
+/// The text of an `Api` error is the server's own words (the provider
+/// layer keeps the response body), which is what the overflow detector
+/// matches on and what the user needs in order to act.
+pub fn describe_provider_error(e: &ProviderError) -> (u16, String) {
+    match e {
+        ProviderError::Api { status, message } => (*status, message.clone()),
+        other => (0, other.to_string()),
+    }
+}
+
+/// The vendor's own error code, when the error carries one.
+///
+/// Only an **HTTP API error** carries a vendor code: the number in
+/// `Bad Request (code 10907)` is the *server's* code, quoted in the
+/// server's own words.
+///
+/// A diagnostic nini composes itself is a different thing. The fallback
+/// provider's summary — "all 3 fallback providers exhausted: openai: HTTP
+/// 400: Bad Request (code 10907)" — quotes another provider's error
+/// verbatim, and running the extractor over it read the *quoted* code as
+/// if it were this error's own: the summary was classified as a context
+/// overflow, and the agent compacted the user's history over a provider
+/// chain that had already given up.
+///
+/// So the code is read only from an error that is an HTTP API error at
+/// all. Everything else falls back to the text, exactly as before.
+fn vendor_error_code(e: &ProviderError, text: &str) -> Option<String> {
+    if !matches!(e, ProviderError::Api { .. }) {
+        return None;
+    }
+    crate::overflow::extract_vendor_error_code(text)
+}
+
+/// A comparable fingerprint of a message history's **content**.
+///
+/// The question this answers is **not** "did the compaction make the
+/// request smaller?". That is the wrong question, and it misfires on a
+/// history that was small to begin with: the summary of a five-byte
+/// history is *longer* than the history it replaces, and the compaction
+/// was perfectly fine. A veto built on "smaller" therefore refused to
+/// retry exactly the runs it was supposed to rescue.
+///
+/// The right question is "**is the history that comes back the same
+/// history that was refused?**". If it is — verbatim — the retry is
+/// literally the request the server just refused, and re-sending it is
+/// waste. If it is different in *any* way, the compaction did something,
+/// and the retry is worth making.
+///
+/// Timestamps are deliberately left out: they are not part of what the
+/// server sees, and a compaction that only re-stamps its messages has
+/// changed nothing the server cares about.
+fn history_content_key(messages: &[Message]) -> String {
+    fn block_key(b: &ContentBlock) -> String {
+        match b {
+            ContentBlock::Text { text } => format!("text\u{1f}{text}"),
+            ContentBlock::ToolUse { id, name, input } => {
+                format!("tool_use\u{1f}{id}\u{1f}{name}\u{1f}{input}")
+            }
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => format!("tool_result\u{1f}{tool_use_id}\u{1f}{content}\u{1f}{is_error}"),
+        }
+    }
+    let mut key = String::new();
+    for m in messages {
+        key.push_str(match m.role {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::Tool => "tool",
+        });
+        key.push('\u{1e}');
+        for b in &m.content {
+            key.push_str(&block_key(b));
+            key.push('\u{1d}');
+        }
+        key.push('\u{1c}');
+    }
+    key
+}
+
+/// The hint appended to a request the server rejected.
+///
+/// A `400` is the server saying "this request is not acceptable". The
+/// reason is in the text that came with it, and that text is **kept**:
+/// it is what tells a wrong model id from a conversation that no longer
+/// fits the model.
+///
+/// The hint only *names* the likeliest cause — the conversation may be
+/// longer than the model accepts — without asserting it, because a 400
+/// is also what an invalid parameter or a bad key looks like, and the
+/// user can tell which one it was from the server's own words.
+///
+/// The wording is deliberately free of the tokens
+/// [`crate::overflow`] matches on to *classify* a failure: a hint that
+/// said "the context is too long" would turn every malformed request
+/// into a context overflow, and the next run would compact the history
+/// away for nothing.
+const REQUEST_REJECTED_HINT: &str = "hint: the server rejected the request; \
+     the conversation may be longer than the model accepts — try /compact, \
+     shrink the task, or switch to a model that accepts more.";
+
+/// The message the user sees when the request was rejected.
+///
+/// The server's words come first, the hint second: the user has to be
+/// able to read the actual reason before the advice.
+pub fn annotate_request_rejection(status: u16, text: &str) -> String {
+    match status {
+        // 400 Bad Request / 413 Payload Too Large — the request itself was
+        // refused, which is what an over-long conversation looks like.
+        400 | 413 => format!("{text} — {REQUEST_REJECTED_HINT}"),
+        _ => text.to_string(),
+    }
+}
+
 /// Exponential backoff: base * 2^(attempt-1) capped at 30s.
 pub fn backoff_ms(attempt: u32, base_ms: u64) -> u64 {
     let exp = 2_u64.saturating_pow(attempt.saturating_sub(1).min(10));
     base_ms.saturating_mul(exp).min(30_000)
+}
+
+#[cfg(test)]
+mod history_key_tests {
+    use super::*;
+
+    fn msg(role: Role, text: &str) -> Message {
+        Message {
+            role,
+            content: vec![ContentBlock::Text { text: text.into() }],
+            timestamp: 0,
+        }
+    }
+
+    /// The key is a fingerprint of the **content**: the same history must
+    /// produce the same key, and any change of content must produce a
+    /// different one.
+    #[test]
+    fn the_key_separates_content_from_metadata() {
+        let a = vec![msg(Role::User, "hello")];
+        let mut b = a.clone();
+        b[0].timestamp = 1_700_000_000; // a timestamp is not content
+        assert_eq!(
+            history_content_key(&a),
+            history_content_key(&b),
+            "a re-stamped history is the same history"
+        );
+
+        let c = vec![msg(Role::User, "hello")];
+        let d = vec![msg(Role::User, "hello!")];
+        assert_ne!(
+            history_content_key(&c),
+            history_content_key(&d),
+            "a different text is a different history"
+        );
+
+        let e = vec![msg(Role::User, "hello")];
+        let f = vec![msg(Role::Assistant, "hello")];
+        assert_ne!(
+            history_content_key(&e),
+            history_content_key(&f),
+            "a different role is a different history"
+        );
+
+        let g = vec![msg(Role::User, "hello")];
+        let h = vec![msg(Role::User, "hello"), msg(Role::Assistant, "hi")];
+        assert_ne!(
+            history_content_key(&g),
+            history_content_key(&h),
+            "an extra turn is a different history"
+        );
+    }
+
+    /// The regression this key replaces: a summary of a tiny history is
+    /// **longer** than the history it replaces. The key must still call
+    /// that a change — the size is not the criterion.
+    #[test]
+    fn a_grown_history_is_still_a_change() {
+        let before = vec![msg(Role::User, "hello")];
+        let after = vec![msg(
+            Role::User,
+            "[CONTEXT SUMMARY]\n\n# Local summary (deterministic)\n\n(no content to summarize)\n",
+        )];
+        assert!(
+            history_content_key(&after).len() > history_content_key(&before).len(),
+            "the compacted history really is longer — the size-based veto \
+             would have refused this retry"
+        );
+        assert_ne!(
+            history_content_key(&before),
+            history_content_key(&after),
+            "but the content did change, so the retry must happen"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -615,6 +852,16 @@ impl RunConfig {
     }
 }
 
+/// How many recovery events the caller must yield, and whether the
+/// request should be retried against the compacted history.
+///
+/// The outcome of [`Agent::recover_from_overflow`] — the one routine every
+/// overflow path shares.
+struct OverflowRecovery {
+    events: Vec<AgentEvent>,
+    retry: bool,
+}
+
 /// The agent. Owns a provider, a tool registry, and the conversation history.
 pub struct Agent {
     provider: Arc<dyn Provider>,
@@ -726,6 +973,13 @@ impl Agent {
     /// Get the current phase of the agent.
     pub fn phase(&self) -> AgentPhase {
         self.phase.clone()
+    }
+
+    /// How many transient-error retries have been spent on the current
+    /// request. Reset to zero by a successful turn (`MessageStop`), so a
+    /// single unlucky 503 does not make every later error unretryable.
+    pub fn retry_attempt(&self) -> u32 {
+        self.retry_attempt
     }
 
     /// Set the phase and return the previous value. The run loop uses
@@ -918,6 +1172,259 @@ impl Agent {
     /// `context_window - reserve_tokens`.
     pub fn should_compact(&self) -> bool {
         crate::compaction::should_compact(self.estimated_tokens(), &self.config.compaction)
+    }
+
+    // v0.12 (fix): the overflow-recovery routine, shared by every branch of
+    // the agent loop that can discover "the context did not fit".
+
+    /// The one and only overflow-recovery sequence.
+    ///
+    /// Pi's `_checkCompaction` Case 1 → `_runAutoCompaction("overflow",
+    /// willRetry = true)` (`agent-session.ts:2132`), with the one-shot bound
+    /// of `_overflowRecoveryAttempted` (`:2172`) and the failed assistant
+    /// turn dropped before the summary is written (`:2019`).
+    ///
+    /// **Everything that can detect an overflow goes through here.** There
+    /// used to be two copies of this sequence — one in the `MessageStop`
+    /// arm, one in the `StreamEvent::Error` arm — and they had already
+    /// drifted (one checked for a cancelled compaction, the other did not;
+    /// one emitted `Compacted` before clearing the auto-compacting flag, the
+    /// other after). A third copy in the HTTP-error arm would have been the
+    /// bug this refactor exists to prevent: a real HTTP 400 recovering
+    /// under *different* semantics from an SSE error.
+    ///
+    /// `detail` is the provider's own words, appended to the "nothing left
+    /// to compact" message so the user can see what the server said.
+    ///
+    /// `must_have_changed` says whether the retry has to carry a
+    /// **different** history than the one that was refused. It is set for
+    /// the HTTP exit (a 400/413 is the server's explicit verdict on
+    /// *this* request: a retry that carries the very same conversation is
+    /// the very same request) and cleared for the mid-stream error path,
+    /// where Pi's own behaviour — compact, retry, and report if it fails
+    /// again — is what the conformance oracle pins
+    /// (`nini-conformance/tests/overflow_recovery.rs`).
+    ///
+    /// "Different" is **verbatim difference of content**, not "smaller".
+    /// A summary of a tiny history is longer than the history it
+    /// replaces; the compaction still worked, and refusing to retry there
+    /// throws the whole recovery away.
+    ///
+    /// Returns the events to yield in order. `retry == true` means the
+    /// compaction succeeded and the caller must rebuild the request from
+    /// the compacted history (`retry_after_compaction = true; break
+    /// 'outer`); `retry == false` means the run is over and the caller must
+    /// `return` — every event explaining why is in `events`.
+    fn recover_from_overflow(
+        &mut self,
+        detail: Option<&str>,
+        must_have_changed: bool,
+    ) -> OverflowRecovery {
+        let mut events = Vec::new();
+
+        if self.overflow_recovery_attempted {
+            // Pi: one recovery, then say so (`agent-session.ts:2172`).
+            // Without this bound, a compaction that cannot shrink the
+            // context re-sends the identical oversized request until
+            // `max_iterations` trips — a message that says nothing about
+            // context.
+            //
+            // v0.12 (review, W3): the server's own words go with it. The
+            // fixed sentence alone ("…try a larger-context model") threw
+            // away the one piece of information the user needs: what the
+            // server actually said. For iFlytek that is the difference
+            // between "your context is too long" and "your request was
+            // malformed", and the code (`Bad Request (code 10907)`) is
+            // the only thing that tells them apart.
+            let mut message = "Context overflow recovery failed after one \
+                compact-and-retry attempt. Try reducing context or \
+                switching to a larger-context model."
+                .to_string();
+            if let Some(detail) = detail {
+                message.push_str(&format!(" (server said: {detail})"));
+            }
+            events.push(AgentEvent::Error { message });
+            self.set_phase(AgentPhase::Idle);
+            events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
+            return OverflowRecovery {
+                events,
+                retry: false,
+            };
+        }
+        self.overflow_recovery_attempted = true;
+
+        // Drop the failed assistant turn before compacting: Pi removes it
+        // from state so the summary is not written *about* the error
+        // response (`agent-session.ts#messages.slice(0, -1)-2019`).
+        //
+        // **Guarded, not blind.** A provider-reported HTTP error arrives
+        // before this run has appended any assistant message, so the last
+        // message is normally the user turn (or a tool result) that was
+        // just sent. Popping it unconditionally would delete a real turn
+        // from the history that is about to be compacted.
+        if matches!(self.messages.last().map(|m| m.role), Some(Role::Assistant)) {
+            self.messages.pop();
+        }
+
+        // v0.10.8 (A2)：压缩**有生命周期**。
+        //
+        // 此前压缩是「偷偷」进行的：没有相位、没有标志，于是 TUI 永远不知道
+        // 正在压缩，`is_compacting` 永远是 false —— runtime.rs 里那个「压缩期间
+        // 提交进队列」的分支是**不可达死代码**，而 Pi 在压缩期间是有明确语义的。
+        self.begin_auto_compaction();
+        self.set_phase(AgentPhase::Compacting {
+            reason: "overflow".to_string(),
+            progress: None,
+        });
+        events.push(AgentEvent::PhaseChanged(AgentPhase::Compacting {
+            reason: "overflow".to_string(),
+            progress: None,
+        }));
+
+        // The history as it stands **right before** the compaction — this
+        // is exactly what the compaction hook is handed, and what the
+        // retry must not be.
+        //
+        // Measured *after* the failed assistant turn was popped: the pop
+        // is part of the recovery sequence, not part of the compaction,
+        // so it must not be able to pass for one.
+        let before_key = history_content_key(&self.messages);
+
+        match self.compact_history_via_hook() {
+            Some(r) => {
+                // 压缩结束：标志落下，再报告压缩结果。
+                //
+                // 注意：**队列不在这里**。产品里排队的是 TUI 的
+                // `run_state.pending_next_turn_messages`（用户在压缩期间提交的
+                // 消息），agent 这一份队列（`pending_next_turn_messages`）在产品里
+                // 一直是空的——`end_auto_compaction()` 只是把标志和中止句柄复位。
+                self.end_auto_compaction();
+                events.push(AgentEvent::Compacted {
+                    summary: r.summary.clone(),
+                    tokens_before: r.tokens_before,
+                });
+                // v0.12 (review, C2): **a compaction that changed nothing
+                // is not a compaction.** The retry is supposed to re-send
+                // a *different* conversation; if the history that comes
+                // back is verbatim the history that was refused, the
+                // retry is the very request the server just refused, and
+                // the run would overflow identically — with the user's
+                // history already rewritten for nothing.
+                //
+                // The test is **content, not size**. "Smaller" is the
+                // wrong criterion: the summary of a five-byte history is
+                // *longer* than the history it replaces, so a size-based
+                // veto refused to retry precisely the small-history runs
+                // the recovery exists for. What matters is whether the
+                // compaction did *anything* to the history.
+                let after_key = history_content_key(&self.messages);
+                if must_have_changed && before_key == after_key {
+                    let mut message = "Context overflow recovery compacted the \
+                         conversation but the history did not change — the retry \
+                         would be the same request the server just refused. \
+                         Try reducing context or switching to a larger-context model."
+                        .to_string();
+                    if let Some(detail) = detail {
+                        message.push_str(&format!(" (server said: {detail})"));
+                    }
+                    events.push(AgentEvent::Error { message });
+                    self.set_phase(AgentPhase::Idle);
+                    events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
+                    return OverflowRecovery {
+                        events,
+                        retry: false,
+                    };
+                }
+                self.set_phase(AgentPhase::Working);
+                events.push(AgentEvent::PhaseChanged(AgentPhase::Working));
+                OverflowRecovery {
+                    events,
+                    retry: true,
+                }
+            }
+            None => {
+                // v0.11 (A2b)：压缩被**取消**与「没什么可压缩」是两件事，
+                // 报告也必须不同。
+                //
+                // Pi：用户按了 Esc → `abortCompaction()` → 压缩以
+                // `aborted: true` 结束，UI 说「Auto-compaction cancelled」。
+                if self.compaction_aborted {
+                    self.end_auto_compaction();
+                    self.set_phase(AgentPhase::Idle);
+                    events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
+                    events.push(AgentEvent::TurnEnd {
+                        stop_reason: "compaction cancelled".to_string(),
+                        usage: Usage::default(),
+                    });
+                    return OverflowRecovery {
+                        events,
+                        retry: false,
+                    };
+                }
+                // Nothing could be compacted, so a retry would send the same
+                // oversized history and overflow identically. Pi's
+                // `compact()` returns false in this situation and the run
+                // ends; silently looping to `max_iterations` was the bug.
+                let mut message = "Context overflow and nothing left to \
+                    compact — ending this run. Start a new session or run \
+                    /compact."
+                    .to_string();
+                if let Some(detail) = detail {
+                    message.push_str(&format!(" (server said: {detail})"));
+                }
+                events.push(AgentEvent::Error { message });
+                // v0.10.8 (A2, review finding)：**收尾**。压缩没成功也是
+                // 「压缩结束了」—— 标志必须落下，否则它会**永久**为真，而
+                // TUI 会把之后每一次提交都收进队列且永不执行。
+                self.end_auto_compaction();
+                self.set_phase(AgentPhase::Idle);
+                events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
+                OverflowRecovery {
+                    events,
+                    retry: false,
+                }
+            }
+        }
+    }
+
+    /// The transient-error retry, shared by **every** error exit.
+    ///
+    /// There used to be one retry sequence (the `StreamEvent::Error`
+    /// arm) and one *absence* of it (the HTTP-error arm) — which meant
+    /// the policy this file documents (`is_retryable_error` knows that a
+    /// 529 is exactly as transient as a 503) never applied to the path
+    /// that **every** real HTTP failure takes: providers turn a non-2xx
+    /// response into `ProviderError::Api`, so a 429/500/502/503/504/529
+    /// died on the first attempt. One routine, so the two exits cannot
+    /// drift apart again.
+    ///
+    /// The retry itself happens in the loop's tail (backoff sleep, then
+    /// the request is rebuilt); this method only decides *whether* to
+    /// retry and puts the agent into the `Retrying` phase.
+    ///
+    /// Returns `Some(attempt)` when the request may be retried. The
+    /// caller yields the `PhaseChanged` event and breaks out of the
+    /// stream loop.
+    fn begin_transient_retry(
+        &mut self,
+        status: u16,
+        text: &str,
+        config: &RunConfig,
+        abort: &AbortHandle,
+    ) -> Option<u32> {
+        if !is_transient_provider_error(status, text) {
+            return None;
+        }
+        if self.retry_attempt >= config.retry.max_retries {
+            return None;
+        }
+        if abort.is_aborted() {
+            return None;
+        }
+        let attempt = self.retry_attempt + 1;
+        self.retry_attempt = attempt;
+        self.set_phase(AgentPhase::Retrying { attempt });
+        Some(attempt)
     }
 
     /// Compact the history the way Pi does: through the caller's hook when
@@ -1435,12 +1942,36 @@ impl Agent {
                                 // compact and retry. Mirrors Pi's
                                 // _checkCompaction() (the same triggers
                                 // we use in nini).
-                                let overflowed = crate::overflow::is_context_overflow(
+                                let overflowed = crate::overflow::is_context_overflow_with_signals(
                                     &stop_reason,
                                     None, // error message is in MessageStop
                                     Some(&usage),
                                     Some(config.compaction.context_window),
+                                    &crate::overflow::OverflowSignals::default(),
                                 );
+                                // Pi parity (agent-session.ts:697-699): a
+                                // **successful** assistant turn clears the
+                                // one-shot overflow-recovery bound.
+                                //
+                                // Pi resets `_overflowRecoveryAttempted`
+                                // whenever an assistant message arrives whose
+                                // stop reason is neither "error" nor
+                                // "length". Without the reset, a long task
+                                // that overflows, recovers, produces an
+                                // answer and then overflows *again* — the
+                                // second overflow is refused with "recovery
+                                // failed after one attempt", while Pi would
+                                // compact once more and carry on.
+                                //
+                                // The reset is deliberately **not**
+                                // unconditional: a turn that is itself an
+                                // overflow has not produced a usable answer,
+                                // and letting it clear the bound would turn
+                                // "compact once and retry" into "compact
+                                // forever".
+                                if !overflowed && !matches!(stop_reason.as_str(), "error" | "length") {
+                                    self.overflow_recovery_attempted = false;
+                                }
                                 // v0.10 (fix): a length stop that *carried
                                 // tool calls* is not a context problem, it is
                                 // a truncated serialisation — and Pi refuses
@@ -1468,119 +1999,21 @@ impl Agent {
                                 // exactly what left the run with no way
                                 // forward (`agent-session.ts#isContextOverflow-2021`).
                                 if recoverable {
-                                    if self.overflow_recovery_attempted {
-                                        // Pi: one recovery, then say so
-                                        // (`agent-session.ts:2172-2011`).
-                                        let msg = "Context overflow recovery \
-                                            failed after one compact-and-retry \
-                                            attempt. Try reducing context or \
-                                            switching to a larger-context model.";
-                                        yield AgentEvent::Error {
-                                            message: msg.to_string(),
-                                        };
-                                        self.set_phase(AgentPhase::Idle);
-                                        yield AgentEvent::PhaseChanged(AgentPhase::Idle);
-                                        return;
+                                    // v0.12 (fix): the recovery sequence lives in
+                                    // one place now (`recover_from_overflow`), so
+                                    // this arm, the `StreamEvent::Error` arm and
+                                    // the HTTP-error arm cannot drift apart.
+                                    let recovery = self.recover_from_overflow(None, false);
+                                    for ev in recovery.events {
+                                        yield ev;
                                     }
-                                    self.overflow_recovery_attempted = true;
-                                    // Drop the failed assistant turn before
-                                    // compacting: Pi removes it from state so
-                                    // the summary is not written *about* the
-                                    // error response
-                                    // (`agent-session.ts#messages.slice(0, -1)-2019`).
-                                    if matches!(
-                                        self.messages.last().map(|m| m.role),
-                                        Some(Role::Assistant)
-                                    ) {
-                                        self.messages.pop();
+                                    if recovery.retry {
+                                        retry_after_compaction = true;
+                                        break 'outer;
                                     }
-                                    // v0.10.8 (A2)：压缩**有生命周期**。
-                                    //
-                                    // 此前压缩是「偷偷」进行的：没有相位、没有标志，
-                                    // 于是 TUI 永远不知道正在压缩，`is_compacting`
-                                    // 永远是 false —— runtime.rs 里那个「压缩期间
-                                    // 提交进队列」的分支是**不可达死代码**，
-                                    // 而 Pi 在压缩期间是有明确语义的。
-                                    //
-                                    // Pi：`agent-session.ts#_checkCompaction` →
-                                    // 压缩期间 `prompt()` 走 queueCompactionMessage
-                                    // （另一条路径直接抛错）—— Pi 的两种路径都要照做，
-                                    // 这里先接上「排队」那条（nini 的压缩是本地的，
-                                    // 窗口短，但语义必须存在）。
-                                    self.begin_auto_compaction();
-                                    self.set_phase(AgentPhase::Compacting {
-                                        reason: "overflow".to_string(),
-                                        progress: None,
-                                    });
-                                    yield AgentEvent::PhaseChanged(AgentPhase::Compacting {
-                                        reason: "overflow".to_string(),
-                                        progress: None,
-                                    });
-                                    match self.compact_history_via_hook() {
-                                        Some(r) => {
-                                            // 压缩结束：标志落下。
-                                            //
-                                            // 注意：**队列不在这里**。产品里排队的是
-                                            // TUI 的 `run_state.pending_next_turn_messages`
-                                            // （用户在压缩期间提交的消息），agent 这一份
-                                            // 队列（`pending_next_turn_messages`）在产品里
-                                            // 一直是空的——`end_auto_compaction()` 只是把
-                                            // 标志和中止句柄复位。
-                                            self.end_auto_compaction();
-                                            yield AgentEvent::Compacted {
-                                                summary: r.summary.clone(),
-                                                tokens_before: r.tokens_before,
-                                            };
-                                            self.set_phase(AgentPhase::Working);
-                                            yield AgentEvent::PhaseChanged(AgentPhase::Working);
-                                            retry_after_compaction = true;
-                                            break 'outer;
-                                        }
-                                        None => {
-                                            // v0.11 (A2b)：压缩被**取消**与「没什么可压缩」
-                                            // 是两件事，报告也必须不同。
-                                            //
-                                            // Pi：用户按了 Esc → `abortCompaction()`
-                                            // → 压缩以 `aborted: true` 结束，UI 说
-                                            // 「Auto-compaction cancelled」，然后冲刷队列。
-                                            // nini 此前只有「溢出且无法压缩」这一条路，
-                                            // 报的是一条与事实不符的错误。
-                                            if self.compaction_aborted {
-                                                self.end_auto_compaction();
-                                                self.set_phase(AgentPhase::Idle);
-                                                yield AgentEvent::PhaseChanged(AgentPhase::Idle);
-                                                yield AgentEvent::TurnEnd {
-                                                    stop_reason: "compaction cancelled".to_string(),
-                                                    usage: Usage::default(),
-                                                };
-                                                return;
-                                            }
-                                            // Nothing could be compacted, so
-                                            // a retry would send the same
-                                            // oversized history and overflow
-                                            // identically. Pi's `compact()`
-                                            // returns false in this situation
-                                            // and the run ends; silently
-                                            // looping to `max_iterations` was
-                                            // the bug.
-                                            let msg = "Context overflow and \
-                                                nothing left to compact — \
-                                                ending this run. Start a new \
-                                                session or run /compact.";
-                                            yield AgentEvent::Error {
-                                                message: msg.to_string(),
-                                            };
-                                            // v0.10.8 (A2, review finding)：**收尾**。
-                                            // 压缩没成功也是「压缩结束了」——
-                                            // 标志必须落下，否则它会**永久**为真，
-                                            // 而 TUI 会把之后每一次提交都收进队列
-                                            // 且永不执行。
-                                            self.end_auto_compaction();
-                                            self.set_phase(AgentPhase::Idle);
-                                            yield AgentEvent::PhaseChanged(AgentPhase::Idle);
-                                            return;
-                                        }
-                                    }
+                                    // The recovery failed (or was cancelled) and
+                                    // the events above say so; the run is over.
+                                    return;
                                 }
                             }
                             Some(Ok(StreamEvent::Error { message })) => {
@@ -1598,77 +2031,46 @@ impl Agent {
                                 // Pi: `overflow.ts:136` Case 1 on the
                                 // assistant message, then
                                 // `_checkCompaction` → `_runAutoCompaction`.
-                                let overflowed = crate::overflow::is_context_overflow(
+                                let overflowed = crate::overflow::is_context_overflow_with_signals(
                                     "error",
                                     Some(&message),
                                     None,
                                     Some(config.compaction.context_window),
+                                    &crate::overflow::OverflowSignals {
+                                        error_code: crate::overflow::extract_vendor_error_code(
+                                            &message,
+                                        ),
+                                    },
                                 );
                                 if overflowed {
-                                    if self.overflow_recovery_attempted {
-                                        yield AgentEvent::Error {
-                                            message: "Context overflow recovery \
-                                                failed after one compact-and-retry \
-                                                attempt. Try reducing context or \
-                                                switching to a larger-context model."
-                                                .to_string(),
-                                        };
-                                        self.set_phase(AgentPhase::Idle);
-                                        yield AgentEvent::PhaseChanged(AgentPhase::Idle);
-                                        return;
+                                    // v0.12 (fix): shared with the other two
+                                    // overflow paths — see
+                                    // `Agent::recover_from_overflow`.
+                                    let recovery = self.recover_from_overflow(Some(&message), false);
+                                    for ev in recovery.events {
+                                        yield ev;
                                     }
-                                    self.overflow_recovery_attempted = true;
-                                    // v0.10.8 (A2)：这条路径是**生产主路径**
-                                    // （provider 把 HTTP 400 报成 StreamEvent::Error），
-                                    // 它也必须有压缩的生命周期——否则「压缩期间
-                                    // 提交进队列」只在另一条路径上成立。
-                                    self.begin_auto_compaction();
-                                    self.set_phase(AgentPhase::Compacting {
-                                        reason: "overflow".to_string(),
-                                        progress: None,
-                                    });
-                                    yield AgentEvent::PhaseChanged(AgentPhase::Compacting {
-                                        reason: "overflow".to_string(),
-                                        progress: None,
-                                    });
-                                    match self.compact_history_via_hook() {
-                                        Some(r) => {
-                                            yield AgentEvent::Compacted {
-                                                summary: r.summary.clone(),
-                                                tokens_before: r.tokens_before,
-                                            };
-                                            self.end_auto_compaction();
-                                            self.set_phase(AgentPhase::Working);
-                                            yield AgentEvent::PhaseChanged(AgentPhase::Working);
-                                            retry_after_compaction = true;
-                                            break 'outer;
-                                        }
-                                        None => {
-                                            yield AgentEvent::Error {
-                                                message: format!(
-                                                    "Context overflow and nothing left \
-                                                     to compact: {message}"
-                                                ),
-                                            };
-                                            // 收尾：标志必须落下（review finding）。
-                                            self.end_auto_compaction();
-                                            self.set_phase(AgentPhase::Idle);
-                                            yield AgentEvent::PhaseChanged(AgentPhase::Idle);
-                                            return;
-                                        }
+                                    if recovery.retry {
+                                        retry_after_compaction = true;
+                                        break 'outer;
                                     }
+                                    return;
                                 }
-                                if is_retryable_error(&message)
-                                    && self.retry_attempt < config.retry.max_retries
-                                    && !abort.is_aborted()
+                                // Transient? Retry the current request.
+                                //
+                                // The same routine the HTTP-error arm
+                                // uses — one sequence, two exits — so the
+                                // retry semantics cannot drift apart.
+                                // This arm has no HTTP status (the error
+                                // arrived inside a 200 response), so the
+                                // text decides.
+                                if let Some(attempt) =
+                                    self.begin_transient_retry(0, &message, &config, &abort)
                                 {
                                     // Pi parity: switch to Retrying phase
                                     // and signal the stream consumer to
                                     // break out so we can retry the current
                                     // request.
-                                    let attempt = self.retry_attempt + 1;
-                                    self.retry_attempt = attempt;
-                                    self.set_phase(AgentPhase::Retrying { attempt });
                                     yield AgentEvent::PhaseChanged(
                                         AgentPhase::Retrying { attempt },
                                     );
@@ -1676,13 +2078,151 @@ impl Agent {
                                     break 'outer;
                                 }
                                 // Non-retryable: surface as fatal.
-                                yield AgentEvent::Error { message: message.clone() };
+                                //
+                                // v0.12 (review, W4): reported **once**. The
+                                // error used to be reported twice — once as
+                                // an `AgentEvent::Error` and once as the
+                                // terminal error — and the CLI pushes both
+                                // into the same sink, so the transcript
+                                // showed the identical sentence twice, glued
+                                // into one line. The terminal error is the
+                                // one that ends the run and the one every
+                                // caller reads, so it is the one kept.
                                 Err(AgentError::Provider(ProviderError::Api {
                                     status: 0,
                                     message,
                                 }))?;
                             }
-                            Some(Err(e)) => Err(AgentError::Provider(e))?,
+                            Some(Err(e)) => {
+                                // v0.12 (fix): **this is the arm every real
+                                // HTTP error arrives in.**
+                                //
+                                // Every provider turns a non-2xx response
+                                // into `ProviderError::Api { status,
+                                // message }` — including the HTTP 400 that a
+                                // context overflow produces. This arm used to
+                                // re-raise that error without a single look at
+                                // it, so a long task that outgrew the window
+                                // died here: no compaction, no retry, the
+                                // history intact but the session already lost.
+                                //
+                                // The text is now read exactly like the
+                                // `StreamEvent::Error` arm reads it, and the
+                                // vendor's own error code (iFlytek's `10907`,
+                                // for instance) is passed along as a structured
+                                // signal — some vendors say nothing in prose.
+                                let (status, text) = describe_provider_error(&e);
+                                //
+                                // v0.12 (review, W1): **the status decides
+                                // whether this failure is a candidate for
+                                // the overflow path at all.**
+                                //
+                                // The check used to run on *every* HTTP
+                                // failure, so a 500 whose body happened to
+                                // say "maximum context length exceeded" —
+                                // or that carried a vendor code — compacted
+                                // the user's history. A 5xx is a broken
+                                // server, not an oversized request: the
+                                // right answer is to wait a moment and send
+                                // the same request again, which is what the
+                                // transient-retry path below does.
+                                //
+                                // | status | what it means | overflow? | retry? |
+                                // |---|---|---|---|
+                                // | 400 / 413 | the request was refused | yes | no |
+                                // | 408 / 429 / 5xx | the server is busy/broken | no | yes |
+                                // | other 4xx | the request is wrong | no | no |
+                                // | 0 (no status) | network-level failure | text | text |
+                                //
+                                // This is the same rule
+                                // [`annotate_request_rejection`] already
+                                // used to decide where a hint belongs.
+                                let overflow_candidate = match status {
+                                    // No HTTP status: the text is all there
+                                    // is, and the text decides (unchanged).
+                                    0 => true,
+                                    // "Your request was refused" — the shape
+                                    // an over-long conversation has.
+                                    400 | 413 => true,
+                                    // Transient: the server is busy, the
+                                    // request was fine. Never an overflow.
+                                    408 | 429 => false,
+                                    s if (500..=599).contains(&s) => false,
+                                    // Every other 4xx: the client has to fix
+                                    // the request. Not an overflow, not
+                                    // retryable.
+                                    _ => false,
+                                };
+                                if overflow_candidate {
+                                    let signals = crate::overflow::OverflowSignals {
+                                        error_code: vendor_error_code(&e, &text),
+                                    };
+                                    let overflowed = crate::overflow::is_context_overflow_with_signals(
+                                        "error",
+                                        Some(&text),
+                                        None,
+                                        Some(config.compaction.context_window),
+                                        &signals,
+                                    );
+                                    if overflowed {
+                                        // The same recovery the other two arms
+                                        // use — one compact-and-retry, then stop.
+                                        let recovery = self.recover_from_overflow(Some(&text), true);
+                                        for ev in recovery.events {
+                                            yield ev;
+                                        }
+                                        if recovery.retry {
+                                            retry_after_compaction = true;
+                                            break 'outer;
+                                        }
+                                        return;
+                                    }
+                                }
+                                // Not an overflow. A transient failure
+                                // (429 / 5xx / 408) is worth another
+                                // attempt: the same request usually
+                                // succeeds once the server's mood
+                                // changes. The status decides, not the
+                                // body — a 503 with an empty body is the
+                                // most common shape of a transient
+                                // failure, and a 400 that happens to
+                                // mention "timeout" is still a request
+                                // the client has to fix.
+                                if let Some(attempt) =
+                                    self.begin_transient_retry(status, &text, &config, &abort)
+                                {
+                                    yield AgentEvent::PhaseChanged(
+                                        AgentPhase::Retrying { attempt },
+                                    );
+                                    last_error = Some(text.clone());
+                                    break 'outer;
+                                }
+                                // Not an overflow: the server rejected the
+                                // request for some other reason. The message
+                                // the user sees must say what to do next, and
+                                // it must keep the server's own words — they
+                                // are what tells a bad model id from an
+                                // oversized context.
+                                //
+                                // v0.12 (review, W4): the error is reported
+                                // **once**. It used to be reported twice —
+                                // once as an `AgentEvent::Error` and once as
+                                // the terminal error — and the CLI pushes
+                                // both into the same sink, so the transcript
+                                // showed the identical sentence twice, glued
+                                // into one line. The terminal error is the
+                                // one that ends the run and the one every
+                                // caller reads, so it is the one that is
+                                // kept.
+                                let annotated = annotate_request_rejection(status, &text);
+                                Err(AgentError::Provider(match e {
+                                    ProviderError::Api { status, .. } => ProviderError::Api {
+                                        status,
+                                        message: annotated,
+                                    },
+                                    other => other,
+                                }))?;
+                            }
                             None => break,
                         }
                     }
