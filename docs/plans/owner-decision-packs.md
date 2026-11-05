@@ -530,13 +530,20 @@
 | 5 | Pi 内建工具到底 **7 个还是 8 个** | R14 / B21 | 快照内 **7 个**；本机安装包 **8 个**（多 `powershell`）→ 需 owner 确认台账用哪个口径 |
 | 6 | `B1.exit_criterion` 里「cmd_clone **接受 session-id 参数**」与 Pi 实际（**无参数**）的冲突 | R10 | 需 owner 确认按哪个口径 |
 | 7 | ~~`B24` 的数字：16 还是 18~~ | — | **2026-11-05 已解决**：根因是「零读取」没写口径。按写明的口径复算 = **27 零读 = 9 syntax* + 18**，台账标题已改为 18、口径与复算命令已写进 `B24.nini_state`，不再需要 owner 裁决 |
-| 8 | `B25` 的「5 个缺失」是 **5 组还是 6 个 binding id** | R14 | `map` 里 `nini: null` 实为 **6 条** → 需 owner 统一口径（**本文件按 6 个 id / 5 组写**） |
+| 8 | ~~`B25` 的「5 个缺失」是 5 组还是 6 个 binding id~~ | — | **2026-11-05 已解决**：`map` 里 `nini: null` 实为 **6 条**，其中「跳字符」占 2 个 id（「跳上/跳下同一字符」在 Pi 是两个独立 binding id，nini 一个都没有）→ **5 组 / 6 个 id**。台账标题与正文已按此改写 |
 | 9 | R5 的「用户真正常用哪几家」 | R5 | 无客观依据 → 需 owner 给名单，否则就是又一轮自选范围 |
 
 ### 7.2 台账自身还需要修的三处口径（与拍板并行，不额外花成本）
 
-| 位置 | 现状 | 应为 |
-|---|---|---|
-| `docs/GOALS.md` §4 决策台账 | 只有 `R4 / R5 / R9 / R10 / R6` 五行 | 补 `R11 / R12 / R13 / R14` 四行（`scripts/parity-gap.py:81` 的 `DECISIONS` 白名单**已经**包含它们） |
-| `docs/GOALS.md` §2 Provider 行 | 「Pi **0.84.2** 内置 40 个」 | 版本口径对齐 0.85.1（实测同为 40），并按 R5 的新结论改写 |
-| `scripts/parity-gaps.json` `B25.pi_basis` | 「KEYBINDINGS（**90** 个 binding id）」 | `KEYBINDINGS` 实为 **47**；90 是与 `TUI_KEYBINDINGS`(47) 合并去重后的数（重叠 4） |
+| 位置 | 现状 | 应为 | 状态 |
+|---|---|---|---|
+| `docs/GOALS.md` §4 决策台账 | 只有 `R4 / R5 / R9 / R10 / R6` 五行 | 补 `R11 / R12 / R13 / R14` 四行 | ✅ **已补**（2026-11-05） |
+| `scripts/parity-gaps.json` `B25.pi_basis` | 「KEYBINDINGS（**90** 个 binding id）」 | `KEYBINDINGS` 实为 **47**；90 是与 `TUI_KEYBINDINGS`(47) 合并去重后的数（重叠 4） | ✅ **已改**（2026-11-05） |
+| `docs/GOALS.md` §2 Provider 行 | 「Pi **0.84.2** 内置 40 个」 | 版本口径对齐 0.85.1（实测同为 40） | ✅ **已改**（2026-11-05）——「按 R5 的新结论改写」仍待拍板 |
+
+**另有一处新发现（与拍板并行，不额外花成本）**：`/login` 与 `/logout` 的 provider 清单里
+有 **`together`**（10 个），但 `crates/nini-cli/src/provider_factory.rs` 的 `build_provider`
+**构造不出** `together` —— 它的 `other =>` 臂会打印 `unknown provider: together` 并
+`exit(2)`。也就是说 `/login` 在**教用户用一个 nini 拒绝的 provider**。修法二选一：
+① 把 `together` 从 `/login`/`/logout` 清单里去掉（**5 行**）；② 给它加一个走
+`openai_compat` 的薄壳（**~90 行**，属 R5 的「方言分层」范围）。
