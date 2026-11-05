@@ -12,7 +12,9 @@ use crate::render::render_frame_with_theme;
 use crate::selector::SelectorItem;
 use crate::state::{AppState, RunMode, TranscriptLine};
 use anyhow::Result;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEvent};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEvent, KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -1238,7 +1240,37 @@ async fn run_loop(
                         }
                     }
                     Some(Ok(Event::Mouse(m))) => {
-                        let _ = handle_mouse(m, &shared);
+                        // v0.16 fix: route wheel events to the active selector
+                        // as Up/Down key presses. The selector overlay owns
+                        // the mouse pointer; a wheel scroll in the list is
+                        // equivalent to pressing Up/Down.
+                        if active_selector.is_some()
+                            && matches!(
+                                m.kind,
+                                crossterm::event::MouseEventKind::ScrollUp
+                                    | crossterm::event::MouseEventKind::ScrollDown
+                            )
+                        {
+                            let code = if matches!(
+                                m.kind,
+                                crossterm::event::MouseEventKind::ScrollDown
+                            ) {
+                                crossterm::event::KeyCode::Down
+                            } else {
+                                crossterm::event::KeyCode::Up
+                            };
+                            let key =
+                                crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+                            handle_selector_key(
+                                key,
+                                &shared,
+                                active_selector.as_mut().unwrap(),
+                                &mut selector_query,
+                                &mut selector_visible,
+                            );
+                        } else {
+                            let _ = handle_mouse(m, &shared);
+                        }
                     }
                     Some(Ok(Event::Resize(cols, rows))) => {
                         // ratatui handles the buffer; the *report* is
@@ -2452,8 +2484,33 @@ pub fn handle_mouse(m: crossterm::event::MouseEvent, shared: &SharedState) -> bo
         return false;
     }
 
+    // v0.16 fix: completion popup owns the wheel while it is up.
+    // The old code dropped every mouse event when an overlay was active,
+    // but the completion popup is keyboard-driven (Up/Down) with no
+    // mouse input path at all — so a wheel scroll inside the popup
+    // was a dead no-op. Route the wheel to the popup's select_up/down
+    // so the user can scroll it with the pointer.
+    if matches!(
+        m.kind,
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+    ) {
+        if let Some(popup) = state.ui_state.completion.as_mut() {
+            if matches!(m.kind, MouseEventKind::ScrollDown) {
+                popup.select_down();
+            } else {
+                popup.select_up();
+            }
+            return true;
+        }
+    }
+
     // Overlays own the pointer while they are up: a wheel event inside a
     // selector scrolls the list, not the transcript behind it.
+    //
+    // `ui_state.selector` is never written (the live selector lives in
+    // `run_loop`'s `active_selector`), so this branch only fires for
+    // completion popups — which are handled above. Selectors are
+    // routed via `handle_selector_key` in the run_loop event loop.
     if state.ui_state.selector.is_some() || state.ui_state.completion.is_some() {
         return false;
     }

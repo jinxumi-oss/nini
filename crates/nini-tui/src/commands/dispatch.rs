@@ -669,12 +669,18 @@ fn cmd_session(
 ) -> CommandResult {
     let lines = vec![
         format!(
-            "session_id: {}",
+            "session_id: {} ({})",
             state
                 .session_state
                 .session_id
                 .as_deref()
-                .unwrap_or("(none)")
+                .unwrap_or("(none)"),
+            state
+                .session_state
+                .session_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "no file".to_string()),
         ),
         format!("model:      {}", state.model_state.model),
         format!("mode:       {:?}", state.run_state.mode),
@@ -1307,37 +1313,28 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
         if let Err(e) = state.session_load(path.clone()) {
             return CommandResult::error(format!("Failed to load session: {e}"));
         }
-        // Rebuild transcript from session entries.
-        // v0.8.9 (P1-5): same as `/new` — the new session can have far
-        // fewer lines than the one we were scrolled into.
-        let ts = Arc::make_mut(&mut state.transcript_state);
-        ts.lines.clear();
-        ts.reset_view();
-        // v0.8.9 (perf): same — the rebuilt transcript reuses indices.
-        state.invalidate_item_counts();
+        // v0.16 fix: the transcript is rebuilt *by* `session_load` — from
+        // the session's live context, not its raw entries — and nothing
+        // more is needed here. This command used to rebuild the transcript
+        // by hand from `guard.entries`: it cleared the transcript and then
+        // re-pushed every user/assistant message through `push_user` /
+        // `push_assistant`, which
+        //
+        //   * kept only `ContentBlock::Text` blocks, so tool calls, tool
+        //     results and bash executions vanished from the screen while
+        //     staying in the session (a coding session resumed as prose),
+        //   * was a strictly worse copy of what `session_load` had
+        //     already built from the live context (the hand-built loop
+        //     knew nothing of bash executions, failed turns or
+        //     compaction summaries) — and it *overwrote* the good
+        //     transcript with it, and
+        //   * wrote the `(loaded session ...)` confirmation into the
+        //     session as well, so it came back on the next `/resume` of
+        //     this file as a phantom assistant turn.
+        //
+        // One block caused all three defects; deleting it is the fix,
+        // not rewriting it.
         let session_id = state.session_state.session_id.clone().unwrap_or_default();
-        // Take ownership of the session Arc so we can lock it without
-        // keeping a borrow of state.
-        let session_arc = state.session_state.session.take();
-        if let Some(arc) = session_arc {
-            let guard = crate::state::lock_session(&arc);
-            for entry in &guard.entries {
-                if let Some(msg) = entry_legacy_message(entry) {
-                    for block in &msg.content {
-                        if let nini_core::ContentBlock::Text { text } = block {
-                            match msg.role {
-                                nini_core::Role::User => state.push_user(text.clone()),
-                                nini_core::Role::Assistant => state.push_assistant(text.clone()),
-                                nini_core::Role::System | nini_core::Role::Tool => {}
-                            }
-                        }
-                    }
-                }
-            }
-            drop(guard);
-            // Restore the Arc.
-            state.session_state.session = Some(arc);
-        }
         // v0.8.9 (P2-9): say so when the history has a hole in it. The
         // reader is deliberately tolerant of malformed lines, but
         // tolerance the user cannot see is its own kind of lie — a
@@ -1349,7 +1346,15 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
                  the history above has gaps"
             ));
         }
-        state.push_assistant(format!("(loaded session {session_id})"));
+        // R: a `Notice`, not `push_assistant_raw` — the confirmation is
+        // the TUI talking, and v0.10.3's rule is that such a line must
+        // never be mistaken for a model message in the export or the
+        // search index. `push_assistant_raw` keeps it out of the session
+        // file but still glues it onto the last assistant text of the
+        // loaded history (same-turn merging), so it becomes part of a
+        // model message on screen and in `/export`. A `Notice` is its
+        // own row and never touches the session.
+        state.push_notice(format!("(loaded session {session_id})"));
         state.push_divider();
         return CommandResult::output(vec![format!(
             "Resumed: {}{}",
@@ -1680,19 +1685,6 @@ fn cmd_editor(state: &mut AppState, _settings: &mut SettingsManager, _args: &str
     state.run_state.pending_external_editor = true;
     state.run_state.status = "Opening editor…".to_string();
     CommandResult::output(vec!["Opening editor…".to_string()])
-}
-
-/// v0.7.1 — delegate to the chokepoint in nini-core::conversion.
-/// The chokepoint implements the full wiki 7→3 (nini's 10→4)
-/// conversion, including the ToolResult → Role::Tool mapping that
-/// the previous local implementation was dropping via _ => None.
-fn entry_legacy_message(entry: &nini_core::SessionEntry) -> Option<nini_core::AgentMessage> {
-    let m = nini_core::conversion::session_entry_to_llm_message(entry)?;
-    Some(nini_core::AgentMessage {
-        role: m.role,
-        content: m.content,
-        timestamp: m.timestamp,
-    })
 }
 
 fn cmd_hotkeys(
