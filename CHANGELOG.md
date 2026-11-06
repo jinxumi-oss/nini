@@ -1,6 +1,6 @@
 ## v0.17.0 — provider/model 级配置真的生效（D5）+ 取回排队消息（R14）+ 计划状态订正
 
-2092 tests, all green.
+2097 tests, all green.
 
 这一版做三件事，**都是把「说出去的比做到的多」纠回来**：
 
@@ -31,7 +31,7 @@
 
 ## Unreleased — TUI 的键位/浮层 oracle + provider 层的四个真缺陷：错误体被丢弃、HTTP 400 不压缩重试、空 content 被序列化成空串、瞬时错误不重试；外加一次独立审查（2 Critical + 9 Warning）
 
-2074 tests, all green.
+2097 tests, all green.
 
 这一轮不是发布，是 **v0.16.0 之后的两次工作合流**：前半是 TUI 的对照 oracle
 （第 1–4 节），后半是一次**线上故障的复盘**（第 5–13 节）——用户的 provider 是
@@ -648,7 +648,7 @@ OpenAI SDK 是**字符串拼接**（`baseURL + '/' + 'chat/completions'`），ba
 - **消费层**（`crates/nini-cli/src/provider_factory.rs`）：provider 级 `model_overrides` 按 Pi 语义合并进 per-model 覆盖表（`thinkingLevelMap`/`samplingParams` 是**合并**、`headers`/`compat` 是**覆盖**，引用 `provider-composer.js:277-281` 与 `304/314`）；`oauth` 给出**显式提示**；模型级 `compat` 经 `compat_for` 真正落到请求体。
 - **模型面**（`crates/nini-core/src/model_runtime.rs`）：`ModelSpec` 新增 `compat` / `thinking_level_map` / `sampling_params`；`user_model_specs` 按 Pi 优先级填（模型级 `api` 优先，`model-config.js:142` + `provider-composer.js:49`）；模型级字段此前被 serde **静默丢弃**，现在被承载。
 
-测试数 **1878 → 2074 → 2092**（本轮 +18：解析层 +6、消费层 +8、模型面 +4）。README 徽章/正文与 CHANGELOG 顶部同步为 2092（门禁要求对外声明与实测精确相等）。
+测试数 **1878 → 2074 → 2097**（本轮 +18：解析层 +6、消费层 +8、模型面 +4）。README 徽章/正文与 CHANGELOG 顶部同步为 2097（门禁要求对外声明与实测精确相等）。
 
 **仍缺、不冒充支持**：provider 级 `oauth` 无实现（R4 凭据 env-only、R5 无 radius）——已读 + 提示，能力仍缺；model 级 `cost`（计价展示是产品决定，不在本轮范围）；Pi 口径差异②（同名内置 provider 的 stream 优先级）需单独设计轮。
 

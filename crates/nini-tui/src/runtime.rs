@@ -121,6 +121,39 @@ fn push_notices(shared: &SharedState, msgs: Vec<String>) {
     lock_state(shared).push_notices(msgs);
 }
 
+/// v0.11 (X): watchdog 异常分支的显式终止通知文案（**纯函数**）。
+///
+/// 当 agent 任务异常结束（未产生正常 Done）时，watchdog 除了复位状态，
+/// 还要向 transcript 推一条用户可见的终止通知，否则「断开后完全静止、
+/// 无回复」。文案生成抽成纯函数：只接收「异常类型 + 原因」，返回通知
+/// 文案，不碰任何状态、不产生副作用，便于后续单独测试。
+#[derive(Debug, Clone)]
+enum WatchdogStopReason {
+    /// 正常结束路径但没走到 Done（驱动没承诺正常结束）。
+    NoDone,
+    /// 任务 panic（携带 panic 信息）。
+    Panicked(String),
+    /// 超时未结束。
+    Timeout,
+}
+
+/// watchdog 异常分支的显式终止通知文案（纯函数：只接收输入、返回文案）。
+fn watchdog_stop_notice(reason: &WatchdogStopReason) -> String {
+    match reason {
+        WatchdogStopReason::NoDone => {
+            "agent run stopped: the agent task ended without a Done event".to_string()
+        }
+        WatchdogStopReason::Panicked(msg) => {
+            format!("agent run stopped: the agent task panicked ({msg})")
+        }
+        WatchdogStopReason::Timeout => {
+            format!(
+                "agent run stopped: the agent task did not finish within {WATCHDOG_TIMEOUT_SECS}s"
+            )
+        }
+    }
+}
+
 /// A trimmed-down agent event for cross-task delivery. Avoids leaking
 /// `nini_core::AgentEvent` (and its `AgentError`/`Provider` dependencies)
 /// across the spawn boundary.
@@ -3690,19 +3723,35 @@ pub fn submit_user_input_inner(
                     g.run_state.mode = RunMode::Editing;
                     g.run_state.abort_signal = None;
                 }
+                // v0.11 (X)：先定终止原因（纯 helper 的输入），异常分支在
+                // tracing::warn! 处据此推一条显式终止通知给 transcript。
+                let stop_reason = match &outcome {
+                    Ok(Ok(())) => WatchdogStopReason::NoDone,
+                    Ok(Err(join_err)) => WatchdogStopReason::Panicked(join_err.to_string()),
+                    Err(_) => WatchdogStopReason::Timeout,
+                };
                 match outcome {
-                    Ok(Ok(())) => tracing::warn!(
-                        "agent task ended without a Done event; \
-                         cleared run_state::agent_alive"
-                    ),
-                    Ok(Err(join_err)) => tracing::warn!(
-                        "agent task panicked ({join_err}); \
-                         cleared run_state::agent_alive"
-                    ),
-                    Err(_) => tracing::warn!(
-                        "agent task did not finish within {WATCHDOG_TIMEOUT_SECS}s; \
-                         cleared run_state::agent_alive"
-                    ),
+                    Ok(Ok(())) => {
+                        tracing::warn!(
+                            "agent task ended without a Done event; \
+                             cleared run_state::agent_alive"
+                        );
+                        push_notices(&watchdog_shared, vec![watchdog_stop_notice(&stop_reason)]);
+                    }
+                    Ok(Err(join_err)) => {
+                        tracing::warn!(
+                            "agent task panicked ({join_err}); \
+                             cleared run_state::agent_alive"
+                        );
+                        push_notices(&watchdog_shared, vec![watchdog_stop_notice(&stop_reason)]);
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "agent task did not finish within {WATCHDOG_TIMEOUT_SECS}s; \
+                             cleared run_state::agent_alive"
+                        );
+                        push_notices(&watchdog_shared, vec![watchdog_stop_notice(&stop_reason)]);
+                    }
                 }
             });
         }
@@ -3719,6 +3768,12 @@ pub fn submit_user_input_inner(
                 tracing::warn!(
                     "no tokio runtime for the agent watchdog; \
                      cleared run_state::agent_alive"
+                );
+                // v0.11 (X)：无 tokio runtime 的 watchdog 分支同样属于异常结束，
+                // 也要推显式终止通知，避免「断开后完全静止、无回复」。
+                push_notices(
+                    &shared,
+                    vec![watchdog_stop_notice(&WatchdogStopReason::Timeout)],
                 );
             }
         }
