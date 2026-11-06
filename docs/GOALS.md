@@ -81,7 +81,7 @@
 
 ### T3 每个 parity 声明背后必须有一条会红的 oracle
 
-`nini-conformance` 45 条 + 各 crate 的 e2e。继承 v0.10 已固化的三条纪律：
+`nini-conformance` 的测试数取**口径**（2026-11-07 收口）：**`cargo test -p nini-conformance` 的 passed 总数**（可复算的实测值；原写的「45 条」与「实测 66」是不同时期的旧数，不再各自声称）。当前实测 **75 条**，+ 各 crate 的 e2e。继承 v0.10 已固化的三条纪律：
 
 1. **fixture 必须来自真实 Pi 输出**，不能来自 nini 自己的输出（自洽实现查不出对称的 bug —— `stop_reason` 大小写就是这么躲过 950 个绿测试的）。
 2. **oracle 只能引用修复前后都存在的 API**；接口会变的修复，oracle 必须走签名不变的更高层入口（编译失败不是 oracle，v0.10 会话里因此栽了两次）。
@@ -251,7 +251,7 @@ hook 隔离的测试全绿，而交付二进制里 `catch_hook_panic` 是死代�
 
 | 文档 | 状态 | 说明 |
 |---|---|---|
-| **`plans/parity-with-pi.md`** | **active** | **功能面 parity 的唯一执行细则**（2026-10-18，v2 经自我审查修正）：差距总表 A/B/C + W0–W5 + §9 已知不确定性。**注意**：其 §9 记录了 v1 三条核心论断被实测推翻，且 GOALS 内的“45 条 oracle”同样已旧（实测 66） |
+| **`plans/parity-with-pi.md`** | **active** | **功能面 parity 的唯一执行细则**（2026-10-18，v2 经自我审查修正）：差距总表 A/B/C + W0–W5 + §9 已知不确定性。**注意**：其 §9 记录了 v1 三条核心论断被实测推翻，且 GOALS 的“oracle 计数”口径已收口（见 T3：`cargo test -p nini-conformance` 的 passed 总数，当前实测 75，可复算） |
 | `plans/v0.10-pi-parity-refactor.md` | **只读** | R1–R8 历史路线 + 里程碑实施记录（§12 起）；§31b 构建身份已落地 |
 | `plans/input_interrupt_parity.md` | 归入 W1 | M0/M1/**M2 实质**已完成；未做的是 M2b 双队列 / M3 / M4（§8.8 已勘误） |
 | `plans/r2a-compaction-persistence.md` | **shipped** | **A1–A4 与它 §0 的 P0.1/P0.2 全部交付**（2026-11-05 复核：真实 session 文件里 `parentId` 是链式的、`toolCall`/`toolResult` 行数实测 27–213；`/compact` 与自动压缩都走 session 层；resume 的转录由 `build_context_entries` 重建）。该文档的 status 字段曾长期与事实不符，本轮已订正并留痕（见其 §5） |
