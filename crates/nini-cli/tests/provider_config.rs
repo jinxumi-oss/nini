@@ -29,7 +29,7 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use nini_cli::provider_factory::build_provider;
+use nini_cli::provider_factory::{build_provider, model_overrides_of, models_json_warnings};
 use nini_core::provider::{ContentBlock, Message, Provider, Request, Role};
 use nini_core::settings::ModelsJson;
 use wiremock::matchers::{method, path};
@@ -639,4 +639,272 @@ async fn unknown_fields_are_still_ignored() {
 
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1, "the provider must still be usable");
+}
+
+// ---
+// 8. D5：`oauth` 与 provider 级的 `modelOverrides`
+// ---
+
+/// 一份同时带 `oauth` 与 `modelOverrides` 的 `models.json`（provider 名与
+/// `models[]` 里有**同键**的那些）。
+fn a_models_json_with_oauth_and_model_overrides(base_url: &str) -> ModelsJson {
+    models_json(&format!(
+        r#"{{
+  "providers": {{
+    "my-gw": {{
+      "api": "openai-completions",
+      "baseUrl": "{base}",
+      "apiKey": "the-key",
+      "oauth": "radius",
+      "models": [
+        {{
+          "id": "some-model",
+          "headers": {{"X-Shared": "from-models", "X-Only-Models": "yes"}},
+          "thinkingLevelMap": {{"low": "low-from-models", "high": "high-from-models"}},
+          "samplingParams": {{"top_p": 0.5, "seed": 7}},
+          "compat": {{"maxTokensField": "max_completion_tokens"}}
+        }}
+      ],
+      "modelOverrides": {{
+        "some-model": {{
+          "headers": {{"X-Shared": "from-override", "X-Only-Override": "yes"}},
+          "thinkingLevelMap": {{"high": "high-from-override"}},
+          "samplingParams": {{"top_p": 0.9}},
+          "compat": {{"supportsStore": false}}
+        }}
+      }}
+    }}
+  }}
+}}"#,
+        base = base_url
+    ))
+}
+
+/// `oauth` 被**读进来了**，而且 nini **明说**它不实现。
+///
+/// D5/T4：nini 没有 OAuth（radius）实现（R4：凭据只走环境变量；R5：没有
+/// radius provider），所以这个声明**不生效**——但它不能被**静默**丢弃：一个
+/// 被静默丢弃的声明，就是一份用户以为配了、其实没配的文件。
+#[tokio::test]
+async fn the_provider_level_oauth_is_read_and_reported_as_not_implemented() {
+    let models = a_models_json_with_oauth_and_model_overrides("http://gw.invalid/v1");
+
+    // 读进来了。
+    let config = models
+        .providers
+        .get("my-gw")
+        .expect("the provider is in the file");
+    assert_eq!(
+        config.oauth.as_deref(),
+        Some("radius"),
+        "the `oauth` declaration must be read, not dropped on the floor"
+    );
+
+    // 而且有一条**显式提示**（不是报错）。
+    let warnings = models_json_warnings(&models);
+    let hint = warnings
+        .iter()
+        .find(|w| w.contains("oauth"))
+        .expect("nini must say that it does not implement `oauth`");
+    assert!(
+        hint.contains("my-gw"),
+        "the hint must name the provider: {hint}"
+    );
+    assert!(
+        hint.contains("not implemented"),
+        "the hint must say that nini does not implement OAuth: {hint}"
+    );
+    assert!(
+        hint.contains("no effect"),
+        "the hint must say that the declaration has no effect: {hint}"
+    );
+}
+
+/// provider 级的 `modelOverrides` 按 **Pi 的口径**合进 model 级覆盖表。
+///
+/// Pi 的两层 model 级声明：`models[]` 里模型自己的，与 provider 级
+/// `modelOverrides`（按模型 id 索引）。Pi 把后者**应用在前者之上**
+/// （`provider-composer.js:303-306` → `applyModelOverride`，
+/// `provider-composer.js:22-47`）：
+///
+///   * `thinkingLevelMap`：**按档位合并**（`:27-29`）——override 赢它写的
+///     档位，模型自己的档位留着；
+///   * `samplingParams`：**按 key 合并**（`:42-44`）；
+///   * `compat`：**按 key 合并**（`:45` 的 `mergeCompat`）；
+///   * `headers`：**同名 key 覆盖**，而且是 **`models[]` 赢**——请求头由
+///     `rawModelHeaders` 单独算（`:274-283`），展开顺序是
+///     `{...modelOverrides[id].headers, ...models[].headers}`（`:277-281`），
+///     后展开的赢。
+#[tokio::test]
+async fn the_provider_level_model_overrides_are_merged_the_way_pi_merges_them() {
+    let models = a_models_json_with_oauth_and_model_overrides("http://gw.invalid/v1");
+    let config = models
+        .providers
+        .get("my-gw")
+        .expect("the provider is in the file");
+
+    let table = model_overrides_of(config);
+    let entry = table
+        .get("some-model")
+        .expect("the model has an override entry");
+
+    // headers：同名 key 覆盖，`models[]` 赢（Pi 的 `rawModelHeaders`）。
+    let headers: std::collections::BTreeMap<&str, &str> = entry
+        .headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    assert_eq!(
+        headers.get("X-Shared"),
+        Some(&"from-models"),
+        "Pi spreads `models[].headers` after `modelOverrides[id].headers`, so the \
+         `models[]` declaration wins the same name"
+    );
+    assert_eq!(
+        headers.get("X-Only-Models"),
+        Some(&"yes"),
+        "a header only `models[]` declares must survive the merge"
+    );
+    assert_eq!(
+        headers.get("X-Only-Override"),
+        Some(&"yes"),
+        "a header only `modelOverrides` declares must not be dropped"
+    );
+
+    // thinkingLevelMap：按档位合并，override 赢它写的档位。
+    let map = entry
+        .thinking_level_map
+        .as_ref()
+        .expect("the thinking level map is carried");
+    assert_eq!(
+        map.low.as_deref(),
+        Some("low-from-models"),
+        "a level only `models[]` declares must survive the merge"
+    );
+    assert_eq!(
+        map.high.as_deref(),
+        Some("high-from-override"),
+        "the override wins the level it names"
+    );
+
+    // samplingParams：按 key 合并。
+    let params = entry
+        .sampling_params
+        .as_ref()
+        .expect("the sampling parameters are carried");
+    assert_eq!(
+        params.get("top_p"),
+        Some(&serde_json::json!(0.9)),
+        "the override wins the key it names"
+    );
+    assert_eq!(
+        params.get("seed"),
+        Some(&serde_json::json!(7)),
+        "a key only `models[]` declares must survive the merge"
+    );
+
+    // compat：按 key 合并（Pi 的 `mergeCompat`）。
+    let compat = entry.compat.as_ref().expect("the compat is carried");
+    assert_eq!(
+        compat.max_tokens_field.as_deref(),
+        Some("max_completion_tokens"),
+        "a switch only `models[]` declares must survive the merge"
+    );
+    assert_eq!(
+        compat.supports_store,
+        Some(false),
+        "the override wins the switch it names"
+    );
+}
+
+/// 合并后的 model 级头真的在请求上。
+#[tokio::test]
+async fn the_merged_model_headers_reach_the_request() {
+    let server = mock_server().await;
+    let models = a_models_json_with_oauth_and_model_overrides(&server.uri());
+
+    let provider = build_provider("my-gw", Vec::new(), &[], &[], None, Some(&models))
+        .expect("the provider builds");
+    send_one(&provider, "some-model").await;
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        header(&requests[0], "x-shared"),
+        Some("from-models"),
+        "the merged model-level header must be on the wire"
+    );
+    assert_eq!(
+        header(&requests[0], "x-only-override"),
+        Some("yes"),
+        "a header only `modelOverrides` declares must be on the wire too"
+    );
+}
+
+/// model 级的 `compat` 真的落到请求上（D5 的消费点）。
+///
+/// Pi 的 `models[].compat` 是**按模型**的（`model-config.js:152`），而 nini 的
+/// 方言描述符是**按 provider** 的（`nini_ai::openai::OpenAiCompat`），所以这个
+/// provider 的 model 级 compat 会落到它请求的形状上——这里断言的就是这个。
+#[tokio::test]
+async fn the_model_level_compat_reaches_the_request_body() {
+    let server = mock_server().await;
+    let models = models_json(&format!(
+        r#"{{
+  "providers": {{
+    "my-gw": {{
+      "api": "openai-completions",
+      "baseUrl": "{base}",
+      "apiKey": "the-key",
+      "models": [
+        {{"id": "some-model", "compat": {{"maxTokensField": "max_tokens"}}}}
+      ]
+    }}
+  }}
+}}"#,
+        base = server.uri()
+    ));
+
+    let provider = build_provider("my-gw", Vec::new(), &[], &[], None, Some(&models))
+        .expect("the provider builds");
+    send_one(&provider, "some-model").await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("the body is JSON");
+    assert_eq!(
+        body.get("max_tokens").and_then(|v| v.as_u64()),
+        Some(64),
+        "the model-level compat must change the field the budget travels in: {body}"
+    );
+    assert!(
+        body.get("max_completion_tokens").is_none(),
+        "the other budget field must not be sent as well: {body}"
+    );
+}
+
+/// 合并后的 compat 真的落到请求上：`modelOverrides` 写的那个开关也算数。
+///
+/// 这一条把整条链锁住：**`modelOverrides` → 合并 → 方言描述符 → 请求体**。
+#[tokio::test]
+async fn the_merged_compat_reaches_the_request_body() {
+    let server = mock_server().await;
+    let models = a_models_json_with_oauth_and_model_overrides(&server.uri());
+
+    let provider = build_provider("my-gw", Vec::new(), &[], &[], None, Some(&models))
+        .expect("the provider builds");
+    send_one(&provider, "some-model").await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("the body is JSON");
+    assert_eq!(
+        body.get("max_completion_tokens").and_then(|v| v.as_u64()),
+        Some(64),
+        "the switch only `models[]` declares must reach the wire: {body}"
+    );
+    assert!(
+        body.get("store").is_none(),
+        "the switch only `modelOverrides` declares must reach the wire too: {body}"
+    );
 }

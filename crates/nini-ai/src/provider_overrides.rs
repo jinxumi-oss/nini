@@ -10,16 +10,92 @@
 //! 构造点，而项目的纪律是「oracle 只能引用修复前后都存在的 API」。
 //! 所以这些配置挂在 provider 构造上，请求时再按 `req.model` 查表。
 
+use nini_core::settings::{ProviderCompat, ThinkingLevelMap};
 use reqwest::RequestBuilder;
 
 /// model 级覆盖。
 /// 一个模型可以有自己的请求头和 base URL。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// D5: Pi 的 `ModelOverrideSchema`（`model-config.js:154-171`）还带着三个
+/// 开关——思考档位映射、采样参数、方言兼容——它们在这里**承载**：provider
+/// 构造路径按 Pi 的口径把它们合并进这张表（合并规则见
+/// `nini_cli::provider_factory`），请求时再按 `req.model` 查表。
+#[derive(Debug, Clone, Default)]
 pub struct ModelOverride {
     /// 这个模型专属的请求头。
     pub headers: Vec<(String, String)>,
     /// 这个模型专属的 base URL（有它就不用 provider 自己的）。
     pub base_url: Option<String>,
+    /// Which thinking level maps to which value.
+    ///
+    /// Pi: `ModelOverrideSchema.thinkingLevelMap?` (`model-config.js:157`)
+    /// — the same shape as the model's own `thinkingLevelMap`
+    /// (`model-config.js:145`): one optional value per thinking level.
+    ///
+    /// Pi merges it **per level** with the model's own map
+    /// (`applyModelOverride`, `provider-composer.js:27-29`:
+    /// `{...model.thinkingLevelMap, ...override.thinkingLevelMap}`) — the
+    /// override wins for the levels it names, the model's own values
+    /// survive for the levels it does not.
+    pub thinking_level_map: Option<ThinkingLevelMap>,
+    /// Extra sampling parameters sent with every request of this model.
+    ///
+    /// Pi: `ModelOverrideSchema.samplingParams?` (`model-config.js:168`)
+    /// — `Record<string, unknown>`, merged **per key** with the model's own
+    /// params (`provider-composer.js:42-44`:
+    /// `{...model.samplingParams, ...override.samplingParams}`).
+    pub sampling_params: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// The wire-dialect switches of this model.
+    ///
+    /// Pi: `ModelOverrideSchema.compat?` (`model-config.js:170`) — merged
+    /// **per key** with the model's own compat (`mergeCompat`,
+    /// `provider-composer.js:5-21`, applied at `provider-composer.js:45`:
+    /// `mergeCompat(model.compat, override.compat)`).
+    pub compat: Option<ProviderCompat>,
+}
+
+impl PartialEq for ModelOverride {
+    /// 手写而不是 derive：`serde_json::Value` 只有 `PartialEq`（它里面是
+    /// `f64`），而 `nini_core::settings` 的 `ThinkingLevelMap` /
+    /// `ProviderCompat` 没有 derive `PartialEq`——那个 crate 是**解析层**，
+    /// 这一轮不改它，所以这里逐字段比。
+    ///
+    /// `Eq` 一并去掉：`Value` 不是 `Eq`，加不回来。
+    fn eq(&self, other: &Self) -> bool {
+        self.headers == other.headers
+            && self.base_url == other.base_url
+            && thinking_level_map_eq(&self.thinking_level_map, &other.thinking_level_map)
+            && self.sampling_params == other.sampling_params
+            && compat_eq(&self.compat, &other.compat)
+    }
+}
+
+/// 两个 `ThinkingLevelMap` 是不是一样（逐档位比）。
+fn thinking_level_map_eq(a: &Option<ThinkingLevelMap>, b: &Option<ThinkingLevelMap>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.off == b.off
+                && a.minimal == b.minimal
+                && a.low == b.low
+                && a.medium == b.medium
+                && a.high == b.high
+                && a.xhigh == b.xhigh
+                && a.max == b.max
+        }
+        _ => false,
+    }
+}
+
+/// 两个 `ProviderCompat` 是不是一样（逐开关比）。
+fn compat_eq(a: &Option<ProviderCompat>, b: &Option<ProviderCompat>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.max_tokens_field == b.max_tokens_field && a.supports_store == b.supports_store
+        }
+        _ => false,
+    }
 }
 
 /// provider 级与 model 级的请求头配置。

@@ -267,6 +267,7 @@ async fn model_level_headers_win_over_provider_level_headers() {
         ModelOverride {
             headers: vec![("x-shared".to_string(), "from-model".to_string())],
             base_url: None,
+            ..Default::default()
         },
     );
 
@@ -313,6 +314,7 @@ async fn a_model_level_base_url_takes_over() {
         ModelOverride {
             headers: vec![],
             base_url: Some(model_server.uri()),
+            ..Default::default()
         },
     );
 
@@ -362,6 +364,7 @@ async fn a_model_level_base_url_still_gets_the_dialect_path() {
         ModelOverride {
             headers: vec![],
             base_url: Some(model_server.uri()),
+            ..Default::default()
         },
     );
 

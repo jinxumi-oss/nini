@@ -407,6 +407,23 @@ pub struct ProviderConfig {
     /// and the missing item, nothing else.
     #[serde(default)]
     pub name: Option<String>,
+    /// Pi's OAuth flavour of this provider.
+    ///
+    /// Pi: `ProviderConfigSchema.oauth?` (`model-config.js:182`). Pi's
+    /// schema admits **exactly one** spelling: the literal `"radius"`.
+    ///
+    /// nini has **no OAuth implementation and no radius provider** (R4
+    /// credentials come from the environment, and the radius semantics
+    /// are out of scope), so this field is **read but never acted on**.
+    /// It is here so the file is not silently half-read: a `models.json`
+    /// that declares `"oauth": "radius"` used to lose that declaration
+    /// without a word.
+    ///
+    /// The value is kept as a plain string; nini does not validate it
+    /// against Pi's literal, because an unknown value is a fact about the
+    /// file, not an error nini should raise.
+    #[serde(default)]
+    pub oauth: Option<String>,
     /// Extra HTTP headers every request of this provider carries.
     ///
     /// Pi: `ProviderConfigSchema.headers?` — `Record<string, string>`
@@ -482,6 +499,151 @@ pub struct ProviderConfig {
     pub compat: Option<ProviderCompat>,
     #[serde(default)]
     pub models: Vec<ModelConfig>,
+    /// Per-model overrides of this provider's models.
+    ///
+    /// Pi: `ProviderConfigSchema.modelOverrides?` (`model-config.js:184`)
+    /// — `Record<string, ModelOverrideSchema>`, keyed by **model id**
+    /// (the key is the model the override applies to, the value is Pi's
+    /// `ModelOverrideSchema`, `model-config.js:154-168`).
+    ///
+    /// nini reads the record so the file is not silently half-read: the
+    /// overrides used to be dropped on the floor.
+    ///
+    /// Pi's spelling is `modelOverrides`; the snake_case field name is
+    /// nini's, and the camelCase spelling is accepted as an alias.
+    #[serde(default, alias = "modelOverrides")]
+    pub model_overrides: Option<std::collections::BTreeMap<String, ModelOverride>>,
+}
+
+/// Pi's `thinkingLevelMap`: which thinking level maps to which value.
+///
+/// Pi: `ThinkingLevelMapSchema` (`model-config.js:46-55`) — the seven
+/// levels `off` / `minimal` / `low` / `medium` / `high` / `xhigh` /
+/// `max`, each `Optional(String | Null)`.
+///
+/// `Some(v)` = that level maps to the value `v`; `None` = Pi's `Null`
+/// (the level is declared **unsupported**) or the key is absent.
+///
+/// Pi's spelling is `thinkingLevelMap`; the snake_case field name is
+/// nini's, and the camelCase spelling is accepted as an alias.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct ThinkingLevelMap {
+    /// The value the `off` level maps to.
+    #[serde(default)]
+    pub off: Option<String>,
+    /// The value the `minimal` level maps to.
+    #[serde(default)]
+    pub minimal: Option<String>,
+    /// The value the `low` level maps to.
+    #[serde(default)]
+    pub low: Option<String>,
+    /// The value the `medium` level maps to.
+    #[serde(default)]
+    pub medium: Option<String>,
+    /// The value the `high` level maps to.
+    #[serde(default)]
+    pub high: Option<String>,
+    /// The value the `xhigh` level maps to.
+    #[serde(default)]
+    pub xhigh: Option<String>,
+    /// The value the `max` level maps to.
+    #[serde(default)]
+    pub max: Option<String>,
+}
+
+/// Pi's `modelOverrides` entry: the override of one model.
+///
+/// Pi: `ModelOverrideSchema` (`model-config.js:154-168`). It carries the
+/// same knobs as a model definition (`ModelDefinitionSchema`,
+/// `model-config.js:139-153`) minus the model's own identity (`id`,
+/// `api`, `baseUrl`).
+///
+/// nini reads the record so the file is not silently half-read; which
+/// override wins over which declaration is nini's own business (this
+/// round only parses).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ModelOverride {
+    /// The model's display name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Whether the model does extended thinking.
+    #[serde(default, alias = "reasoning")]
+    pub reasoning: Option<bool>,
+    /// Which thinking level maps to which value.
+    #[serde(default, alias = "thinkingLevelMap")]
+    pub thinking_level_map: Option<ThinkingLevelMap>,
+    /// Input modalities ("text", "image").
+    #[serde(default)]
+    pub input: Option<Vec<String>>,
+    /// The model's price.
+    #[serde(default)]
+    pub cost: Option<ModelCost>,
+    /// The context window.
+    #[serde(default, alias = "contextWindow")]
+    pub context_window: Option<u32>,
+    /// The output-token ceiling.
+    #[serde(default, alias = "maxTokens")]
+    pub max_tokens: Option<u32>,
+    /// Extra sampling parameters sent with every request.
+    #[serde(default, alias = "samplingParams")]
+    pub sampling_params: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Extra HTTP headers this model's requests carry.
+    #[serde(default)]
+    pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// The wire-dialect switches of this model.
+    #[serde(default)]
+    pub compat: Option<ProviderCompat>,
+}
+
+/// Pi's `cost` object.
+///
+/// Pi: `ModelCostSchema` (`model-config.js:36-45`) — the four rates
+/// `input` / `output` / `cacheRead` / `cacheWrite`, plus optional
+/// `tiers` (a list of `ModelCostTierSchema`, `model-config.js:27-34`),
+/// where a tier applies from a token count on.
+///
+/// Pi's spelling is camelCase for the rates; the snake_case field names
+/// are nini's, and the camelCase spellings are accepted as aliases.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ModelCost {
+    /// The price of one input token.
+    #[serde(default)]
+    pub input: Option<f64>,
+    /// The price of one output token.
+    #[serde(default)]
+    pub output: Option<f64>,
+    /// The price of one cache-read token.
+    #[serde(default, alias = "cacheRead")]
+    pub cache_read: Option<f64>,
+    /// The price of one cache-write token.
+    #[serde(default, alias = "cacheWrite")]
+    pub cache_write: Option<f64>,
+    /// The price tiers, by input-token count.
+    #[serde(default)]
+    pub tiers: Option<Vec<ModelCostTier>>,
+}
+
+/// One price tier of a model's `cost`.
+///
+/// Pi: `ModelCostTierSchema` (`model-config.js:27-34`) — the four rates
+/// plus the token count the tier starts at (`inputTokensAbove`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ModelCostTier {
+    /// The input-token count this tier starts at.
+    #[serde(default, alias = "inputTokensAbove")]
+    pub input_tokens_above: Option<f64>,
+    /// The price of one input token.
+    #[serde(default)]
+    pub input: Option<f64>,
+    /// The price of one output token.
+    #[serde(default)]
+    pub output: Option<f64>,
+    /// The price of one cache-read token.
+    #[serde(default, alias = "cacheRead")]
+    pub cache_read: Option<f64>,
+    /// The price of one cache-write token.
+    #[serde(default, alias = "cacheWrite")]
+    pub cache_write: Option<f64>,
 }
 
 /// Pi's `compat` object, as far as nini understands it.
@@ -511,7 +673,7 @@ pub struct ProviderConfig {
 /// Unknown fields are **ignored** (serde is in lenient mode here, and
 /// that is deliberate: a file with a compat key nini does not know must
 /// not take the whole provider down with it).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ProviderCompat {
     /// Which field carries the output-token budget.
     ///
@@ -584,6 +746,14 @@ where
 pub struct ModelConfig {
     #[serde(default)]
     pub id: Option<String>,
+    /// The wire dialect **this model** speaks.
+    ///
+    /// Pi: `ModelDefinitionSchema.api?` (`model-config.js:141`). It
+    /// overrides the provider's own `api` for this one model.
+    ///
+    /// Pi's spelling is `api` — the same word, no alias needed.
+    #[serde(default)]
+    pub api: Option<String>,
     /// The context window, in nini's spelling.
     ///
     /// Pi writes `contextWindow` (its `ModelMetadataSchema`), and that is
@@ -642,6 +812,35 @@ pub struct ModelConfig {
     /// Pi's spelling is `headers` — the same word, no alias needed.
     #[serde(default)]
     pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// Which thinking level maps to which value.
+    ///
+    /// Pi: `ModelDefinitionSchema.thinkingLevelMap?`
+    /// (`model-config.js:143`) — see [`ThinkingLevelMap`].
+    ///
+    /// Pi's spelling is `thinkingLevelMap`; the snake_case field name is
+    /// nini's, and the camelCase spelling is accepted as an alias.
+    #[serde(default, alias = "thinkingLevelMap")]
+    pub thinking_level_map: Option<ThinkingLevelMap>,
+    /// Extra sampling parameters sent with every request of this model.
+    ///
+    /// Pi: `ModelDefinitionSchema.samplingParams?`
+    /// (`model-config.js:148`) — `Record<string, unknown>`. nini keeps the
+    /// values as raw JSON, because Pi does not constrain them either.
+    ///
+    /// Pi's spelling is `samplingParams`; the snake_case field name is
+    /// nini's, and the camelCase spelling is accepted as an alias.
+    #[serde(default, alias = "samplingParams")]
+    pub sampling_params: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// The wire-dialect switches of this model.
+    ///
+    /// Pi: `ModelDefinitionSchema.compat?` (`model-config.js:150`) — the
+    /// same `compat` object the provider carries, but for this model
+    /// alone. nini reads the two switches it knows — see
+    /// [`ProviderCompat`].
+    ///
+    /// Pi's spelling is `compat` — the same word, no alias needed.
+    #[serde(default)]
+    pub compat: Option<ProviderCompat>,
 }
 
 #[cfg(test)]
@@ -981,5 +1180,130 @@ mod tests {
         .unwrap();
         let m = load_models_json(dir.path());
         assert!(m.providers.contains_key("custom"));
+    }
+
+    /// D5: Pi's `ProviderConfigSchema.oauth?` (`model-config.js:182`)
+    /// and `ProviderConfigSchema.modelOverrides?` (`model-config.js:184`)
+    /// are read, so the file is not silently half-read.
+    ///
+    /// `oauth` is read **only**: nini has no OAuth implementation and no
+    /// radius provider, so the value is carried, never acted on.
+    #[test]
+    fn provider_oauth_and_model_overrides_are_read() {
+        let parsed: ModelsJson = serde_json::from_str(
+            r#"{"providers":{"p":{"oauth":"radius","modelOverrides":{"m1":{"name":"M1","reasoning":true}}}}}"#,
+        )
+        .expect("parses");
+
+        let p = parsed.providers.get("p").expect("provider p");
+        assert_eq!(
+            p.oauth.as_deref(),
+            Some("radius"),
+            "Pi's `oauth` key was dropped on the floor"
+        );
+        let overrides = p
+            .model_overrides
+            .as_ref()
+            .expect("`modelOverrides` was dropped on the floor");
+        let m1 = overrides.get("m1").expect("the override of model `m1`");
+        assert_eq!(m1.name.as_deref(), Some("M1"));
+        assert_eq!(m1.reasoning, Some(true));
+    }
+
+    /// D5: Pi's `ModelDefinitionSchema` keys `api?`, `thinkingLevelMap?`,
+    /// `samplingParams?` and `compat?` (`model-config.js:139-153`) are
+    /// read from the **model** level.
+    #[test]
+    fn model_level_api_thinking_map_sampling_params_and_compat_are_read() {
+        let parsed: ModelsJson = serde_json::from_str(
+            r#"{"providers":{"p":{"models":[{"id":"m1","api":"openai-completions","thinkingLevelMap":{"off":null,"high":"high-effort"},"samplingParams":{"temperature":0.7,"top_p":1},"compat":{"maxTokensField":"max_tokens","supportsStore":false}}]}}}"#,
+        )
+        .expect("parses");
+
+        let m = &parsed.providers["p"].models[0];
+        assert_eq!(
+            m.api.as_deref(),
+            Some("openai-completions"),
+            "the model-level `api` was not read"
+        );
+
+        let map = m
+            .thinking_level_map
+            .as_ref()
+            .expect("`thinkingLevelMap` was not read");
+        assert_eq!(map.high.as_deref(), Some("high-effort"));
+        assert_eq!(
+            map.off, None,
+            "Pi's `null` means the level is unsupported — it must read as None"
+        );
+        assert_eq!(map.low, None, "an absent level must read as None");
+
+        let sampling = m
+            .sampling_params
+            .as_ref()
+            .expect("`samplingParams` was not read");
+        assert_eq!(sampling.get("temperature"), Some(&serde_json::json!(0.7)));
+        assert_eq!(sampling.get("top_p"), Some(&serde_json::json!(1)));
+
+        let compat = m.compat.as_ref().expect("`compat` was not read");
+        assert_eq!(compat.max_tokens_field.as_deref(), Some("max_tokens"));
+        assert_eq!(compat.supports_store, Some(false));
+    }
+
+    /// D5: the `samplingParams` spelling (Pi's) is the alias of the
+    /// snake_case field name, and both are read.
+    #[test]
+    fn sampling_params_is_read_under_the_camel_case_alias() {
+        let model: ModelConfig =
+            serde_json::from_str(r#"{"id":"m1","samplingParams":{"seed":7}}"#).expect("parses");
+        let sampling = model
+            .sampling_params
+            .as_ref()
+            .expect("`samplingParams` was not read");
+        assert_eq!(sampling.get("seed"), Some(&serde_json::json!(7)));
+    }
+
+    /// D5: a model that declares none of the new keys keeps every one of
+    /// them at `None` — the `#[serde(default)]` behaviour.
+    #[test]
+    fn absent_model_keys_are_none() {
+        let model: ModelConfig = serde_json::from_str(r#"{"id":"m1"}"#).expect("parses");
+        assert!(model.api.is_none());
+        assert!(model.thinking_level_map.is_none());
+        assert!(model.sampling_params.is_none());
+        assert!(model.compat.is_none());
+    }
+
+    /// D5: a provider that declares neither `oauth` nor `modelOverrides`
+    /// keeps both at `None`.
+    #[test]
+    fn absent_provider_keys_are_none() {
+        let parsed: ModelsJson =
+            serde_json::from_str(r#"{"providers":{"p":{"api":"openai-completions"}}}"#)
+                .expect("parses");
+        let p = &parsed.providers["p"];
+        assert!(p.oauth.is_none());
+        assert!(p.model_overrides.is_none());
+    }
+
+    /// D5: `ThinkingLevelMap` is a plain struct — constructible field by
+    /// field and `Default`-able.
+    #[test]
+    fn thinking_level_map_is_constructible_and_defaultable() {
+        let map = ThinkingLevelMap {
+            off: Some("none".to_string()),
+            minimal: None,
+            low: Some("low".to_string()),
+            medium: None,
+            high: Some("high".to_string()),
+            xhigh: None,
+            max: Some("max".to_string()),
+        };
+        assert_eq!(map.high.as_deref(), Some("high"));
+        assert_eq!(map.xhigh, None);
+
+        let empty = ThinkingLevelMap::default();
+        assert_eq!(empty.off, None);
+        assert_eq!(empty.max, None);
     }
 }

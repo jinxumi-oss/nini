@@ -190,6 +190,7 @@ mod tests {
             supports_temperature: true,
             cost_tiers: Vec::new(),
             thinking_levels: Vec::new(),
+            ..Default::default()
         }
     }
 

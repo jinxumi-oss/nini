@@ -45,6 +45,7 @@ fn spec(id: &str, provider: &str, name: &str, window: u32) -> ModelSpec {
         supports_temperature: true,
         cost_tiers: Vec::new(),
         thinking_levels: Vec::new(),
+        ..Default::default()
     }
 }
 

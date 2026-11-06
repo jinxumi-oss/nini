@@ -1,6 +1,6 @@
 ## v0.17.0 — provider/model 级配置真的生效（D5）+ 取回排队消息（R14）+ 计划状态订正
 
-2074 tests, all green.
+2092 tests, all green.
 
 这一版做三件事，**都是把「说出去的比做到的多」纠回来**：
 
@@ -639,6 +639,18 @@ OpenAI SDK 是**字符串拼接**（`baseURL + '/' + 'chat/completions'`），ba
 `NINI_PROVIDER` 对称。此前 provider 能从环境变量选，模型不能：裸跑 `nini` 时
 `--model` 的默认值总是赢过 settings 文件，用户自己的 provider 没有一条路能让
 `nini` 开口说它的话。
+
+### 14. models.json 的字段真正被解析与承载（D5 剩余承载，2026-11-06）
+
+本轮把上一轮台账里 D5 仍缺的字段，在**解析层 + provider 构造路径 + 模型面**上真正承载起来（全部是加法，不改任何既有解析行为）：
+
+- **解析层**（`crates/nini-core/src/settings.rs`）：`ProviderConfig` 的 `oauth`（Pi 只接受 `Literal("radius")`，nini **没有 OAuth 实现、也没有 radius provider**，所以**只读 + 显式提示**、不静默丢弃）、`model_overrides`（按模型 id 的覆盖记录）；`ModelConfig` 的 `api` / `thinking_level_map` / `sampling_params` / `compat`；新增 `ThinkingLevelMap` 类型（`model-config.js:46-55`）。`ModelOverride` / `ModelCost` / `ModelCostTier` 补成 Pi `ModelOverrideSchema` 的完整形态。
+- **消费层**（`crates/nini-cli/src/provider_factory.rs`）：provider 级 `model_overrides` 按 Pi 语义合并进 per-model 覆盖表（`thinkingLevelMap`/`samplingParams` 是**合并**、`headers`/`compat` 是**覆盖**，引用 `provider-composer.js:277-281` 与 `304/314`）；`oauth` 给出**显式提示**；模型级 `compat` 经 `compat_for` 真正落到请求体。
+- **模型面**（`crates/nini-core/src/model_runtime.rs`）：`ModelSpec` 新增 `compat` / `thinking_level_map` / `sampling_params`；`user_model_specs` 按 Pi 优先级填（模型级 `api` 优先，`model-config.js:142` + `provider-composer.js:49`）；模型级字段此前被 serde **静默丢弃**，现在被承载。
+
+测试数 **1878 → 2074 → 2092**（本轮 +18：解析层 +6、消费层 +8、模型面 +4）。README 徽章/正文与 CHANGELOG 顶部同步为 2092（门禁要求对外声明与实测精确相等）。
+
+**仍缺、不冒充支持**：provider 级 `oauth` 无实现（R4 凭据 env-only、R5 无 radius）——已读 + 提示，能力仍缺；model 级 `cost`（计价展示是产品决定，不在本轮范围）；Pi 口径差异②（同名内置 provider 的 stream 优先级）需单独设计轮。
 
 ## v0.16.0 — 把台账里剩下的三条真差距关掉：`!cmd` 边跑边出、工具「执行开始」的时机、三个符号的接线
 

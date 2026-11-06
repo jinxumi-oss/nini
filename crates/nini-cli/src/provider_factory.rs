@@ -20,7 +20,7 @@ use nini_ai::provider_registry::{
 };
 use nini_core::config_value::resolve_config_value_detailed;
 use nini_core::provider::{Provider, Usage};
-use nini_core::settings::{ModelsJson, ProviderCompat, ProviderConfig};
+use nini_core::settings::{ModelsJson, ProviderCompat, ProviderConfig, ThinkingLevelMap};
 
 use nini_ai::openai::{MaxTokensField, OpenAiCompat};
 use nini_ai::provider_overrides::ModelOverride;
@@ -281,12 +281,22 @@ struct ResolvedProvider {
     /// OpenAI dialects, `x-api-key` for Anthropic).
     auth_header: Option<&'static str>,
     /// Per-model overrides, keyed by the model id (`models[]` in
-    /// `models.json`).
+    /// `models.json`, plus the provider-level `modelOverrides`).
     ///
     /// Pi resolves the override by the model id
-    /// (`rawModelHeaders`, `provider-composer.js:319-327`), so the key is
+    /// (`rawModelHeaders`, `provider-composer.js:274-283`), so the key is
     /// `req.model` verbatim.
     model_overrides: std::collections::BTreeMap<String, ModelOverride>,
+    /// 这个 provider 的 **model 级** compat。
+    ///
+    /// Pi 的 compat 是**按模型**的（`models[].compat` /
+    /// `modelOverrides[id].compat`，`model-config.js:152` / `170`），而 nini 的
+    /// 方言描述符是**按 provider** 的（`nini_ai::openai::OpenAiCompat`），
+    /// 所以 nini 把这个 provider 各个模型声明的 model 级 compat 合成一个，
+    /// 叠在 provider 级的 compat 之上——Pi 的顺序也是这样：model 级压
+    /// provider 级（`mergeCompat(providerConfig.compat, definition.compat)`，
+    /// `provider-composer.js:75`）。
+    model_compat: Option<ProviderCompat>,
 }
 
 /// Look up what nini knows about a provider it ships with.
@@ -351,13 +361,47 @@ fn provider_headers_of(config: &ProviderConfig) -> Vec<(String, String)> {
         .collect()
 }
 
-/// model 级覆盖表：按 `models[].id` 组装。
+/// model 级覆盖表：按 `models[].id` 组装，**并**把 provider 级的
+/// `modelOverrides` 合进来。
 ///
-/// Pi 的 model 级头与 base URL 是**按模型 id** 查表的
-/// （`rawModelHeaders`，`provider-composer.js:319-327`；model 级的
-/// `baseUrl` 走 `modelFromJson`，`provider-composer.js:65`），所以这里的键
-/// 就是模型 id 本身（也就是 `req.model` 的原样值）。
-fn model_overrides_of(
+/// # Pi 的口径（可复算）
+///
+/// Pi 有两层「model 级」声明：
+///
+///   * `models[]` 里那条模型自己的声明（`ModelDefinitionSchema`，
+///     `model-config.js:139-153`）；
+///   * provider 级的 `modelOverrides`（`ModelOverrideSchema`，
+///     `model-config.js:154-171`），**按模型 id** 索引。
+///
+/// Pi 把第二层**应用在第一层之上**：`composeModelProvider` 的 `getModels`
+/// 逐个模型地问一次 `config?.modelOverrides?.[model.id]`，有就
+/// `applyModelOverride(model, override)`（`provider-composer.js:303-306`），
+/// 而 `applyModelOverride`（`provider-composer.js:22-47`）逐项合成：
+///
+///   * **`thinkingLevelMap`：按档位合并**——
+///     `{...model.thinkingLevelMap, ...override.thinkingLevelMap}`
+///     （`provider-composer.js:27-29`）：override 赢它写了的那些档位，
+///     模型自己写的档位留着；
+///   * **`samplingParams`：按 key 合并**——
+///     `{...model.samplingParams, ...override.samplingParams}`
+///     （`provider-composer.js:42-44`）；
+///   * **`compat`：按 key 合并**——`mergeCompat(model.compat,
+///     override.compat)`（`provider-composer.js:45`，`mergeCompat` 本体在
+///     `provider-composer.js:5-21`，第一句就是 `{...base, ...override}`）。
+///     注意：Pi 的 compat 也是**合并**，不是整块替换；
+///   * **`headers`：同名 key 覆盖**，而且方向是 **`models[]` 赢**——
+///     `rawModelHeaders`（`provider-composer.js:274-283`）的展开顺序是
+///     `{...config?.modelOverrides?.[model.id]?.headers, ...definition?.headers,
+///     ...extensionModel?.headers}`（`provider-composer.js:277-281`），后展开的
+///     赢，所以 `models[]` 里写的头压过 `modelOverrides` 里的同名头。
+///     （Pi 自己在 `provider-composer.js:296-297` 说 modelOverrides 是
+///     「最上面一层」，那说的是**模型定义**这一层；请求头是 `rawModelHeaders`
+///     单独算的，顺序以它为准。）
+///
+/// `baseUrl` 只有 `models[]` 有（`ModelDefinitionSchema.baseUrl?`，
+/// `model-config.js:143`；`ModelOverrideSchema` 里没有这一项），所以 model 级
+/// base URL 不会被 `modelOverrides` 改写。
+pub fn model_overrides_of(
     config: &ProviderConfig,
 ) -> std::collections::BTreeMap<String, ModelOverride> {
     let mut map = std::collections::BTreeMap::new();
@@ -385,9 +429,199 @@ fn model_overrides_of(
         {
             entry.base_url = Some(base_url.to_string());
         }
+        // 模型自己声明的那几项（D5）：思考档位、采样参数、方言开关。
+        entry.thinking_level_map = model.thinking_level_map.clone();
+        entry.sampling_params = model.sampling_params.clone();
+        entry.compat = model.compat.clone();
+        // provider 级的 `modelOverrides` 覆盖它（Pi 的口径，见上面的注释）。
+        if let Some(over) = config.model_overrides.as_ref().and_then(|m| m.get(id)) {
+            entry.headers = merge_model_headers(over.headers.as_ref(), &entry.headers);
+            entry.thinking_level_map = merge_thinking_level_map(
+                entry.thinking_level_map.as_ref(),
+                over.thinking_level_map.as_ref(),
+            );
+            entry.sampling_params = merge_sampling_params(
+                entry.sampling_params.as_ref(),
+                over.sampling_params.as_ref(),
+            );
+            entry.compat = merge_compat(entry.compat.as_ref(), over.compat.as_ref());
+        }
         map.insert(id.to_string(), entry);
     }
+    // `modelOverrides` 里那些 `models[]` 没写的模型 id：Pi 照样应用
+    // （`provider-composer.js:303-306` 问的是「这个模型有没有 override」，
+    // 不是「这个模型是不是在 `models[]` 里」），所以它们也进表。
+    for (id, over) in config.model_overrides.iter().flatten() {
+        if map.contains_key(id) {
+            continue;
+        }
+        let mut entry = ModelOverride::default();
+        entry.headers = over
+            .headers
+            .iter()
+            .flatten()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        entry.thinking_level_map = over.thinking_level_map.clone();
+        entry.sampling_params = over.sampling_params.clone();
+        entry.compat = over.compat.clone();
+        map.insert(id.clone(), entry);
+    }
     map
+}
+
+/// model 级请求头的合并（Pi 的 `rawModelHeaders`）。
+///
+/// Pi 的展开顺序是 `{...modelOverrides[id].headers, ...models[].headers}`
+/// （`provider-composer.js:277-281`）——**`models[]` 的头赢**（同名 key）。
+/// `definition` 是 `models[]` 那一份，`over` 是 `modelOverrides` 那一份。
+fn merge_model_headers(
+    over: Option<&std::collections::BTreeMap<String, String>>,
+    definition: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut merged: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (name, value) in over.into_iter().flatten() {
+        merged.insert(name.clone(), value.clone());
+    }
+    for (name, value) in definition {
+        merged.insert(name.clone(), value.clone());
+    }
+    merged.into_iter().collect()
+}
+
+/// `thinkingLevelMap` 的合并（Pi 的 `applyModelOverride`）。
+///
+/// Pi：`{...model.thinkingLevelMap, ...override.thinkingLevelMap}`
+/// （`provider-composer.js:27-29`）——override 赢它写了的那些档位。
+///
+/// **已知差异**：Pi 的档位值可以是 `null`（那个档位**不支持**），
+/// 而 nini 的解析层用 `Option<String>`，`None` 同时表示「没写」和
+/// 「写的是 null」——所以 nini 分不出这两种，合并时 `None` 一律当
+/// 「没写」（底层的值留着）。
+fn merge_thinking_level_map(
+    base: Option<&ThinkingLevelMap>,
+    over: Option<&ThinkingLevelMap>,
+) -> Option<ThinkingLevelMap> {
+    let (base, over) = match (base, over) {
+        (None, None) => return None,
+        (base, over) => (base, over),
+    };
+    let pick = |o: Option<String>, b: Option<String>| o.or(b);
+    Some(ThinkingLevelMap {
+        off: pick(
+            over.and_then(|m| m.off.clone()),
+            base.and_then(|m| m.off.clone()),
+        ),
+        minimal: pick(
+            over.and_then(|m| m.minimal.clone()),
+            base.and_then(|m| m.minimal.clone()),
+        ),
+        low: pick(
+            over.and_then(|m| m.low.clone()),
+            base.and_then(|m| m.low.clone()),
+        ),
+        medium: pick(
+            over.and_then(|m| m.medium.clone()),
+            base.and_then(|m| m.medium.clone()),
+        ),
+        high: pick(
+            over.and_then(|m| m.high.clone()),
+            base.and_then(|m| m.high.clone()),
+        ),
+        xhigh: pick(
+            over.and_then(|m| m.xhigh.clone()),
+            base.and_then(|m| m.xhigh.clone()),
+        ),
+        max: pick(
+            over.and_then(|m| m.max.clone()),
+            base.and_then(|m| m.max.clone()),
+        ),
+    })
+}
+
+/// `samplingParams` 的合并（Pi 的 `applyModelOverride`）。
+///
+/// Pi：`{...model.samplingParams, ...override.samplingParams}`
+/// （`provider-composer.js:42-44`）——override 赢它写了的那些 key。
+fn merge_sampling_params(
+    base: Option<&std::collections::BTreeMap<String, serde_json::Value>>,
+    over: Option<&std::collections::BTreeMap<String, serde_json::Value>>,
+) -> Option<std::collections::BTreeMap<String, serde_json::Value>> {
+    match (base, over) {
+        (None, None) => None,
+        (base, over) => {
+            let mut merged = base.cloned().unwrap_or_default();
+            if let Some(over) = over {
+                merged.extend(over.clone());
+            }
+            Some(merged)
+        }
+    }
+}
+
+/// `compat` 的合并（Pi 的 `mergeCompat`）。
+///
+/// Pi：`{...base, ...override}`（`provider-composer.js:8`）——override 赢它写了
+/// 的那些 key。Pi 另外对四个嵌套的路由参数做深一层的合并
+/// （`provider-composer.js:12-19`），那四个 nini 没有建模。
+fn merge_compat(
+    base: Option<&ProviderCompat>,
+    over: Option<&ProviderCompat>,
+) -> Option<ProviderCompat> {
+    match (base, over) {
+        (None, None) => None,
+        (base, over) => Some(ProviderCompat {
+            max_tokens_field: over
+                .and_then(|c| c.max_tokens_field.clone())
+                .or_else(|| base.and_then(|c| c.max_tokens_field.clone())),
+            supports_store: over
+                .and_then(|c| c.supports_store)
+                .or_else(|| base.and_then(|c| c.supports_store)),
+        }),
+    }
+}
+
+/// 这个 provider 的 **model 级** compat（合成成一个）。
+///
+/// Pi 的 compat 是**按模型**的，而 nini 的方言描述符是**按 provider** 的，
+/// 所以这里把这个 provider 各个模型声明的 model 级 compat 合成一个：
+/// 顺序是 `models[]` 的声明顺序（后声明的 key 赢，与 Pi 的展开语义一致），
+/// 然后是 `modelOverrides` 里那些 `models[]` 没写的 id（按 id 排序）。
+///
+/// **已知限制**：nini 一个 provider 只有一份方言描述符，所以一个模型的
+/// model 级 compat 也会落到这个 provider 的其它模型上——Pi 的「按模型
+/// 区分」要等 nini 的方言描述符也按模型走（本轮 `nini_ai::openai` 不在
+/// 改动范围内）。
+fn model_level_compat_of(
+    config: &ProviderConfig,
+    table: &std::collections::BTreeMap<String, ModelOverride>,
+) -> Option<ProviderCompat> {
+    let mut ids: Vec<&str> = Vec::new();
+    for model in &config.models {
+        if let Some(id) = model
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            ids.push(id);
+        }
+    }
+    if let Some(overrides) = &config.model_overrides {
+        for id in overrides.keys() {
+            if !ids.iter().any(|seen| *seen == id.as_str()) {
+                ids.push(id.as_str());
+            }
+        }
+    }
+    let mut merged: Option<ProviderCompat> = None;
+    for id in ids {
+        let Some(compat) = table.get(id).and_then(|entry| entry.compat.as_ref()) else {
+            continue;
+        };
+        merged = merge_compat(merged.as_ref(), Some(compat));
+    }
+    merged
 }
 
 /// 把 `models.json` 的 `authHeader` 变成 provider builder 要的 `&'static str`。
@@ -695,6 +929,8 @@ fn resolve_models_json_provider(
 ) -> Result<ResolvedProvider, ModelsJsonProviderError> {
     let (api, base_url) = resolve_endpoint(id, config)?;
     let api_key = resolve_credential(id, config, api_key_override)?;
+    let model_overrides = model_overrides_of(config);
+    let model_compat = model_level_compat_of(config, &model_overrides);
     Ok(ResolvedProvider {
         api,
         base_url,
@@ -706,7 +942,8 @@ fn resolve_models_json_provider(
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .map(leak_header_name),
-        model_overrides: model_overrides_of(config),
+        model_overrides,
+        model_compat,
     })
 }
 
@@ -718,7 +955,12 @@ fn resolve_models_json_provider(
 /// for the **user-level** file: the project-level one is a catalogue,
 /// not a configuration, so a provider in it is never composed and never
 /// complained about.
-pub(crate) fn models_json_warnings(models: &ModelsJson) -> Vec<String> {
+///
+/// D5/T4: nini also adds a line of its own — **not** an error, a notice:
+/// a provider that declares `oauth` is told that nini read the
+/// declaration and does not implement it (see the comment at the push
+/// site below).
+pub fn models_json_warnings(models: &ModelsJson) -> Vec<String> {
     let mut warnings = Vec::new();
     for (id, config) in &models.providers {
         // Pi composes a provider's *models*; a provider that declares
@@ -728,6 +970,21 @@ pub(crate) fn models_json_warnings(models: &ModelsJson) -> Vec<String> {
         }
         if let Err(e) = resolve_endpoint(id, config) {
             warnings.push(format!("Provider \"{id}\": {}", e.detail));
+        }
+        // D5/T4: `oauth` 被**读进来了**，但 nini **不实现** OAuth（radius）——
+        // 这是一条**提示**，不是报错：文件没有坏，坏的是 nini 没有这个能力。
+        //
+        // 决策依据：R4（凭据只走环境变量）与 R5（没有 radius provider）。
+        // Pi 的 `oauth` 是 `ProviderConfigSchema.oauth?`（`model-config.js:182`），
+        // 值是那个字面量 `"radius"`；nini 读了它，但没有任何代码路径消费它，
+        // 所以**必须说出来**——一个被静默丢弃的声明，就是一份用户以为配了、
+        // 其实没配的文件。
+        if let Some(oauth) = config.oauth.as_deref() {
+            warnings.push(format!(
+                "Provider \"{id}\": \"oauth\": \"{oauth}\" was read but is not implemented by nini \
+                 (nini has no OAuth/radius provider — credentials come from the environment), \
+                 so this declaration has no effect."
+            ));
         }
     }
     warnings
@@ -753,7 +1010,16 @@ fn build_models_json_provider(
             // R5: 薄壳在 `models.json` 里也按同一套 wire 差异走（Pi 的
             // `detectCompat` 判定的是 provider 名 + base URL，两处都一样），
             // 而用户在文件里写的 `compat` 叠在上面。
-            let compat = compat_for(id, &resolved.base_url, config.compat.as_ref());
+            //
+            // D5: **model 级**的 compat 也算数——Pi 的顺序是 model 级压
+            // provider 级（`mergeCompat(providerConfig.compat,
+            // definition.compat)`，`provider-composer.js:75`），所以这里
+            // 先把两处合成一个，再交给 `compat_for`。
+            let compat = compat_for(
+                id,
+                &resolved.base_url,
+                merge_compat(config.compat.as_ref(), resolved.model_compat.as_ref()).as_ref(),
+            );
             // `nini_ai::openai_compat::OpenAiCompatProvider` 只是
             // `OpenAiProvider` 的一层壳（`openai_compat.rs:10-21`），而三个
             // 覆盖 builder（`with_headers` / `with_auth_header` /

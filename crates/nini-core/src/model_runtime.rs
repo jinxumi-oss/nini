@@ -23,7 +23,7 @@ use serde::Deserialize;
 /// the same names. The one exception is `cost`, where Pi's camelCase
 /// sub-keys are stored snake_case because the Rust side never round-trips
 /// this document.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ModelSpec {
     /// `provider/model-id`, the key everything is looked up by.
     pub id: String,
@@ -52,6 +52,34 @@ pub struct ModelSpec {
     pub cost_tiers: Vec<ModelCostTier>,
     /// The thinking levels this model declares in `thinkingLevelMap`.
     pub thinking_levels: Vec<String>,
+    /// The wire-dialect switches of **this model**.
+    ///
+    /// Pi: `ModelDefinitionSchema.compat?` (`model-config.js:150`) — the
+    /// same `compat` object the provider carries, but for this model
+    /// alone. nini reads the two switches it knows; see
+    /// [`crate::settings::ProviderCompat`].
+    ///
+    /// Pi's spelling is `compat` — the same word, no alias needed.
+    pub compat: Option<crate::settings::ProviderCompat>,
+    /// Which thinking level maps to which value, for this model.
+    ///
+    /// Pi: `ModelDefinitionSchema.thinkingLevelMap?`
+    /// (`model-config.js:142`) — see
+    /// [`crate::settings::ThinkingLevelMap`] (Pi's
+    /// `ThinkingLevelMapSchema`, `model-config.js:46-55`).
+    ///
+    /// Pi's spelling is `thinkingLevelMap`; the snake_case field name is
+    /// nini's.
+    pub thinking_level_map: Option<crate::settings::ThinkingLevelMap>,
+    /// Extra sampling parameters sent with every request of this model.
+    ///
+    /// Pi: `ModelDefinitionSchema.samplingParams?`
+    /// (`model-config.js:157`) — `Record<string, unknown>`. nini keeps the
+    /// values as raw JSON, because Pi does not constrain them either.
+    ///
+    /// Pi's spelling is `samplingParams`; the snake_case field name is
+    /// nini's.
+    pub sampling_params: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 /// A pricing tier: rates that apply once total input tokens exceed
@@ -185,6 +213,9 @@ impl ModelRuntime {
                             },
                         })
                         .collect(),
+                    // The shipped catalog carries no model-level compat /
+                    // thinkingLevelMap / samplingParams.
+                    ..Default::default()
                 })
                 .collect(),
         }
@@ -307,11 +338,20 @@ pub fn user_model_specs(cfg: &crate::settings::ModelsJson) -> Vec<ModelSpec> {
                 // now carry one (`ModelConfig::name`); when it does, that
                 // is the label — otherwise the id is the honest one.
                 name: m.name.clone().unwrap_or_else(|| full.clone()),
-                // The provider's declared wire format. It is carried for
-                // display only — nothing in nini branches on it.
-                api: pc
+                // The wire format of this model. Pi's priority is
+                // `definition.api ?? providerConfig.api ?? defaults?.api`
+                // (`provider-composer.js:49`): the model's own `api`
+                // wins, the provider's is the fallback.
+                //
+                // It is carried for display only — nothing in nini
+                // branches on it. The request-level mapping of a
+                // model-level `api` (which provider/dialect actually
+                // speaks it) is a **pending design decision**; this round
+                // only carries the value to the model surface.
+                api: m
                     .api
                     .clone()
+                    .or_else(|| pc.api.clone())
                     .unwrap_or_else(|| "openai-completions".to_string()),
                 provider: provider.clone(),
                 reasoning: m.reasoning.unwrap_or(false),
@@ -322,6 +362,11 @@ pub fn user_model_specs(cfg: &crate::settings::ModelsJson) -> Vec<ModelSpec> {
                 supports_temperature: true,
                 cost_tiers: Vec::new(),
                 thinking_levels: Vec::new(),
+                // The model-level knobs Pi carries per model
+                // (`ModelDefinitionSchema`, `model-config.js:139-157`).
+                compat: m.compat.clone(),
+                thinking_level_map: m.thinking_level_map.clone(),
+                sampling_params: m.sampling_params.clone(),
             });
         }
     }
