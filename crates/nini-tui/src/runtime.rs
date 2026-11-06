@@ -3725,6 +3725,10 @@ pub fn submit_user_input_inner(
                 }
                 // v0.11 (X)：先定终止原因（纯 helper 的输入），异常分支在
                 // tracing::warn! 处据此推一条显式终止通知给 transcript。
+                // `g` 必须先 drop 再推通知：`push_notices` 会重新取一次状态锁，
+                // 而状态锁是非重入 Mutex，持锁调用会死锁（会让 watchdog 永远
+                // 不复位 `agent_alive`，把「断开后冻结」变成永久冻结）。
+                drop(g);
                 let stop_reason = match &outcome {
                     Ok(Ok(())) => WatchdogStopReason::NoDone,
                     Ok(Err(join_err)) => WatchdogStopReason::Panicked(join_err.to_string()),
@@ -3769,6 +3773,8 @@ pub fn submit_user_input_inner(
                     "no tokio runtime for the agent watchdog; \
                      cleared run_state::agent_alive"
                 );
+                // 同样先 drop 状态锁再推通知（非重入 Mutex，不能持锁调用）。
+                drop(g);
                 // v0.11 (X)：无 tokio runtime 的 watchdog 分支同样属于异常结束，
                 // 也要推显式终止通知，避免「断开后完全静止、无回复」。
                 push_notices(
