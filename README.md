@@ -5,14 +5,24 @@
 >
 > 一个干净的 Pi agent，用 Rust 重写——作者力求保留 Pi agent 最初的原滋味。
 
+**Looking for the Rust version of the Pi agent? / 在找 Pi agent 的 Rust 版本？**
+**This is it.** nini is a Rust reimplementation of
+[Pi](https://github.com/earendil-works/pi) — the TypeScript AI coding agent
+by [Mario Zechner](https://mariozechner.at) — with the same `~/.pi/agent`
+formats, the same 23 slash commands, and one 6.7 MiB binary in place of a
+Node.js toolchain. Also known as: *Pi agent Rust*, *Pi coding agent Rust
+rewrite*, *Rust implementation of Pi*, *Pi agent 的 Rust 版本*, *Pi 的 Rust 版本*,
+*Rust 版 Pi agent*, *Pi 的 Rust 实现* — and if you are searching by topic tag,
+`pi-agent` / `pi-coding-agent` / `pi-agent-rust`.
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 [![Status](https://img.shields.io/badge/status-v0.17.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2097%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-2098%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
-nini is a clean-room Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
+nini is a Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
 the AI coding agent by Mario Zechner. It reads `~/.nini/agent/` — **nini's own
 directory** — but the *formats* stay Pi-compatible: the same session JSONL v4,
 and 23 slash commands with the same names plus 5 of its own. Copy your
@@ -24,17 +34,43 @@ author's aim is to keep Pi's original flavor: the same configuration,
 the same session files, the same commands, the same feel in the hand,
 with nothing bolted on and nothing taken away.
 
-"Clean" here means two things, and both are meant literally: it is a
-**clean-room** reimplementation — written from Pi's observable behavior
-and file formats, not from its source — and it is a **clean** agent:
-no account, no cloud, no telemetry, no feature bloat, nothing that
-Pi does not also do.
+"Clean" here means two things, and both are meant literally. Its **code is
+written from scratch in Rust** — not one line of Pi's TypeScript was
+translated or copied over — and it is a **clean** agent: no account, no cloud,
+no telemetry, no feature bloat, nothing that Pi does not also do.
 
-> 「干净」在这里是两层意思，两层都是字面意义上的：它是 **clean-room**
-> 重写（照着 Pi 的可观察行为和文件格式写，不看 Pi 的源码），同时它也是
-> 一个**干净**的 agent：没有账号、没有云、没有遥测、没有功能膨胀，
-> 凡 Pi 没做的事 nini 也不做。完整中文版见
-> [README.zh-CN.md](README.zh-CN.md)。
+> 「干净」在这里是两层意思，两层都是字面意义上的：它的**代码是从零用 Rust
+> 写的**——没有翻译或抄写 Pi 的任何一行 TypeScript——同时它也是一个**干净**的
+> agent：没有账号、没有云、没有遥测、没有功能膨胀，凡 Pi 没做的事 nini 也不做。
+> 完整中文版见 [README.zh-CN.md](README.zh-CN.md)。
+
+## Credits — this is Pi's project, we only rewrote it
+
+**Pi is the original; nini is the translation.** Everything that makes this
+project worth anything — the agent loop, the session JSONL format, the
+slash-command surface, the settings schema, the compaction algorithm, and the
+whole "keep it small, keep it boring, keep it local" philosophy — was designed
+by **[Mario Zechner](https://mariozechner.at) ([@badlogic](https://github.com/badlogic))**
+and the maintainers and contributors of
+**[earendil-works/pi](https://github.com/earendil-works/pi)** (MIT). If Pi did
+not exist, nini would not exist. **Thank you.**
+
+To make that debt *checkable* rather than merely declared, **Pi v0.85.1's
+source is pinned inside this repository** — `references/pi-0.85.1/`, 422 files,
+each sha256-locked — and **every symbolic citation** into it (340 at the time of writing, recomputed by
+`scripts/pi-oracle-lock.py --verify-refs`) (`agent-loop.ts#shouldStopAfterTurn`,
+never `agent-loop.ts:225`) are re-resolved against that snapshot on every gate
+run. A claim in this repo about Pi's behavior either points at a line of Pi's
+own source, or it is a bug.
+
+Also thanks to **[Armin Ronacher](https://github.com/arminronacher)** and the
+Rust community for the ecosystem — tokio, ratatui, reqwest, serde — that makes
+a project like this buildable in a few weeks.
+
+Any mistake in nini is ours alone, not Pi's. If Pi upstream ships something
+you need urgently, please file an
+[issue](https://github.com/jinxumi-oss/nini/issues/new) — the priority list
+mirrors the most-asked-for upstream features.
 
 ### Keeping Pi's original flavor
 
@@ -64,11 +100,11 @@ What that means in practice, and nothing more:
 
 ## Why nini?
 
-- **Single 6.4 MiB executable** (2.4 MB compressed) instead of a Node.js
+- **Single 6.7 MiB executable** (2.5 MB compressed) instead of a Node.js
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **2097 unit + integration tests**, including property-based SSE fuzz and
+- **2098 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -437,24 +473,8 @@ confirming the specific test goes red.
 
 ## Acknowledgments
 
-nini is a clean-room reimplementation. The reference specification was
-extracted from:
-
-- **[Pi](https://github.com/earendil-works/pi)** by **Mario Zechner** —
-  the original TypeScript implementation. nini's session format,
-  slash command surface, settings schema, and compaction algorithm
-  all follow Pi v0.85.1's documented behavior.
-
-- **Armin Ronacher** and the **Rust community** — for the rich ecosystem
-  (tokio, ratatui, reqwest, serde) that makes a project like this
-  practical to build in a few weeks.
-
-- The Pi contributors and early users whose feedback shaped the spec
-  we read while building this.
-
-If Pi upstream ships a feature you need urgently, please file an
-[issue](https://github.com/jinxumi-oss/nini/issues/new) — the priority list
-mirrors the most-asked-for upstream features.
+See [Credits — this is Pi's project, we only rewrote it](#credits--this-is-pis-project-we-only-rewrote-it)
+at the top of this file.
 
 ## License
 

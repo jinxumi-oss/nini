@@ -102,7 +102,7 @@ v0.9.2 一整版都在清这个。
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
 | 版本 | **v0.17.0** | `Cargo.toml` version = 0.17.0；`nini --version` 自报同一数字（`crates/nini-cli/tests/build_identity.rs` 把二进制/manifest/CHANGELOG 三方放在一起比）；Cargo.lock 的 8 个 crate 版本随之更新（`cargo build --release --offline` 自动更新） | **已发布**：tag `v0.17.0`（annotated，tagger `nini-bot`），release 资产 `nini-x86_64-unknown-linux-gnu.tar.xz`（内含 `nini` 一个顶层文件，`install.sh` 按这两个名字取）+ `.sha256`（内容是提取后目录里的 `nini` 的哈希，使 `install.sh` 的 `sha256sum -c` 能通过） |
-| 测试 | **2074 通过 / 0 失败**（另有 1 个 doctest 被 ignore：TUI 的 `dynamic_border` 示例需要 TTY） | 本机全量 `cargo test --workspace`（2026-11-06） | 无 |
+| 测试 | **2098 通过 / 0 失败**（另有 1 个 doctest 被 ignore：TUI 的 `dynamic_border` 示例需要 TTY） | 本机全量 `cargo test --workspace`（2026-11-07） | 无 |
 | 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 已从 stub 改为**明说本机不做云端分享并指向 `/export`**（Pi 的 `/share` 要 gh 账号或云端，与 nini「不出网」原则冲突，登记为 B10 伪差距） |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
 | 行为 oracle | **符号引用全部可解析（drift=0）**；台账的 `nini_state` **每条都能 grep 到代码符号**（`crates/nini-core/tests/ledger_anchors.rs`）；行为层 **Pi 侧可执行对照物 ≥1**（真 Pi 0.85.1 录制的会话） | `python3 scripts/pi-oracle-lock.py --verify-refs`；`crates/nini-tui/tests/behavior_parity.rs` | 其余 oracle 仍只断言 nini 侧（依据已是机器可解析的符号引用，不再依赖行号）——**C1 已闭**，剩下的覆盖度是另一件事 |

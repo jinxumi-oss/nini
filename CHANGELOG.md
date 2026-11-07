@@ -1,6 +1,6 @@
 ## v0.17.0 — provider/model 级配置真的生效（D5）+ 取回排队消息（R14）+ 计划状态订正
 
-2097 tests, all green.
+2098 tests, all green.
 
 这一版做三件事，**都是把「说出去的比做到的多」纠回来**：
 
@@ -31,7 +31,7 @@
 
 ## Unreleased — TUI 的键位/浮层 oracle + provider 层的四个真缺陷：错误体被丢弃、HTTP 400 不压缩重试、空 content 被序列化成空串、瞬时错误不重试；外加一次独立审查（2 Critical + 9 Warning）
 
-2097 tests, all green.
+2098 tests, all green.
 
 这一轮不是发布，是 **v0.16.0 之后的两次工作合流**：前半是 TUI 的对照 oracle
 （第 1–4 节），后半是一次**线上故障的复盘**（第 5–13 节）——用户的 provider 是

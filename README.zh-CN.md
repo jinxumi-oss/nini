@@ -5,15 +5,23 @@
 > A clean Pi agent, rewritten in Rust — the author's aim is to keep Pi's
 > original flavor.
 
+**在找 Pi agent 的 Rust 版本？就是这个。**
+nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
+TypeScript AI coding agent）的 **Rust 重写版**：同样的 `~/.pi/agent` 格式、
+同样的 23 条斜杠命令，用一个 6.7 MiB 的单文件二进制代替整套 Node.js 工具链。
+也常被搜作：*Pi agent Rust*、*Pi 的 Rust 版本*、*Pi agent 的 Rust 版本*、
+*Pi coding agent 的 Rust 实现*、*Rust implementation of Pi*、*Rust 版 Pi agent*、
+*Pi 的 Rust 重写*——按标签找的话是 `pi-agent` / `pi-coding-agent` / `pi-agent-rust`。
+
 [English](README.md) | **简体中文**
 
 [![Status](https://img.shields.io/badge/status-v0.17.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2097%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-2098%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
-AI coding agent）的 **clean-room Rust 重写版**。它读 `~/.nini/agent/`——
+AI coding agent）的 **Rust 重写版**。它读 `~/.nini/agent/`——
 **nini 自己的目录**——但*格式*与 Pi 兼容：同一种 session JSONL v4，
 同样的 23 条斜杠命令，外加 5 条自己的。把你的 skills、`settings.json`
 和 `models.json` 放进 `~/.nini/agent/`，它们照常可用。
@@ -25,10 +33,32 @@ nini 不是想做一个"不一样的 agent"。它就是 **Pi，只不过用 Rust
 > nini is not trying to be a different agent. It is Pi, in Rust — and the
 > author's aim is to keep Pi's original flavor.
 
-这里"干净"是两层意思，两层都是字面意义上的：它是 **clean-room** 重写
-（照着 Pi 的可观察行为和文件格式写，不看 Pi 的源码），同时它也是一个
+这里"干净"是两层意思，两层都是字面意义上的：它的**代码是从零用 Rust 写的**
+——没有翻译或抄写 Pi 的任何一行 TypeScript——同时它也是一个
 **干净** 的 agent：没有账号、没有云、没有遥测、没有功能膨胀，凡 Pi 没做的事
 nini 也不做。
+
+## 致敬——Pi 是原作，我们只是把它翻译成了 Rust
+
+**Pi 是原作，nini 是译本。** 让这个项目有价值的一切——agent loop、session JSONL
+格式、斜杠命令面、settings schema、压缩算法，以及"保持小巧、保持无聊、保持本地"
+的整套哲学——都由 **[Mario Zechner](https://mariozechner.at)
+（[@badlogic](https://github.com/badlogic)）** 与
+**[earendil-works/pi](https://github.com/earendil-works/pi)**（MIT）的维护者与
+贡献者设计出来。**没有 Pi 就没有 nini。谢谢你们。**
+
+为了让这份"欠债"**可核验**而不只是一句声明：**Pi v0.85.1 的源码被固定在本仓库里**
+——`references/pi-0.85.1/`，422 个文件，每个都带 sha256 锁——并且指向它的 **每一条符号引用**（写下时是 340 条，由 `scripts/pi-oracle-lock.py --verify-refs` 实时复算）
+（`agent-loop.ts#shouldStopAfterTurn`，而不是 `agent-loop.ts:225`）每次跑门禁都会
+重新解析。本仓库里任何一句关于 Pi 行为的断言，要么能落到 Pi 源码的某一行上，
+要么它就是个 bug。
+
+也感谢 **[Armin Ronacher](https://github.com/arminronacher)** 和 Rust 社区——
+tokio、ratatui、reqwest、serde——正是这套生态让这样的项目几周内能落地。
+
+nini 里的任何错误都由我们自己承担，与 Pi 无关。如果 Pi 上游出了你急需的功能，
+请提 [issue](https://github.com/jinxumi-oss/nini/issues/new)——优先级列表对齐的是
+上游被要求最多的功能。
 
 ### 保留 Pi 最初的原滋味 (Keeping Pi's original flavor)
 
@@ -51,9 +81,9 @@ nini 也不做。
 
 ## 为什么用 nini
 
-- **单个 6.4 MiB 可执行文件**（压缩后 2.4 MB），取代一整套 Node.js 工具链
+- **单个 6.7 MiB 可执行文件**（压缩后 2.5 MB），取代一整套 Node.js 工具链
 - **无授权附加条款**——纯 MIT，不像某些带着 OpenAI/Anthropic 再分发限制的分支
-- **2074 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
+- **2098 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
   HTTP 服务器的端到端线格式测试
 - **内置工具可扩展**——bash、read、write、edit、grep、find
 - **流式 TUI**，带斜杠命令自动补全
@@ -385,20 +415,8 @@ conformance 测试的规矩：fixture 必须来自 Pi 的真实输出，绝不�
 
 ## 致谢
 
-nini 是 clean-room 重写。参照规格提取自：
-
-- **Mario Zechner** 的 **[Pi](https://github.com/earendil-works/pi)**——
-  原始的 TypeScript 实现。nini 的 session 格式、斜杠命令面、settings schema
-  和压缩算法，都遵循 Pi v0.85.1 有文档记录的行为。
-
-- **Armin Ronacher** 和 **Rust 社区**——正是他们带来的生态（tokio、ratatui、
-  reqwest、serde），让这样的项目在几周内可落地。
-
-- Pi 的贡献者与早期用户，他们的反馈塑造了我们构建时对着读的那份规格。
-
-如果 Pi 上游出了你急需的功能，请提
-[issue](https://github.com/jinxumi-oss/nini/issues/new)——优先级列表对齐的是
-上游被要求最多的功能。
+见文件顶部的 [「致敬——Pi 是原作，我们只是把它翻译成了 Rust」
+](#致敬pi-是原作我们只是把它翻译成了-rust)。
 
 ## 许可
 

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nini — Pi agent 的 Rust 版本 | Rust rewrite of the Pi coding agent</title>
+<meta name="description" content="nini 是 Pi coding agent 的 Rust 重写版：由 Mario Zechner 写的 TypeScript AI coding agent（earendil-works/pi）的 Rust 实现。同样的 session JSONL v4 格式、同样 23 条斜杠命令，单个 6.7 MiB 二进制，无账号无遥测。The Rust version of the Pi agent.">
+<meta name="keywords" content="pi agent, pi agent rust, pi-agent, pi-agent-rust, pi-coding-agent, pi coding agent, rust, rust implementation of pi, pi 的 rust 版本, pi agent 的 rust 版本, rust 重写, ai coding agent, coding agent, terminal agent, tui, pi clone, pi reimplementation, Mario Zechner, badlogic, earendil-works, llm agent, claude code alternative, rust cli">
+<link rel="canonical" href="https://jinxumi-oss.github.io/nini/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="nini">
+<meta property="og:title" content="nini — Pi agent 的 Rust 版本 | Rust rewrite of the Pi coding agent">
+<meta property="og:description" content="Pi coding agent 的 Rust 重写版：同样的 session 格式与 23 条斜杠命令，单个 6.7 MiB 二进制，无账号无遥测。">
+<meta property="og:url" content="https://jinxumi-oss.github.io/nini/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="nini — Pi agent 的 Rust 版本">
+<meta name="twitter:description" content="Pi coding agent 的 Rust 重写版 · Rust rewrite of the Pi coding agent">
+<link rel="alternate" type="text/plain" href="https://raw.githubusercontent.com/jinxumi-oss/nini/main/llms.txt" title="llms.txt">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23151a21'/%3E%3Ctext x='16' y='22' font-family='ui-monospace,monospace' font-size='16' font-weight='700' fill='%235eead4' text-anchor='middle'%3En%3C/text%3E%3C/svg%3E">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "nini",
+  "alternateName": ["Pi agent Rust", "Rust version of the Pi coding agent", "Pi 的 Rust 版本"],
+  "description": "nini is a Rust reimplementation of Pi, the TypeScript AI coding agent by Mario Zechner. Same session JSONL v4 format, same 23 slash commands, one single binary, no account, no telemetry.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux, macOS",
+  "programmingLanguage": "Rust",
+  "url": "https://github.com/jinxumi-oss/nini",
+  "codeRepository": "https://github.com/jinxumi-oss/nini",
+  "license": "https://github.com/jinxumi-oss/nini/blob/main/LICENSE",
+  "author": { "@type": "Person", "name": "Mario Zechner", "url": "https://mariozechner.at" },
+  "creditText": "A Rust port of Pi by Mario Zechner and the earendil-works/pi contributors. nini is not affiliated with or endorsed by the Pi project.",
+  "keywords": "pi agent, pi agent rust, pi coding agent, rust, ai coding agent, coding agent, terminal ui, rust cli, llm",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<style>
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #21262d;
+    --accent: #5eead4; --accent2: #7aa2f7; --code-bg: #161b22;
+    --maxw: 46rem;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0;
+      --accent: #0f766e; --accent2: #0550ae; --code-bg: #f6f8fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: var(--maxw); margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .35rem; letter-spacing: -.02em; }
+  h2 { font-size: 1.15rem; margin: 2.5rem 0 .75rem; letter-spacing: -.01em; }
+  h3 { font-size: 1rem; margin: 1.5rem 0 .4rem; }
+  p { margin: .65rem 0; }
+  a { color: var(--accent2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875em;
+              background: var(--code-bg); padding: .12em .38em; border-radius: 5px; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+        padding: .9rem 1rem; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  .tagline { font-size: 1.1rem; color: var(--fg); margin: 0 0 .25rem; }
+  .sub { color: var(--muted); margin: 0 0 1.75rem; }
+  .aliases { color: var(--muted); font-size: .9rem; margin: .5rem 0 0; }
+  .aliases code { font-size: .82em; }
+  .cta { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.5rem 0 0; }
+  .cta a { border: 1px solid var(--line); border-radius: 8px; padding: .5rem .9rem;
+           font-size: .92rem; font-weight: 600; }
+  .cta a.primary { border-color: var(--accent); color: var(--accent); }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; margin: .8rem 0; }
+  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  ul { padding-left: 1.2rem; }
+  li { margin: .3rem 0; }
+  .tribute { border-left: 3px solid var(--accent); padding: .1rem 0 .1rem 1rem; color: var(--muted); }
+  .tribute strong { color: var(--fg); }
+  footer { color: var(--muted); font-size: .85rem; margin-top: 3rem; }
+</style>
+</head>
+<body>
+<main>
+
+  <h1>nini</h1>
+  <p class="tagline">Pi agent 的 Rust 版本 —— Pi coding agent, rewritten in Rust.</p>
+  <p class="sub">
+    nini 是 <a href="https://github.com/earendil-works/pi">Pi</a>（Mario Zechner 写的
+    TypeScript AI coding agent）的 Rust 重写版：同样的 session JSONL v4 格式、同样的
+    23 条斜杠命令、同样的 settings schema，用一个 6.7&nbsp;MiB 的单文件二进制代替整套
+    Node.js 工具链。没有账号，没有云，没有遥测。
+  </p>
+  <p class="aliases">
+    也常被搜作：
+    <code>Pi agent Rust</code> <code>Pi coding agent Rust rewrite</code>
+    <code>Rust implementation of Pi</code> <code>Rust 版 Pi agent</code>
+    <code>Pi 的 Rust 版本</code> <code>Pi agent 的 Rust 版本</code>
+    <code>Pi 的 Rust 实现</code>
+    <br>按标签找：<code>pi-agent</code> <code>pi-coding-agent</code> <code>pi-agent-rust</code>
+  </p>
+
+  <div class="cta">
+    <a class="primary" href="https://github.com/jinxumi-oss/nini">GitHub 仓库</a>
+    <a href="https://github.com/jinxumi-oss/nini/releases">下载二进制</a>
+    <a href="https://github.com/jinxumi-oss/nini#quick-start">快速开始</a>
+    <a href="https://github.com/jinxumi-oss/nini/blob/main/README.zh-CN.md">中文 README</a>
+  </div>
+
+  <h2>它和 Pi 一样在哪</h2>
+  <table>
+    <tr><th>会话格式</th><td>JSONL v4，与 Pi 兼容</td></tr>
+    <tr><th>斜杠命令</th><td>Pi 的 23 条 builtin 全部具备，另加 5 条 nini 自己的扩展（不计入 parity）</td></tr>
+    <tr><th>配置</th><td><code>settings.json</code> / <code>models.json</code> / <code>skills/</code> —— 原样读取</td></tr>
+    <tr><th>内置工具</th><td>bash、read、write、edit、grep、find、ls</td></tr>
+    <tr><th>Provider</th><td>OpenAI 兼容 / OpenAI Responses / Anthropic / Google / DeepSeek / Groq / Mistral / Cohere</td></tr>
+    <tr><th>安装</th><td>Rust 1.85+，单个静态二进制，无运行时</td></tr>
+  </table>
+
+  <h2>装上它</h2>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/jinxumi-oss/nini/main/install.sh | sh
+nini</code></pre>
+  <p>没有 API key 也能先跑起来：<code>nini --provider fixture</code> 走内置的假 provider。</p>
+
+  <h2>致敬</h2>
+  <p class="tribute">
+    <strong>Pi 是原作，nini 是译本。</strong>
+    让这个项目有价值的一切——agent loop、session 格式、命令面、settings schema、
+    压缩算法，以及「保持小巧、保持无聊、保持本地」的整套哲学——都由
+    <a href="https://mariozechner.at">Mario Zechner</a>
+    （<a href="https://github.com/badlogic">@badlogic</a>）与
+    <a href="https://github.com/earendil-works/pi">earendil-works/pi</a> 的维护者与贡献者
+    设计出来。<strong>没有 Pi 就没有 nini。谢谢你们。</strong>
+    <br><br>
+    为了让这份欠债可核验而不只是一句声明，Pi v0.85.1 的源码被固定在本仓库里
+    （<code>references/pi-0.85.1/</code>，422 个文件，每个都带 sha256 锁），
+    指向它的每一条符号引用（写下时 340 条，由脚本实时复算）每次跑门禁都会重新解析。
+    <br><br>
+    nini 是独立实现，与 Pi 项目无隶属关系，也未获其背书。
+    nini 里的任何错误由我们自己承担，与 Pi 无关。
+  </p>
+
+  <h2>不做什么</h2>
+  <p>
+    不做 OAuth / 设备流登录，不做扩展运行时，不做云端分享，不做语法高亮。
+    不支持的 flag 与命令是**带着原因明确拒绝**，而不是收下就丢。
+  </p>
+
+  <hr>
+  <footer>
+    MIT 许可 · <a href="https://github.com/jinxumi-oss/nini">github.com/jinxumi-oss/nini</a>
+    · 本页面向检索与 AI 抓取，正文以
+    <a href="https://github.com/jinxumi-oss/nini/blob/main/README.md">README</a> 为准
+    · <a href="https://raw.githubusercontent.com/jinxumi-oss/nini/main/llms.txt">llms.txt</a>
+  </footer>
+
+</main>
+</body>
+</html>
