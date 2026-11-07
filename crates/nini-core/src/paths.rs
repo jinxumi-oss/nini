@@ -151,13 +151,32 @@ impl AgentDirGuard {
     }
 }
 
-pub fn agent_lock() -> AgentDirGuard {
+/// 进程级**环境锁**：改环境变量的测试必须持有它。
+///
+/// `std::env::set_var` / `remove_var` **不是线程安全的**（Rust 官方文档明说）——
+/// 两个线程同时改环境块就是数据竞争。同一个测试二进制里如果每套 suite 各带一把
+/// **互不排斥**的锁，它们就能交错：症状是「某个测试偶发读到别的 suite 留下的
+/// 环境值」。这类 flake 复现一次要跑几十遍，比没有测试更糟。
+///
+/// 实测过的实例：`nini-cli` 的测试二进制里原本有**两把**互不排斥的锁——
+/// `app::p0_1_skills_tests_support::HOME_LOCK` 与 `provider_factory::tests::ENV_LOCK`——
+/// 于是 `demo` 的 `max_tokens` 测试**偶发**拿到默认值 8192 而不是 `models.json`
+/// 里声明的 32768。现在只有这一把。
+///
+/// `agent_lock()` 也持有它（它要改 `NINI_AGENT_DIR`）。**不要**在持有本锁时
+/// 再调 `agent_lock()`——std 的 `Mutex` 不可重入，会死锁。
+pub fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::{Mutex, MutexGuard, OnceLock};
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let lock: MutexGuard<'static, ()> = LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    lock
+}
+
+pub fn agent_lock() -> AgentDirGuard {
+    let lock = env_lock();
 
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

@@ -988,7 +988,13 @@ async fn run_tui_bootstrap(
 /// it must serialise against every other test that does — two suites with
 /// two locks would be two suites that could interleave.
 pub(crate) mod p0_1_skills_tests_support {
-    pub(crate) static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// 进程级环境锁 —— **唯一一把**，见 `nini_core::paths::env_lock()`。
+    /// 这里不再自己定义一把：那正是 2026-11-07 修掉的 flake 的成因
+    /// （`provider_factory` 另有一把，两把互不排斥，而
+    /// `std::env::set_var` 不是线程安全的）。
+    pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        nini_core::paths::env_lock()
+    }
 
     /// Point HOME (and the agent directory) at a scratch directory.
     pub(crate) fn isolate_home(root: &std::path::Path) {
@@ -1089,7 +1095,7 @@ mod p0_1_skills_tests {
 
     #[test]
     fn tui_system_prompt_actually_contains_the_skills_block() {
-        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_guard();
         let tmp = tempfile::tempdir().unwrap();
         isolate_home(tmp.path());
         let cwd = make_project_with_skill(tmp.path(), "p0-one-skill", "does a p0 one thing");
@@ -1123,7 +1129,7 @@ mod p0_1_skills_tests {
     /// lying to the model in another.
     #[test]
     fn skills_visible_to_user_match_skills_in_prompt() {
-        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_guard();
         let tmp = tempfile::tempdir().unwrap();
         isolate_home(tmp.path());
         let cwd = make_project_with_skill(tmp.path(), "alpha-skill", "first");
@@ -1159,7 +1165,7 @@ mod p0_1_skills_tests {
 
     #[test]
     fn no_skills_flag_suppresses_the_block() {
-        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_guard();
         let tmp = tempfile::tempdir().unwrap();
         isolate_home(tmp.path());
         let cwd = make_project_with_skill(tmp.path(), "suppressed-skill", "should not appear");
@@ -1186,7 +1192,7 @@ mod p0_1_skills_tests {
 
     #[test]
     fn skills_fix_preserves_the_working_directory_hint() {
-        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_guard();
         let tmp = tempfile::tempdir().unwrap();
         isolate_home(tmp.path());
         let cwd = make_project_with_skill(tmp.path(), "cwd-hint-skill", "x");
@@ -1210,7 +1216,7 @@ mod p0_1_skills_tests {
 
     #[test]
     fn empty_project_yields_no_skills_block_and_no_panic() {
-        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_guard();
         let tmp = tempfile::tempdir().unwrap();
         isolate_home(tmp.path());
         let cwd = tmp.path().join("empty");
@@ -1241,7 +1247,7 @@ mod p0_1_skills_tests {
     /// same number, in both flag states.
     #[test]
     fn status_bar_count_and_prompt_contents_agree_under_both_flag_states() {
-        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_guard();
         let tmp = tempfile::tempdir().unwrap();
         isolate_home(tmp.path());
         let cwd = make_project_with_skill(tmp.path(), "agree-a", "a");
@@ -1458,6 +1464,42 @@ mod print_mode_tool_tests {
 }
 
 #[cfg(test)]
+/// 这条不变量：**整个测试二进制只有一把环境锁**。
+///
+/// `std::env::set_var` / `remove_var` 不是线程安全的。同一个二进制里如果有两把
+/// **互不排斥**的锁，两个 suite 就能同时改同一个环境块——一个在重建 environ，
+/// 另一个在读 `NINI_AGENT_DIR`，读到的是一次撕裂的中间态。
+///
+/// 症状不是「被测代码算错了」，而是**邻居在它读配置的那一刻改了环境**
+/// （2026-11-07 实测：`demo` 的 `max_tokens` 测试偶发拿到 8192，而不是
+/// `models.json` 里声明的 32768）。
+///
+/// 判据：拿着这里的守卫时，另一个线程去拿 `provider_factory` 的守卫必须
+/// **拿不到**——因为它们是同一把锁。
+mod env_lock_is_one_lock_tests {
+    #[test]
+    fn the_two_env_guards_are_the_same_lock() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let held = super::p0_1_skills_tests_support::env_guard();
+        std::thread::spawn(move || {
+            let _other = crate::provider_factory::env_guard();
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "两把不同的锁：provider_factory 的 env_guard 没被 app 的 env_guard 挡住——\
+             环境变量的读写不是线程安全的，两个 suite 会同时改环境块"
+        );
+        drop(held);
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(),
+            "释放之后另一个线程应该能拿到锁"
+        );
+    }
+}
+
+#[cfg(test)]
 mod cli_flag_wiring_tests {
     //! v0.10: five flags were accepted, documented in `--help`, and dropped at
     //! the CLI boundary.
@@ -1599,7 +1641,7 @@ mod cli_flag_wiring_tests {
     /// only reason to reach for the flag: narrowing.
     #[test]
     fn skill_paths_override_automatic_discovery() {
-        let _g = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_guard();
         let tmp = tempfile::tempdir().unwrap();
         isolate_home(tmp.path());
         let cwd = make_project_with_skill(tmp.path(), "discovered", "found automatically");

@@ -1127,6 +1127,19 @@ fn resolve_api_key(explicit: Option<&str>, env_var: &str, provider: &str) -> Res
 /// implements) are built from the table in `nini_ai::provider_registry`.
 /// Their base URL comes from `{ID}_BASE_URL` or the table, their key from
 /// the table's environment variable.
+/// 进程级环境锁（测试用）—— **整个 crate 只有这一把**。
+///
+/// 见 `nini_core::paths::env_lock()`：环境变量的读写不是线程安全的。同一个测试
+/// 二进制里如果有两把**互不排斥**的锁，两个 suite 就能同时改同一个环境块——
+/// 一个在重建 environ，另一个在读 `NINI_AGENT_DIR`，读到的是一次撕裂的中间态。
+///
+/// `app.rs` 的 `p0_1_skills_tests_support::env_guard()` 与它**必须是同一把**——
+/// `the_two_env_guards_are_the_same_lock` 就是钉这件事的断言。
+#[cfg(test)]
+pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    nini_core::paths::env_lock()
+}
+
 pub fn build_provider(
     provider: &str,
     turns: Vec<Vec<FixtureTurn>>,
@@ -1484,8 +1497,11 @@ mod tests {
 
     #[test]
     fn explicit_api_key_wins_over_the_env_var() {
-        // SAFETY: single-threaded test process, no other thread reads
-        // this var concurrently.
+        // SAFETY: `std::env::set_var` is **not thread-safe** (Rust's own
+        // docs say so), so "no other thread touches the environment" is not
+        // a property of a test — cargo runs tests in parallel threads. The
+        // environment lock is what makes it true here.
+        let _g = env_guard();
         unsafe { std::env::set_var("NINI_TEST_KEY", "from-env") };
         let k = resolve_api_key(Some("from-flag"), "NINI_TEST_KEY", "test").unwrap();
         assert_eq!(k, "from-flag");
@@ -1493,6 +1509,7 @@ mod tests {
 
     #[test]
     fn env_var_is_used_when_no_flag_is_given() {
+        let _g = env_guard();
         unsafe { std::env::set_var("NINI_TEST_KEY", "from-env") };
         let k = resolve_api_key(None, "NINI_TEST_KEY", "test").unwrap();
         assert_eq!(k, "from-env");
@@ -1516,6 +1533,7 @@ mod tests {
 
     #[test]
     fn a_blank_env_var_is_an_error() {
+        let _g = env_guard();
         unsafe { std::env::set_var("NINI_TEST_KEY", "   ") };
         let err = resolve_api_key(None, "NINI_TEST_KEY", "test").unwrap_err();
         assert!(
@@ -1617,14 +1635,35 @@ mod tests {
     ///
     /// Same shape as `nini_core::paths::agent_lock()`, which exists for the
     /// same reason on the agent directory.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+    ///
+    /// **2026-11-07：并入 `HOME_LOCK`（不再自己一把）。**
+    /// 这个测试二进制里原本有**两把互不排斥的锁**：这里这把，和
+    /// `app::p0_1_skills_tests_support::HOME_LOCK`。而
+    /// `std::env::set_var` / `remove_var` **不是线程安全的**——两把锁各管各的，
+    /// 两个 suite 就能同时改同一个环境块。
+    /// 症状：`demo` 的 `max_tokens` 测试**偶发**拿到默认值 8192，而不是
+    /// `models.json` 里声明的 32768——**不是那个测试自己算错了**，是另一个
+    /// suite 正在重建环境块，`HOME` 被读成了别的值。
+    /// 现在这个 crate 里的环境改动只有一把锁，与 `app.rs` 的 skills / flag
+    /// 测试共用。
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        super::env_guard()
     }
 
     fn with_env_unset<T>(names: &[&str], f: impl FnOnce() -> T) -> T {
+        // One lock for the whole block: `env_lock()` serialises every
+        // environment mutation in this binary, and the sandbox below is
+        // the agent directory redirected at an empty place.
         let _guard = env_guard();
+        // The user's own `models.json` must not decide these tests'
+        // verdicts: the agent directory is pointed at an empty sandbox
+        // for the duration. (It used to be `agent_lock()` inside
+        // `build()` — but `agent_lock()` and `env_lock()` are the
+        // **same** mutex, and this function already holds it. Taking it
+        // twice is a deadlock, not a lock.)
+        let sandbox = tempfile::tempdir().unwrap();
+        let saved_agent_dir = std::env::var_os("NINI_AGENT_DIR");
+        unsafe { std::env::set_var("NINI_AGENT_DIR", sandbox.path()) };
         let mut all: Vec<&str> = names.to_vec();
         all.extend(AMBIENT.iter().map(|(n, _)| *n));
         let saved: Vec<(String, Option<String>)> = all
@@ -1646,6 +1685,10 @@ mod tests {
                 None => unsafe { std::env::remove_var(&n) },
             }
         }
+        match saved_agent_dir {
+            Some(v) => unsafe { std::env::set_var("NINI_AGENT_DIR", v) },
+            None => unsafe { std::env::remove_var("NINI_AGENT_DIR") },
+        }
         out
     }
 
@@ -1653,7 +1696,9 @@ mod tests {
         // The user's own `models.json` must not decide these tests'
         // verdicts: the agent directory is pointed at an empty sandbox
         // for the duration.
-        let _guard = nini_core::paths::agent_lock();
+        // The empty agent-directory sandbox comes from `with_env_unset`,
+        // which every caller of this helper goes through — see the note
+        // there about why it is not taken here.
         let models = nini_core::settings::load_user_models_json();
         build_provider(provider, Vec::new(), &[], &[], key, Some(&models))
     }
@@ -1859,6 +1904,7 @@ mod tests {
 
     #[test]
     fn the_api_key_on_the_command_line_wins_over_the_file() {
+        let _g = env_guard();
         let entry = models_json_entry(
             Some("http://x.invalid/v1"),
             Some("openai-completions"),
