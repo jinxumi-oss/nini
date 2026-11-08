@@ -247,6 +247,39 @@ pub(crate) fn report_startup_diagnostics(skills: &nini_core::skills::LoadSkillsR
     eprintln!("{text}");
 }
 
+/// The `max_tokens` ceiling for the selected model, from the user's
+/// `models.json` in Pi's spelling
+/// (`models.json` → `providers[].models[].maxTokens`), falling back to
+/// `RunConfig::new`'s default `8192` when the model declares none.
+///
+/// v0.16 (max_tokens): the request used to always carry `8192`, and a
+/// model whose ceiling `models.json` states was capped at that number
+/// even though Pi composes the request from the model definition
+/// (`provider-composer.js:73`) — so a model whose real ceiling bites first
+/// reached nini's overflow/compaction path on the wrong ceiling, and the
+/// compact-and-retry it gets was not consistent with Pi. Aligning the
+/// request's `max_tokens` with the model's own ceiling makes the mechanism
+/// match Pi; `8192` stays the fallback for a model that declares none.
+pub(crate) fn model_max_tokens(
+    user_models: &nini_core::settings::ModelsJson,
+    provider: &str,
+    model: &str,
+) -> Option<u32> {
+    // The selected model is `provider/model` (the TUI and the single-shot
+    // entries carry it qualified) or a bare model id — resolve to the
+    // `provider/model` id `user_model_specs` keys its entries under, so a
+    // bare id resolves against the matching provider.
+    let full = if model.contains('/') {
+        model.to_string()
+    } else {
+        format!("{provider}/{model}")
+    };
+    nini_core::model_runtime::user_model_specs(user_models)
+        .into_iter()
+        .find(|spec| spec.id == full)
+        .map(|spec| spec.max_tokens)
+}
+
 pub(crate) fn build_tui_run_config(
     settings: &nini_core::settings::Settings,
     cwd: &std::path::Path,
@@ -285,6 +318,12 @@ pub(crate) fn build_tui_run_config(
             n,
         )
     };
+    // The request's `max_tokens` ceiling is the selected model's own
+    // `maxTokens` from the user's `models.json`, not a hardcoded 8192
+    // (Pi composes the request from the model definition).
+    let user_models = nini_core::settings::load_user_models_json();
+    let model_ceiling = model_max_tokens(&user_models, &cfg.provider, &cfg_model);
+
     let config = RunConfig {
         model: cfg_model.clone(),
         system: Some(prompt_setup::settings_to_system_prompt_with(
@@ -340,6 +379,10 @@ pub(crate) fn build_tui_run_config(
         // in `AppConfig::resolved_tool_execution`, shared with the
         // `demo`/`-p` door so the two cannot drift apart.
         tool_execution: cfg.resolved_tool_execution(settings),
+        // v0.16 (max_tokens): the model's own ceiling from models.json
+        // (see `model_max_tokens`). Falls back to `RunConfig::new`'s 8192
+        // when the model declares none.
+        max_tokens: Some(model_ceiling.unwrap_or(8192)),
         ..RunConfig::new(cfg_model)
     };
     (config, skills_in_prompt)
@@ -990,8 +1033,7 @@ async fn run_tui_bootstrap(
 pub(crate) mod p0_1_skills_tests_support {
     /// 进程级环境锁 —— **唯一一把**，见 `nini_core::paths::env_lock()`。
     /// 这里不再自己定义一把：那正是 2026-11-07 修掉的 flake 的成因
-    /// （`provider_factory` 另有一把，两把互不排斥，而
-    /// `std::env::set_var` 不是线程安全的）。
+    /// （`provider_factory` 另有一把，两把互不排斥）。
     pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
         nini_core::paths::env_lock()
     }
@@ -1851,6 +1893,96 @@ mod queue_hook_tests {
             g.run_state.pending_steer_messages,
             vec!["steer me".to_string()],
             "followUp 钩子不得取走 steer 队列——那是 steering 钩子的活"
+        );
+    }
+}
+
+/// v0.16 (max_tokens): the two RunConfig assembly doors take the selected
+/// model's `maxTokens` from the user's `models.json`, with `8192` as the
+/// fallback — so the compact+retry path fires at the model's own ceiling
+/// (Pi parity) instead of a hardcoded 8192.
+///
+/// These tests walk the door: a Pi-style `models.json` in the agent
+/// directory is planted, the assembly runs, and the resulting `RunConfig`
+/// must carry the declared ceiling — or `8192` when nothing declares one.
+#[cfg(test)]
+mod max_tokens_tests {
+    use super::p0_1_skills_tests_support::{env_guard, isolate_home};
+    use super::*;
+    use std::io::Write;
+    use std::path::Path;
+
+    /// A Pi-style `models.json`: one model per provider, each declaring a
+    /// `maxTokens`. A model nobody declares is deliberately absent.
+    fn pi_models_json() -> &'static str {
+        r#"{
+  "providers": {
+    "gw": {
+      "baseUrl": "http://127.0.0.1:9877/v1",
+      "api": "openai-completions",
+      "models": [
+        { "id": "gw/big", "maxTokens": 32768 },
+        { "id": "gw/tiny", "maxTokens": 1024 }
+      ]
+    },
+    "acme": { "models": [ { "id": "acme/other", "maxTokens": 81920 } ] }
+  }
+}"#
+    }
+
+    /// Point the agent directory at `<root>` and plant the Pi-style file.
+    fn plant_models_json(root: &Path) {
+        isolate_home(root);
+        let agent = root.join(".nini").join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let mut f = std::fs::File::create(agent.join("models.json")).unwrap();
+        f.write_all(pi_models_json().as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn the_tui_run_config_takes_the_selected_model_max_tokens() {
+        let _g = env_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        plant_models_json(tmp.path());
+        let cwd = tmp.path();
+        let settings = load_settings(&cwd);
+        let tools = nini_core::tool::ToolRegistry::new();
+
+        // The model's own ceiling wins, qualified or bare.
+        for model in ["gw/big", "big"] {
+            let mut cfg = AppConfig::for_tool_selection();
+            cfg.provider = "gw".into();
+            cfg.model = model.to_string();
+            let (run_cfg, _) = build_tui_run_config(&settings, &cwd, &tools, &cfg);
+            assert_eq!(
+                run_cfg.max_tokens,
+                Some(32_768),
+                "the TUI run config must carry the selected model's maxTokens, \
+         not the default, for model={model}"
+            );
+        }
+
+        // Another provider's model is not this one: it must not win.
+        let mut cfg = AppConfig::for_tool_selection();
+        cfg.provider = "acme".into();
+        cfg.model = "other".into();
+        let (run_cfg, _) = build_tui_run_config(&settings, &cwd, &tools, &cfg);
+        assert_eq!(
+            run_cfg.max_tokens,
+            Some(81_920),
+            "the wrong provider's model must not win"
+        );
+
+        // Fallback: a model the user did not declare keeps `RunConfig`'s
+        // 8192 — the plan's口径 is to keep that fallback, not drop it.
+        let mut cfg = AppConfig::for_tool_selection();
+        cfg.provider = "gw".into();
+        cfg.model = "gw/undeclared".into();
+        let (run_cfg, _) = build_tui_run_config(&settings, &cwd, &tools, &cfg);
+        assert_eq!(
+            run_cfg.max_tokens,
+            Some(8192),
+            "an undeclared model must fall back to 8192"
         );
     }
 }

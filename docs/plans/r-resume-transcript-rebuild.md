@@ -24,7 +24,10 @@ compaction 摘要——`render_context_entries`），这才是 agent 下一轮�
 
 1. **删重建循环**。`session_load(path)` 失败即报错返回；成功即完成（A4 保证它
    调了 `transcript_from_context`）。删 40 行手写循环 + `entry_legacy_message`
-   的调用点（函数本身留着——conformance 在用它，grep 确认再动）。
+   的调用点（函数本身留着——实测无调用点：crates/ 全树仅 3 处注释引用
+   `crates/nini-core/src/conversion.rs:17`、`crates/nini-cli/src/demo.rs:376,382`；
+   `crates/nini-cli/src/demo.rs:385` 的 `cli_entry_legacy` 靠 `#[allow(dead_code)]` +
+   `pub(crate)` + 一条测试自保）+ 待 owner 确认是否移除/保留）。
 2. **skipped 提示改 `push_stop_notice`**（A4/R2h 注释说的"内联在内容旁边"——
    StopNotice 正是为此设计的变体；`push_assistant` 把它变成了模型消息）。
 3. **`(loaded session <id>)` 改 `push_notice`**（TUI 自己说的话，不进 session——
@@ -45,6 +48,6 @@ compaction 摘要——`render_context_entries`），这才是 agent 下一轮�
 
 ## 不做的
 
-- P5（选择器目录范围）——登记台账备注，语义由 owner 定
-- `entry_legacy_message` 函数本身——conformance 在用
+- P5（选择器目录范围）——需要 owner 确认（待 owner 拍板）：session 选择器只列 cwd 子目录 vs `/resume` 列递归集，语义由 owner 定，本轮不动
+- `entry_legacy_message` 函数本身——实测无调用点（crates/ 全树仅 3 处注释引用：`crates/nini-core/src/conversion.rs:17`、`crates/nini-cli/src/demo.rs:376,382`；`crates/nini-cli/src/demo.rs:385` 的 `cli_entry_legacy` 靠 `#[allow(dead_code)]` + `pub(crate)` + 一条测试自保）+ 待 owner 确认是否移除/保留
 - 改门禁、改 `render_context_entries`（它是对的）

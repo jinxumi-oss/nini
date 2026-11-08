@@ -38,6 +38,13 @@ fn assemble_run_config(
     model: &str,
     system: String,
 ) -> RunConfig {
+    // The request's `max_tokens` ceiling is the selected model's own
+    // `maxTokens` from the user's `models.json`, not a hardcoded 8192
+    // (Pi composes the request from the model definition). Same shape as
+    // the TUI door (`app::model_max_tokens`).
+    let user_models = nini_core::settings::load_user_models_json();
+    let model_ceiling = crate::app::model_max_tokens(&user_models, &tool_cfg.provider, model);
+
     RunConfig {
         model: model.to_string(),
         system: Some(system),
@@ -61,6 +68,8 @@ fn assemble_run_config(
         // `AppConfig::resolved_tool_execution`, shared with the TUI door
         // so the two cannot drift apart.
         tool_execution: tool_cfg.resolved_tool_execution(settings),
+        // Same as the TUI door: the model's own ceiling from models.json.
+        max_tokens: Some(model_ceiling.unwrap_or(8192)),
         ..RunConfig::new(model.to_string())
     }
 }
@@ -364,14 +373,14 @@ pub(crate) fn demo_simple_turns(task: &str) -> Vec<Vec<FixtureTurn>> {
 }
 
 /// v0.7.1 — delegate to the chokepoint in nini-core::conversion.
-/// See crates/nini-tui/src/commands.rs::entry_legacy_message for the
-/// parallel refactor.
+/// The TUI-side parallel helper `entry_legacy_message` was removed in
+/// the /resume (B26) cleanup; this CLI-side helper is kept for
+/// symmetry and may be needed again when the CLI gets a `--dump-legacy`
+/// flag.
 ///
 /// Currently only exercised by `cli_entry_legacy_handles_real_entry`
 /// below; the `let _ =` form doesn't count as a use for `dead_code`,
-/// and `pub(crate)` widens visibility so rustc flags it. The function
-/// is kept for symmetry with the TUI's `entry_legacy_message` and may
-/// be needed again when the CLI gets a `--dump-legacy` flag.
+/// and `pub(crate)` widens visibility so rustc flags it.
 #[allow(dead_code)]
 pub(crate) fn cli_entry_legacy(entry: &nini_core::SessionEntry) -> Option<nini_core::AgentMessage> {
     let m = nini_core::conversion::session_entry_to_llm_message(entry)?;
@@ -661,5 +670,83 @@ mod print_wrap_tests {
             let joined: String = wrapped.chars().filter(|c| *c != '\n').collect();
             assert_eq!(joined, text, "the wrap lost or changed text");
         }
+    }
+}
+
+/// v0.16 (max_tokens): `assemble_run_config` takes the selected model's
+/// `maxTokens` from the user's `models.json`, with `8192` as the fallback —
+/// the same shape as the TUI door (`app::model_max_tokens`). These tests
+/// walk the door: the Pi-style file is planted, the assembly runs, and the
+/// resulting `RunConfig` must carry the declared ceiling.
+#[cfg(test)]
+mod max_tokens_tests {
+    use super::demo_run_config;
+    use crate::app::p0_1_skills_tests_support::{env_guard, isolate_home};
+    use std::io::Write;
+    use std::path::Path;
+
+    fn pi_models_json() -> &'static str {
+        r#"{
+  "providers": {
+    "gw": {
+      "baseUrl": "http://127.0.0.1:9877/v1",
+      "api": "openai-completions",
+      "models": [
+        { "id": "gw/big", "maxTokens": 32768 },
+        { "id": "gw/tiny", "maxTokens": 1024 }
+      ]
+    },
+    "acme": { "models": [ { "id": "acme/other", "maxTokens": 81920 } ] }
+  }
+}"#
+    }
+
+    fn plant_models_json(root: &Path) {
+        isolate_home(root);
+        let agent = root.join(".nini").join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let mut f = std::fs::File::create(agent.join("models.json")).unwrap();
+        f.write_all(pi_models_json().as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn the_assembled_config_takes_the_selected_model_max_tokens() {
+        let _g = env_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        plant_models_json(tmp.path());
+        let settings = nini_core::settings::Settings::default();
+        let mut tool_cfg = crate::app::AppConfig::for_tool_selection();
+        tool_cfg.provider = "gw".into();
+
+        // The model's own ceiling wins, qualified or bare.
+        for model in ["gw/big", "big"] {
+            let cfg = demo_run_config(&tool_cfg, &settings, model, String::new());
+            assert_eq!(
+                cfg.max_tokens,
+                Some(32_768),
+                "assemble must take the selected model's maxTokens, not the default, for model={model}"
+            );
+        }
+
+        // Another provider's model is not this one: it must not win.
+        let mut tool_cfg = crate::app::AppConfig::for_tool_selection();
+        tool_cfg.provider = "acme".into();
+        let cfg = demo_run_config(&tool_cfg, &settings, "other", String::new());
+        assert_eq!(
+            cfg.max_tokens,
+            Some(81_920),
+            "the wrong provider's model must not win"
+        );
+
+        // Fallback: a model the user did not declare keeps `RunConfig`'s
+        // 8192 — the plan's口径 is to keep that fallback, not drop it.
+        let mut tool_cfg = crate::app::AppConfig::for_tool_selection();
+        tool_cfg.provider = "gw".into();
+        let cfg = demo_run_config(&tool_cfg, &settings, "gw/undeclared", String::new());
+        assert_eq!(
+            cfg.max_tokens,
+            Some(8192),
+            "an undeclared model must fall back to 8192"
+        );
     }
 }
