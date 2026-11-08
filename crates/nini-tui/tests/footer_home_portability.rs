@@ -49,13 +49,14 @@ use ratatui::Terminal;
 /// `$HOME` is process-global and cargo runs tests in a binary in parallel.
 static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Row 0 of the frame — the footer's cwd/branch line.
+/// Row 1 of the frame — the footer's cwd/branch line.
+/// (Row 0 is the always-present version line; v1.0.0 版多了一行顶部版本行)
 fn cwd_row(state: &AppState) -> String {
     let backend = TestBackend::new(200, 12);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| render_frame(f, state)).unwrap();
     let buf = terminal.backend().buffer().clone();
-    (0..buf.area.height)
+    (1..buf.area.height)
         .map(|y| {
             (0..buf.area.width)
                 .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))

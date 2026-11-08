@@ -479,36 +479,37 @@ fn empty_state_pixel_layout_regression() {
     assert_eq!(line_count, 24, "expected 24 lines, got {line_count}");
 
     // v0.8: Pi-style 2-line footer.
-    //   Line 0: pwd/branch/session (env context line)
-    //   Line 1: brand badge + phase + ... + right-aligned model
+    //   Line 0: version line (product name + running version) — v1.0.0
+    //   Line 1: pwd/branch/session (env context line)
+    //   Line 2: brand badge + phase + ... + right-aligned model
     //   Line 23 (last): key hints
-    let pwd_line = frame.lines().next().unwrap();
+    let pwd_line = frame.lines().nth(1).unwrap();
     // With no cwd/session set, the pwd line should still render the
-    // 'no session' placeholder (line 0 is reserved for env context).
+    // 'no session' placeholder (line 1 is the pwd line).
     assert!(
         !pwd_line.contains(" nini "),
-        "line 0 is the pwd line (no badge), got: {pwd_line:?}"
+        "line 1 is the pwd line (no badge), got: {pwd_line:?}"
     );
 
-    let stats_line = frame.lines().nth(1).unwrap();
+    let stats_line = frame.lines().nth(2).unwrap();
     assert!(
         stats_line.contains(" nini "),
-        "line 1 should contain ' nini ' brand badge, got: {stats_line:?}"
+        "line 2 should contain ' nini ' brand badge, got: {stats_line:?}"
     );
     assert!(
         stats_line.contains("test-model"),
-        "line 1 should show model name, got: {stats_line:?}"
+        "line 2 should show model name, got: {stats_line:?}"
     );
     assert!(
         stats_line.contains("idle"),
-        "line 1 should show 'idle' phase, got: {stats_line:?}"
+        "line 2 should show 'idle' phase, got: {stats_line:?}"
     );
 
     // Prompt block ("input" border) should be in the bottom region.
-    // Layout: footer(2) + transcript(min 3) + prompt(3) + hints(1) = 9 rows minimum,
-    // leaving 15 rows for transcript on a 24-row screen.
-    // Prompt top border sits at row 2 + transcript_height = 20.
-    let prompt_line_idx = 20;
+    // Layout: version(1) + footer(2) + transcript(min 3) + prompt(3) + hints(1),
+    // leaving ~16 rows for transcript on a 24-row screen.
+    // Prompt top border sits at row 3 + transcript_height = 21.
+    let prompt_line_idx = 21;
     let prompt_line = frame.lines().nth(prompt_line_idx).unwrap();
     assert!(
         prompt_line.contains("input") || prompt_line.contains("❯"),

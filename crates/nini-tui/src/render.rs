@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! ┌───────────────────────────────────────────────────────────────┐
+//! │ nini 1.0.0 │ ← version line (1, always present)            │
 //! │ nini — model: test-model — session: abc123 │ ← status bar (1 line)
 //! ├───────────────────────────────────────────────────────────────┤
 //! │ > hi                                          │ ← transcript
@@ -102,8 +103,13 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     };
     let hint_rows: u16 = if area.height >= 10 { 1 } else { 0 };
     let want_prompt: u16 = if popup_height > 0 { popup_height } else { 3 };
+    // Reserve the version row explicitly: the top chunk (0) holds the
+    // fixed version line, so the prompt budget must account for it too.
+    // `footer_rows + hint_rows + 2` keeps the fixed rows (version +
+    // footer + transcript's Min(1) + hints) plus the prompt budget exactly
+    // filling the terminal on short screens (height 3/4/5 fill exactly).
     let prompt_rows: u16 = want_prompt
-        .min(area.height.saturating_sub(footer_rows + hint_rows + 1))
+        .min(area.height.saturating_sub(footer_rows + hint_rows + 2))
         .max(1);
     let search_rows: u16 = if state.ui_state.search.is_some() {
         1
@@ -114,15 +120,19 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1), // version line: product name + running version, always present
             Constraint::Length(footer_rows), // pwd line + stats/model line
             Constraint::Length(search_rows), // search bar (only when active)
-            Constraint::Min(1),              // transcript — never below one row
+            Constraint::Min(1),    // transcript — never below one row
             Constraint::Length(prompt_rows), // prompt OR popup
-            Constraint::Length(hint_rows),   // key hints
+            Constraint::Length(hint_rows), // key hints
         ])
         .split(area);
 
-    render_footer(f, state, theme, chunks[0]);
+    // The version line takes the top chunk (0); everything that used to
+    // follow it is now one row lower (chunk index +1).
+    render_version_line(f, theme, chunks[0]);
+    render_footer(f, state, theme, chunks[1]);
     // F019: when transcript search is active, render a search bar
     // row (the Layout reserves 1 line for it above the transcript).
     //
@@ -134,17 +144,19 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
     // up to row 1. v0.6 fix: always use the chunks[] indices in
     // their Layout order regardless of search state.
     let (transcript_chunk, prompt_chunk, footer_chunk) = if state.ui_state.search.is_some() {
-        // status=0, search=1, transcript=2, prompt=3, footer=4
-        render_search_bar(f, state, theme, chunks[1]);
-        (chunks[2], chunks[3], chunks[4])
+        // version=0, footer=1, search=2, transcript=3, prompt=4, hints=5
+        render_search_bar(f, state, theme, chunks[2]);
+        (chunks[3], chunks[4], chunks[5])
     } else {
         // ratatui keeps chunk indices stable even when one slot has
         // 0 height, so the transcript/prompt/footer indices are the
-        // SAME as the active case (2, 3, 4) — chunks[1] is just an
-        // empty Rect we never render into. Earlier (commit d4070d0)
+        // SAME as the active case (3, 4, 5). chunks[2] is the search
+        // slot, an empty Rect we never render into; chunks[1] (footer)
+        // may itself be an empty Rect, but render_footer still runs.
+        // Earlier (commit d4070d0)
         // this branch used chunks[1]/[2]/[3] which collided with the
         // transcript Min(3) slot and pushed the prompt up to row 1.
-        (chunks[2], chunks[3], chunks[4])
+        (chunks[3], chunks[4], chunks[5])
     };
     render_transcript(f, state, theme, transcript_chunk);
     if state
@@ -166,6 +178,19 @@ pub fn render_frame_with_theme(f: &mut Frame, state: &AppState, theme: &Theme) {
         // render_running_indicator was removed in v0.8.3 — the working
         // spinner is now embedded in the footer (render_stats_line).
     }
+}
+
+/// Top line of every frame: product name plus the running version. The
+/// version is read from `env!("CARGO_PKG_VERSION")` — the same version
+/// the `nini --version` line and the CLI emit — so the TUI never hard-
+/// codes a stale version string. Always drawn at the top chunk of the
+/// layout.
+fn render_version_line(f: &mut Frame, theme: &Theme, area: Rect) {
+    let line = Span::styled(
+        format!("nini {}", env!("CARGO_PKG_VERSION")),
+        theme.fg_style("dim"),
+    );
+    f.render_widget(Paragraph::new(RLine::from(line)), area);
 }
 
 fn render_footer(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {

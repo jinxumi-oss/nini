@@ -266,7 +266,9 @@ fn initial_model_arg_propagates_to_status_bar() {
 
     // Render and check the frame contains the model name.
     let frame = frame_dump(&state, 200, 24);
-    let status_row = frame.get(1).cloned().unwrap_or_default();
+    // status bar (model identity line) is the footer's second row: row 0 is the
+    // always-present version line (v1.0.0), row 1 is the pwd/env line, row 2 the stats line.
+    let status_row = frame.get(2).cloned().unwrap_or_default();
     assert!(
         status_row.contains("MiniMax-M3"),
         "status bar should show model name 'MiniMax-M3', got: {status_row:?}"

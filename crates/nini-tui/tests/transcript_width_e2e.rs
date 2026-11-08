@@ -909,7 +909,9 @@ fn scroll_indicator_does_not_quote_an_impossible_line_count() {
 
 fn footer_rows(s: &AppState, w: u16, h: u16) -> Vec<String> {
     let rows = frame_rows(s, w, h);
-    rows[..2].to_vec()
+    // Row 0 is the always-present version line (v1.0.0); the footer's two rows
+    // follow at 1..2.
+    rows[1..3].to_vec()
 }
 
 fn state_with_long_cwd_and_model() -> AppState {
