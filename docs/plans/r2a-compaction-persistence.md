@@ -7,7 +7,7 @@ Status: **全部交付（2026-11-05 复核）**：A1–A4 与 §0 的 P0.1 / P0.
 
 当时的状态（2026-10-07 写下，已过期，留痕）：
 
-> Status: **A1 shipped** (`c249d9b`). A2 blocked by P0 below.
+> Status: **已交付（A1–A4 全部交付，2026-11-05 复核）**：当时状态字段曾与 §2/§3 不符（残留的 A2 blocked 记录），已按 §5 更正。
 
 Baseline: 1019 tests pass, clippy 0, fmt clean.（2026-10-07 的基线，未随之更新）
 

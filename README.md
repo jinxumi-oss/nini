@@ -19,7 +19,7 @@ rewrite*, *Rust implementation of Pi*, *Pi agent 的 Rust 版本*, *Pi 的 Rust 
 
 [![Status](https://img.shields.io/badge/status-v0.17.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2098%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-2100%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -104,7 +104,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **2098 unit + integration tests**, including property-based SSE fuzz and
+- **2100 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -341,9 +341,9 @@ trying to be; this section is the user-facing summary of it.
 - No LLM-backed *branch* summary: `/fork` creates a real branch, but Pi's
   `navigateTree` (moving to another node inside one file, optionally
   summarising what was abandoned) is not implemented
-- 9 native provider implementations (7 brands: `anthropic`, `openai` (incl.
+- 37 provider implementations (9 native + 28 thin shells, 7 brands: `anthropic`, `openai` (incl.
   `openai-responses` / `openai-compat`), `google`, `deepseek`, `groq`, `mistral`,
-  `cohere`) out of the 40 Pi 0.84.2 ships; configure the rest via `models.json`
+  `cohere`) out of the 40 Pi 0.85.1 ships; configure the rest via `models.json`
 - **Models declared in your `models.json` are now read** (Pi's spelling:
   `contextWindow`, `maxTokens`, `reasoning`), they appear in `/model` and in
   `--list-models`, and their context window is the one you wrote down.
@@ -445,7 +445,7 @@ The test suite includes property-based fuzz (`proptest`) for the SSE
 parser, end-to-end CLI tests that spawn the compiled binary, TUI
 integration suites using `ratatui::backend::TestBackend` for
 frame-level snapshot assertions, and a `nini-conformance` crate that
-holds **only** Pi-parity oracles — executable statements about Pi 0.84.2
+holds **only** Pi-parity oracles — executable statements about Pi 0.85.1
 that a change to nini can falsify.
 
 The rule for conformance tests: fixtures come from real Pi output, never

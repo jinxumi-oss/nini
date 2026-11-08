@@ -102,7 +102,7 @@ v0.9.2 一整版都在清这个。
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
 | 版本 | **v0.17.0** | `Cargo.toml` version = 0.17.0；`nini --version` 自报同一数字（`crates/nini-cli/tests/build_identity.rs` 把二进制/manifest/CHANGELOG 三方放在一起比）；Cargo.lock 的 8 个 crate 版本随之更新（`cargo build --release --offline` 自动更新） | **已发布**：tag `v0.17.0`（annotated，tagger `nini-bot`），release 资产 `nini-x86_64-unknown-linux-gnu.tar.xz`（内含 `nini` 一个顶层文件，`install.sh` 按这两个名字取）+ `.sha256`（内容是提取后目录里的 `nini` 的哈希，使 `install.sh` 的 `sha256sum -c` 能通过） |
-| 测试 | **2098 通过 / 0 失败**（另有 1 个 doctest 被 ignore：TUI 的 `dynamic_border` 示例需要 TTY） | 本机全量 `cargo test --workspace`（2026-11-07） | 无 |
+| 测试 | **2100 通过 / 0 失败**（另有 1 个 doctest 被 ignore：TUI 的 `dynamic_border` 示例需要 TTY） | 本机全量 `cargo test --workspace`（2026-11-07） | 无 |
 | 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 已从 stub 改为**明说本机不做云端分享并指向 `/export`**（Pi 的 `/share` 要 gh 账号或云端，与 nini「不出网」原则冲突，登记为 B10 伪差距） |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
 | 行为 oracle | **符号引用全部可解析（drift=0）**；台账的 `nini_state` **每条都能 grep 到代码符号**（`crates/nini-core/tests/ledger_anchors.rs`）；行为层 **Pi 侧可执行对照物 ≥1**（真 Pi 0.85.1 录制的会话） | `python3 scripts/pi-oracle-lock.py --verify-refs`；`crates/nini-tui/tests/behavior_parity.rs` | 其余 oracle 仍只断言 nini 侧（依据已是机器可解析的符号引用，不再依赖行号）——**C1 已闭**，剩下的覆盖度是另一件事 |
@@ -143,7 +143,7 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 | # | 决策 | 现状 | 阻塞什么 |
 |---|---|---|---|
 | R4 | nini 是否自建凭据存储（`~/.nini/agent/`），是否可选复用 Pi | **已拍板（2026-11-05）：不做**，保持 env-var-only。这是**有意的产品决定**（不是待决）：nini 的「无账户、无云、无遥测」与自建凭据存储不相容 | 不再阻塞任何工作 |
-| R5 | 是否把 provider 补齐到 Pi 全集 | **已拍板（2026-11-05）：补 28 个薄壳**（Pi 的 39 个有目录的 provider 里，6 个已原生实现、5 个明确不做）。**成本不在协议、在配置**：28 个用的都是 nini 已实现的方言。26 个可直接 `--provider <id>`，2 个（cloudflare-*）需用户给 base URL | B9、C3 → fixed |
+| R5 | 是否把 provider 补齐到 Pi 全集 | **已拍板（2026-11-05）：补 28 个薄壳**（Pi 的 39 个有目录的 provider 里，9 个已原生实现、5 个明确不做）。**成本不在协议、在配置**：28 个用的都是 nini 已实现的方言。26 个可直接 `--provider <id>`，2 个（cloudflare-*）需用户给 base URL | B9、C3 → fixed |
 | **R9** | 语法高亮做不做 | **已拍板（2026-11-05）：本轮不做**。体积早已实测（syntect+fancy-regex +0.63 MiB / onig +0.90 / 自研 +0.003），但本轮复核发现真正的大头是**scope→槽的映射表**（决策包当时只测了体积），且 **Pi 的高亮实现不在快照里**（`src/utils/` 整个目录缺失）→ 逐行对齐不可验证。9 个 `syntax*` 槽**保留**为契约位；B7 的判据改成「9 个槽各能出对应颜色」。见 [`plans/r9-syntax-highlighting.md`](./r9-syntax-highlighting.md) §4 | B7 已关账 |
 | **R10** | `/clone` 改为"切到新分支"会改变用户现有行为 | **已拍板（2026-11-05）：对齐 Pi**——取 session 树叶子 → fork-at-leaf → 切到新 session → 清空编辑器，**不带参数**。能力本来就在 `cmd_fork` 里 | B1 → fixed |
 | **R11** | 要不要做 Pi 兼容的**扩展运行时**，以及它由谁承载 | **已拍板（2026-11-05）：不做，关账**。R6 已用源码证伪技术路径（Pi 加载 TS/`jiti`，`nini-ext` 是 dlopen cdylib，无共同执行模型）；README 明写「扩展工具不在 parity 范围内」 | B21、C4 → fake |
@@ -152,6 +152,7 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 | **R14** | 键位语义与 Pi 对齐的口径 | **已拍板（2026-11-05）：做 `Ctrl+U`/`Ctrl+X`/`Ctrl+Z`/`Alt+Up`（取回排队消息）四项**；`Ctrl+C`（Pi「先清空再退」vs nini「中止回合」）与 `Ctrl+T`（Pi「显隐 thinking 块」vs nini「提高档位」）**保留 nini 语义**并登记理由；跳字符与选区复制**跳过** | B25 → fixed |
 | R6 | 扩展运行时 | **已被证伪**（Pi 加载 TS，`nini-ext` 是 `dlopen` cdylib，无共同执行模型）。`nini-ext` 556 行零调用点，保留并在 crate 头写明原因 | 无（结论已定，不要重开）——R11 是**产品层面**的新决策，不是重开 R6 |
 | — | 行为层对照物升级到 Pi 0.85.1 | 依赖外部条件：一台跑着 0.85.1 的机器 | `SPEC.lock.upgradeProcedure` |
+| P5 | session 选择器目录范围：只列 cwd 子目录 vs `/resume` 列递归集 | **待 owner 拍板**：语义由 owner 定，本轮不动（不自行发明目录范围行为） | 不阻塞 | 拍板前不实现
 
 ---
 

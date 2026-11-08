@@ -9,7 +9,7 @@
 //!
 //! ## The finding
 //!
-//! The plan recorded this as "implemented but never wired — 491 lines,
+//! The plan recorded this as "implemented but never wired — 556 lines,
 //! zero call sites, connect it and it works" (`docs/plans/
 //! v0.10-pi-parity-refactor.md` §5). Reading Pi's source says otherwise:
 //! **wiring it would not work**, and that is a different problem with a

@@ -5,7 +5,7 @@
 //! Pi 0.85.1 的 `builtinProviders()` 返回 **40** 个 provider，但**它们的协议方言
 //! 高度集中**：39 个有静态目录的 provider 里，
 //!
-//! * **6** 个 nini 已有原生实现（anthropic / openai / google / deepseek / groq / mistral）；
+//! * **9** 个 nini 已有原生实现（anthropic / openai / openai-responses / openai-compat / google / deepseek / groq / mistral / cohere）；
 //! * **5** 个需要新协议或 OAuth，**本轮明确不做**：amazon-bedrock（AWS SigV4）、
 //!   google-vertex（Google OAuth + 项目 ID）、openai-codex（OAuth）、
 //!   azure-openai-responses（Azure 方言）、github-copilot（OAuth）；
@@ -353,7 +353,7 @@ mod tests {
         assert_eq!(
             THIN_SHELLS.len(),
             28,
-            "Pi 的 39 个有目录的 provider 里，6 个已原生实现、5 个明确不做，剩下的应当是 28 个薄壳"
+            "Pi 的 39 个有目录的 provider 里，9 个已原生实现、5 个明确不做，剩下的应当是 28 个薄壳"
         );
     }
 
