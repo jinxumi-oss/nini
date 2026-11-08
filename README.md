@@ -17,7 +17,7 @@ rewrite*, *Rust implementation of Pi*, *Pi agent 的 Rust 版本*, *Pi 的 Rust 
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-[![Status](https://img.shields.io/badge/status-v0.17.0-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v1.0.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-2100%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
@@ -279,7 +279,7 @@ nini reads and writes the same file formats as Pi v0.85.1:
 You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.
 
-## Known limitations (as of v0.17.0)
+## Known limitations (as of v1.0.0)
 
 **Deliberate scope decisions** (owner-set, 2026-11-05) — these are *not* bugs
 and are not waiting for a fix:

@@ -1,35 +1,4 @@
-## v0.17.0 — provider/model 级配置真的生效（D5）+ 取回排队消息（R14）+ 计划状态订正
-
-2100 tests, all green.
-
-这一版做三件事，**都是把「说出去的比做到的多」纠回来**：
-
-1. **D5 的可实施部分：用户写在 `models.json` 里的 provider/model 级字段，此前被 serde 直接丢掉**，
-   现在真正接到请求上。载体落在 **provider 构造**上（不在 `Request` 上，理由见下）。
-2. **R14 的最后一项：把排队的消息取回编辑器**（`app.message.dequeue`，Pi 的 `Alt+Up`）。
-3. **订正一份计划的 status 字段**：`docs/plans/r2a-compaction-persistence.md` 长期写着
-   「A2 blocked by P0」，而它 §0 的两个 P0 **早已被修掉**；A1–A4 全部交付，其中 A3 的
-   `AgentEvent::Compacted` 被**保留**（它从「没人消费的空信号」变成了「session 层压缩的可观察
-   契约」，4 个测试文件断言它）——这是比原计划更好的设计。
-
-**载体为什么落在 provider 构造上，而不是请求上**：`nini_core::provider::Request` 有 **30 个构造点**、
-**没有一个**用 `..Default::default()`，其中 **20 个在 oracle/测试文件里**。给 `Request` 加字段会
-**打破 20 个 oracle 的构造点**，而项目的纪律是「oracle 只能引用修复前后都存在的 API；接口会变的
-修复，oracle 必须走签名不变的更高层入口」。所以载体落在 provider 上，`Provider` trait **一行未改**。
-
-测试数 1878 → **1997**：TUI 轮 +14，本轮主体 +73（新增测试文件
-`crates/nini-core/tests/overflow_http_400.rs`（10 条）、
-`crates/nini-core/tests/provider_http_retry.rs`（9 条）、
-`crates/nini-ai/tests/error_body_wire.rs`（13 条，wiremock 端到端）、
-`crates/nini-ai/tests/openai_empty_user_message.rs`（11 条），
-外加 `error_body.rs` / `overflow.rs` / `fallback.rs` / `api_url.rs` 里的单元测试），
-**独立审查后的修复 +32**（第 13 节：`overflow_http_400.rs` 10 → 19 条，
-新增 `crates/nini-core/tests/overflow_recovery_parity.rs`（6 条）、
-`crates/nini-ai/tests/anthropic_blank_blocks.rs`（5 条）、
-`crates/nini-ai/tests/error_body_timeout.rs`（3 条），
-外加 `agent.rs` / `overflow.rs` / `anthropic.rs` / `error_body.rs` 里的单元测试）。
-
-## Unreleased — TUI 的键位/浮层 oracle + provider 层的四个真缺陷：错误体被丢弃、HTTP 400 不压缩重试、空 content 被序列化成空串、瞬时错误不重试；外加一次独立审查（2 Critical + 9 Warning）
+## v1.0.0 — 本版把 v0.17.0 之后的两段 Unreleased 工作全部收口为发布版本：TUI 键位/浮层 oracle、provider 层四个真缺陷（错误体/HTTP 400/空 content/瞬时错误）的修复与独立审查、baseUrl 版本段与 --model 环境变量、D5 剩余字段承载（oauth/model_overrides/models.json 解析与消费、模型面）、watchdog 锁修复、agent 异常结束显式终止通知、版本收口（B1–B4/B6/B7）。测试 2100 全部通过。
 
 2100 tests, all green.
 
@@ -623,7 +592,7 @@ timestamp），不是「变小了」。修正后新增小历史场景的回归�
 因此**不登记** —— 台账记的是「与 Pi 的差距」，把内部健壮性改进塞进去会让这张表失去
 意义。台账 54 → 56 条，`fixed` 38 → 40，可机器判定 41 → 43。
 
-## Unreleased — `baseUrl` 的版本段不再被改写成 `/v1`；`--model` 认环境变量
+
 
 **`chat_completions_url` 认得任何版本段了**（`crates/nini-ai/src/api_url.rs`）。此前只有
 `/v1` 被当作「base 已经带版本」，别的结尾一律被改写成 `.../v1/chat/completions`。
@@ -651,6 +620,39 @@ OpenAI SDK 是**字符串拼接**（`baseURL + '/' + 'chat/completions'`），ba
 测试数 **1878 → 2074 → 2097**（本轮 +18：解析层 +6、消费层 +8、模型面 +4）。README 徽章/正文与 CHANGELOG 顶部同步为 2097（门禁要求对外声明与实测精确相等）。
 
 **仍缺、不冒充支持**：provider 级 `oauth` 无实现（R4 凭据 env-only、R5 无 radius）——已读 + 提示，能力仍缺；model 级 `cost`（计价展示是产品决定，不在本轮范围）；Pi 口径差异②（同名内置 provider 的 stream 优先级）需单独设计轮。
+
+
+## v0.17.0 — provider/model 级配置真的生效（D5）+ 取回排队消息（R14）+ 计划状态订正
+
+2100 tests, all green.
+
+这一版做三件事，**都是把「说出去的比做到的多」纠回来**：
+
+1. **D5 的可实施部分：用户写在 `models.json` 里的 provider/model 级字段，此前被 serde 直接丢掉**，
+   现在真正接到请求上。载体落在 **provider 构造**上（不在 `Request` 上，理由见下）。
+2. **R14 的最后一项：把排队的消息取回编辑器**（`app.message.dequeue`，Pi 的 `Alt+Up`）。
+3. **订正一份计划的 status 字段**：`docs/plans/r2a-compaction-persistence.md` 长期写着
+   「A2 blocked by P0」，而它 §0 的两个 P0 **早已被修掉**；A1–A4 全部交付，其中 A3 的
+   `AgentEvent::Compacted` 被**保留**（它从「没人消费的空信号」变成了「session 层压缩的可观察
+   契约」，4 个测试文件断言它）——这是比原计划更好的设计。
+
+**载体为什么落在 provider 构造上，而不是请求上**：`nini_core::provider::Request` 有 **30 个构造点**、
+**没有一个**用 `..Default::default()`，其中 **20 个在 oracle/测试文件里**。给 `Request` 加字段会
+**打破 20 个 oracle 的构造点**，而项目的纪律是「oracle 只能引用修复前后都存在的 API；接口会变的
+修复，oracle 必须走签名不变的更高层入口」。所以载体落在 provider 上，`Provider` trait **一行未改**。
+
+测试数 1878 → **1997**：TUI 轮 +14，本轮主体 +73（新增测试文件
+`crates/nini-core/tests/overflow_http_400.rs`（10 条）、
+`crates/nini-core/tests/provider_http_retry.rs`（9 条）、
+`crates/nini-ai/tests/error_body_wire.rs`（13 条，wiremock 端到端）、
+`crates/nini-ai/tests/openai_empty_user_message.rs`（11 条），
+外加 `error_body.rs` / `overflow.rs` / `fallback.rs` / `api_url.rs` 里的单元测试），
+**独立审查后的修复 +32**（第 13 节：`overflow_http_400.rs` 10 → 19 条，
+新增 `crates/nini-core/tests/overflow_recovery_parity.rs`（6 条）、
+`crates/nini-ai/tests/anthropic_blank_blocks.rs`（5 条）、
+`crates/nini-ai/tests/error_body_timeout.rs`（3 条），
+外加 `agent.rs` / `overflow.rs` / `anthropic.rs` / `error_body.rs` 里的单元测试）。
+
 
 ## v0.16.0 — 把台账里剩下的三条真差距关掉：`!cmd` 边跑边出、工具「执行开始」的时机、三个符号的接线
 
