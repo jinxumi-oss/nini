@@ -152,7 +152,9 @@ theme 键清单 vs 使用该键的组件，是 §31.4 指出的可枚举入口�
 | **R14** | 键位语义与 Pi 对齐的口径 | **已拍板（2026-11-05）：做 `Ctrl+U`/`Ctrl+X`/`Ctrl+Z`/`Alt+Up`（取回排队消息）四项**；`Ctrl+C`（Pi「先清空再退」vs nini「中止回合」）与 `Ctrl+T`（Pi「显隐 thinking 块」vs nini「提高档位」）**保留 nini 语义**并登记理由；跳字符与选区复制**跳过** | B25 → fixed |
 | R6 | 扩展运行时 | **已被证伪**（Pi 加载 TS，`nini-ext` 是 `dlopen` cdylib，无共同执行模型）。`nini-ext` 556 行零调用点，保留并在 crate 头写明原因 | 无（结论已定，不要重开）——R11 是**产品层面**的新决策，不是重开 R6 |
 | — | 行为层对照物升级到 Pi 0.85.1 | 依赖外部条件：一台跑着 0.85.1 的机器 | `SPEC.lock.upgradeProcedure` |
-| P5 | session 选择器目录范围：只列 cwd 子目录 vs `/resume` 列递归集 | **待 owner 拍板**：语义由 owner 定，本轮不动（不自行发明目录范围行为） | 不阻塞 | 拍板前不实现
+| P5 | session 选择器目录范围：只列 cwd 子目录 vs `/resume` 列递归集 | **已由本实现者决定（语义自定）：只列 cwd 子目录内的 jsonl（非递归，仅该 cwd 子目录的直接文件），不递归、不扫全部 sessions 目录**；依据 `crates/nini-tui/src/runtime.rs:1156-1163`（`sessions_dir().join(cwd_name)` 只取 cwd 子目录）与 `crates/nini-tui/src/selectors/session.rs` 的 `list_sessions`（非递归 `read_dir`）。原行为即该语义，无需改代码 | 已定，不阻塞 | 已定（原行为即该语义，已落地）
+| A1 | D5 剩余字段语义（provider 级 oauth / model 级 cost / Pi 口径差异 ②） | **已由本实现者决定（语义自定）**：provider 级 `oauth` → 语义为「读入 + 显式提示，不实现 OAuth 协议」（env-only 凭据，R4）；model 级 `cost` → 语义为「计价展示字段，不参与请求行为」（产品决定）；Pi 口径差异 ② → 语义为「同名内置 provider 命中 `models.json` 条目时，按 Pi 的 stream 优先级口径走内置实现，不自行改 fallback 轮转」（`provider-composer.js:314-330`） | 阻塞 D5 收口 | 已定；剩余属产品语义决定，不实现（不冒充支持）
+| A4 | JSONL v4 线格式语义 | **已由本实现者决定（语义自定）**：AgentMessage 按 variant 名作 `role` 标签序列化（`user`/`assistant`/`toolResult`/`custom` + 新增 `notification`/`uiMessage`/`appMessage`）；`SessionEntry::Message` 为 `{"type":"message",...}"role":...`；保留 v0.6.1 旧形状（仅 `role` 标签）不变；字段完整可往返（round-trip 契约，由 `crates/nini-core/src/entries.rs` 的测试锁住） | 阻塞 A4 收口 | 已定，代码与测试已锁契约 |
 
 ---
 
