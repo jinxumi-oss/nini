@@ -101,7 +101,7 @@ v0.9.2 一整版都在清这个。
 
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
-| 版本 | **v1.0.0** | `Cargo.toml` version = 1.0.0；`nini --version` 自报同一数字（`crates/nini-cli/tests/build_identity.rs` 把二进制/manifest/CHANGELOG 三方放在一起比）；Cargo.lock 的 8 个 crate 版本随之更新（`cargo build --release --offline` 自动更新） | **已发布**：tag `v1.0.0`（annotated，tagger `nini-bot`），release 资产 `nini-x86_64-unknown-linux-gnu.tar.xz`（内含 `nini` 一个顶层文件，`install.sh` 按这两个名字取）+ `.sha256`（内容是提取后目录里的 `nini` 的哈希，使 `install.sh` 的 `sha256sum -c` 能通过） |
+| 版本 | **v1.0.0** | `Cargo.toml` version = 1.0.0；`nini --version` 自报同一数字（`crates/nini-cli/tests/build_identity.rs` 把二进制/manifest/CHANGELOG 三方放在一起比）；Cargo.lock 的 8 个 crate 版本随之更新（`cargo build --release --offline` 自动更新） | **已发布**：tag `v1.0.0`（annotated，tagger `nini-bot`），release 资产 `nini-x86_64-unknown-linux-gnu.tar.xz`（内含 `nini` 一个顶层文件，`install.sh` 按这两个名字取）+ `.sha256`（内容是提取后目录里的 `nini` 的哈希，使 `install.sh` 的 `sha256sum -c` 能通过）。**用户环境同步**：`scripts/build-release.sh --install` 把发布产物装到 `~/.local/bin/nini`（临时文件 + `mv` 原子替换，运行中的旧进程不受影响），并要求安装字节的 sha256 与 release sidecar **完全一致**——v1.0.0 之前没有这一步（且 `build-release.sh` 误以为 `~/.local/bin/nini` 是指向 `target/` 的软链），导致打完 tag 与 tarball 后终端仍跑旧二进制 |
 | 测试 | **2100 通过 / 0 失败**（另有 1 个 doctest 被 ignore：TUI 的 `dynamic_border` 示例需要 TTY） | 本机全量 `cargo test --workspace`（2026-11-07） | 无 |
 | 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 已从 stub 改为**明说本机不做云端分享并指向 `/export`**（Pi 的 `/share` 要 gh 账号或云端，与 nini「不出网」原则冲突，登记为 B10 伪差距） |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
