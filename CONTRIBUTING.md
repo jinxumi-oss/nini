@@ -53,7 +53,7 @@ The PR template will guide you. The essentials:
 - [ ] `cargo fmt`, `cargo clippy`, `cargo test` all pass locally
 - [ ] Commit message follows the convention below
 - [ ] Docs updated (README, doc comments, or `docs/`)
-- [ ] No new unsafe code (`#![forbid(unsafe_code)]` is workspace-wide)
+- [ ] No new `unsafe` that is not allowed to ship (the workspace lints treat `unused_unsafe` as fail; see `SECURITY.md`)
 
 ### Commit message convention
 
@@ -103,13 +103,16 @@ short version:
 ```bash
 git clone https://github.com/jinxumi-oss/nini
 cd nini
-cargo test --workspace          # ~30 seconds, all 233 tests
+cargo test --workspace          # ~30 seconds, 2104 tests
 cargo clippy --workspace --all-targets
 cargo build --release            # 4.3 MB optimized binary
 ```
 
 ## Release process
 
-Maintainers run `cargo dist` to produce platform binaries. Tags follow
-`vMAJOR.MINOR.PATCH` (e.g., `v0.5.0`). CHANGELOG entries are required
-for any user-visible change.
+Maintainers run `scripts/build-release.sh` to build and package the release
+artifact: it builds with `--release --locked`, refuses to run when the binary
+cannot resolve its own commit / time identity, smoke-checks the binary, packages
+it as `nini-${HOST_TRIPLE}.tar.xz` (+ a `.sha256` sidecar), and optionally
+installs it into `~/.local/bin`. Tags follow `vMAJOR.MINOR.PATCH` (e.g.,
+`v1.0.0`). CHANGELOG entries are required for any user-visible change.

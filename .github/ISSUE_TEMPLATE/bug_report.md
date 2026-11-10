@@ -34,7 +34,7 @@ any panic / assertion failure messages).
 - Terminal: (e.g., `gnome-terminal`, `wezterm`, `tmux`)
 - Provider: (`anthropic`, `openai`, etc.)
 - Model: (e.g., `claude-opus-4-7`, `gpt-5`)
-- Install method: (release binary, `cargo install`, built from source)
+- Install method: (release binary, `install.sh`, built from source)
 
 ### Logs
 

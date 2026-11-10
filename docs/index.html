@@ -25,14 +25,14 @@
   "alternateName": ["Pi agent Rust", "Rust version of the Pi coding agent", "Pi 的 Rust 版本"],
   "description": "nini is a Rust reimplementation of Pi, the TypeScript AI coding agent by Mario Zechner. Same session JSONL v4 format, same 23 slash commands, one single binary, no account, no telemetry.",
   "applicationCategory": "DeveloperApplication",
-  "operatingSystem": "Linux, macOS",
+  "operatingSystem": "Linux x86_64",
   "programmingLanguage": "Rust",
   "url": "https://github.com/jinxumi-oss/nini",
   "codeRepository": "https://github.com/jinxumi-oss/nini",
   "license": "https://github.com/jinxumi-oss/nini/blob/main/LICENSE",
   "author": { "@type": "Person", "name": "Mario Zechner", "url": "https://mariozechner.at" },
   "creditText": "A Rust port of Pi by Mario Zechner and the earendil-works/pi contributors. nini is not affiliated with or endorsed by the Pi project.",
-  "keywords": "pi agent, pi agent rust, pi coding agent, rust, ai coding agent, coding agent, terminal ui, rust cli, llm",
+  "keywords": "pi agent, pi agent rust, pi coding agent, rust, ai coding agent, coding agent, terminal ui, rust cli, llm, security, verified, trustworthy",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
 }
 </script>
@@ -59,6 +59,10 @@
   h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .35rem; letter-spacing: -.02em; }
   h2 { font-size: 1.15rem; margin: 2.5rem 0 .75rem; letter-spacing: -.01em; }
   h3 { font-size: 1rem; margin: 1.5rem 0 .4rem; }
+  .trust { margin: 1.25rem 0 2rem; padding: 1.1rem 1.25rem; border: 1px solid var(--line);
+            border-radius: 10px; background: var(--code-bg); }
+  .trust h3 { font-size: .98rem; color: var(--accent); margin: 0 0 .5rem; }
+  .trust li { margin: .3rem 0; }
   p { margin: .65rem 0; }
   a { color: var(--accent2); text-decoration: none; }
   a:hover { text-decoration: underline; }
@@ -125,14 +129,26 @@
     <tr><th>斜杠命令</th><td>Pi 的 23 条 builtin 全部具备，另加 5 条 nini 自己的扩展（不计入 parity）</td></tr>
     <tr><th>配置</th><td><code>settings.json</code> / <code>models.json</code> / <code>skills/</code> —— 原样读取</td></tr>
     <tr><th>内置工具</th><td>bash、read、write、edit、grep、find、ls</td></tr>
-    <tr><th>Provider</th><td>OpenAI 兼容 / OpenAI Responses / Anthropic / Google / DeepSeek / Groq / Mistral / Cohere</td></tr>
+    <tr><th>Provider</th><td>OpenAI 兼容 / OpenAI Responses / Anthropic / Google / DeepSeek / Groq / Mistral / Cohere（8 个品牌；完整 provider 面 37 个实现，9 native + 28 thin shells，见 README 已知限制）</td></tr>
     <tr><th>安装</th><td>Rust 1.85+，单个静态二进制，无运行时</td></tr>
   </table>
+
+  <section class="trust">
+    <h3>A. 安全与可信（安全与信任）</h3>
+    <p>下列验证在仓库与 CI 中执行，不是人工评审的口头声明，它们共同支撑「可核验」的定位：</p>
+    <p><strong>A. 版本锁定的 Pi 基线：</strong><code>references/pi-0.85.1/</code>（422 个文件，每个带 sha256 锁）与文件格式规范同版本锁定；目标版本由 <code>references/TARGET.json</code> 冻结，并由 <code>scripts/pi-target-lock.py</code> 锁定，重锚到其他版本需先有书面差分计划。</p>
+    <p><strong>A. 工具面逐字段验证，不是断言：</strong><code>crates/nini-tools/tests/tool_contract_parity.rs</code> 逐字段比对 nini 工具与 Pi 运行时工具契约（description、参数名/类型/参数描述、required、promptSnippet、promptGuidelines），并在 CI 运行。</p>
+    <p><strong>A. 行为断言来自运行真实 Pi 的产物：</strong><code>scripts/pi-session-record.sh</code> 用真实 Pi 0.85.1 录制对标 fixture；工具契约与截断期望值由执行 Pi 自身代码产出，CI 重新生成并发现漂移即失败。</p>
+    <p><strong>A. 发布产物身份校验、依赖锁定：</strong><code>scripts/build-release.sh</code> 拒绝无法解析提交身份的二进制，release 包带 <code>.sha256</code> sidecar；依赖由提交的 <code>Cargo.lock</code> 锁定，无 crates.io 入口。</p>
+    <p><strong>A. 安全边界如实声明：</strong><code>SECURITY.md</code> 明确列出 nini 不防御的边界（来自不可信文件的 prompt 注入、被攻陷的 LLM provider、被 spawn 进程本地提权），安全报告走私有 GitHub advisory，不公开 issue。</p>
+  </section>
+
 
   <h2>装上它</h2>
 <pre><code>curl -fsSL https://raw.githubusercontent.com/jinxumi-oss/nini/main/install.sh | sh
 nini</code></pre>
   <p>没有 API key 也能先跑起来：<code>nini --provider fixture</code> 走内置的假 provider。</p>
+  <p>预编译产物目前只有 Linux x86_64（无 macOS / Windows / arm64 预编译）；要构建其他平台，用 <code>install.sh</code> 从源码构建（Rust 1.85+）。</p>
 
   <h2>致敬</h2>
   <p class="tribute">

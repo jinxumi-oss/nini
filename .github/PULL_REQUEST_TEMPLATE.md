@@ -22,7 +22,7 @@ One-paragraph summary. Reference any related issues with `#123`.
 
 - [ ] `cargo fmt --all -- --check` passes
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] `cargo test --workspace` passes (233 tests)
+- [ ] `cargo test --workspace` passes (2104 tests)
 - [ ] Added new tests for the change
 
 If you added a new tool or provider, list the integration tests you added.
@@ -31,7 +31,7 @@ If you added a new tool or provider, list the integration tests you added.
 
 - [ ] Commit messages follow `<type>(<scope>): <subject>` (see CONTRIBUTING.md)
 - [ ] Public API items have doc comments (enforced by `missing_docs` lint)
-- [ ] No new `unsafe` code (`#![forbid(unsafe_code)]` is workspace-wide)
+- [ ] No new `unsafe` that is not allowed to ship (the workspace lints treat `unused_unsafe` as a fail; see `SECURITY.md`)
 - [ ] CLI behavior unchanged (or CHANGELOG.md updated)
 - [ ] If this changes the session JSONL format or slash command surface,
       documented the compatibility implications
