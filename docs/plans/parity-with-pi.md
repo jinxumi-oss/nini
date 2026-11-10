@@ -574,6 +574,25 @@ bash 执行全丢——`cmd_resume` 里那段 v0.8.9 之前的手写重建循环
 厂商也可能被读成溢出。本轮不做「按厂商选表」这种过度设计，风险写进 CHANGELOG 的
 「留给 owner 的」。
 
+### v1.1 —— `/resume` 改成交互式会话选择器（B34）+ Pi 选择器四件套（B35）（2026-11-09）
+
+`/resume` 此前是一堵文本墙：最多 50 行 `N: <uuid>.jsonl [38762 bytes, …]`，认不出是
+哪个会话；而且这些行是 `CommandOutcome::Output`，运行时会用 `push_assistant` 把它们
+写进 session 文件——清单被当成了助手说过的话。Pi 的 `/resume` 只开浮层、不打印清单
+（`references/pi-0.85.1/src/ui/interactive-mode.ts:3094-3098`）。
+
+| 交付 | 是什么 | 判据 |
+|---|---|---|
+| **B34** | `/resume` 开浮层，行内认得出是哪个会话（名字 → 首条用户消息 → `(no messages)`，附相对时间与项目目录名）；`/resume <query>` 改为**开浮层并预填 query**（口径 A，与 Pi 一致，旧行为是「打印匹配清单」）；命令不再返回任何 Output 行，清单不再进 session 文件 | `cargo test -p nini-tui --test resume_selector` 退出 0（12 条）；`cargo test -p nini-tui --test slash_command_e2e` 退出 0 |
+| **B35** | Pi 选择器的四件套做掉：scope 切换（当前目录 / 全部，Tab）、排序模式（threaded / recent / relevance，Ctrl+S）、名字过滤（Ctrl+N）、路径列（Ctrl+P）、删除会话（Ctrl+D，要确认，当前会话不可删）、重命名会话（Ctrl+R，写成追加的 `session_info`，文件名不动）。行内容对齐 Pi（消息数 + 相对时间 + 项目目录），空态按 scope 与名字过滤给不同提示；`/resume <n>` 与选择器共用 `picker_order`（第 n 行 = 第 n 个会话，threaded 的树也算数） | `cargo test -p nini-tui --test resume_selector_pi` 退出 0（14 条）；`cargo test -p nini-tui --test resume_selector` 退出 0（12 条） |
+
+**两处有意偏差**（写在这里，免得被当成 bug）：
+
+1. **scope 默认是「全部」，不是 Pi 的「当前目录」。** 浮层的第 n 行必须与 `/resume n` 是
+   同一个会话（B34 锁住的性质）；从「当前目录」起步会让行号与 `/resume n` 错位。
+2. **Pi 的 `re:` 正则搜索没有实现。** nini-tui 没有 regex 依赖，为一个搜索模式加依赖
+   不划算；这样的查询被当成普通词处理。
+
 ---
 
 ## 5. 门禁与验证口径

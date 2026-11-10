@@ -1961,6 +1961,28 @@ pub fn render_selector_panel(
     f.render_widget(panel, area);
 }
 
+/// The selector panel with the selector's own "nothing to show" wording.
+///
+/// Pi's session picker says something useful when the list is empty
+/// ("No sessions in current folder. Press Tab to view all."), so the
+/// message comes from the selector (`SelectorState::state_empty_message`)
+/// rather than from the panel.
+pub fn render_selector_panel_with_empty(
+    f: &mut Frame,
+    title: &str,
+    query: &str,
+    items: &[SelectorItem],
+    visible: &[usize],
+    selected: usize,
+    theme: &Theme,
+    area: Rect,
+    empty_message: Option<String>,
+) {
+    let panel = SelectorPanel::new(title, query, items, visible, selected, theme)
+        .with_empty_message(empty_message);
+    f.render_widget(panel, area);
+}
+
 // v0.8.3: kept as a no-op fallback for callers that still invoke it
 // during a transient resize. The actual spinner renders via
 // `render_stats_line` in the footer (Pi parity).

@@ -1298,76 +1298,45 @@ fn cmd_compact(state: &mut AppState, settings: &mut SettingsManager, _args: &str
 }
 
 fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
-    // /resume [n] — list available sessions or load by index.
-    // Scans ~/.nini/agent/sessions/ recursively for .jsonl files.
-    // v0.5 only read the top-level directory and missed the
-    // per-cwd subdirectories where nini actually writes its
-    // sessions; v0.6 uses walkdir to find them all.
-    fn session_entries() -> Vec<std::path::PathBuf> {
-        // The previous version fell back to `$HOME/fallback/sessions` when
-        // the agent directory could not be resolved. That path exists
-        // nowhere and was never written to; it only ever made the listing
-        // look like it was looking somewhere.
-        let Some(base) = nini_core::paths::sessions_dir() else {
-            return Vec::new();
-        };
-        if !base.exists() {
-            return Vec::new();
+    // /resume [n|query] — load a session by its number, or open the
+    // interactive session picker.
+    //
+    // The picker and `/resume <n>` share one ordering
+    // (`selectors::session::picker_order`), so a row number in the
+    // picker and a number typed here mean the same session. It is Pi's
+    // threaded order, not the raw listing: a fork sits under the session
+    // it came from, and the number has to count the rows the user sees.
+    //
+    // "Looks like a number" is the test, not "parses as one": `/resume
+    // 99999999999999999999` does not fit in a `usize`, and it used to
+    // fall through to the picker, where it prefilled a filter that
+    // matches nothing and never said the index was out of range. Same
+    // for `/resume -1`. A number the user typed is an index they meant.
+    let arg = args.trim();
+    let numeric = !arg.is_empty()
+        && (arg.chars().all(|c| c.is_ascii_digit())
+            || (arg.len() > 1
+                && (arg.starts_with('-') || arg.starts_with('+'))
+                && arg[1..].chars().all(|c| c.is_ascii_digit())));
+    if numeric {
+        let entries = crate::selectors::session::picker_order();
+        if entries.is_empty() {
+            state.push_notice("No sessions found — they live in ~/.nini/agent/sessions/");
+            return CommandResult::output(vec![]);
         }
-        let mut out: Vec<std::path::PathBuf> = walkdir::WalkDir::new(&base)
-            .max_depth(4)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_type().is_file()
-                    && e.path().extension().map(|s| s == "jsonl").unwrap_or(false)
-            })
-            .map(|e| e.into_path())
-            .collect();
-        // Sort: cwd-name subdirectory first (matches the user's
-        // current project), then everything else by mtime desc so
-        // recent activity is easy to spot.
-        let cwd_name = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-            .unwrap_or_default();
-        out.sort_by(|a, b| {
-            let a_cwd = a.components().any(|c| c.as_os_str() == cwd_name.as_str());
-            let b_cwd = b.components().any(|c| c.as_os_str() == cwd_name.as_str());
-            match (a_cwd, b_cwd) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => {
-                    let a_mt = a
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    let b_mt = b
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    b_mt.cmp(&a_mt)
-                }
-            }
-        });
-        out
-    }
-
-    let entries = session_entries();
-    if entries.is_empty() {
-        return CommandResult::output(vec![
-            "No sessions found.".to_string(),
-            "Sessions are stored in ~/.nini/agent/sessions/".to_string(),
-        ]);
-    }
-
-    // If args is a number, load that session directly.
-    if let Ok(idx) = args.trim().parse::<usize>() {
+        // A number that does not fit a `usize` is out of range by
+        // definition, so it lands on the same branch as `0`.
+        let idx = arg.parse::<usize>().unwrap_or(0);
         if idx == 0 || idx > entries.len() {
-            return CommandResult::error(format!(
-                "Invalid index {idx}. Available: 1–{}",
+            // A notice, not a `CommandResult::error`: an error line is
+            // rendered as `[command error] …` and written into the
+            // session file by the runtime, and "there is no session 99"
+            // is information, not a failure.
+            state.push_notice(format!(
+                "Invalid index {arg}. Available: 1–{}",
                 entries.len()
             ));
+            return CommandResult::output(vec![]);
         }
         let path = entries[idx - 1].clone();
         if let Err(e) = state.session_load(path.clone()) {
@@ -1414,84 +1383,53 @@ fn cmd_resume(state: &mut AppState, _settings: &mut SettingsManager, args: &str)
         // loaded history (same-turn merging), so it becomes part of a
         // model message on screen and in `/export`. A `Notice` is its
         // own row and never touches the session.
-        state.push_notice(format!("(loaded session {session_id})"));
-        state.push_divider();
-        return CommandResult::output(vec![format!(
-            "Resumed: {}{}",
-            path.file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            if skipped > 0 {
-                format!(" (skipped {skipped} damaged line(s))")
-            } else {
-                String::new()
-            }
-        )]);
-    }
-
-    // No arg or non-numeric: list sessions, with optional fuzzy
-    // filter via the args (e.g., /resume claude shows only sessions
-    // whose filename contains "claude").
-    let filter = args.trim();
-    let filter_lower = filter.to_lowercase();
-    const MAX_LIST: usize = 50;
-    let mut lines = Vec::new();
-    lines.push(format!(
-        "{} session(s) available (showing up to {MAX_LIST}):",
-        if filter.is_empty() {
-            entries.len().to_string()
-        } else {
-            format!("{} (filter: \"{}\")", entries.len(), filter)
-        }
-    ));
-    let mut displayed = 0usize;
-    for (i, path) in entries.iter().enumerate() {
-        let name = path
+        let file_name = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if !filter.is_empty() && !name.to_lowercase().contains(&filter_lower) {
-            continue;
-        }
-        displayed += 1;
-        if displayed > MAX_LIST {
-            lines.push(format!("(refine with /resume <query> to see the rest)"));
-            break;
-        }
-        // Optional: surface file mtime + size for easy scanning.
-        let meta = path
-            .metadata()
-            .ok()
-            .map(|m| {
-                let size = m.len();
-                let modified = m
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| {
-                        chrono::DateTime::<chrono::Utc>::from_timestamp(d.as_secs() as i64, 0)
-                            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                            .unwrap_or_default()
-                    })
-                    .unwrap_or_default();
-                format!(
-                    "  [{} bytes{}]",
-                    size,
-                    if modified.is_empty() {
-                        String::new()
-                    } else {
-                        format!(", {}", modified)
-                    }
-                )
-            })
-            .unwrap_or_default();
-        lines.push(format!("  {}: {}{}", i + 1, name, meta));
+        state.push_notice(format!("(loaded session {session_id} from {file_name})"));
+        state.push_divider();
+        // **No output line.** The old `Resumed: <file>` line was returned
+        // as `CommandOutcome::Output`, and the runtime writes every
+        // output line with `push_assistant` — which appends it to the
+        // session file as an assistant message. That is the same defect
+        // B26 fixed for the confirmation line, one line further down:
+        // the file the user just resumed came back carrying a fake
+        // assistant turn saying "Resumed: …".
+        return CommandResult::output(vec![]);
     }
-    if displayed == 0 && !filter.is_empty() {
-        lines.push(format!("(no sessions matching \"{}\")", filter));
-    }
-    lines.push("Type /resume <number> to load.".to_string());
-    CommandResult::output(lines)
+
+    // `/resume` or `/resume <query>` — open the interactive session picker.
+    //
+    // **Why the listing branch is gone.** It used to print up to 50 lines
+    // of `N: <uuid>.jsonl [38762 bytes, …]` and return them as
+    // `CommandOutcome::Output`. Two things were wrong with that: the rows
+    // identified nothing (a UUID filename says which *file*, not which
+    // *conversation*), and the runtime writes every output line with
+    // `push_assistant`, which appends it to the session file — so the
+    // listing was stored in the session as if the assistant had said it,
+    // and came back on the next resume. Pi's `/resume` opens the picker
+    // and never prints a listing
+    // (interactive-mode.ts#showSessionSelector).
+    //
+    // The query rides in the status string: `open_selector:session?<query>`;
+    // the runtime splits it off and prefills the filter box (`runtime.rs`).
+    // `/resume <query>` therefore **changed meaning**: it used to print a
+    // filtered listing, it now opens the picker with the filter pre-filled
+    // (Pi's behaviour).
+    //
+    // **This command returns no output lines and never an error.** Every
+    // user-visible word it produces goes through `state.push_notice`,
+    // which is transcript-only — so the runtime's `push_assistant` loop
+    // has nothing to write and the listing cannot reach the session file.
+    state.push_notice("(opening session selector...)".to_string());
+    let query = args.trim();
+    state.run_state.status = if query.is_empty() {
+        "open_selector:session".to_string()
+    } else {
+        format!("open_selector:session?{query}")
+    };
+    CommandResult::output(vec![])
 }
 
 fn cmd_prompt(state: &mut AppState, _settings: &mut SettingsManager, args: &str) -> CommandResult {
@@ -1860,6 +1798,19 @@ fn cmd_hotkeys(
             OpenExternalEditor => "edit input in $EDITOR",
             CopyLastAssistant => "copy last response",
             Suspend => "suspend to background",
+            // Pi 的会话选择器动作（`app.session.*`）——只在 `/resume` 的
+            // 浮层里生效，所以标签里写明「in the session picker」。
+            ToggleSessionScope => "switch scope (current folder / all) — in the session picker",
+            ToggleSessionSort => {
+                "cycle sort mode (threaded / recent / relevance) — in the session picker"
+            }
+            ToggleSessionNamedFilter => "toggle named-sessions filter — in the session picker",
+            ToggleSessionPath => "toggle the session path column — in the session picker",
+            RenameSession => "rename the selected session — in the session picker",
+            DeleteSession => "delete the selected session — in the session picker",
+            DeleteSessionNoninvasive => {
+                "delete the selected session when the filter is empty — in the session picker"
+            }
             Noop => "(no binding)",
             other => {
                 // A new action must not silently vanish from /hotkeys.

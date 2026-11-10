@@ -1054,6 +1054,17 @@ async fn run_loop(
         let selector_title = active_selector
             .as_ref()
             .map(|s| s.state_title().to_string());
+        // Pi's session picker says something useful when the list is
+        // empty; every other panel keeps the generic wording.
+        let selector_empty_message = active_selector
+            .as_ref()
+            .and_then(|s| s.state_empty_message());
+        // While the session picker is renaming, the input row shows the
+        // name being typed instead of the filter text.
+        let selector_input = active_selector
+            .as_ref()
+            .and_then(|s| s.state_input_text())
+            .unwrap_or_else(|| selector_query.clone());
         let selector_items: Vec<SelectorItem> = active_selector
             .as_ref()
             .map(|s| s.state_items())
@@ -1088,15 +1099,16 @@ async fn run_loop(
                 } else {
                     area
                 };
-                crate::render::render_selector_panel(
+                crate::render::render_selector_panel_with_empty(
                     f,
                     &title,
-                    &selector_query,
+                    &selector_input,
                     &selector_items,
                     &selector_visible,
                     selector_selected,
                     &theme,
                     selector_area,
+                    selector_empty_message.clone(),
                 );
             }
         })?;
@@ -1113,6 +1125,12 @@ async fn run_loop(
         if active_selector.is_none() {
             let status = lock_state(&shared).run_state.status.clone();
             if let Some(kind) = status.strip_prefix("open_selector:") {
+                // `open_selector:session?<query>` — the query prefills the
+                // picker's filter box (`/resume <query>`).
+                let (kind, prefill) = match kind.split_once('?') {
+                    Some((k, q)) => (k, q),
+                    None => (kind, ""),
+                };
                 let current_model = lock_state(&shared).model_state.model.clone();
                 match kind {
                     "model" => {
@@ -1145,22 +1163,22 @@ async fn run_loop(
                         selector_query.clear();
                     }
                     "session" => {
-                        let cwd = std::env::current_dir().ok();
-                        let cwd_name = cwd
-                            .as_ref()
-                            .and_then(|p| p.file_name())
-                            .map(|s| s.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "default".to_string());
-                        // An empty directory lists nothing, rather than
-                        // scanning a path built from `$HOME` directly -
-                        // which is what this did, so `NINI_AGENT_DIR` had
-                        // no effect on the session picker at all.
-                        let dir = nini_core::paths::sessions_dir()
-                            .map(|b| b.join(&cwd_name))
-                            .unwrap_or_default();
-                        let sel = Box::new(crate::selectors::SessionSelector::from_dir(&dir));
+                        // /resume and /session share this picker: every
+                        // session under the sessions root, in Pi's
+                        // threaded order (a fork nests under the session
+                        // it came from) — the same order `/resume <n>`
+                        // numbers them in (`selectors::session::picker_order`).
+                        //
+                        // The running session is handed over so the picker
+                        // can refuse to delete it (Pi:
+                        // `session-selector.js:430`).
+                        let current = lock_state(&shared).session_state.session_path.clone();
+                        let sel = Box::new(
+                            crate::selectors::SessionSelector::all_sessions()
+                                .with_current_session(current),
+                        );
                         active_selector = Some(sel);
-                        selector_query.clear();
+                        selector_query = prefill.to_string();
                     }
                     "tree" => {
                         // Open tree selector against the active session's entries.
@@ -1387,15 +1405,114 @@ async fn run_loop(
 /// Handle a key press while a selector is active. Updates `query`,
 /// `visible`, and the selector's selected index. When user confirms (Enter)
 /// or cancels (Esc), clears the query so the caller can detect closure.
-fn handle_selector_key(
+/// Feed one key to the open selector.
+///
+/// Public because it is the seam between "the key was pressed" and
+/// "the picker reacted" — without it, a picker whose keys are not wired
+/// up looks exactly like a picker that works (the unit tests drive the
+/// selector directly).
+pub fn handle_selector_key(
     k: KeyEvent,
-    _shared: &SharedState,
+    shared: &SharedState,
     selector: &mut Box<dyn crate::selector::SelectorState + Send>,
     query: &mut String,
     visible: &mut Vec<usize>,
 ) {
     use crate::keys::Key as K;
     let key: K = k.into();
+
+    // ---- Pi 的会话选择器 ------------------------------------------------
+    //
+    // 它有自己的两种模式（重命名输入框、删除确认），这两种模式**先于**
+    // 通用按键处理（Pi: `session-selector.js:459-503`：确认期间所有键都
+    // 被吞掉，重命名时按键进输入框而不是列表）。
+    if let Some(sess) = selector
+        .as_any_mut()
+        .downcast_mut::<crate::selectors::session::SessionSelector>()
+    {
+        if sess.confirming_delete().is_some() {
+            match key.code {
+                crossterm::event::KeyCode::Enter => {
+                    sess.confirm_delete();
+                }
+                crossterm::event::KeyCode::Esc => {
+                    sess.cancel_delete();
+                }
+                _ => return, // 确认期间其它键一律不响应
+            }
+            // "Session deleted" / "Failed to delete: …" 得有人说出来。
+            if let Some(msg) = sess.take_status() {
+                push_notice(shared, msg);
+            }
+            refresh_selector_view(selector, query, visible);
+            return;
+        }
+        if sess.renaming().is_some() {
+            match key.code {
+                crossterm::event::KeyCode::Enter => {
+                    sess.commit_rename();
+                }
+                crossterm::event::KeyCode::Esc => {
+                    sess.cancel_rename();
+                }
+                crossterm::event::KeyCode::Char(c) => sess.rename_push(c),
+                crossterm::event::KeyCode::Backspace => sess.rename_backspace(),
+                _ => return,
+            }
+            if let Some(msg) = sess.take_status() {
+                push_notice(shared, msg);
+            }
+            refresh_selector_view(selector, query, visible);
+            return;
+        }
+        // 会话动作：Tab / Ctrl+S / Ctrl+N / Ctrl+P / Ctrl+R / Ctrl+D /
+        // Ctrl+Backspace（Pi 的 `app.session.*`）。
+        let action = crate::keys::resolve(&session_selector_keymap(), key);
+        if crate::keys::is_session_action(action) {
+            match action {
+                crate::keys::KeyAction::ToggleSessionScope => {
+                    sess.toggle_scope();
+                }
+                crate::keys::KeyAction::ToggleSessionSort => {
+                    sess.toggle_sort();
+                }
+                crate::keys::KeyAction::ToggleSessionNamedFilter => {
+                    sess.toggle_name_filter();
+                }
+                crate::keys::KeyAction::ToggleSessionPath => {
+                    sess.toggle_show_path();
+                }
+                crate::keys::KeyAction::RenameSession => {
+                    sess.start_rename();
+                }
+                crate::keys::KeyAction::DeleteSession => {
+                    if !sess.start_delete() {
+                        // 当前会话不能删——不吭声等于没反应（Pi: `onError`）。
+                        if let Some(msg) = sess.take_status() {
+                            push_notice(shared, msg);
+                        }
+                    }
+                }
+                crate::keys::KeyAction::DeleteSessionNoninvasive => {
+                    // Pi：只有搜索框为空时才删，否则这个键**进搜索框**
+                    // （`session-selector.js:494`）。
+                    if query.is_empty() {
+                        if !sess.start_delete() {
+                            if let Some(msg) = sess.take_status() {
+                                push_notice(shared, msg);
+                            }
+                        }
+                    } else {
+                        query.pop();
+                    }
+                }
+                _ => {}
+            }
+            refresh_selector_view(selector, query, visible);
+            return;
+        }
+    }
+
     match key.code {
         crossterm::event::KeyCode::Up => {
             // visible holds *indices into the full items list*, so we
@@ -1481,6 +1598,48 @@ fn compute_visible(query: &str, selector: &dyn crate::selector::SelectorState) -
     }
     // The selector's own filter — see `SelectorState::state_filter`.
     selector.state_filter(query)
+}
+
+/// Recompute the visible rows after the session picker changed its list,
+/// and keep the cursor on a row that is still there.
+fn refresh_selector_view(
+    selector: &mut Box<dyn crate::selector::SelectorState + Send>,
+    query: &str,
+    visible: &mut Vec<usize>,
+) {
+    *visible = compute_visible(query, selector.as_ref());
+    let cur = selector.state_selected();
+    if !visible.contains(&cur) {
+        if let Some(&first) = visible.first() {
+            selector.state_set_selected(first);
+        }
+    }
+}
+
+/// The session picker's own keymap: the built-in `app.session.*` bindings
+/// plus the user's overrides for those actions.
+///
+/// It is a **separate** map on purpose. Pi binds `ctrl+d` to both
+/// `app.exit` and `app.session.delete`
+/// (`references/pi-0.85.1/src/ui/keybindings.ts:178`) — the same key,
+/// two contexts. nini's global map keeps `Ctrl+D` for "quit", and the
+/// picker resolves its keys against this map alone, so the two never meet.
+fn session_selector_keymap() -> Vec<crate::keys::KeyBinding> {
+    let mut map: Vec<crate::keys::KeyBinding> = crate::keys::default_keymap()
+        .into_iter()
+        .filter(|b| crate::keys::is_session_action(b.action))
+        .collect();
+    let snapshot: Vec<(crate::keys::KeyAction, crate::keys::Key)> = user_overrides_cache()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    for (action, key) in snapshot {
+        if crate::keys::is_session_action(action) {
+            map.retain(|b| b.action != action);
+            map.push(crate::keys::KeyBinding { key, action });
+        }
+    }
+    map
 }
 
 /// Helper for early-return in `submit_user_input`: drop state lock and
@@ -2621,6 +2780,15 @@ fn handle_key(
         KeyAction::ScrollDown => scroll_transcript(&mut state, -1),
         KeyAction::ScrollToBottom => scroll_to_bottom(&mut state),
         KeyAction::ScrollToTop => scroll_to_top(&mut state),
+        // 会话选择器的动作只在浮层里解析（它有自己的键位表），到这里
+        // 是不可能的——写清楚，免得以后有人以为它们在全局生效。
+        KeyAction::ToggleSessionScope
+        | KeyAction::ToggleSessionSort
+        | KeyAction::ToggleSessionNamedFilter
+        | KeyAction::ToggleSessionPath
+        | KeyAction::RenameSession
+        | KeyAction::DeleteSession
+        | KeyAction::DeleteSessionNoninvasive => {}
         KeyAction::Noop => {}
     }
 }
@@ -4434,6 +4602,14 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             // key-dispatch site (for event-bus integration) is exhaustive.
         }
         KeyAction::AcceptCompletionOrInsertTab => {}
+        // 会话选择器的动作只在浮层里解析（它有自己的键位表）。
+        KeyAction::ToggleSessionScope
+        | KeyAction::ToggleSessionSort
+        | KeyAction::ToggleSessionNamedFilter
+        | KeyAction::ToggleSessionPath
+        | KeyAction::RenameSession
+        | KeyAction::DeleteSession
+        | KeyAction::DeleteSessionNoninvasive => {}
         KeyAction::Noop => {}
     }
 }

@@ -1,77 +1,100 @@
-# nini
+# nini — Pi agent 的 Rust 版本
 
-> nini is a Rust reimplementation of Pi — the TypeScript AI coding agent by
-> Mario Zechner. It is "the Rust version of the Pi agent": same session
-> JSONL v4 format, same 23 slash commands, same settings schema, one 6.7 MiB
-> single binary instead of a Node.js toolchain. No account, no cloud, no
-> telemetry.
->
-> nini is a Rust reimplementation of Pi — the TypeScript AI coding agent by
-> Mario Zechner. 它是「Pi agent 的 Rust 版本」：同样的 session JSONL v4 格式、
-> 同样的 23 条斜杠命令、同样的 settings schema，用一个 6.7 MiB 单文件二进制
-> 代替整套 Node.js 工具链。无账号、无云、无遥测。
+nini is a Rust re-implementation of Pi — the TypeScript AI coding agent by
+Mario Zechner — designed to run the same Pi behavior locally without a Node.js
+toolchain. It is "the Rust version of the Pi agent": the same session JSONL v4
+format, the same 23 slash commands, the same settings schema, one 6.7 MiB
+static binary, and no account, no cloud, no telemetry.
 
-nini is a **Rust port of the Pi coding agent**, not a different product.
-If someone asks for "Pi agent 的 Rust 版本" / "Pi 的 Rust 版本" / "the Rust
-version of the Pi coding agent" / "Pi agent Rust rewrite" / "Rust
-implementation of Pi", nini is that project. Topic tags: `pi-agent`,
-`pi-coding-agent`, `pi-agent-rust`, `rust-rewrite`.
+nini is a Rust port of the Pi coding agent, not a different product. If someone
+asks for "Pi agent 的 Rust 版本" / "Pi 的 Rust 版本" / "the Rust version of the Pi
+coding agent" / "Pi agent Rust rewrite" / "Rust implementation of Pi", nini is
+that project. Topic tags: `pi-agent`, `pi-coding-agent`, `pi-agent-rust`,
+`rust-rewrite`.
 
-Pi (the original) is by Mario Zechner (@badlogic) and the earendil-works/pi
-contributors — nini credits and thanks them explicitly; see the Credits
-section of the README. Pi v0.85.1's source is pinned in this repository as a
-behavioral oracle, and every nini claim about Pi's behavior is checked
-against it.
+Pi (the original) is by Mario Zechner (@badlogic) and the earandil-works/pi
+contributors — nini credits and thanks them explicitly. Pi v0.85.1's source is
+pinned in this repository as a frozen behavioral oracle, and every nini claim
+about Pi's behavior is checked against it; the tool surface is verified field
+by field against Pi's runtime tool contract (see the "Why it is trustworthy"
+section of README.md).
 
-## Start here
+## Install
 
-- [README (English)](https://github.com/jinxumi-oss/nini/blob/main/README.md):
-  what nini is, install, features, Pi ecosystem compatibility, known limitations.
-- [README (简体中文)](https://github.com/jinxumi-oss/nini/blob/main/README.zh-CN.md):
-  the same document in Chinese.
-- [Releases](https://github.com/jinxumi-oss/nini/releases): prebuilt Linux
-  x86_64 binaries (`nini-x86_64-unknown-linux-gnu.tar.xz` + `.sha256`).
-- [Install script](https://github.com/jinxumi-oss/nini/blob/main/install.sh).
+- Prebuilt binaries: Linux x86_64 only (`nini-x86_64-unknown-linux-gnu.tar.xz` +
+  `.sha256` sidecar on each release). No macOS / Windows / arm64 prebuilt binary
+  yet; build another platform with the installer.
+- Install script: `https://raw.githubusercontent.com/jinxumi-oss/nini/main/install.sh`
+  (places `nini` in `~/.local/bin`).
+- No `cargo install` option: the crate is not published to crates.io (`publish =
+  false`), so use the release tarball or the installer.
+- Rust 1.85+, single static binary, no runtime, no account, no telemetry.
 
-## What nini is
+## Features
 
 - Terminal AI coding agent (TUI) — the Rust counterpart of
-  `earendil-works/pi`, which is MIT licensed and written in TypeScript.
-- Reads `~/.nini/agent/` (its own directory): `settings.json`, `models.json`,
-  `skills/`, `sessions/`. The *formats* stay Pi-compatible, so Pi's skills,
-  settings and models work unchanged.
+  `earandil-works/pi`.
+- Reads `~/.nini/agent/` (`settings.json`, `models.json`, `skills/`,
+  `sessions/`); Pi's formats stay compatible — copy Pi's skills / settings /
+  models in and they work as they are.
 - Session format: JSONL v4, byte-compatible with Pi sessions.
-- Command surface: all 23 of Pi's builtin slash commands, plus 5 nini-only
-  extensions (`/help`, `/status`, `/prompt`, `/debug`, `/editor`) that are
-  explicitly not counted toward parity.
+- All 23 of Pi's builtin slash commands, plus 5 nini-only extensions
+  (`/help`, `/status`, `/prompt`, `/debug`, `/editor`), explicitly not counted
+  toward parity.
 - Built-in tools: bash, read, write, edit, grep, find, ls.
-- Providers: OpenAI-compatible, OpenAI Responses, Anthropic, plus Google /
-  DeepSeek / Groq / Mistral / Cohere; any OpenAI-compatible endpoint works via
-  `models.json`.
+- Providers: 37 implementations across 7 brands (`anthropic`, `openai`
+  (incl. `openai-responses` / `openai-compat`), `google`, `deepseek`, `groq`,
+  `mistral`, `cohere`); the headline 8 brand surfaces are OpenAI 兼容 /
+  OpenAI Responses / Anthropic / Google / DeepSeek / Groq / Mistral / Cohere.
+  Any OpenAI-compatible endpoint works via `models.json`. No OAuth / radius;
+  env API keys only.
 - Rust 1.85+, one static binary, no runtime, no account, no telemetry.
+- Deterministic local compaction (LLM summarization is a follow-up, not shipped);
+  auto-triggers on context overflow.
 
-## Project facts
+## Facts
 
-- Language: Rust (workspace of 8 crates: nini-core, nini-ai, nini-session,
+- Language: Rust workspace of 8 crates (nini-core, nini-ai, nini-session,
   nini-tools, nini-tui, nini-ext, nini-conformance, nini-cli).
-- License: MIT.
-- Tests: ~2100 unit + integration tests, including wire-format tests that
-  stand up a real HTTP server.
-- Targets Pi v0.85.1, frozen; `references/pi-0.85.1/` holds that snapshot
-  (422 files, each sha256-locked) and `references/spec-v0.85.1/` the file-format
-  spec.
+- License: MIT (no license riders).
+- Tests: 2136 unit + integration tests. The declared number is enforced by a
+  gate that must exactly equal the measured number, so the README badge, body
+  and CHANGELOG cannot drift from the suite.
+- Targets Pi v0.85.1, frozen; `references/pi-0.85.1/` holds the behavioral
+  snapshot (422 files, each sha256-locked) and `references/spec-v0.85.1/` the
+  file-format spec.
+- Prebuilt release binaries: Linux x86_64 only.
 
-## Non-goals / known limitations
+## Trust & verification (security posture)
 
-nini does not do OAuth or device-flow login, does not run an extension
-runtime, does not share sessions to the cloud, and does not implement syntax
-highlighting. Unsupported flags and commands are **refused with a reason**, not
-silently accepted and dropped.
+- Frozen, version-locked Pi baseline (`references/TARGET.json` +
+  `scripts/pi-target-lock.py`) and tool-contract parity tested field by field
+  in CI.
+- Behavioral fixtures are recorded from real Pi 0.85.1 sessions; the tool
+  contract and truncation expectations are produced by running Pi's own code,
+  and are regenerated and checked in CI.
+- Invariant / mutation-verification and parity gates each have a red path;
+  nothing is left as an eyeballed statement.
+- Release artifacts are identity-verified (embedded commit / time, `.sha256`
+  sidecar), dependencies are locked (committed `Cargo.lock`), and there is no
+  crates.io entry point for a future release to pull into.
+- Threat model (unhandled: prompt injection from untrusted file contents, a
+  hostile LLM provider, local privilege escalation by a spawned process) is
+  documented in SECURITY.md. Security reports go through private GitHub
+  advisories, not public issues.
 
-## Optional
+## Known limitations
 
-- [Upstream Pi](https://github.com/earendil-works/pi): the original project
-  nini is a port of. MIT licensed. Please consider supporting it upstream.
-- [Goals and status](https://github.com/jinxumi-oss/nini/blob/main/docs/GOALS.md):
-  the project's single source of truth for what it is and where it stands.
-- [CHANGELOG](https://github.com/jinxumi-oss/nini/blob/main/CHANGELOG.md).
+- No OAuth / device-flow auth (env API keys only); no extension runtime; no
+  cloud session sharing; no syntax highlighting. Unsupported flags and commands
+  are refused with a reason, not silently accepted and dropped.
+- Platform: prebuilt binaries are Linux x86_64 only.
+
+## Links
+
+- README (English): https://github.com/jinxumi-oss/nini/blob/main/README.md
+- README (简体中文): https://github.com/jinxumi-oss/nini/blob/main/README.zh-CN.md
+- Releases: https://github.com/jinxumi-oss/nini/releases
+- Security policy: https://github.com/jinxumi-oss/nini/blob/main/SECURITY.md
+- Goals & status: https://github.com/jinxumi-oss/nini/blob/main/docs/GOALS.md
+- CHANGELOG: https://github.com/jinxumi-oss/nini/blob/main/CHANGELOG.md

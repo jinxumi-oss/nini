@@ -135,7 +135,7 @@ pub const REGISTRY: &[CommandDef] = &[
         CommandId::Resume,
         "resume",
         "Resume a previous session",
-        Some("<session-id>"),
+        Some("[<n|query>]"),
     ),
     CommandDef::new(
         CommandId::Export,

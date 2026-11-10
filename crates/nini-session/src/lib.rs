@@ -6,7 +6,7 @@
 //! - Format version: 3 (matches pi)
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 pub mod tree;
@@ -824,6 +824,156 @@ pub fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, CoreError> {
         .map_err(|e| CoreError::InvalidEntry(format!("timestamp: {}", e)))
 }
 
+/// What a session file says about itself — read without reading all of it.
+///
+/// **Why this exists.** The only way to learn anything about a session
+/// file today is [`Session::read_from_file`] (lib.rs:312 → [`Codec::read`]
+/// lib.rs:685), and that parses the **whole** file and keeps every entry in
+/// a `Vec` (lib.rs:715/721). Listing sessions means touching thousands of
+/// them (2456 on the reference machine), so a full parse each is not
+/// affordable. The name and the first user message — the two things a
+/// human needs to recognise a session — live in the first few lines, so a
+/// bounded read is enough.
+#[derive(Debug, Clone, Default)]
+pub struct SessionMeta {
+    /// The `cwd` of the session header (the project it belongs to).
+    pub cwd: Option<String>,
+    /// The session's own name (`session_info` entry), if it has one.
+    pub name: Option<String>,
+    /// The first line of the session's **first** user message.
+    pub first_user_message: Option<String>,
+    /// The session's own id (the header's `id`).
+    ///
+    /// Pi's session search text starts with the id
+    /// (`session-selector-search.js#getSessionSearchText`), and the
+    /// forked-session tree matches children to parents by it.
+    pub id: Option<String>,
+    /// The id of the session this one was forked from (the header's
+    /// `parentSession`).
+    pub parent_session: Option<String>,
+    /// How many messages the session holds.
+    ///
+    /// `None` when the bounded read did not see the whole file: the count
+    /// would then be a **lie** (a lower bound presented as a count), and
+    /// the picker shows it next to the session's age.
+    pub message_count: Option<usize>,
+}
+
+/// Read a session's header, name and first user message from the **first
+/// `max_bytes`** of a session file.
+///
+/// [`Session::read_from_file`] (lib.rs:312) parses the whole file and keeps
+/// every entry in a `Vec` (lib.rs:715/721) — far too much for listing
+/// thousands of sessions. The name and the first user message live in the
+/// first lines, so a bounded read is enough. Lines that do not parse (the
+/// last one may be cut in half by the byte limit) are skipped.
+pub fn read_meta_bounded(path: &Path, max_bytes: usize) -> Option<SessionMeta> {
+    let mut file = File::open(path).ok()?;
+    let total = file.metadata().ok().map(|m| m.len()).unwrap_or(0);
+    let mut buf = vec![0u8; max_bytes];
+    let n = file.read(&mut buf).ok()?;
+    buf.truncate(n);
+    // Did the window cover the whole file? If not, the message count
+    // would be a lower bound, so it is reported as unknown instead.
+    let complete = total <= n as u64;
+    let text = String::from_utf8_lossy(&buf);
+    let mut meta = SessionMeta::default();
+    let mut messages = 0usize;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(parsed) = serde_json::from_str::<Line>(line) else {
+            continue; // a truncated or damaged line — skip it
+        };
+        match parsed {
+            Line::Session(h) => {
+                if !h.cwd.is_empty() {
+                    meta.cwd = Some(h.cwd);
+                }
+                if !h.id.is_empty() {
+                    meta.id = Some(h.id);
+                }
+                meta.parent_session = h.parent_session;
+            }
+            Line::Entry(nini_core::SessionEntry::SessionInfo(info)) => {
+                meta.name = Some(info.name);
+            }
+            Line::Entry(nini_core::SessionEntry::Message(m)) => {
+                messages += 1;
+                if let AgentMessage::User(u) = &m.message {
+                    let body = match &u.content {
+                        nini_core::entries::StringOrContentBlocks::String(s) => s.clone(),
+                        nini_core::entries::StringOrContentBlocks::Blocks(blocks) => blocks
+                            .iter()
+                            .filter_map(|c| match c {
+                                nini_core::entries::ContentBlock::Text { text } => {
+                                    Some(text.clone())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    };
+                    let first = body.lines().next().unwrap_or("").trim().to_string();
+                    // The **first** user message is the session's subject.
+                    // The old code kept overwriting it, so a session with
+                    // no name was labelled by its *last* message in the
+                    // window — the opposite of what the row is for.
+                    if !first.is_empty() && meta.first_user_message.is_none() {
+                        meta.first_user_message = Some(first);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    meta.message_count = if complete { Some(messages) } else { None };
+    Some(meta)
+}
+
+/// Give a session a name by appending a `session_info` entry to it.
+///
+/// Pi renames a session exactly this way (`session-manager.ts`
+/// `appendSessionInfo`, called from the session selector's
+/// `renameSession`): the file keeps its name and its history, and the new
+/// name is one more entry in it. Rewriting the file instead would drop
+/// every entry this crate does not know how to parse.
+///
+/// The entry is **appended**, so the last `session_info` wins — which is
+/// what [`read_meta_bounded`] reports as the session's name.
+pub fn append_session_info(path: &Path, name: &str) -> Result<(), CoreError> {
+    let entry = SessionEntry::SessionInfo(nini_core::entries::SessionInfoEntry {
+        id: format!("si_{}", Uuid::new_v4()),
+        parent_id: None,
+        timestamp: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        name: name.to_string(),
+    });
+    let line = serde_json::to_string(&entry)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    // The previous line has to end with a newline, otherwise the new
+    // entry would be glued onto it and the file would lose one entry.
+    if needs_newline_before_append(path)? {
+        writeln!(file)?;
+    }
+    writeln!(file, "{}", line)?;
+    Ok(())
+}
+
+/// Does the file's last byte exist and is it not a newline?
+fn needs_newline_before_append(path: &Path) -> Result<bool, CoreError> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last)?;
+    Ok(last[0] != b'\n')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,6 +1018,134 @@ mod tests {
         assert_eq!(loaded.header.version, 3);
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.entries[0].id(), "msg1");
+    }
+
+    // ---- B35: the bounded read and the rename entry ----------------
+    //
+    // The picker's row shows the session's age, its message count and
+    // (in the threaded view) its place in the fork tree — so the bounded
+    // read has to report the header's id, the parent session and the
+    // message count, and the count must be **unknown** rather than a lie
+    // when the window did not cover the whole file.
+
+    #[test]
+    fn the_bounded_read_reports_the_header_the_name_and_the_message_count() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        let mut out = String::new();
+        out.push_str(
+            "{\"type\":\"session\",\"version\":3,\"id\":\"u_abc\",\
+             \"timestamp\":\"2024-12-03T14:00:00.000Z\",\"cwd\":\"/test/cwd\",\
+             \"parentSession\":\"u_parent\"}\n",
+        );
+        out.push_str(
+            "{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\
+             \"timestamp\":\"2024-12-03T14:00:01.000Z\",\
+             \"message\":{\"role\":\"user\",\"content\":\"the first thing\",\
+             \"timestamp\":1733239201000}}\n",
+        );
+        out.push_str(
+            "{\"type\":\"message\",\"id\":\"m2\",\"parentId\":null,\
+             \"timestamp\":\"2024-12-03T14:00:02.000Z\",\
+             \"message\":{\"role\":\"user\",\"content\":\"the second thing\",\
+             \"timestamp\":1733239202000}}\n",
+        );
+        out.push_str(
+            "{\"type\":\"session_info\",\"id\":\"si1\",\"parentId\":null,\
+             \"timestamp\":\"2024-12-03T14:00:03.000Z\",\"name\":\"the name\"}\n",
+        );
+        std::fs::write(&path, out).unwrap();
+
+        let meta = read_meta_bounded(&path, 8 * 1024).expect("the meta is read");
+        assert_eq!(meta.id.as_deref(), Some("u_abc"));
+        assert_eq!(meta.parent_session.as_deref(), Some("u_parent"));
+        assert_eq!(meta.name.as_deref(), Some("the name"));
+        assert_eq!(meta.cwd.as_deref(), Some("/test/cwd"));
+        assert_eq!(meta.message_count, Some(2));
+        // The **first** user message is the session's subject — not the
+        // last one.
+        assert_eq!(
+            meta.first_user_message.as_deref(),
+            Some("the first thing"),
+            "the label must be the first thing the user said"
+        );
+    }
+
+    #[test]
+    fn the_message_count_is_unknown_when_the_file_does_not_fit_the_window() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("big.jsonl");
+        let mut out = String::new();
+        out.push_str(
+            "{\"type\":\"session\",\"version\":3,\"id\":\"u_big\",\
+             \"timestamp\":\"2024-12-03T14:00:00.000Z\",\"cwd\":\"/test/cwd\"}\n",
+        );
+        // More than the window holds, so the count would be a lower bound.
+        for i in 0..500 {
+            out.push_str(&format!(
+                "{{\"type\":\"message\",\"id\":\"m{i}\",\"parentId\":null,\
+                 \"timestamp\":\"2024-12-03T14:00:01.000Z\",\
+                 \"message\":{{\"role\":\"user\",\"content\":\"padding padding padding\",\
+                 \"timestamp\":1733239201000}}}}\n"
+            ));
+        }
+        std::fs::write(&path, out).unwrap();
+
+        let meta = read_meta_bounded(&path, 1024).expect("the meta is read");
+        assert_eq!(
+            meta.message_count, None,
+            "a count read from part of the file is a lower bound, not a count"
+        );
+    }
+
+    #[test]
+    fn appending_a_session_info_names_the_session_without_touching_the_file_name() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("20260101-000000_aa.jsonl");
+        let mut out = String::new();
+        out.push_str(
+            "{\"type\":\"session\",\"version\":3,\"id\":\"u_abc\",\
+             \"timestamp\":\"2024-12-03T14:00:00.000Z\",\"cwd\":\"/test/cwd\"}\n",
+        );
+        out.push_str(
+            "{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\
+             \"timestamp\":\"2024-12-03T14:00:01.000Z\",\
+             \"message\":{\"role\":\"user\",\"content\":\"hello\",\
+             \"timestamp\":1733239201000}}\n",
+        );
+        std::fs::write(&path, out).unwrap();
+
+        append_session_info(&path, "the new name").unwrap();
+
+        // The file keeps its name …
+        assert!(path.exists());
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with("_aa.jsonl"));
+        // … and the history is still there.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"content\":\"hello\""));
+        // … with the new name as one more entry.
+        let mut names = Vec::new();
+        for line in raw.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("type").and_then(|t| t.as_str()) == Some("session_info") {
+                names.push(
+                    v.get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                );
+            }
+        }
+        assert_eq!(names, vec!["the new name".to_string()]);
+        // The bounded read reports it as the session's name.
+        let meta = read_meta_bounded(&path, 8 * 1024).unwrap();
+        assert_eq!(meta.name.as_deref(), Some("the new name"));
     }
 
     // ---- v0.8.9 (P2-9): damaged lines are salvaged, not fatal -------

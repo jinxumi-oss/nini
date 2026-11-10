@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-08",
+  "updated": "2026-11-09",
   "authority": "docs/GOALS.md",
   "detail": "docs/plans/parity-with-pi.md",
   "gaps": [
@@ -840,6 +840,36 @@
       "blocking_decision": null,
       "round": "v0.16",
       "exit_criterion": "机器判定: true —— `cargo test -p nini-ai --test anthropic_blank_blocks` 退出 0（5 条）；变异注入：把 assistant 角色从空白过滤里去掉 → 该文件必须变红（实测：3 条变红）",
+      "machine_checkable": true,
+      "layer": null
+    },
+    {
+      "id": "B34",
+      "class": "B",
+      "severity": "P1",
+      "title": "`/resume` 是一堵文本墙：50 行文件名清单认不出是哪个会话，而且清单被当助手消息写进 session 文件",
+      "pi_basis": "Pi 的 `/resume` 只打开会话选择器浮层，不打印清单（references/pi-0.85.1/src/ui/interactive-mode.ts:3094-3098 → `showSessionSelector`，:5348-5361 → `SessionSelectorComponent` → `handleResumeSession(sessionPath)`）；行内可辨认的名字 / 首条用户消息 / 相对时间 / 项目目录来自 Pi 的 `SessionSelectorComponent`（dist/modes/interactive/components/session-selector.js）。",
+      "nini_state": "已修（2026-11-09）：`crates/nini-tui/src/commands/dispatch.rs` 的 `cmd_resume` 不再返回任何 Output 行——`/resume <n>` 直接 `session_load`，`/resume` 与 `/resume <query>` 只写状态 `open_selector:session`，由 `crates/nini-tui/src/runtime.rs` 的 `apply_selector_result` 交给浮层；旧的 50 行清单分支整段删除。浮层的行由 `crates/nini-tui/src/selectors/session.rs` 的 `session_paths` 与 `row_for` 生成（标签 = 会话名或首条用户消息，描述 = 相对时间 + 项目目录名）；会话文件的有界读取在 `crates/nini-session/src/lib.rs` 的 `read_meta_bounded`——全量的 `read_from_file` 会把每个 entry 收进内存，2456 个会话扛不住。",
+      "oracle": "crates/nini-tui/tests/resume_selector.rs 12 条：无参开浮层且不打印清单；带 query 预填过滤；命令不往 session 文件写任何字节；标签取首条用户消息；有名会话取名字；空会话标为 (no messages)；描述含相对时间与项目目录；当前项目排最前；浮层第 n 行 = `/resume n` 加载的那个；取消不加载任何会话；越界序号（含超出 usize 的数字与负数）报 Invalid index 而不落到查询分支；帧里有标题 / 消息预览 / 项目目录。crates/nini-tui/tests/slash_command_e2e.rs 1 条：`/resume` 开浮层、不打印清单。",
+      "status": "fixed",
+      "blocking_decision": null,
+      "round": "v1.1",
+      "exit_criterion": "机器判定: true —— `cargo test -p nini-tui --test resume_selector` 退出 0（12 条）；`cargo test -p nini-tui --test slash_command_e2e` 退出 0；`cargo test -p nini-tui` 退出 0；`bash scripts/gate.sh` 退出 0。",
+      "machine_checkable": true,
+      "layer": null
+    },
+    {
+      "id": "B35",
+      "class": "B",
+      "severity": "P2",
+      "title": "Pi 会话选择器的四件套未做：scope 切换（当前目录 / 全部）、排序模式（threaded / recent / relevance）、删除会话、重命名会话",
+      "pi_basis": "Pi 的会话选择器组件（`@earendil-works/pi-coding-agent` 的 dist/modes/interactive/components/session-selector.js）提供 scope 切换（Current Folder / All）、name 过滤（All / Named）、排序（Threaded / Recent / Fuzzy）、相对时间与路径、删除确认与重命名；`references/pi-0.85.1/src/ui/interactive-mode.ts:5348-5361` 是它的入口（`showSessionSelector` → `SessionSelectorComponent`）。",
+      "nini_state": "已修（2026-11-09）：`crates/nini-tui/src/selectors/session.rs` 的 `SessionSelector` 现在有 Pi 选择器的四件套——scope（`toggle_scope`：当前目录 ↔ 全部）、排序模式（`toggle_sort`：threaded / recent / relevance）、名字过滤（`toggle_name_filter`）、路径列（`toggle_show_path`）、删除（`start_delete` + `confirm_delete`，当前会话不可删）与重命名（`start_rename` + `commit_rename`）；行内容由 `row_for` 生成，`picker_order` 是选择器与 `/resume <n>` 共用的行序，搜索由 `state_filter` 按 Pi 的 getSessionSearchText 语义做（id + 名字 + 首条用户消息 + cwd），空态文案由 `state_empty_message` 给出，做完了/被拒绝的消息由 `take_status` 交给运行时。键位在 `crates/nini-tui/src/keys.rs` 的 `default_keymap` 里登记为 Pi 的会话键（Tab / Ctrl+S / Ctrl+N / Ctrl+P / Ctrl+R / Ctrl+D / Ctrl+Backspace），`is_session_action` 标出这七个是**上下文相关**的动作（Pi 把 ctrl+d 同时绑给 app.exit 与 app.session.delete），`crates/nini-tui/src/keybindings_manager.rs` 的 `parse_action` 认它们（用户改绑不静默失效），运行时在 `crates/nini-tui/src/runtime.rs` 的 `handle_selector_key` 里用 `session_selector_keymap` 解析，删除被拒时用 `push_notice` 把原因说给用户听。重命名在 `crates/nini-session/src/lib.rs` 的 `append_session_info` 里追加一条 session_info 条目（文件名不动），元信息由 `read_meta_bounded` 有界读取。两处有意偏差：scope 默认「全部」（否则选择器显示的行与 `/resume n` 不是同一批会话）、Pi 的 re: 正则搜索未实现（nini-tui 无 regex 依赖）。",
+      "oracle": "crates/nini-tui/tests/resume_selector_pi.rs 14 条：scope 在全部与当前目录之间切换；threaded 把 fork 出来的会话画在父会话下面；recent 保持加载顺序；relevance 把命中的会话排前面；名字过滤只列有名字的会话；删除要确认且文件真的没了；当前会话不可删；重命名写入 session_info 条目且文件名不变；路径列可开关；搜索命中名字与首条用户消息；帧里有消息数与相对时间；空态给出该做什么的提示；运行时真的把会话键送进选择器（Ctrl+N / Ctrl+R / Ctrl+D 走 `handle_selector_key`）；`/resume <n>` 数的是选择器显示的行（`picker_order`，fork 画在父会话下面也算一行）。crates/nini-tui/tests/resume_selector.rs 12 条（B34，未回退）。",
+      "status": "fixed",
+      "blocking_decision": null,
+      "round": "v1.1",
+      "exit_criterion": "机器判定: true —— `cargo test -p nini-tui --test resume_selector_pi` 退出 0（14 条）；`cargo test -p nini-tui --test resume_selector` 退出 0（12 条）；`cargo test --workspace` 退出 0；`bash scripts/gate.sh` 退出 0。",
       "machine_checkable": true,
       "layer": null
     }

@@ -280,6 +280,22 @@ pub fn parse_action(name: &str) -> Option<KeyAction> {
         "CopyLastAssistant" => CopyLastAssistant,
         "Suspend" => Suspend,
         "DequeueMessages" => DequeueMessages,
+        // Pi 的会话选择器动作（`app.session.*`）。不认的后果是**静默
+        // 忽略**：用户在 `keybindings.json` 里把 `app.session.delete` 改到
+        // 另一个键上，文件能解析、也不报错，但按键一点没变。
+        //
+        // 两个名字都收：nini 的 camelCase 与 Pi 键位文件里的带点名。
+        "ToggleSessionScope" | "toggleSessionScope" => ToggleSessionScope,
+        "ToggleSessionSort" | "toggleSessionSort" | "app.session.toggleSort" => ToggleSessionSort,
+        "ToggleSessionNamedFilter"
+        | "toggleSessionNamedFilter"
+        | "app.session.toggleNamedFilter" => ToggleSessionNamedFilter,
+        "ToggleSessionPath" | "toggleSessionPath" | "app.session.togglePath" => ToggleSessionPath,
+        "RenameSession" | "renameSession" | "app.session.rename" => RenameSession,
+        "DeleteSession" | "deleteSession" | "app.session.delete" => DeleteSession,
+        "DeleteSessionNoninvasive"
+        | "deleteSessionNoninvasive"
+        | "app.session.deleteNoninvasive" => DeleteSessionNoninvasive,
         "Noop" => Noop,
         _ => return None,
     })
@@ -399,6 +415,42 @@ mod tests {
     #[test]
     fn parse_action_unknown() {
         assert!(parse_action("NonExistent").is_none());
+    }
+
+    /// B35：Pi 的 `app.session.*` 键位必须能被 `keybindings.json` 认出来。
+    ///
+    /// 不认的后果是**静默忽略**——用户把 `app.session.delete` 改绑到另一个
+    /// 键上，文件能解析、也不报错，但按键一点没变。
+    #[test]
+    fn the_session_picker_actions_can_be_rebound() {
+        assert!(matches!(
+            parse_action("ToggleSessionScope"),
+            Some(KeyAction::ToggleSessionScope)
+        ));
+        assert!(matches!(
+            parse_action("app.session.toggleSort"),
+            Some(KeyAction::ToggleSessionSort)
+        ));
+        assert!(matches!(
+            parse_action("app.session.toggleNamedFilter"),
+            Some(KeyAction::ToggleSessionNamedFilter)
+        ));
+        assert!(matches!(
+            parse_action("app.session.togglePath"),
+            Some(KeyAction::ToggleSessionPath)
+        ));
+        assert!(matches!(
+            parse_action("app.session.rename"),
+            Some(KeyAction::RenameSession)
+        ));
+        assert!(matches!(
+            parse_action("app.session.delete"),
+            Some(KeyAction::DeleteSession)
+        ));
+        assert!(matches!(
+            parse_action("app.session.deleteNoninvasive"),
+            Some(KeyAction::DeleteSessionNoninvasive)
+        ));
     }
 
     #[test]

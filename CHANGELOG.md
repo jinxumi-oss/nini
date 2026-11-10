@@ -1,6 +1,66 @@
-## v1.0.0 — 本版把 v0.17.0 之后的两段 Unreleased 工作全部收口为发布版本：TUI 键位/浮层 oracle、provider 层四个真缺陷（错误体/HTTP 400/空 content/瞬时错误）的修复与独立审查、baseUrl 版本段与 --model 环境变量、D5 剩余字段承载（oauth/model_overrides/models.json 解析与消费、模型面）、watchdog 锁修复、agent 异常结束显式终止通知、版本收口（B1–B4/B6/B7）。测试 2100 全部通过。
+## Unreleased — `/resume` 打开交互式会话选择器（B34）+ Pi 选择器四件套（B35）
 
-2100 tests, all green.
+**症状**：`/resume` 是一堵文本墙。屏幕上最多 50 行
+`N: 2026-11-08T14-54-20-331Z_8a2e1aa3-….jsonl [38762 bytes, 2026-11-08 14:54]`——
+全是 UUID 文件名，认不出是哪个会话；而且这些行是命令的 Output，运行时用
+`push_assistant` 逐行写进 **session 文件**，清单被当成了助手说过的话（下次 resume
+它又回来了）。
+
+**旧行为 → 新行为**（这是有意的语义变更，不是「一直如此」）：
+
+| | 旧 | 新 |
+|---|---|---|
+| `/resume` | 打印 50 行清单进转录 | 打开**交互式会话选择器浮层** |
+| `/resume <query>` | 打印匹配的清单（并写进 session 文件） | 打开浮层并**用 query 预填过滤**（与 Pi 一致：Pi 的 `/resume` 只开选择器，从不打印清单） |
+| `/resume <n>` | 直接加载第 n 个会话 | 不变——浮层的第 n 行与 `/resume n` 是同一个会话 |
+| 清单进 session 文件 | 是 | **否**——命令不再返回任何 Output 行 |
+
+**浮层里认得出是哪个会话**：标签 = 会话名 → 首条用户消息 → `(no messages)`（存 60
+字符，屏上按主列宽度截断）；描述 = 相对时间（`now` / `5m` / `3h` / `2d`）· 项目目录名。
+排序沿用既有规则：当前项目目录优先，其余按最近修改倒序。方向键移动、输入即过滤、
+Enter 选中即切会话、Esc 取消——**取消不加载任何会话**（旧的选择器把结果预置成第一项，
+Esc 会静默切到列表第一项）。
+
+台账：**B34**（fixed）。oracle：`crates/nini-tui/tests/resume_selector.rs`（12 条）、
+`crates/nini-tui/tests/slash_command_e2e.rs`（1 条）。
+
+**B35：Pi 选择器的四件套**（上一段登记为「下一轮做」的 B35，本轮做掉）：
+
+| 键 | 作用 |
+|---|---|
+| `Tab` | scope：当前目录 ↔ 全部 |
+| `Ctrl+S` | 排序模式：threaded → recent → relevance |
+| `Ctrl+N` | 只看有名字的会话 |
+| `Ctrl+P` | 显示 / 隐藏会话路径 |
+| `Ctrl+R` | 重命名会话（在会话文件里**追加一条 `session_info`**，文件名不动） |
+| `Ctrl+D` | 删除会话（先确认；**当前会话不可删**） |
+| `Ctrl+Backspace` | 查询为空时的删除别名 |
+
+行内容对齐 Pi：标签 = 会话名 → 首条用户消息 → `(no messages)`；右侧 = 消息数 · 相对时间 ·
+项目目录（`Ctrl+P` 再加路径）。空态按 scope 与名字过滤给不同的提示（“No sessions in current
+folder. Press Tab to view all.”）。排序模式里的 threaded 会把 fork 出来的会话画在它
+的父会话下面（带树形前缀）。
+
+顺带修了一处**行号对不上**：`/resume <n>` 原来数的是磁盘上的清单，选择器数的是它显示的
+行。threaded 排序下两者会错开（fork 画在父会话下面，就不再占第一行）。现在两边都走
+`picker_order`——同一个函数、同一个顺序——所以「第 n 行」和「第 n 个会话」始终是同一个
+会话。
+
+两处**有意的偏差**（写在这里，免得被当成 bug）：
+
+1. **scope 默认是「全部」，不是 Pi 的「当前目录」。** 浮层的第 n 行必须与 `/resume n` 是
+   同一个会话（B34 锁住的性质）；从「当前目录」起步会让行号与 `/resume n` 错位。
+2. **Pi 的 `re:` 正则搜索没有实现。** nini-tui 没有 regex 依赖，为一个搜索模式加依赖
+   不划算；这样的查询被当成普通词处理。
+
+台账：**B35**（fixed）。oracle：`crates/nini-tui/tests/resume_selector_pi.rs`（14 条）、
+`crates/nini-tui/tests/resume_selector.rs`（12 条）。
+
+2136 tests, all green.
+
+## v1.0.0 — 本版把 v0.17.0 之后的两段 Unreleased 工作全部收口为发布版本：TUI 键位/浮层 oracle、provider 层四个真缺陷（错误体/HTTP 400/空 content/瞬时错误）的修复与独立审查、baseUrl 版本段与 --model 环境变量、D5 剩余字段承载（oauth/model_overrides/models.json 解析与消费、模型面）、watchdog 锁修复、agent 异常结束显式终止通知、版本收口（B1–B4/B6/B7）。测试 2104 全部通过。
+
+2104 tests, all green.
 
 这一轮不是发布，是 **v0.16.0 之后的两次工作合流**：前半是 TUI 的对照 oracle
 （第 1–4 节），后半是一次**线上故障的复盘**（第 5–13 节）——用户的 provider 是

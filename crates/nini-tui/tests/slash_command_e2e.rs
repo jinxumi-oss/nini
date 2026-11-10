@@ -675,27 +675,33 @@ fn dispatch_is_total_over_all_commands() {
 }
 
 // =====================================================================
-// Test 20: /resume lists sessions or reports none found
+// Test 20: /resume opens the interactive session picker
 // =====================================================================
+//
+// The old assertion here locked the **old** behaviour — that `/resume`
+// printed a listing ("session(s) available") into the transcript. That
+// behaviour is what the requirement rejects: a 50-line wall of UUID
+// filenames, written into the session file as if the assistant had said
+// it. The command now opens the interactive picker and prints nothing.
 #[test]
-fn resume_command_lists_sessions_or_none() {
+fn resume_command_opens_the_session_selector() {
     let mut state = AppState::new("test");
     let mut settings = SettingsManager::default();
     let r = dispatch(&mut state, &mut settings, CommandId::Resume, "");
+    assert!(r.error.is_none(), "/resume must not fail: {:?}", r.error);
     match r.outcome {
         CommandOutcome::Output(lines) => {
-            // Either "No sessions found" or a numbered list.
-            assert!(!lines.is_empty());
-            let is_empty_state = lines[0].contains("No sessions");
-            let is_list = lines[0].contains("session(s) available");
             assert!(
-                is_empty_state || is_list,
-                "Expected no-sessions or list, got: {:?}",
-                lines
+                lines.is_empty(),
+                "/resume must not print a session listing: {lines:?}"
             );
         }
         _ => panic!("expected Output"),
     }
+    assert_eq!(
+        state.run_state.status, "open_selector:session",
+        "/resume without arguments must open the interactive session selector"
+    );
 }
 
 // =====================================================================

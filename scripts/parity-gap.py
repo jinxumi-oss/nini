@@ -71,7 +71,11 @@ ROUNDS = ("W0", "W1-A", "W1-B", "W1-C", "W2", "W3", "W4", "W5", "—",
           # （`!cmd` 流式与可中止）、B8（mermaid 的降级占位）、B20（工具
           # 「执行开始」事件的时机）、D1（三个符号接线），以及新登记的 B22
           # （mermaid 的真图渲染仍未做）。
-          "v0.16")
+          "v0.16",
+          # v1.1 计划（/tmp/pi-work/resume-ux/plan.md）：`/resume` 改成交互式
+          # 会话选择器浮层（B34），以及 Pi 选择器的四件套（scope 切换 / 排序
+          # 模式 / 删除 / 重命名）本期不做、登记为 B35。
+          "v1.1")
 # Decision numbers. R4/R5/R9/R10 predate this whitelist; R11-R14 were
 # added on 2026-11-05 because six gaps had been sitting in `open` while
 # their own `exit_criterion` said they needed an owner decision — the

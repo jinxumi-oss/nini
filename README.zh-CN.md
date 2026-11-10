@@ -17,7 +17,7 @@ TypeScript AI coding agent）的 **Rust 重写版**：同样的 `~/.pi/agent` �
 
 [![Status](https://img.shields.io/badge/status-v1.0.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2100%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-2136%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini 是 [Pi](https://github.com/earendil-works/pi)（Mario Zechner 写的
@@ -34,9 +34,12 @@ nini 不是想做一个"不一样的 agent"。它就是 **Pi，只不过用 Rust
 > author's aim is to keep Pi's original flavor.
 
 这里"干净"是两层意思，两层都是字面意义上的：它的**代码是从零用 Rust 写的**
-——没有翻译或抄写 Pi 的任何一行 TypeScript——同时它也是一个
-**干净** 的 agent：没有账号、没有云、没有遥测、没有功能膨胀，凡 Pi 没做的事
-nini 也不做。
+——没有翻译或抄写 Pi 的任何一行 TypeScript——同时它也是**以 Pi v0.85.1 的
+固定行为基线为参照的 Rust 重写**：`references/pi-0.85.1/` 钉住了 Pi 的源码
+（422 个文件，每个带 sha256 锁），仓库里任何关于 Pi 行为的断言都对着这个
+快照复算核对，而不是单纯声称——它不是逐行移植，而是用 Pi 的源码当行为契约。
+同时它也是一个**干净** 的 agent：没有账号、没有云、没有遥测、没有功能膨胀，
+凡 Pi 没做的事 nini 也不做。
 
 ## 致敬——Pi 是原作，我们只是把它翻译成了 Rust
 
@@ -83,7 +86,7 @@ nini 里的任何错误都由我们自己承担，与 Pi 无关。如果 Pi 上�
 
 - **单个 6.7 MiB 可执行文件**（压缩后 2.5 MB），取代一整套 Node.js 工具链
 - **无授权附加条款**——纯 MIT，不像某些带着 OpenAI/Anthropic 再分发限制的分支
-- **2100 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
+- **2136 个单元 + 集成测试**，含基于属性的 SSE 模糊测试，以及会真的拉起
   HTTP 服务器的端到端线格式测试
 - **内置工具可扩展**——bash、read、write、edit、grep、find
 - **流式 TUI**，带斜杠命令自动补全
@@ -98,8 +101,19 @@ nini 里的任何错误都由我们自己承担，与 Pi 无关。如果 Pi 上�
 | **TUI** | ratatui + crossterm，readline 式编辑、kill ring、历史回溯、斜杠命令补全下拉、命令面板（Ctrl+Shift+K）、transcript 搜索（Ctrl+F）、外部编辑器（Ctrl+G） |
 | **斜杠命令** | Pi 全部 23 条内建命令（`/model`、`/export`、`/new`、`/quit`……），外加 5 条 nini 独有（`/help`、`/status`、`/prompt`、`/debug`、`/editor`） |
 | **Session** | JSONL v4 编解码 + 旧版 v3 读取；读 `~/.nini/agent/skills/`、`settings.json`、`models.json` |
-| **压缩** | LLM 摘要 + 确定性兜底；上下文溢出时自动触发 |
+| **压缩** | 本地确定性摘要（未做 LLM 摘要，属后续）；上下文溢出时自动触发 |
 | **Hooks（v0.7）** | 与 Pi 兼容的 5 方法 `AgentLoopHooks` trait：steering / followup / transform_context / convert_to_llm / should_stop_after_turn。工具执行前后的生命周期 hook。BashOperations + ReadOperations 让后端可 mock。 |
+
+## 为什么可信
+
+nini 让每一项关于 Pi 行为的断言都**可核验**，而不是只做声明。证据在仓库里，且在 CI 里执行：
+
+- **唯一且版本锁定的 Pi 基线。** Pi v0.85.1 被钉成行为基线（`references/pi-0.85.1/`，422 个文件，每个带 sha256 锁）与文件格式规范（`references/spec-v0.85.1/`）同版本。目标版本在 `references/TARGET.json` 里冻结，并由 `scripts/pi-target-lock.py` 锁定；要重锚到其他版本，必须先有书面差分计划。
+- **工具面是验证，不是断言**。`crates/nini-tools/tests/tool_contract_parity.rs` 逐字段比对 nini 每个工具与 Pi 运行时工具契约（description、参数名/类型/参数描述、`required`、`promptSnippet`、`promptGuidelines`），并断言 Pi 的每个工具都存在（唯一例外是明确登记的 `powershell`）。它在 CI 里跑。
+- **行为断言来自运行真实 Pi 的产物，而不是手写样本。** 对标 fixture 由真实 Pi 0.85.1 会话录制（`scripts/pi-session-record.sh`）；工具契约与截断期望值由执行 Pi 自身代码产出（`scripts/pi-tool-dump.mjs`、`scripts/truncate-oracle.mjs`），CI 会重新生成并发现漂移即失败。
+- **每个门禁都有变红路径。** 不变量在「`fix` 没配对应断言」时会让 CI 失败；目标锁定、键位对照、工具契约对照各自在无法满足时都会变红。没有靠眼睛判断的断言。
+- **发布产物有身份校验。** 发布二进制内嵌提交、构建时间与 dirty 标记，`scripts/build-release.sh` 拒绝无法解析身份的二进制，每个 release 包都带 `.sha256` sidecar（`release/nini-x86_64-unknown-linux-gnu.tar.xz.sha256`）。
+- **依赖锁定。** `Cargo.lock` 已提交；`cargo fmt` 与 `clippy -D warnings` 在 CI 里跑，测试还额外在 release profile 下跑（因为测试无法执行 release 二进制会运行的代码：profile 与 `panic` 策略不同）。
 
 ## 快速开始
 
@@ -222,7 +236,7 @@ nini 没有实现的开关或命令会**带着理由被拒绝**——绝不会�
 | `/logout` | — | 告诉你该取消哪个变量（无法改父 shell） |
 | `/new` | — | 完整实现（清空 transcript） |
 | `/compact` | — | 真实实现（session 层压缩） |
-| `/resume` | `[session-id]` | 真实实现（session 选择器） |
+| `/resume` | `[<n\|query>]` | 真实实现（交互式 session 选择器） |
 | `/reload` | — | 完整实现（重读 `settings.json`；**skills 需要新 session**——prompt 在一个 run 的生命周期内是固定的） |
 | `/quit` | — | 完整实现 |
 
@@ -304,8 +318,7 @@ session JSONL。
 - 没有基于 LLM 的**分支**摘要：`/fork` 会创建真正的分支，但 Pi 的
   `navigateTree`（在同一个文件里跳到另一个节点，并可选地总结被放弃的内容）
   尚未实现
-- Pi 0.84.2 内置的 40 个 provider 里，nini 原生实现了 9 个（7 个品牌）；
-  其余用 `models.json` 配置
+- Pi 0.85.1 的 40 个 provider 里，nini 有 37 个实现（9 个 native + 28 个 thin shells，7 个品牌：`anthropic`、`openai`（含 `openai-responses` / `openai-compat`）、`google`、`deepseek`、`groq`、`mistral`、`cohere`），其余用 `models.json` 配置
 - **你在 `models.json` 里声明的模型现在能被读懂了**（用 Pi 的拼写：
   `contextWindow`、`maxTokens`、`reasoning`），它们会出现在 `/model` 与
   `--list-models` 里，context window 用的就是你写下的那个数字。
@@ -354,6 +367,9 @@ session JSONL。
 - **没有语法高亮。** Pi 会给围栏代码块上色（`highlightCode`），write
   工具的 diff 里也一样；nini 只用基础样式渲染代码块。那九个 `syntax*`
   主题槽位存在但没人读——是预留，不是实现
+- **平台覆盖：当前 release 只提供 Linux x86_64 的预编译二进制（无 macOS /
+  Windows / arm64 预编译）；要构建其他平台，用 install.sh 从源码构建（Rust
+  1.85+）。**
 
 ## 架构
 
@@ -390,7 +406,7 @@ cargo clippy --workspace --all-targets
 测试套件里有针对 SSE 解析器的基于属性模糊测试（`proptest`）、会拉起编译
 出来的二进制的端到端 CLI 测试、用 `ratatui::backend::TestBackend` 做
 帧级快照断言的 TUI 集成套件，以及一个 `nini-conformance` crate——它**只**
-装 Pi 对等的 oracle：关于 Pi 0.84.2 的、可执行的陈述，改 nini 就能让它们变红。
+装 Pi 对等的 oracle：关于 Pi 0.85.1 的、可执行的陈述，改 nini 就能让它们变红。
 
 conformance 测试的规矩：fixture 必须来自 Pi 的真实输出，绝不来自 nini 自己。
 一个拿 nini 和自己对照往返的测试抓不住线格式的 bug，因为那类 bug 是对称的

@@ -215,7 +215,28 @@
     "Suspend": [
       "suspend"
     ],
-    "Noop": []
+    "Noop": [],
+    "DeleteSession": [
+      "session-delete"
+    ],
+    "DeleteSessionNoninvasive": [
+      "session-delete"
+    ],
+    "RenameSession": [
+      "session-rename"
+    ],
+    "ToggleSessionNamedFilter": [
+      "session-filter"
+    ],
+    "ToggleSessionPath": [
+      "session-path"
+    ],
+    "ToggleSessionSort": [
+      "session-sort"
+    ],
+    "ToggleSessionScope": [
+      "session-scope"
+    ]
   },
   "map": [
     {
@@ -539,6 +560,48 @@
       "keys": "same",
       "class": "search-close",
       "note": ""
+    },
+    {
+      "pi": "app.session.delete",
+      "nini": "DeleteSession",
+      "keys": "same",
+      "class": "session-delete",
+      "note": "会话选择器里的删除（Ctrl+D，要确认）——键与 Pi 相同；只在 /resume 浮层里生效，与全局的 Ctrl+D（退出）不同时发生"
+    },
+    {
+      "pi": "app.session.deleteNoninvasive",
+      "nini": "DeleteSessionNoninvasive",
+      "keys": "same",
+      "class": "session-delete",
+      "note": "查询为空时的删除别名（Ctrl+Backspace）"
+    },
+    {
+      "pi": "app.session.rename",
+      "nini": "RenameSession",
+      "keys": "same",
+      "class": "session-rename",
+      "note": "会话选择器里的重命名（Ctrl+R）"
+    },
+    {
+      "pi": "app.session.toggleNamedFilter",
+      "nini": "ToggleSessionNamedFilter",
+      "keys": "same",
+      "class": "session-filter",
+      "note": "只看有名字的会话（Ctrl+N）"
+    },
+    {
+      "pi": "app.session.togglePath",
+      "nini": "ToggleSessionPath",
+      "keys": "same",
+      "class": "session-path",
+      "note": "显示/隐藏会话路径（Ctrl+P）"
+    },
+    {
+      "pi": "app.session.toggleSort",
+      "nini": "ToggleSessionSort",
+      "keys": "same",
+      "class": "session-sort",
+      "note": "排序模式 threaded/recent/relevance（Ctrl+S）"
     }
   ],
   "divergences": [
@@ -552,10 +615,6 @@
     }
   ],
   "exempt": [
-    {
-      "glob": "app.session.*",
-      "reason": "nini 的会话操作走斜杠命令（/new、/resume、/tree、/rename），没有 Pi 那套会话键位"
-    },
     {
       "glob": "app.models.*",
       "reason": "nini 的模型管理是 /model 选择器 + Ctrl+P 循环，没有 Pi 的批量 enable/reorder/save"

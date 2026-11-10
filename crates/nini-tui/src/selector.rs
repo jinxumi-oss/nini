@@ -49,6 +49,13 @@ pub struct SelectorPanel {
     pub visible: Vec<usize>,
     pub selected: usize,
     pub theme: Theme,
+    /// What to say when there is nothing to show.
+    ///
+    /// The generic panels say "(no items available)" / "(no matches)";
+    /// Pi's session picker says something much more useful — "No sessions
+    /// in current folder. Press Tab to view all." — because the way out of
+    /// an empty list depends on the panel.
+    pub empty_message: Option<String>,
 }
 
 impl SelectorPanel {
@@ -67,7 +74,14 @@ impl SelectorPanel {
             visible: visible.to_vec(),
             selected,
             theme: theme.clone(),
+            empty_message: None,
         }
+    }
+
+    /// Set the message shown when the list is empty.
+    pub fn with_empty_message(mut self, message: Option<String>) -> Self {
+        self.empty_message = message;
+        self
     }
 }
 
@@ -155,11 +169,13 @@ impl Widget for SelectorPanel {
         // wrap-around nav all live in one component now).
         let list_area = rows[1];
         if self.visible.is_empty() {
-            let msg = if self.items.is_empty() {
-                "(no items available)"
-            } else {
-                "(no matches)"
-            };
+            let msg = self.empty_message.clone().unwrap_or_else(|| {
+                if self.items.is_empty() {
+                    "(no items available)".to_string()
+                } else {
+                    "(no matches)".to_string()
+                }
+            });
             Line::from(Span::styled(msg, self.theme.fg_style("dim"))).render(list_area, buf);
             return;
         }
@@ -212,6 +228,24 @@ pub trait SelectorState: Any + Send + std::fmt::Debug {
     }
     /// Optional: set the fuzzy-filter query. Default no-op.
     fn state_set_query(&mut self, _q: String) {}
+    /// Optional: what the panel says when the list is empty.
+    ///
+    /// The default (`None`) leaves the panel's generic wording alone.
+    /// Pi's session picker has its own wording per scope and per filter
+    /// (`session-selector.js:404-419`) — "No sessions in current folder.
+    /// Press Tab to view all." is the difference between an empty panel
+    /// and a dead end.
+    fn state_empty_message(&self) -> Option<String> {
+        None
+    }
+    /// Optional: the text the panel's input row should show.
+    ///
+    /// The session picker uses it while it is renaming a session: the
+    /// name being typed replaces the filter text, so the user can see what
+    /// they are typing (Pi shows a whole "Rename Session" panel).
+    fn state_input_text(&self) -> Option<String> {
+        None
+    }
     /// How this selector filters its items for a query.
     ///
     /// The default is nini's generic filter — an exact substring hit on

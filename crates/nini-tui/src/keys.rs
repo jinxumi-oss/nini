@@ -230,8 +230,53 @@ pub enum KeyAction {
     /// Windows 上不支持 —— 与 Pi 的说法一致（"Suspend to background is
     /// not supported on Windows"）。
     Suspend,
+    /// Switch the session picker's scope between "current folder" and
+    /// "all" (Pi: `tui.input.tab` — the scope toggle has no `app.session.*`
+    /// id of its own, see `references/pi-0.85.1/src/tui/keybindings.ts:145`).
+    ToggleSessionScope,
+    /// Cycle the session picker's sort mode: threaded → recent →
+    /// relevance (Pi: `app.session.toggleSort`, `ctrl+s`).
+    ToggleSessionSort,
+    /// Toggle the session picker's "named sessions only" filter
+    /// (Pi: `app.session.toggleNamedFilter`, `ctrl+n`).
+    ToggleSessionNamedFilter,
+    /// Toggle the session path column in the session picker
+    /// (Pi: `app.session.togglePath`, `ctrl+p`).
+    ToggleSessionPath,
+    /// Rename the selected session (Pi: `app.session.rename`, `ctrl+r`).
+    ///
+    /// Pi writes the new name as an appended `session_info` entry; the
+    /// session file keeps its name.
+    RenameSession,
+    /// Delete the selected session, after a confirmation
+    /// (Pi: `app.session.delete`, `ctrl+d`).
+    DeleteSession,
+    /// Delete the selected session **only when the filter box is empty**
+    /// (Pi: `app.session.deleteNoninvasive`, `ctrl+backspace`).
+    DeleteSessionNoninvasive,
     /// Unhandled (no binding matched).
     Noop,
+}
+
+/// Is this action one of the session picker's own actions?
+///
+/// The session picker's keys are **context-scoped**: Pi binds `ctrl+d` to
+/// both `app.exit` and `app.session.delete`
+/// (`references/pi-0.85.1/src/ui/keybindings.ts:178`), and the two never
+/// meet — the picker resolves its keys against the session map alone, the
+/// editor against the global one. This predicate is what tells the two
+/// apart.
+pub fn is_session_action(a: KeyAction) -> bool {
+    matches!(
+        a,
+        KeyAction::ToggleSessionScope
+            | KeyAction::ToggleSessionSort
+            | KeyAction::ToggleSessionNamedFilter
+            | KeyAction::ToggleSessionPath
+            | KeyAction::RenameSession
+            | KeyAction::DeleteSession
+            | KeyAction::DeleteSessionNoninvasive
+    )
 }
 
 /// A single binding rule: matches a `Key` (modifiers + code), produces a
@@ -518,6 +563,47 @@ pub fn default_keymap() -> Vec<KeyBinding> {
             key: Key::new(KeyCode::Char('v'), ctrl),
             action: PasteImage,
         },
+        // ---- Pi 的会话选择器键位（`app.session.*`）----
+        //
+        // 这些绑定是**上下文相关**的：它们只在 `/resume` 的浮层里生效，
+        // 而浮层解析按键时用的是「只含会话动作」的那张表（见
+        // `runtime.rs#session_selector_keymap`），全局表在这里的作用只是
+        // 让这些键位**可登记、可改绑、可在 `/hotkeys` 里看见**。
+        //
+        // 所以它们必须排在表**末尾**：`resolve` 返回第一个命中的绑定，
+        // 排在前面就会把 Tab / Ctrl+D / Ctrl+P 从全局动作（补全、退出、
+        // 循环模型）手里抢走。Pi 也是这么解决的——同一个键在不同的上下文
+        // 里是不同的动作（`ctrl+d` 既是 `app.exit` 又是
+        // `app.session.delete`，见
+        // `references/pi-0.85.1/src/ui/keybindings.ts:178`）。
+        KeyBinding {
+            key: Key::new(KeyCode::Tab, KeyModifiers::NONE),
+            action: ToggleSessionScope,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('s'), ctrl),
+            action: ToggleSessionSort,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('n'), ctrl),
+            action: ToggleSessionNamedFilter,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('p'), ctrl),
+            action: ToggleSessionPath,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('r'), ctrl),
+            action: RenameSession,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Char('d'), ctrl),
+            action: DeleteSession,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Backspace, ctrl),
+            action: DeleteSessionNoninvasive,
+        },
     ]
 }
 
@@ -686,6 +772,76 @@ mod tests {
         assert!(!m.contains(KeyModifiers::ALT));
     }
 
+    /// Pi 的会话选择器键位（`app.session.*`）必须与 Pi 一致。
+    ///
+    /// 这些键在**浮层里**生效，但它们登记在这张表里，所以「Pi 的键位是
+    /// 什么」这件事有一个可断言的答案（而不是散落在运行时里的一串常量）。
+    #[test]
+    fn the_session_picker_keys_are_pis() {
+        let km = default_keymap();
+        let ctrl = KeyModifiers::CTRL;
+        let binding = |action: KeyAction| km.iter().find(|b| b.action == action).map(|b| b.key);
+        assert_eq!(
+            binding(KeyAction::ToggleSessionScope),
+            Some(Key::new(KeyCode::Tab, KeyModifiers::NONE)),
+            "Pi 的 scope 切换用 Tab（tui.input.tab）"
+        );
+        assert_eq!(
+            binding(KeyAction::ToggleSessionSort),
+            Some(Key::new(KeyCode::Char('s'), ctrl)),
+            "Pi: app.session.toggleSort = ctrl+s"
+        );
+        assert_eq!(
+            binding(KeyAction::ToggleSessionNamedFilter),
+            Some(Key::new(KeyCode::Char('n'), ctrl)),
+            "Pi: app.session.toggleNamedFilter = ctrl+n"
+        );
+        assert_eq!(
+            binding(KeyAction::ToggleSessionPath),
+            Some(Key::new(KeyCode::Char('p'), ctrl)),
+            "Pi: app.session.togglePath = ctrl+p"
+        );
+        assert_eq!(
+            binding(KeyAction::RenameSession),
+            Some(Key::new(KeyCode::Char('r'), ctrl)),
+            "Pi: app.session.rename = ctrl+r"
+        );
+        assert_eq!(
+            binding(KeyAction::DeleteSession),
+            Some(Key::new(KeyCode::Char('d'), ctrl)),
+            "Pi: app.session.delete = ctrl+d"
+        );
+        assert_eq!(
+            binding(KeyAction::DeleteSessionNoninvasive),
+            Some(Key::new(KeyCode::Backspace, ctrl)),
+            "Pi: app.session.deleteNoninvasive = ctrl+backspace"
+        );
+    }
+
+    /// 会话选择器的键**不能抢走**全局的键。
+    ///
+    /// `resolve` 返回第一个命中的绑定，所以全局动作必须排在会话动作
+    /// 前面——否则 Ctrl+D 不再退出 nini，Tab 不再补全，Ctrl+P 不再
+    /// 循环模型。Pi 也是这么解决的：同一个键在两个上下文里是不同的动作
+    /// （`ctrl+d` 既是 `app.exit` 又是 `app.session.delete`）。
+    #[test]
+    fn the_session_keys_do_not_steal_the_global_ones() {
+        let km = default_keymap();
+        let ctrl = KeyModifiers::CTRL;
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Char('d'), ctrl)),
+            KeyAction::Quit
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Char('p'), ctrl)),
+            KeyAction::CycleModelNext
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Tab, KeyModifiers::NONE)),
+            KeyAction::AcceptCompletionOrInsertTab
+        );
+    }
+
     // ---------------------------------------------------------------
     // v0.10: the duplicate-key oracle this file was missing.
     //
@@ -709,14 +865,30 @@ mod tests {
     #[test]
     fn no_key_is_bound_to_two_actions() {
         let km = default_keymap();
-        let mut seen: Vec<(Key, String)> = Vec::new();
+        let mut seen: Vec<(Key, KeyAction)> = Vec::new();
         let mut conflicts: Vec<String> = Vec::new();
 
         for b in &km {
-            if let Some((_, previous)) = seen.iter().find(|(k, _)| *k == b.key) {
-                conflicts.push(format!("{:?} -> {previous} and {:?}", b.key.code, b.action));
-            } else {
-                seen.push((b.key, format!("{:?}", b.action)));
+            match seen.iter().find(|(k, _)| *k == b.key) {
+                Some((_, previous)) => {
+                    // 会话选择器的动作是**上下文相关**的：Pi 把 `ctrl+d` 同时
+                    // 绑给 `app.exit` 与 `app.session.delete`
+                    // （`references/pi-0.85.1/src/ui/keybindings.ts:178`），
+                    // 两个上下文永远不会相遇——浮层只解析会话动作，编辑器只
+                    // 解析全局动作。所以「全局动作 + 会话动作」共用一个键
+                    // 不是遮蔽，而是 Pi 的做法本身。
+                    //
+                    // 真正的遮蔽是**同一个上下文里**的两个绑定：两个全局动作，
+                    // 或者两个会话动作。
+                    let same_context = is_session_action(*previous) == is_session_action(b.action);
+                    if same_context {
+                        conflicts.push(format!(
+                            "{:?} -> {:?} and {:?}",
+                            b.key.code, previous, b.action
+                        ));
+                    }
+                }
+                None => seen.push((b.key, b.action)),
             }
         }
 

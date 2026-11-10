@@ -19,7 +19,7 @@ rewrite*, *Rust implementation of Pi*, *Pi agent 的 Rust 版本*, *Pi 的 Rust 
 
 [![Status](https://img.shields.io/badge/status-v1.0.0-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2100%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-2136%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -35,10 +35,14 @@ the same session files, the same commands, the same feel in the hand,
 with nothing bolted on and nothing taken away.
 
 "Clean" here means two things, and both are meant literally. Its **code is
-written from scratch in Rust** — not one line of Pi's TypeScript was
-translated or copied over — and it is a **clean** agent: no account, no cloud,
-no telemetry, no feature bloat, nothing that Pi does not also do.
-
+written from scratch in Rust** — no line of Pi's TypeScript was transcribed or
+copied into it — while it is a **Rust re-implementation against Pi v0.85.1's
+pinned behavioral oracle**: `references/pi-0.85.1/` holds Pi's source (422 files,
+each sha256-locked) so every Pi-behavior claim here is re-resolved and checked
+against it, not merely asserted. A claim in this repo about Pi's behavior
+either points at a line of Pi's own source, or it is a bug — this is the oracle,
+not a copy. It is also a **clean** agent: no account, no cloud, no telemetry, no
+feature bloat, nothing that Pi does not also do.
 > 「干净」在这里是两层意思，两层都是字面意义上的：它的**代码是从零用 Rust
 > 写的**——没有翻译或抄写 Pi 的任何一行 TypeScript——同时它也是一个**干净**的
 > agent：没有账号、没有云、没有遥测、没有功能膨胀，凡 Pi 没做的事 nini 也不做。
@@ -104,7 +108,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **2100 unit + integration tests**, including property-based SSE fuzz and
+- **2136 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete
@@ -119,8 +123,43 @@ What that means in practice, and nothing more:
 | **TUI** | ratatui + crossterm, readline-style editing, kill ring, history recall, slash-command autocomplete dropdown, command palette (Ctrl+Shift+K), transcript search (Ctrl+F), external editor (Ctrl+G) |
 | **Slash commands** | All 23 Pi builtin commands (`/model`, `/export`, `/new`, `/quit`, …), plus 5 nini-only ones (`/help`, `/status`, `/prompt`, `/debug`, `/editor`) |
 | **Session** | JSONL v4 codec + legacy-v3 reader; reads `~/.nini/agent/skills/`, `settings.json`, `models.json` |
-| **Compaction** | LLM-backed summary with deterministic fallback; auto-triggers on context overflow |
+| **Compaction** | Deterministic local summary (LLM summarisation is a follow-up, not shipped); auto-triggers on context overflow |
 | **Hooks (v0.7)** | Pi-compatible 5-method `AgentLoopHooks` trait: steering / followup / transform_context / convert_to_llm / should_stop_after_turn. Tool before/after lifecycle hooks. BashOperations + ReadOperations for mockable backends. |
+
+## Why it is trustworthy
+
+nini makes every Pi-behavior claim checkable rather than merely declared. The
+proof lives in this repository and runs in CI:
+
+- **One frozen Pi baseline, version-locked.** Pi v0.85.1 is pinned as a
+  behavioral oracle (`references/pi-0.85.1/`, 422 files, each sha256-locked) and
+the file-format spec (`references/spec-v0.85.1/`). The target version is
+frozen in `references/TARGET.json` and locked by `scripts/pi-target-lock.py`;
+re-anchoring to another version first requires a written delta plan.
+- **The tool surface is verified, not asserted.**
+  `crates/nini-tools/tests/tool_contract_parity.rs` compares each nini tool
+  against Pi's runtime tool contract field by field — description, parameter
+  names/types/descriptions, `required`, `promptSnippet`, `promptGuidelines` —
+  and asserts every Pi tool is present except the explicitly documented
+  `powershell` exclusion. It runs in CI.
+- **Behavioral claims come from running real Pi, not from hand-written samples.**
+  Parity fixtures are recorded from real Pi 0.85.1 sessions
+  (`scripts/pi-session-record.sh`); the tool contract and truncation
+  expectations are produced by executing Pi's own code
+  (`scripts/pi-tool-dump.mjs`, `scripts/truncate-oracle.mjs`), and CI
+  regenerates them and fails if they drift.
+- **Every gate has a red path.** Invariants fail CI if a `fix` ships without
+  its assertion; the target lock, keybindings parity and tool-contract parity
+  each fail if they can't be satisfied. Nothing is left as an eyeballed
+  statement.
+- **Releases are identity-verified.** The release binary embeds its commit, build
+  time and dirty flag, `scripts/build-release.sh` refuses to ship a binary whose
+  identity cannot be resolved, and every release tarball ships a `.sha256`
+sidecar (`release/nini-x86_64-unknown-linux-gnu.tar.xz.sha256`).
+- **Dependencies are locked.** `Cargo.lock` is committed; `cargo fmt` and
+  `clippy -D warnings` run in CI, and the suite is additionally run under the
+  release profile, because tests cannot exercise the code a release binary would
+  run (profile and `panic` strategy differ).
 
 ## Quick start
 
@@ -247,7 +286,7 @@ naming it** — never accepted and dropped.
 | `/logout` | — | tells you what to unset (cannot mutate the parent shell) |
 | `/new` | — | full (clears transcript) |
 | `/compact` | — | real (session-layer compaction) |
-| `/resume` | `[session-id]` | real (session picker) |
+| `/resume` | `[<n\|query>]` | real (interactive session picker) |
 | `/reload` | — | full (re-reads `settings.json`; **skills need a new session** — the prompt is fixed for the life of a run) |
 | `/quit` | — | full |
 
@@ -408,6 +447,10 @@ trying to be; this section is the user-facing summary of it.
   and does the same inside the write tool's diff; nini renders code blocks
   with the base style only. The nine `syntax*` theme slots exist and are read
   by nothing — they are reserved, not implemented
+- **Platform coverage: the current release ships prebuilt binaries for Linux
+  x86_64 only** (no macOS / Windows / arm64 binaries are in the release yet);
+  build another platform with the installer (`install.sh`) or from source with
+  Rust 1.85+.
 
 ## Architecture
 
