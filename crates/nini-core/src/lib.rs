@@ -11,6 +11,7 @@ pub mod conversion;
 
 pub mod compaction;
 pub mod config_value;
+pub mod constraint;
 pub mod entries;
 pub mod git;
 pub mod logging;

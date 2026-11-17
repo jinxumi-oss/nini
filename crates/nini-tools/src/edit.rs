@@ -216,6 +216,23 @@ impl Tool for EditTool {
             let (new_content, replacements) =
                 Self::apply_all(&content, &edits).map_err(ToolError::InvalidArgs)?;
 
+            // v0.11 (quality-left-shift PoC): constraint gate — a violating
+            // change must not reach the mainline; the rules inspect the
+            // added lines of this change only.
+            let change = vec![(
+                path.display().to_string(),
+                nini_core::constraint::added_lines_of(&new_content),
+            )];
+            if nini_core::constraint::check_has_violations(
+                &change,
+                &nini_core::constraint::ConstraintConfig::default(),
+            ) {
+                return Err(ToolError::InvalidArgs(format!(
+                    "constraint gate rejected change on {}: quality-left-shift rules failed",
+                    path.display()
+                )));
+            }
+
             // Atomic write
             let parent = path.parent().unwrap_or(Path::new("."));
             let file_name = path.file_name().unwrap();

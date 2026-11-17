@@ -94,13 +94,25 @@ impl Tool for WriteTool {
             let file_name = path
                 .file_name()
                 .ok_or_else(|| ToolError::InvalidArgs("path has no file name".to_string()))?;
-            // v0.10 (G2): the name was `.{file}.nini-tmp.{pid}` — one per
-            // process per file, so two concurrent writes to that file truncated
-            // and rewrote the *same* path. `unique_temp_name` adds a monotonic
-            // counter.
+            // v0.10 (G2): see the note in `write.rs` — the pid-only temp name
+            // collided between concurrent edits to the same file. `unique_temp_name`
+            // adds a monotonic counter.
             let tmp = parent.join(crate::mutation_queue::unique_temp_name(
                 &file_name.to_string_lossy(),
             ));
+            let change = vec![(
+                path.display().to_string(),
+                nini_core::constraint::added_lines_of(&parsed.content),
+            )];
+            if nini_core::constraint::check_has_violations(
+                &change,
+                &nini_core::constraint::ConstraintConfig::default(),
+            ) {
+                return Err(ToolError::InvalidArgs(format!(
+                    "constraint gate rejected change on {}: quality-left-shift rules failed",
+                    path.display()
+                )));
+            }
             fs::write(&tmp, parsed.content.as_bytes()).await?;
             if let Err(e) = fs::rename(&tmp, &path).await {
                 // Best-effort cleanup
@@ -187,5 +199,41 @@ mod tests {
             .execute(json!({"content": "x"}), ToolContext::default())
             .await;
         assert!(matches!(err, Err(ToolError::InvalidArgs(_))));
+    }
+
+    #[tokio::test]
+    async fn write_rejects_timer_patch() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(r"bad.txt");
+        let tool = WriteTool::new();
+        let err = tool
+            .execute(
+                json!({"path": path.to_str().unwrap(), "content": "let t = setInterval(() => {}, 1000);\n"}),
+                ToolContext::default(),
+            )
+            .await;
+        assert!(
+            matches!(err, Err(ToolError::InvalidArgs(_))),
+            "timer patch must be rejected"
+        );
+        assert!(!path.exists(), "rejected change must not be written");
+    }
+
+    #[tokio::test]
+    async fn write_rejects_comments_dominated() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(r"commented.txt");
+        let tool = WriteTool::new();
+        let err = tool
+            .execute(
+                json!({"path": path.to_str().unwrap(), "content": "// a\n// b\n// c\n"}),
+                ToolContext::default(),
+            )
+            .await;
+        assert!(
+            matches!(err, Err(ToolError::InvalidArgs(_))),
+            "comment-dominated change must be rejected"
+        );
+        assert!(!path.exists(), "rejected change must not be written");
     }
 }

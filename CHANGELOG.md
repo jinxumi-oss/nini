@@ -56,7 +56,7 @@ folder. Press Tab to view all.”）。排序模式里的 threaded 会把 fork �
 台账：**B35**（fixed）。oracle：`crates/nini-tui/tests/resume_selector_pi.rs`（14 条）、
 `crates/nini-tui/tests/resume_selector.rs`（12 条）。
 
-2136 tests, all green.
+2193 tests, all green.
 
 ## v1.0.0 — 本版把 v0.17.0 之后的两段 Unreleased 工作全部收口为发布版本：TUI 键位/浮层 oracle、provider 层四个真缺陷（错误体/HTTP 400/空 content/瞬时错误）的修复与独立审查、baseUrl 版本段与 --model 环境变量、D5 剩余字段承载（oauth/model_overrides/models.json 解析与消费、模型面）、watchdog 锁修复、agent 异常结束显式终止通知、版本收口（B1–B4/B6/B7）。测试 2104 全部通过。
 
