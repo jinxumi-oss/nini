@@ -1023,10 +1023,16 @@ mod tests {
             ),
             "the chain must not go on: the next answer would be spliced onto the half-answer"
         );
-        assert!(
-            !nini_core::agent::is_transient_provider_failure(&err),
-            "a half answer must not be replayed: {err:?}"
-        );
+        // Whether the **agent layer** replays this is decided by the
+        // "only before the first output" rule, not by the classification:
+        // the half answer was already streamed, so the `produced_output`
+        // guard in `crates/nini-core/src/agent.rs` blocks the replay —
+        // see `crates/nini-core/tests/provider_transport_retry.rs`
+        // (`a_broken_sse_stream_after_output_is_not_replayed`).
+        //
+        // What matters *here* is that the chain stops instead of splicing
+        // two answers together (asserted above) and that the failure is
+        // reported at all (asserted above).
     }
 
     #[test]

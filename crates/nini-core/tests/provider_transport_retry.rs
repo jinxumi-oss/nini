@@ -40,6 +40,11 @@
 //! * a retry happens only **before the first output** — a stream that
 //!   already produced text is not replayed, because the text that
 //!   already reached the user cannot be taken back;
+//! * a **broken stream** (the response arrived, the stream died at a
+//!   parse / UTF-8 boundary) is retried — the very policy the fallback
+//!   chain has always applied
+//!   (`crates/nini-ai/src/fallback.rs`: `Sse(_) => true`) — but only
+//!   before the first output;
 //! * the error the user finally sees carries the **cause**, and the
 //!   cause is never what the length cap cuts;
 //! * a transport failure says "transport error", not "http error" —
@@ -493,6 +498,95 @@ async fn a_mid_stream_failure_is_not_retried() {
 }
 
 // ---------------------------------------------------------------------------
+// 6b. A broken SSE stream is retried
+// ---------------------------------------------------------------------------
+
+/// The response arrived, the stream died halfway through — the parse /
+/// UTF-8 boundary broke.
+///
+/// The fallback chain has always replayed this
+/// (`crates/nini-ai/src/fallback.rs`: `Sse(_) => true`), while the
+/// agent's own classifier let it fall through to the text heuristic,
+/// where "stream broke at a UTF-8 boundary" matches nothing: the very
+/// same failure was replayed inside a chain and given up on when the
+/// provider was called directly.
+#[tokio::test(flavor = "current_thread")]
+async fn a_broken_sse_stream_is_retried() {
+    assert!(
+        is_transient_provider_failure(&ProviderError::Sse(
+            "stream broke at a UTF-8 boundary".into()
+        )),
+        "a broken stream must be transient — the fallback chain already \
+         treats it as retryable"
+    );
+
+    let (provider, calls) = ScriptProvider::new(vec![
+        Step::Fail(ProviderError::Sse(
+            "stream broke at a UTF-8 boundary".into(),
+        )),
+        Step::Ok("done".into()),
+    ]);
+    let mut agent = Agent::new(provider, ToolRegistry::new(), config());
+
+    let (events, error) = drain(&mut agent).await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "a broken stream was not retried: {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            AgentEvent::PhaseChanged(nini_core::agent::AgentPhase::Retrying { .. })
+        )),
+        "the run never entered the Retrying phase: {events:?}"
+    );
+    assert!(error.is_none(), "the run ended with {error:?}");
+}
+
+// ---------------------------------------------------------------------------
+// 6c. A broken SSE stream that already produced text is not replayed
+// ---------------------------------------------------------------------------
+
+/// The "retry only before the first output" rule still holds for a
+/// broken stream: the text that already reached the user cannot be
+/// taken back, so a replay would show it twice (terminal + session
+/// file).
+#[tokio::test(flavor = "current_thread")]
+async fn a_broken_sse_stream_after_output_is_not_replayed() {
+    let (provider, calls) = ScriptProvider::new(vec![Step::TextThenFail(
+        "half a sentence".into(),
+        ProviderError::Sse("stream broke at a UTF-8 boundary".into()),
+    )]);
+    let mut agent = Agent::new(provider, ToolRegistry::new(), config());
+
+    let (events, error) = drain(&mut agent).await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a stream that already produced output was replayed: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|ev| matches!(
+            ev,
+            AgentEvent::PhaseChanged(nini_core::agent::AgentPhase::Retrying { .. })
+        )),
+        "the run entered the Retrying phase after producing output: {events:?}"
+    );
+    let error = error.expect("the turn must fail");
+    assert!(
+        error.contains("sse error"),
+        "the broken stream was lost: {error}"
+    );
+    assert!(
+        error.contains("stream broke at a UTF-8 boundary"),
+        "the cause was lost: {error}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 7. An exhausted retry budget still names the cause
 // ---------------------------------------------------------------------------
 
@@ -552,12 +646,26 @@ fn the_transient_classifier_truth_table() {
         message: "unauthorized".into(),
     }));
 
-    // The other variants keep the text heuristic (no HTTP status).
+    // A broken stream is **always** transient: the response arrived,
+    // the stream died halfway through. This is the policy the
+    // fallback chain has applied all along
+    // (`crates/nini-ai/src/fallback.rs`: `Sse(_) => true`) — the same
+    // failure used to be replayed inside a chain and dropped when the
+    // provider was called directly.
     assert!(is_transient_provider_failure(&ProviderError::Sse(
         "503 service unavailable".into()
     )));
-    assert!(!is_transient_provider_failure(&ProviderError::Sse(
+    assert!(is_transient_provider_failure(&ProviderError::Sse(
         "the stream ended early".into()
+    )));
+
+    // The remaining variants keep the text heuristic (no HTTP status):
+    // a bad key / a malformed body fails the same way the next time.
+    assert!(!is_transient_provider_failure(&ProviderError::Auth(
+        "invalid api key".into()
+    )));
+    assert!(!is_transient_provider_failure(&ProviderError::Json(
+        "expected value at line 1 column 1".into()
     )));
 }
 

@@ -375,9 +375,18 @@ pub fn is_transient_provider_error(status: u16, text: &str) -> bool {
 /// internal"). Retrying them would only burn the backoff (2 s + 4 s +
 /// 8 s) before the same permanent failure comes back.
 ///
-/// Every other variant (auth, json, sse) has no HTTP status of its own,
-/// so it keeps its pre-existing behaviour: status `0` → the text
-/// heuristic decides.
+/// `Sse` is **always** transient: the response arrived, the stream died
+/// halfway through (the parse / UTF-8 boundary broke) — the request was
+/// worth sending once and may well be worth sending again. This is the
+/// policy the fallback chain has applied all along
+/// (`crates/nini-ai/src/fallback.rs`: `Sse(_) => true`), so the very
+/// same failure was replayed inside a chain but silently dropped when
+/// the provider was called directly.
+///
+/// The remaining variants (`Auth`, `Json`) have no HTTP status of their
+/// own, so they keep their pre-existing behaviour: status `0` → the
+/// text heuristic decides. A bad key or a malformed body fails the
+/// same way the next time.
 ///
 /// The **fallback chain** delivers its verdict through this very
 /// function. A chain whose every failure was transient (5xx / 408 / 429
@@ -403,8 +412,18 @@ pub fn is_transient_provider_failure(e: &ProviderError) -> bool {
         // are permanent: the text heuristics would match a "503"
         // inside a URL.
         ProviderError::InvalidRequest(_) | ProviderError::NotImplemented(_) => false,
-        // The rest (auth / json / sse) keep the pre-existing
-        // behaviour: no HTTP status of their own → the text decides.
+        // A stream that died halfway through (the response arrived, the
+        // parse/UTF-8 boundary broke) is worth another attempt — the
+        // same policy the fallback chain already applies
+        // (`crates/nini-ai/src/fallback.rs`: `Sse(_) => true`).
+        //
+        // The "only before the first output" rule still applies: a
+        // stream that already produced text must not be replayed (its
+        // output cannot be taken back), so this only fires when
+        // nothing was produced yet.
+        ProviderError::Sse(_) => true,
+        // The rest (auth / json) keep the pre-existing behaviour: no
+        // HTTP status of their own → the text decides.
         other => is_transient_provider_error(0, &other.to_string()),
     }
 }
