@@ -133,8 +133,6 @@ enum WatchdogStopReason {
     NoDone,
     /// 任务 panic（携带 panic 信息）。
     Panicked(String),
-    /// 超时未结束。
-    Timeout,
 }
 
 /// watchdog 异常分支的显式终止通知文案（纯函数：只接收输入、返回文案）。
@@ -145,11 +143,6 @@ fn watchdog_stop_notice(reason: &WatchdogStopReason) -> String {
         }
         WatchdogStopReason::Panicked(msg) => {
             format!("agent run stopped: the agent task panicked ({msg})")
-        }
-        WatchdogStopReason::Timeout => {
-            format!(
-                "agent run stopped: the agent task did not finish within {WATCHDOG_TIMEOUT_SECS}s"
-            )
         }
     }
 }
@@ -621,6 +614,11 @@ impl AgentSink {
 /// the rest of the session — and the symptom of that is a TUI that accepts
 /// input and then does nothing with it. Ten minutes is far longer than a
 /// legitimate turn and far shorter than "the user gave up".
+///
+/// 超时**不再是**「任务已死」的判据（v0.17）：它只是「多久看一眼」的心跳。
+/// 长任务（72 小时连续工作里任何一轮都可能超过 10 分钟）会长时间超过它；
+/// 超时只记日志并**继续等待同一个任务**（重新武装计时），只有任务真正结束
+/// （正常结束但没走 Done / panic）才复位状态并推终止通知。
 const WATCHDOG_TIMEOUT_SECS: u64 = 600;
 
 pub type AgentDriver = Arc<
@@ -1364,7 +1362,18 @@ async fn run_loop(
                     handle_external_editor_dance(terminal, &shared, guard);
                 }
             }
-            _ = tick.tick() => { /* animation tick */ }
+            _ = tick.tick() => {
+                // R3: edge auto-scroll while a selection is being dragged
+                // (Pi: `autoScrollSelection`, 50 ms interval). The tick
+                // already runs at 50 ms, so no extra timer is needed.
+                let scrolled = {
+                    let mut g = lock_state(&shared);
+                    auto_scroll_step(&mut g)
+                };
+                if scrolled {
+                    let _ = event_tx.send(true);
+                }
+            }
             Some(theme_event) = theme_rx.recv() => {
                 // Theme file changed — reload from settings.
                 use crate::theme_watcher::ThemeEvent;
@@ -2368,36 +2377,10 @@ fn handle_key(
             suspend_to_background(terminal, guard, &shared);
         }
         KeyAction::PasteImage => {
-            // Try to read an image from the system clipboard. If found,
-            // insert its `[pasted image: <path>]` description into the
-            // prompt AND surface a short transcript confirmation so
-            // the user sees what landed. If the clipboard has no image
-            // (or is unavailable in headless env), silently fall
-            // through to Noop.
-            match crate::image_paste::paste_image_with_size_from_clipboard() {
-                Ok(Some((path, size))) => {
-                    let desc = crate::image_paste::describe_path(&path);
-                    // Insert the description char-by-char into the
-                    // prompt input.
-                    for c in desc.chars() {
-                        state.input.insert_char(c);
-                    }
-                    state.refresh_completion();
-                    // Surface a short echo in the transcript.
-                    state.push_assistant(format!(
-                        "[pasted] {} ({:.1} KB)",
-                        path.display(),
-                        size as f64 / 1024.0
-                    ));
-                    // Brief status-bar hint.
-                    state.run_state.status = format!("pasted {:.1} KB", size as f64 / 1024.0);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    state.push_assistant(format!("[paste error] {e}"));
-                    state.run_state.status = format!("paste error");
-                }
-            }
+            // One implementation, two dispatch sites: try the image first,
+            // and when the clipboard holds no image, paste the text at the
+            // cursor. See `paste_from_clipboard`.
+            paste_from_clipboard(&mut state);
         }
         KeyAction::Newline => {
             // v0.10.1 (M1): same as Insert — a multi-line prompt is being
@@ -2780,6 +2763,25 @@ fn handle_key(
         KeyAction::ScrollDown => scroll_transcript(&mut state, -1),
         KeyAction::ScrollToBottom => scroll_to_bottom(&mut state),
         KeyAction::ScrollToTop => scroll_to_top(&mut state),
+        // v0.11: fine-grained scrolling. Pi ships the same four actions
+        // (`tui.altScreen.lineUp`/`lineDown`/`halfPageUp`/`halfPageDown`,
+        // `references/pi-0.85.1/src/tui/keybindings.ts:168-183`) but leaves
+        // them unbound by default; nini binds them on purpose — the
+        // deviation is registered in `keys.rs`.
+        //
+        // The unit is the **rendered row**: one row is one row, a half
+        // page is half of `page_rows` (Pi's `max(1, floor(h / 2))`), and a
+        // page is a screen minus Pi's four-row overlap.
+        KeyAction::LineUp => scroll_transcript_by_rows(&mut state, 1),
+        KeyAction::LineDown => scroll_transcript_by_rows(&mut state, -1),
+        KeyAction::HalfPageUp => {
+            let step = half_page_rows(&state);
+            scroll_transcript_by_rows(&mut state, step);
+        }
+        KeyAction::HalfPageDown => {
+            let step = half_page_rows(&state);
+            scroll_transcript_by_rows(&mut state, -step);
+        }
         // 会话选择器的动作只在浮层里解析（它有自己的键位表），到这里
         // 是不可能的——写清楚，免得以后有人以为它们在全局生效。
         KeyAction::ToggleSessionScope
@@ -2803,6 +2805,20 @@ fn handle_key(
 /// fields: which scroll view, and how far below the thumb's top the pointer
 /// grabbed it. The grab offset is what makes a drag feel attached rather than
 /// teleporting - the thumb keeps the same point under the cursor.
+///
+/// **Item 4 (intentional deviation from Pi).** nini adds two more fields so
+/// that a drag can be smoothed: `last_row` (the pointer row of the last
+/// event) and `smooth_increment` (the increment the last event applied).
+/// Pi maps every drag event to an absolute proportional position
+/// (`scrollScrollbarToPointer`, `references/pi-0.85.1/src/tui/tui-alt-screen.ts:1056-1066`,
+/// called per event from `handleScrollbarMouseEvent`, `:1079-1088`), so a
+/// single event can jump many rows at once. nini keeps Pi's mapping for the
+/// first event of a drag and low-pass filters the *increments* of the events
+/// after it: every event applies half of its own increment plus half of the
+/// previous event's increment, so a jump that is much larger than the one
+/// before it is damped to about half of it instead of being applied in full.
+/// This is a deliberate difference from Pi, registered here and pinned by
+/// `mouse_e2e.rs::a_drag_smooths_incremental_steps`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollbarDrag {
     /// `event.y - geometry.thumbTop` at the moment of the press.
@@ -2814,6 +2830,15 @@ pub struct ScrollbarDrag {
     /// by two rows the instant the drag starts. Found by a test that was
     /// itself wrong for an unrelated reason and had to be fixed first.
     pub grab_offset: i32,
+    /// The pointer's row at the last event of this drag: the press row until
+    /// the first drag event, then the row of every drag event. The drag
+    /// branch maps this row to a target offset so it can tell how far the
+    /// pointer moved since the previous event.
+    pub last_row: u16,
+    /// The increment the last drag event applied, after smoothing. Zero
+    /// means no drag event has applied anything yet, which is how the first
+    /// event of a drag is recognised.
+    pub smooth_increment: i64,
 }
 
 /// Handle one mouse event.
@@ -2866,21 +2891,30 @@ pub fn handle_mouse(m: crossterm::event::MouseEvent, shared: &SharedState) -> bo
 
     let current_offset = state.transcript_state.scroll_offset;
 
-    // v0.10.x: the scrollbar's unit is **rendered rows**, not lines.
+    // v0.10.x: the scrollbar's unit is **rendered rows**, and so is the
+    // scroll offset now.
     //
-    // `current_offset` counts `TranscriptLine`s, and the scrollbar's
-    // geometry is expressed in rows. The two coincide only when every
-    // line is one row tall; with a wrapped message or a tall tool result
-    // they do not, and the mouse hit-tested a different thumb from the
-    // one the renderer drew — so a press on the visible thumb made it
-    // jump. The render path publishes the number it used.
+    // `current_offset` counts rendered rows skipped from the bottom, and
+    // the scrollbar's geometry is expressed in the same rows. The render
+    // path publishes the number it used.
     let skipped_items = state.items_skipped_from_bottom();
 
     match m.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let up = matches!(m.kind, MouseEventKind::ScrollUp);
-            let step = crate::scrollbar::wheel_lines();
-            let max_offset = state.transcript_state.lines.len().saturating_sub(1);
+            // Pi multiplies the wheel step by 5 when Alt is held:
+            // `ALT_WHEEL_SCROLL_MULTIPLIER` (`tui-alt-screen.ts:75`) applied
+            // in `getWheelScrollLines` (`tui-alt-screen.ts:968-971`), which
+            // reads the Alt bit of the SGR mouse button code. crossterm
+            // reports the same modifier as `KeyModifiers::ALT`.
+            let alt = m.modifiers.contains(KeyModifiers::ALT);
+            // The step is in **rendered rows**: one wheel event moves one
+            // row (Pi's `wheelScrollLines` default of 1,
+            // `references/pi-0.85.1/src/tui/tui-alt-screen.ts:264`), and Pi
+            // multiplies it by 5 while Alt is held
+            // (`ALT_WHEEL_SCROLL_MULTIPLIER`, `tui-alt-screen.ts:75`).
+            let step = crate::scrollbar::wheel_lines() * if alt { 5 } else { 1 };
+            let max_offset = total_rendered_rows(&state).saturating_sub(1);
             let next = if up {
                 current_offset.saturating_add(step).min(max_offset)
             } else {
@@ -2890,6 +2924,9 @@ pub fn handle_mouse(m: crossterm::event::MouseEvent, shared: &SharedState) -> bo
                 Arc::make_mut(&mut state.transcript_state).scroll_offset = next;
                 Arc::make_mut(&mut state.transcript_state).autoscroll = next == 0;
                 state.mark_scroll_activity();
+                // R3: the selection lives in screen-row space, so a
+                // user-initiated scroll invalidates it.
+                clear_selection(&mut state);
                 return true;
             }
             false
@@ -2899,23 +2936,56 @@ pub fn handle_mouse(m: crossterm::event::MouseEvent, shared: &SharedState) -> bo
                 Some(v) => v,
                 None => return false,
             };
+            if !vp.hits_column(m.column, m.row) {
+                // Not the scrollbar: this is a text selection (R3).
+                //
+                // This check comes **before** the scrollbar's geometry:
+                // `geometry()` is `None` when the content fits on screen
+                // (no scrollbar to draw), and asking for it first made
+                // every click in a short transcript return early — no
+                // selection, no copy, nothing.
+                return begin_selection(&mut state, &m);
+            }
             let Some(g) = vp.geometry(skipped_items) else {
                 return false;
             };
-            if !vp.hits_column(m.column, m.row) {
-                return false;
-            }
             // Grabbing the rail above or below the thumb starts a drag too,
             // which is how a single press jumps. The thumb then snaps to the
             // pointer minus this offset.
             let grab_offset = m.row as i32 - g.thumb_top as i32;
-            state.ui_state.scrollbar_drag = Some(ScrollbarDrag { grab_offset });
+            state.ui_state.scrollbar_drag = Some(ScrollbarDrag {
+                grab_offset,
+                last_row: m.row as u16,
+                smooth_increment: 0,
+            });
             state.mark_scroll_activity();
             true
         }
         MouseEventKind::Drag(MouseButton::Left) => {
+            // Item 4: incremental smoothing, an **intentional deviation from
+            // Pi**. Pi maps every drag event to an absolute proportional
+            // position - `scrollScrollbarToPointer`
+            // (`references/pi-0.85.1/src/tui/tui-alt-screen.ts:1056-1066`),
+            // called per event from `handleScrollbarMouseEvent`
+            // (`:1079-1088`) - so one event can span many rows at once.
+            //
+            // nini keeps Pi's complete proportional mapping for the *first*
+            // event of a drag (so the thumb still lands exactly where the
+            // row geometry says it should) and low-pass filters the
+            // *increments* of the events after it: every event applies half
+            // of its own increment plus half of the previous event's
+            // increment, so an increment much larger than the one before it
+            // is damped to about half of it instead of being applied in full.
+            //
+            // The increments are counted in **rendered rows**, the unit the
+            // mapping produces.
+            //
+            // A turn-around drops the filter state: the low-pass describes
+            // the other direction, and keeping it would make the pointer
+            // refuse to go back.
             let Some(drag) = state.ui_state.scrollbar_drag else {
-                return false;
+                // No scrollbar drag: this is a selection drag (R3).
+                return extend_selection(&mut state, &m, true);
             };
             let vp = match transcript_viewport(&state) {
                 Some(v) => v,
@@ -2924,24 +2994,56 @@ pub fn handle_mouse(m: crossterm::event::MouseEvent, shared: &SharedState) -> bo
             let Some(g) = vp.geometry(skipped_items) else {
                 return false;
             };
-            let heights = state
-                .line_heights
-                .lock()
-                .map(|h| h.clone())
-                .unwrap_or_default();
             let thumb_offset = (m.row as i64 - vp.y as i64 - drag.grab_offset as i64)
                 .clamp(0, i64::from(u16::MAX)) as usize;
-            if let Some(next) =
-                crate::scrollbar::line_offset_for_thumb_offset(&heights, thumb_offset, &g)
-            {
-                let max_offset = state.transcript_state.lines.len().saturating_sub(1);
-                let next = next.min(max_offset);
-                if next != current_offset {
-                    Arc::make_mut(&mut state.transcript_state).scroll_offset = next;
-                    Arc::make_mut(&mut state.transcript_state).autoscroll = next == 0;
-                    state.mark_scroll_activity();
+            // Where the pointer was at the previous event: its target offset.
+            let prev_thumb_offset = (drag.last_row as i64 - vp.y as i64 - drag.grab_offset as i64)
+                .clamp(0, i64::from(u16::MAX)) as usize;
+            // The mapping is in **rendered rows**: the thumb's proportional
+            // position becomes a row offset directly (Pi's
+            // `scrollScrollbarToPointer`, `tui-alt-screen.ts:1056-1066`),
+            // with no row-height conversion in between.
+            let cur = crate::scrollbar::scroll_rows_for_thumb_offset(thumb_offset, &g);
+            let prev = crate::scrollbar::scroll_rows_for_thumb_offset(prev_thumb_offset, &g);
+            let delta = match (cur, prev) {
+                (Some(c), Some(p)) => c as i64 - p as i64,
+                _ => 0,
+            };
+            let step = if drag.smooth_increment == 0 {
+                // The first event of this drag: the complete proportional
+                // mapping, exactly as Pi does it.
+                cur.map(|c| c as i64 - current_offset as i64).unwrap_or(0)
+            } else {
+                let mut smooth = drag.smooth_increment;
+                if (delta > 0) != (smooth > 0) {
+                    // The pointer turned around: the filter state belongs to
+                    // the other direction and is dropped.
+                    smooth = 0;
                 }
+                if smooth == 0 {
+                    delta
+                } else {
+                    // 50% low pass on the increment, integer division
+                    // truncating towards zero.
+                    (delta + smooth) / 2
+                }
+            };
+            let max_offset = total_rendered_rows(&state).saturating_sub(1);
+            let next = (current_offset as i64 + step).clamp(0, max_offset as i64) as usize;
+            if next != current_offset {
+                Arc::make_mut(&mut state.transcript_state).scroll_offset = next;
+                Arc::make_mut(&mut state.transcript_state).autoscroll = next == 0;
+                state.mark_scroll_activity();
+                // R3: the selection lives in screen-row space, so a
+                // scrollbar drag invalidates it — the visible rows moved,
+                // and the highlight would point at different text.
+                clear_selection(&mut state);
             }
+            state.ui_state.scrollbar_drag = Some(ScrollbarDrag {
+                last_row: m.row as u16,
+                smooth_increment: step,
+                ..drag
+            });
             true
         }
         MouseEventKind::Up(MouseButton::Left) => {
@@ -2949,11 +3051,437 @@ pub fn handle_mouse(m: crossterm::event::MouseEvent, shared: &SharedState) -> bo
                 state.mark_scroll_activity();
                 true
             } else {
-                false
+                // R3/R6: finish the selection, then copy it if the user
+                // asked for copy-on-select.
+                finish_selection(&mut state, &m)
             }
+        }
+        MouseEventKind::Down(MouseButton::Right) => {
+            // R8: right-click pastes into the prompt.
+            //
+            // nini has **no input-box focus model** (the prompt is always
+            // editable), so a right-click in the transcript pastes into the
+            // prompt — the same target Pi uses. The transcript's own
+            // selection is untouched by this.
+            //
+            // Pi only does this on Windows; nini does it everywhere, which
+            // is a deliberate extension (the plan's stage 3).
+            if selection_row_at(&state, &m).is_none() {
+                return false;
+            }
+            paste_into_prompt(&mut state)
         }
         _ => false,
     }
+}
+
+// ── R3: mouse text selection ────────────────────────────────────────────
+//
+// The coordinate space (plan.md §2):
+//
+// * `state.screen_text_rows` holds the **visible** screen rows, top to
+//   bottom; a row's index is `mouse.y - content_area.y`.
+// * `SelectionPoint.col` is a **character index** into that row's text
+//   (`selection::col_to_char_offset` maps a terminal column onto it).
+
+/// The row a mouse event landed on, and that row's text.
+///
+/// `None` when the event is outside the transcript content area, or on the
+/// scrollbar column — the scrollbar owns those clicks.
+fn selection_row_at(state: &AppState, m: &crossterm::event::MouseEvent) -> Option<(usize, String)> {
+    selection_row_at_inner(state, m, false)
+}
+
+/// The row a **drag** landed on, clamped to the last published row.
+///
+/// Dragging past the last text row is the normal way to reach the edge
+/// (and to start the auto-scroll), so the drag must not give up there:
+/// the row is clamped to the last one, the way Pi clamps the point to the
+/// scroll view.
+fn selection_row_at_drag(
+    state: &AppState,
+    m: &crossterm::event::MouseEvent,
+) -> Option<(usize, String)> {
+    selection_row_at_inner(state, m, true)
+}
+
+fn selection_row_at_inner(
+    state: &AppState,
+    m: &crossterm::event::MouseEvent,
+    clamp_to_last_row: bool,
+) -> Option<(usize, String)> {
+    let vp = transcript_viewport(state)?;
+    if m.column < vp.x || m.row < vp.y {
+        return None;
+    }
+    if m.row >= vp.y.saturating_add(vp.height) {
+        return None;
+    }
+    if vp.hits_column(m.column, m.row) {
+        return None;
+    }
+    let idx = (m.row - vp.y) as usize;
+    let rows = state.screen_text_rows.lock().ok()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let idx = if clamp_to_last_row {
+        idx.min(rows.len() - 1)
+    } else {
+        idx
+    };
+    let text = rows.get(idx)?.clone();
+    Some((idx, text))
+}
+
+/// The selection point (row + character index) for a mouse position.
+fn selection_point_at(
+    state: &AppState,
+    row: usize,
+    text: &str,
+    column: u16,
+) -> crate::selection::SelectionPoint {
+    let screen_col = match transcript_viewport(state) {
+        Some(vp) => column.saturating_sub(vp.x) as usize,
+        None => column as usize,
+    };
+    crate::selection::SelectionPoint {
+        row,
+        col: crate::selection::col_to_char_offset(text, screen_col),
+    }
+}
+
+/// How many clicks in a row: 1 = character, 2 = word, 3 = line.
+///
+/// Pi's `getClickCount` (`references/pi-0.85.1/src/tui/tui-alt-screen.ts:1220`):
+/// the count only grows when the next press is within 500 ms, on the same
+/// row, and on the same word; otherwise it restarts at 1. A press that is
+/// not on a word character never counts as a double-click (Pi drops
+/// `lastClick` in that case).
+fn click_count_for(
+    state: &mut AppState,
+    row: usize,
+    col: usize,
+    word: Option<(usize, usize)>,
+) -> u32 {
+    const DOUBLE_CLICK_INTERVAL_MS: u128 = 500;
+    let now = std::time::Instant::now();
+    let count = match (state.ui_state.last_click.as_ref(), word) {
+        (Some(prev), Some(w))
+            if now.duration_since(prev.clicked_at).as_millis() <= DOUBLE_CLICK_INTERVAL_MS
+                && prev.row == Some(row)
+                && prev.word == Some(w) =>
+        {
+            (prev.count % 3) + 1
+        }
+        _ => 1,
+    };
+    state.ui_state.last_click = word.map(|w| crate::state::MouseClickRecord {
+        clicked_at: now,
+        row: Some(row),
+        col: Some(col),
+        word: Some(w),
+        count,
+    });
+    count
+}
+
+/// The granularity a click count means (Pi: `selectionGranularity`).
+fn granularity_for(count: u32) -> crate::selection::SelectionGranularity {
+    use crate::selection::SelectionGranularity;
+    match count {
+        2 => SelectionGranularity::Word,
+        3 => SelectionGranularity::Line,
+        _ => SelectionGranularity::Character,
+    }
+}
+
+/// R3: a left press in the transcript starts a selection.
+fn begin_selection(state: &mut AppState, m: &crossterm::event::MouseEvent) -> bool {
+    use crate::selection::Selection;
+    let Some((row, text)) = selection_row_at(state, m) else {
+        return false;
+    };
+    let point = selection_point_at(state, row, &text, m.column);
+    // The word under the pointer decides the click count (Pi's rule): a
+    // press on whitespace is never a double-click.
+    let bounds = crate::selection::word_bounds(&text, point.col);
+    let word = if bounds.0 < bounds.1 {
+        Some(bounds)
+    } else {
+        None
+    };
+    let count = click_count_for(state, row, point.col, word);
+    let granularity = granularity_for(count);
+    state.ui_state.selection_granularity = granularity;
+    // The initial range for the granularity (Pi: `selectionInitialRange`).
+    let range = crate::selection::range_for_point(&text, point, granularity)
+        .unwrap_or((point.col, point.col));
+    let anchor = crate::selection::SelectionPoint { row, col: range.0 };
+    let focus = crate::selection::SelectionPoint { row, col: range.1 };
+    state.ui_state.selection = Some(Selection { anchor, focus });
+    // The range the drag is measured against (Pi: `selectionInitialRange`).
+    state.ui_state.selection_initial = Some((anchor, focus));
+    state.ui_state.selection_dragged = false;
+    true
+}
+
+/// R3: a drag extends the selection to the pointer.
+///
+/// `mark_dragged` distinguishes a real drag from the release event, which
+/// only refreshes the focus.
+fn extend_selection(
+    state: &mut AppState,
+    m: &crossterm::event::MouseEvent,
+    mark_dragged: bool,
+) -> bool {
+    use crate::selection::Selection;
+    use crate::selection::SelectionGranularity;
+    let Some((row, text)) = selection_row_at_drag(state, m) else {
+        return false;
+    };
+    let Some(sel) = state.ui_state.selection.clone() else {
+        return false;
+    };
+    // The drag is measured against the range the press started with
+    // (Pi: `selectionInitialRange`); without it a drag that crosses the
+    // start flips the anchor and the next mouse move flips it back.
+    let (initial_anchor, initial_focus) = state
+        .ui_state
+        .selection_initial
+        .unwrap_or((sel.anchor, sel.focus));
+    let point = selection_point_at(state, row, &text, m.column);
+    let granularity = state.ui_state.selection_granularity;
+    // The range under the pointer. For the character granularity it is the
+    // character itself; for word/line it is the word/row (`range_for_point`
+    // returns `None` when the pointer is not on a word character).
+    let range = match granularity {
+        SelectionGranularity::Character => Some((point.col, point.col + 1)),
+        _ => crate::selection::range_for_point(&text, point, granularity),
+    };
+    let next = match range {
+        Some((s, e)) => {
+            // Pi's `updateSelectionFocus` (`tui-alt-screen.ts:1199`): the
+            // range at the new point replaces the focus end, and the anchor
+            // stays on the initial range's opposite end — so dragging back
+            // past the start flips the selection instead of collapsing it.
+            let range_start = crate::selection::SelectionPoint { row, col: s };
+            let range_end = crate::selection::SelectionPoint { row, col: e };
+            let before_initial =
+                (range_start.row, range_start.col) < (initial_anchor.row, initial_anchor.col);
+            if before_initial {
+                Selection {
+                    anchor: initial_focus,
+                    focus: range_start,
+                }
+            } else {
+                Selection {
+                    anchor: initial_anchor,
+                    focus: range_end,
+                }
+            }
+        }
+        None => Selection {
+            anchor: sel.anchor,
+            focus: point,
+        },
+    };
+    state.ui_state.selection = Some(next);
+    if mark_dragged {
+        state.ui_state.selection_dragged = true;
+    }
+    // Edge auto-scroll direction (Pi: `updateSelectionAutoScroll`,
+    // `tui-alt-screen.ts:1249`): the pointer on the top/bottom edge of
+    // the content area scrolls the transcript while the drag continues.
+    state.ui_state.selection_auto_scroll_dir = auto_scroll_direction(state, m);
+    true
+}
+
+/// R3: drop the selection (and anything that would keep it alive).
+///
+/// The selection's coordinates are **screen rows**, so any scroll invalidates
+/// it: the text the highlight covers would silently change.
+fn clear_selection(state: &mut AppState) {
+    state.ui_state.selection = None;
+    state.ui_state.selection_dragged = false;
+    state.ui_state.selection_initial = None;
+    state.ui_state.selection_auto_scroll_dir = 0;
+}
+
+/// Which edge the pointer is on: -1 = top (older), 1 = bottom (newer), 0 = none.
+fn auto_scroll_direction(state: &AppState, m: &crossterm::event::MouseEvent) -> i8 {
+    let Some(vp) = transcript_viewport(state) else {
+        return 0;
+    };
+    if m.row <= vp.y {
+        -1
+    } else if m.row >= vp.y.saturating_add(vp.height).saturating_sub(1) {
+        1
+    } else {
+        0
+    }
+}
+
+/// R3: the release ends the selection; R6: then copy it if enabled.
+fn finish_selection(state: &mut AppState, m: &crossterm::event::MouseEvent) -> bool {
+    // The release position is the final focus.
+    let _ = extend_selection(state, m, false);
+    state.ui_state.selection_dragged = false;
+    state.ui_state.selection_auto_scroll_dir = 0;
+    state.ui_state.selection_initial = None;
+    copy_selection(state);
+    true
+}
+
+/// R3: one tick of edge auto-scroll (Pi: `autoScrollSelection`, 50 ms).
+///
+/// The window moved, so the selection's screen rows move with it — the
+/// selection stays anchored to the same text.
+fn auto_scroll_step(state: &mut AppState) -> bool {
+    let dir = state.ui_state.selection_auto_scroll_dir;
+    if dir == 0 {
+        return false;
+    }
+    // One tick moves one **rendered row**.
+    let max_offset = total_rendered_rows(&state).saturating_sub(1);
+    let current = state.transcript_state.scroll_offset;
+    let next = if dir < 0 {
+        current.saturating_add(1).min(max_offset)
+    } else {
+        current.saturating_sub(1)
+    };
+    if next == current {
+        state.ui_state.selection_auto_scroll_dir = 0;
+        return false;
+    }
+    {
+        let ts = Arc::make_mut(&mut state.transcript_state);
+        ts.scroll_offset = next;
+        ts.autoscroll = next == 0;
+    }
+    // Scrolling toward older content moves every visible row one row
+    // down, so the selection's rows move with it (-dir). The unit is one
+    // **rendered row**, the same unit the tick scrolls.
+    let shift = (-dir) as i64;
+    if let Some(sel) = state.ui_state.selection.as_mut() {
+        sel.anchor.row = (sel.anchor.row as i64 + shift).max(0) as usize;
+        sel.focus.row = (sel.focus.row as i64 + shift).max(0) as usize;
+    }
+    state.mark_scroll_activity();
+    true
+}
+
+/// R6: copy the selection to the clipboard (copy-on-select).
+///
+/// The native clipboard is tried first — it is the only channel nini can
+/// *verify*. When it is unreachable (headless, tmux without a bridge), the
+/// OSC 52 fallback asks the **terminal** to do it; that cannot be
+/// verified, so the feedback says so instead of claiming a copy.
+fn copy_selection(state: &mut AppState) {
+    let Some(sel) = state.ui_state.selection.clone() else {
+        return;
+    };
+    if !crate::settings::copy_on_select_from_settings(state.model_state.settings_path.as_deref()) {
+        return;
+    }
+    let rows = state
+        .screen_text_rows
+        .lock()
+        .map(|r| r.clone())
+        .unwrap_or_default();
+    let text = crate::selection::selection_text(&rows, &sel);
+    if text.is_empty() {
+        return;
+    }
+    let bytes = text.len();
+    // The feedback goes to the **status bar only**: a copy happens on every
+    // click, and a transcript line per click buried the conversation in
+    // "Copied N bytes" noise (the reader's own words were pushed off the
+    // screen). The status bar is transient — it holds one line and the next
+    // status replaces it.
+    //
+    // The one exception is the failure: it is rare, and a failure nobody
+    // sees is a failure nobody acts on — so it also gets a transcript line.
+    match write_clipboard_text(&text) {
+        Ok(()) => {
+            state.run_state.status = format!("copied {bytes} bytes");
+        }
+        Err(reason) => match crate::osc52::write_clipboard(&text) {
+            Ok(()) => {
+                state.run_state.status = format!("copied {bytes} bytes (OSC 52)");
+            }
+            Err(osc_reason) => {
+                state.push_notice(format!("Copy failed: {reason} ({osc_reason})"));
+                state.run_state.status = "copy failed".to_string();
+            }
+        },
+    }
+}
+
+/// R8: paste the clipboard's text into the prompt.
+///
+/// `Ok(None)` (the clipboard holds no text) is a normal state, not an
+/// error: nothing happens and nothing is claimed.
+fn paste_into_prompt(state: &mut AppState) -> bool {
+    match read_clipboard_text() {
+        Ok(Some(text)) => {
+            state.input.insert_str(&text);
+            state.refresh_completion();
+            state.run_state.status = format!("pasted {} chars", text.chars().count());
+            true
+        }
+        Ok(None) => false,
+        Err(reason) => {
+            state.run_state.status = format!("paste failed: {reason}");
+            true
+        }
+    }
+}
+
+// R3–R7 (mouse selection and the testable clipboard seam).
+//
+// R7: headless CI has no system clipboard, so the copy/paste paths go
+// through these wrappers. The override lets stage-2/3 tests inject
+// clipboard content; with no override the real clipboard is used.
+thread_local! {
+    static CLIPBOARD_OVERRIDE: std::cell::RefCell<Option<String>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// R7: read the clipboard text, using the override when one is set and the
+/// real clipboard otherwise.
+pub(crate) fn read_clipboard_text() -> Result<Option<String>, String> {
+    CLIPBOARD_OVERRIDE.with(|c| {
+        let value = c.borrow().clone();
+        if value.is_some() {
+            Ok(value)
+        } else {
+            crate::clipboard::read()
+        }
+    })
+}
+
+/// R7: write the clipboard text, using the override when one is set and the
+/// real clipboard otherwise.
+pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
+    CLIPBOARD_OVERRIDE.with(|c| {
+        let mut slot = c.borrow_mut();
+        if slot.is_some() {
+            *slot = Some(text.to_string());
+            Ok(())
+        } else {
+            crate::clipboard::copy(text)
+        }
+    })
+}
+
+/// R7: inject clipboard content for tests (headless CI has no clipboard).
+#[cfg(test)]
+pub(crate) fn set_clipboard_override(value: Option<String>) {
+    CLIPBOARD_OVERRIDE.with(|c| {
+        *c.borrow_mut() = value;
+    });
 }
 
 /// The transcript's on-screen rectangle, as last drawn.
@@ -3853,11 +4381,27 @@ pub fn submit_user_input_inner(
                 // A driver that never returns would leave the guard up
                 // forever — the symptom is a TUI that can no longer submit
                 // anything. The timeout is the backstop for that.
-                let outcome = tokio::time::timeout(
-                    std::time::Duration::from_secs(WATCHDOG_TIMEOUT_SECS),
-                    handle,
-                )
-                .await;
+                // 超时**不再是**「任务已死」的判据（v0.17）：它只是「多久看一眼」的
+                // 心跳。长任务（72 小时连续工作里任何一轮都可能超过 10 分钟）会长时间
+                // 超过它，所以超时只记日志并**继续等待同一个任务**（用新一轮 timeout
+                // 重新武装计时）；只有任务真正结束（正常结束但没走 Done / panic）才走
+                // 既有的状态复位 + 终止通知逻辑。
+                // `&mut JoinHandle` 仍是 Future，超时不会取消任务（与原直接 await 等价）。
+                let mut handle = handle;
+                let outcome = loop {
+                    let o = tokio::time::timeout(
+                        std::time::Duration::from_secs(WATCHDOG_TIMEOUT_SECS),
+                        &mut handle,
+                    )
+                    .await;
+                    if o.is_ok() {
+                        break o;
+                    }
+                    tracing::warn!(
+                        "agent task did not finish within {WATCHDOG_TIMEOUT_SECS}s; \
+                         this round is still running (a long task is normal), continue waiting for the same task"
+                    );
+                };
                 let mut g = lock_state(&watchdog_shared);
                 if g.run_state.run_seq != seq {
                     // A newer turn is running: this watchdog has nothing
@@ -3897,10 +4441,14 @@ pub fn submit_user_input_inner(
                 // 而状态锁是非重入 Mutex，持锁调用会死锁（会让 watchdog 永远
                 // 不复位 `agent_alive`，把「断开后冻结」变成永久冻结）。
                 drop(g);
+                // 超时已由上面的重新武装循环处理（只记日志并继续等待同一个任务），
+                // 走到这里只有两种终态：正常结束（没走 Done）或 panic。
                 let stop_reason = match &outcome {
                     Ok(Ok(())) => WatchdogStopReason::NoDone,
                     Ok(Err(join_err)) => WatchdogStopReason::Panicked(join_err.to_string()),
-                    Err(_) => WatchdogStopReason::Timeout,
+                    Err(_) => unreachable!(
+                        "timeout 只记日志并继续等待同一个任务，不会到达终止通知分支"
+                    ),
                 };
                 match outcome {
                     Ok(Ok(())) => {
@@ -3917,13 +4465,11 @@ pub fn submit_user_input_inner(
                         );
                         push_notices(&watchdog_shared, vec![watchdog_stop_notice(&stop_reason)]);
                     }
-                    Err(_) => {
-                        tracing::warn!(
-                            "agent task did not finish within {WATCHDOG_TIMEOUT_SECS}s; \
-                             cleared run_state::agent_alive"
-                        );
-                        push_notices(&watchdog_shared, vec![watchdog_stop_notice(&stop_reason)]);
-                    }
+                    // 超时不再是「任务已死」的判据：超时只记日志并继续等待同一个任务，
+                    // 不会到达这里的终止通知分支。
+                    Err(_) => unreachable!(
+                        "timeout 只记日志并继续等待同一个任务，不会到达终止通知分支"
+                    ),
                 }
             });
         }
@@ -3947,7 +4493,7 @@ pub fn submit_user_input_inner(
                 // 也要推显式终止通知，避免「断开后完全静止、无回复」。
                 push_notices(
                     &shared,
-                    vec![watchdog_stop_notice(&WatchdogStopReason::Timeout)],
+                    vec![watchdog_stop_notice(&WatchdogStopReason::NoDone)],
                 );
             }
         }
@@ -4211,32 +4757,170 @@ fn move_prompt_vertically(state: &mut AppState, delta: i32) {
 // copies on the same day. A dispatch point that silently drops half the
 // actions is a trap, not a convenience.
 
-/// One page up or down. `page_lines` is published by the renderer, the
-/// only scope holding both the per-line row counts and the viewport
-/// height; guessing `1` was the pre-v0.10 bug, because `scroll_offset`
-/// counts TranscriptLines and one of those can render across fifty rows.
+/// One page up or down.
+///
+/// The page is a screen of **rendered rows** (`state.page_rows()`, the
+/// viewport height the renderer publishes) minus Pi's page overlap
+/// (`PAGE_SCROLL_OVERLAP`, `references/pi-0.85.1/src/tui/tui-alt-screen.ts:74`),
+/// so four rows of the previous page stay on screen — Pi's
+/// `scrollBy(max(1, viewportHeight - PAGE_SCROLL_OVERLAP))`
+/// (`tui-alt-screen.ts:724-734`).
+///
+/// The unit used to be transcript lines, which is why this needed the
+/// renderer's help: one transcript line can render across fifty rows, so
+/// a "page" of lines was not a page of screen. The unit is the rendered
+/// row now, the same unit `scroll_offset` counts.
 fn scroll_transcript(state: &mut AppState, delta: i32) {
-    let max_offset = state.transcript_state.lines.len().saturating_sub(1) as i32;
-    let step = state.page_lines() as i32;
+    let step = (state.page_rows() as i32 - crate::scrollbar::PAGE_SCROLL_OVERLAP as i32).max(1);
+    scroll_transcript_by_rows(state, delta * step);
+}
+
+/// Scroll by an exact number of **rendered rows**.
+///
+/// The shared core of every keyboard scroll: the page scroll and the
+/// fine-grained scroll (one row / half a page) differ only in the step
+/// they pass in. Clamping, the autoscroll flag and the scroll-activity
+/// stamp therefore cannot drift apart between them.
+fn scroll_transcript_by_rows(state: &mut AppState, delta_rows: i32) {
+    let max_offset = total_rendered_rows(state).saturating_sub(1) as i32;
     let current = state.transcript_state.scroll_offset as i32;
-    let next = (current + delta * step).clamp(0, max_offset) as usize;
+    let next = (current + delta_rows).clamp(0, max_offset) as usize;
     let ts = Arc::make_mut(&mut state.transcript_state);
     ts.scroll_offset = next;
     ts.autoscroll = next == 0;
     state.mark_scroll_activity();
 }
 
+/// Half a page, in **rendered rows**.
+///
+/// Pi: `tui.altScreen.halfPageUp` / `halfPageDown`
+/// (`references/pi-0.85.1/src/tui/tui-alt-screen.ts:736-742`) scroll by
+/// `Math.max(1, Math.floor(viewportHeight / 2))` — half the viewport.
+///
+/// `viewportHeight` is Pi's unit of rendered rows, and nini's is the same
+/// now: half of `page_rows()`, the number of rendered rows that fill the
+/// viewport. The `max(1, …)` is Pi's guard against a dead key: with a
+/// one-row page, half of it is zero and the key would do nothing at all.
+fn half_page_rows(state: &AppState) -> i32 {
+    ((state.page_rows() / 2) as i32).max(1)
+}
+
 /// `home` — `tui.altScreen.top` (`keybindings.ts:208`).
 ///
-/// `scroll_offset` counts TranscriptLines skipped **from the bottom**, so
-/// the oldest line on screen is `total - 1`. `autoscroll` must come off:
-/// the renderer's tail-aligned branch ignores `scroll_offset` entirely.
+/// `scroll_offset` counts rendered rows skipped **from the bottom**, so
+/// the top of the transcript is the last row: `total rows - 1`.
+/// `autoscroll` must come off: the renderer's tail-aligned branch ignores
+/// `scroll_offset` entirely.
 fn scroll_to_top(state: &mut AppState) {
-    let total = state.transcript_state.lines.len();
+    let total = total_rendered_rows(state);
     let ts = Arc::make_mut(&mut state.transcript_state);
     ts.autoscroll = false;
     ts.scroll_offset = total.saturating_sub(1);
     state.mark_scroll_activity();
+}
+
+/// How many **rendered rows** the transcript occupies.
+///
+/// The render path publishes the scrollbar's content height
+/// (`scrollbar::Viewport::content_height`), which is the number of
+/// rendered rows the transcript takes up — the same unit `scroll_offset`
+/// counts. The per-line row counts (`state.line_heights`) are the second
+/// source of the same number.
+///
+/// The number of transcript *lines* is the third: a line is at least one
+/// row tall, so it is a lower bound, and it is the only number available
+/// before the first frame has published anything. It is also what keeps
+/// the scroll alive when the published numbers are stale (a transcript
+/// that grew since the last frame): the clamp must not be smaller than
+/// the content it clamps.
+fn total_rendered_rows(state: &AppState) -> usize {
+    // The lock order matches `render.rs` (`line_heights` before
+    // `transcript_viewport`), so the two cannot deadlock against each
+    // other.
+    let heights = state
+        .line_heights
+        .lock()
+        .map(|h| h.iter().sum::<usize>())
+        .unwrap_or(0);
+    let published = state
+        .transcript_viewport
+        .lock()
+        .map(|vp| vp.content_height)
+        .unwrap_or(0);
+    published
+        .max(heights)
+        .max(state.transcript_state.lines.len())
+}
+
+// ---- clipboard paste ------------------------------------------------
+//
+// One implementation, two dispatch sites (`apply_action` and the test's
+// mirrored dispatch). Both used to carry their own `KeyAction::PasteImage`
+// arm that tried the clipboard **image** and fell through to a silent
+// Noop when there was no image — which meant plain-text paste via Ctrl+V
+// did nothing at all, the most common clipboard case. Aligned with Pi's
+// `handleClipboardPaste`: try the image first, and when the clipboard
+// holds no image, read the text and insert it at the cursor.
+
+/// Paste whatever is on the system clipboard into the input buffer.
+///
+/// Mirrors Pi's `handleClipboardPaste`: image first (encoded to a temp
+/// PNG and inserted as `[pasted image: <path>]`), then text. A clipboard
+/// that is unreachable is reported honestly in the status bar rather
+/// than silently swallowed — see `clipboard.rs`'s "never report success
+/// we cannot verify" rule.
+fn paste_from_clipboard(state: &mut AppState) {
+    // Try the image path first. `paste_image_with_size_from_clipboard`
+    // returns `Ok(None)` when the clipboard holds no image, which is the
+    // normal text-clipboard case, not an error.
+    match crate::image_paste::paste_image_with_size_from_clipboard() {
+        Ok(Some((path, size))) => {
+            let desc = crate::image_paste::describe_path(&path);
+            // Insert the description into the prompt input at the cursor.
+            state.input.insert_str(&desc);
+            state.refresh_completion();
+            // Surface a short echo in the transcript.
+            state.push_assistant(format!(
+                "[pasted] {} ({:.1} KB)",
+                path.display(),
+                size as f64 / 1024.0
+            ));
+            // Brief status-bar hint.
+            state.run_state.status = format!("pasted {:.1} KB", size as f64 / 1024.0);
+            return;
+        }
+        // A real I/O / arboard error on the image path: report it rather
+        // than pretending nothing happened.
+        Err(e) => {
+            state.push_assistant(format!("[paste error] {e}"));
+            state.run_state.status = "paste error".to_string();
+            return;
+        }
+        Ok(None) => {}
+    }
+
+    // No image on the clipboard — fall through to text. Read whatever
+    // text the clipboard holds and insert it at the cursor.
+    match crate::clipboard::read() {
+        Ok(Some(text)) => {
+            // An empty clipboard string pastes nothing; the status hint
+            // still tells the user the paste was attempted.
+            state.input.insert_str(&text);
+            state.refresh_completion();
+            let n = text.chars().count();
+            state.run_state.status = format!("pasted {n} chars");
+        }
+        // The clipboard held no text (empty, or an image-only clipboard
+        // that the image path above already declined): silent Noop, as
+        // before — there is genuinely nothing to paste.
+        Ok(None) => {}
+        Err(reason) => {
+            // No clipboard reachable: be honest about it in the status bar
+            // instead of pretending the paste worked.
+            state.push_assistant(format!("[paste error] {reason}"));
+            state.run_state.status = "paste error".to_string();
+        }
+    }
 }
 
 /// `end` — `tui.altScreen.bottom` (`keybindings.ts:240`).
@@ -4357,36 +5041,10 @@ pub fn apply_action(state: &mut AppState, key: Key) {
             state.run_state.status = "opening editor…".to_string();
         }
         KeyAction::PasteImage => {
-            // Try to read an image from the system clipboard. If found,
-            // insert its `[pasted image: <path>]` description into the
-            // prompt AND surface a short transcript confirmation so
-            // the user sees what landed. If the clipboard has no image
-            // (or is unavailable in headless env), silently fall
-            // through to Noop.
-            match crate::image_paste::paste_image_with_size_from_clipboard() {
-                Ok(Some((path, size))) => {
-                    let desc = crate::image_paste::describe_path(&path);
-                    // Insert the description char-by-char into the
-                    // prompt input.
-                    for c in desc.chars() {
-                        state.input.insert_char(c);
-                    }
-                    state.refresh_completion();
-                    // Surface a short echo in the transcript.
-                    state.push_assistant(format!(
-                        "[pasted] {} ({:.1} KB)",
-                        path.display(),
-                        size as f64 / 1024.0
-                    ));
-                    // Brief status-bar hint.
-                    state.run_state.status = format!("pasted {:.1} KB", size as f64 / 1024.0);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    state.push_assistant(format!("[paste error] {e}"));
-                    state.run_state.status = format!("paste error");
-                }
-            }
+            // One implementation, two dispatch sites: try the image first,
+            // and when the clipboard holds no image, paste the text at the
+            // cursor. See `paste_from_clipboard`.
+            paste_from_clipboard(state);
         }
         KeyAction::Newline => {
             // v0.10.1 (M1): same as Insert — a multi-line prompt is being
@@ -4592,6 +5250,18 @@ pub fn apply_action(state: &mut AppState, key: Key) {
         KeyAction::ScrollDown => scroll_transcript(state, -1),
         KeyAction::ScrollToBottom => scroll_to_bottom(state),
         KeyAction::ScrollToTop => scroll_to_top(state),
+        // v0.11: the fine-grained scroll actions, same semantics as the
+        // first dispatch site above.
+        KeyAction::LineUp => scroll_transcript_by_rows(state, 1),
+        KeyAction::LineDown => scroll_transcript_by_rows(state, -1),
+        KeyAction::HalfPageUp => {
+            let step = half_page_rows(state);
+            scroll_transcript_by_rows(state, step);
+        }
+        KeyAction::HalfPageDown => {
+            let step = half_page_rows(state);
+            scroll_transcript_by_rows(state, -step);
+        }
         KeyAction::CycleModelNext => cycle_model(state, 1),
         KeyAction::CycleModelPrev => cycle_model(state, -1),
         KeyAction::CycleThinkingNext => cycle_thinking(state, 1),
@@ -4869,4 +5539,531 @@ pub fn reload_user_overrides() -> usize {
         .unwrap_or_else(|e| e.into_inner());
     *guard = fresh.clone();
     fresh.len()
+}
+
+#[cfg(test)]
+mod mouse_selection_tests {
+    use super::*;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    /// A state with the given published screen rows and a transcript
+    /// viewport that covers them.
+    fn state_with_rows(rows: &[&str]) -> AppState {
+        let mut state = AppState::new("test-model");
+        {
+            let mut published = state.screen_text_rows.lock().unwrap();
+            published.clear();
+            published.extend(rows.iter().map(|r| r.to_string()));
+        }
+        *state.transcript_viewport.lock().unwrap() = crate::scrollbar::Viewport {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+            content_height: rows.len(),
+            viewport_height: 24,
+        };
+        state
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn press(column: u16, row: u16) -> MouseEvent {
+        mouse(MouseEventKind::Down(MouseButton::Left), column, row)
+    }
+
+    fn drag(column: u16, row: u16) -> MouseEvent {
+        mouse(MouseEventKind::Drag(MouseButton::Left), column, row)
+    }
+
+    fn release(column: u16, row: u16) -> MouseEvent {
+        mouse(MouseEventKind::Up(MouseButton::Left), column, row)
+    }
+
+    /// The selected text of the current selection.
+    fn selected_text(state: &AppState) -> String {
+        let Some(sel) = state.ui_state.selection.clone() else {
+            return String::new();
+        };
+        let rows = state.screen_text_rows.lock().unwrap().clone();
+        crate::selection::selection_text(&rows, &sel)
+    }
+
+    #[test]
+    fn a_click_selects_the_character_under_the_pointer() {
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        handle_mouse(press(2, 0), &shared);
+        let state = lock_state(&shared);
+        let sel = state
+            .ui_state
+            .selection
+            .clone()
+            .expect("a press starts a selection");
+        assert_eq!(sel.anchor.col, 2);
+        assert_eq!(
+            sel.focus.col, 3,
+            "a character selection covers one character"
+        );
+        assert_eq!(selected_text(&state), "l");
+    }
+
+    #[test]
+    fn a_drag_selects_everything_between_the_two_points() {
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        handle_mouse(press(2, 0), &shared);
+        handle_mouse(drag(7, 0), &shared);
+        handle_mouse(release(7, 0), &shared);
+        let state = lock_state(&shared);
+        assert_eq!(selected_text(&state), "llo wo");
+        assert!(
+            !state.ui_state.selection_dragged,
+            "the release ends the drag"
+        );
+    }
+
+    #[test]
+    fn a_drag_upwards_selects_the_same_text() {
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        handle_mouse(press(7, 0), &shared);
+        handle_mouse(drag(2, 0), &shared);
+        handle_mouse(release(2, 0), &shared);
+        let state = lock_state(&shared);
+        assert_eq!(selected_text(&state), "llo wo");
+    }
+
+    #[test]
+    fn a_double_click_selects_the_word() {
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        handle_mouse(press(2, 0), &shared);
+        handle_mouse(release(2, 0), &shared);
+        // The second press within the double-click window, on the same word.
+        handle_mouse(press(3, 0), &shared);
+        handle_mouse(release(3, 0), &shared);
+        let state = lock_state(&shared);
+        assert_eq!(
+            state.ui_state.selection_granularity,
+            crate::selection::SelectionGranularity::Word
+        );
+        assert_eq!(selected_text(&state), "hello");
+    }
+
+    #[test]
+    fn a_triple_click_selects_the_line() {
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        handle_mouse(press(2, 0), &shared);
+        handle_mouse(release(2, 0), &shared);
+        handle_mouse(press(3, 0), &shared);
+        handle_mouse(release(3, 0), &shared);
+        handle_mouse(press(4, 0), &shared);
+        handle_mouse(release(4, 0), &shared);
+        let state = lock_state(&shared);
+        assert_eq!(
+            state.ui_state.selection_granularity,
+            crate::selection::SelectionGranularity::Line
+        );
+        assert_eq!(selected_text(&state), "hello world");
+    }
+
+    #[test]
+    fn a_press_on_the_scrollbar_column_does_not_select() {
+        // A scrollbar only exists when the content is taller than the
+        // viewport, so the transcript needs more rows than fit.
+        let mut state = state_with_rows(&["hello world"]);
+        {
+            let mut vp = state.transcript_viewport.lock().unwrap();
+            vp.content_height = 100;
+            vp.viewport_height = 24;
+        }
+        let shared = shared_state(state);
+        handle_mouse(press(79, 0), &shared);
+        let state = lock_state(&shared);
+        assert!(
+            state.ui_state.selection.is_none(),
+            "the scrollbar column belongs to the scrollbar"
+        );
+        assert!(
+            state.ui_state.scrollbar_drag.is_some(),
+            "the press started a scrollbar drag instead"
+        );
+    }
+
+    #[test]
+    fn the_selection_is_copied_on_release() {
+        // The override makes the native copy succeed without a system
+        // clipboard — the path whose feedback can be verified.
+        set_clipboard_override(Some(String::new()));
+        crate::osc52::set_fail_for_tests(true);
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        handle_mouse(press(2, 0), &shared);
+        handle_mouse(drag(7, 0), &shared);
+        handle_mouse(release(7, 0), &shared);
+        let state = lock_state(&shared);
+        assert!(
+            state.run_state.status.contains("copied"),
+            "the release reports the copy: {}",
+            state.run_state.status
+        );
+        assert!(
+            !state.run_state.status.contains("OSC 52"),
+            "a verified copy does not need the OSC 52 fallback: {}",
+            state.run_state.status
+        );
+        set_clipboard_override(None);
+        crate::osc52::set_fail_for_tests(false);
+    }
+
+    #[test]
+    fn a_successful_copy_does_not_add_a_transcript_line() {
+        // A copy happens on every click. A transcript line per click buried
+        // the conversation in "Copied N bytes" noise, so the success feedback
+        // is the status bar only.
+        set_clipboard_override(Some(String::new()));
+        crate::osc52::set_fail_for_tests(true);
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        let before = {
+            let state = lock_state(&shared);
+            state.transcript_state.lines.len()
+        };
+        handle_mouse(press(2, 0), &shared);
+        handle_mouse(drag(7, 0), &shared);
+        handle_mouse(release(7, 0), &shared);
+        let state = lock_state(&shared);
+        assert_eq!(
+            state.transcript_state.lines.len(),
+            before,
+            "a successful copy must not push a line into the transcript"
+        );
+        assert!(
+            state.run_state.status.contains("copied"),
+            "the status bar still reports it: {}",
+            state.run_state.status
+        );
+        set_clipboard_override(None);
+        crate::osc52::set_fail_for_tests(false);
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_a_line_in_the_transcript() {
+        // The exception: a failure is rare, and a failure nobody sees is a
+        // failure nobody acts on.
+        set_clipboard_override(None);
+        crate::osc52::set_fail_for_tests(true);
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        let before = {
+            let state = lock_state(&shared);
+            state.transcript_state.lines.len()
+        };
+        handle_mouse(press(2, 0), &shared);
+        handle_mouse(drag(7, 0), &shared);
+        handle_mouse(release(7, 0), &shared);
+        let state = lock_state(&shared);
+        assert!(
+            state.transcript_state.lines.len() > before,
+            "a failed copy must leave a visible line in the transcript"
+        );
+        assert!(
+            state.run_state.status.contains("copy failed"),
+            "and it says so in the status bar: {}",
+            state.run_state.status
+        );
+        crate::osc52::set_fail_for_tests(false);
+    }
+
+    #[test]
+    fn a_copy_that_cannot_be_verified_says_so() {
+        // Neither channel works: the feedback must not claim a copy.
+        set_clipboard_override(None);
+        crate::osc52::set_fail_for_tests(true);
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        handle_mouse(press(2, 0), &shared);
+        handle_mouse(drag(7, 0), &shared);
+        handle_mouse(release(7, 0), &shared);
+        let state = lock_state(&shared);
+        assert!(
+            state.run_state.status.contains("copy failed"),
+            "an unverifiable copy is reported as a failure: {}",
+            state.run_state.status
+        );
+        crate::osc52::set_fail_for_tests(false);
+    }
+
+    #[test]
+    fn a_right_click_pastes_into_the_prompt() {
+        set_clipboard_override(Some("pasted text".to_string()));
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        handle_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Right), 2, 0),
+            &shared,
+        );
+        let state = lock_state(&shared);
+        assert_eq!(state.input.text, "pasted text");
+        set_clipboard_override(None);
+    }
+
+    #[test]
+    fn the_click_count_cycles_through_one_two_three() {
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        // Three presses on the same word inside the window: character, word, line.
+        for expected in [
+            crate::selection::SelectionGranularity::Character,
+            crate::selection::SelectionGranularity::Word,
+            crate::selection::SelectionGranularity::Line,
+        ] {
+            handle_mouse(press(2, 0), &shared);
+            handle_mouse(release(2, 0), &shared);
+            let state = lock_state(&shared);
+            assert_eq!(
+                state.ui_state.selection_granularity, expected,
+                "the click count must cycle character -> word -> line"
+            );
+        }
+        // A fourth press starts over (Pi: `(previous.count % 3) + 1`).
+        handle_mouse(press(2, 0), &shared);
+        handle_mouse(release(2, 0), &shared);
+        let state = lock_state(&shared);
+        assert_eq!(
+            state.ui_state.selection_granularity,
+            crate::selection::SelectionGranularity::Character,
+            "the fourth click starts the cycle over"
+        );
+    }
+
+    #[test]
+    fn a_click_outside_the_double_click_window_starts_over() {
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        handle_mouse(press(2, 0), &shared);
+        handle_mouse(release(2, 0), &shared);
+        // The second press is on a *different* word: Pi's rule only grows the
+        // count for the same word.
+        handle_mouse(press(8, 0), &shared);
+        handle_mouse(release(8, 0), &shared);
+        let state = lock_state(&shared);
+        assert_eq!(
+            state.ui_state.selection_granularity,
+            crate::selection::SelectionGranularity::Character,
+            "a press on another word is a fresh single click"
+        );
+    }
+
+    #[test]
+    fn the_edge_auto_scroll_moves_the_selection_with_the_window() {
+        let mut state = state_with_rows(&["hello world", "second row", "third row"]);
+        // A transcript taller than the viewport, so the window can move.
+        Arc::make_mut(&mut state.transcript_state).lines.extend(
+            (0..10).map(|i| crate::state::TranscriptLine::AssistantText(format!("line {i}"))),
+        );
+        {
+            let mut vp = state.transcript_viewport.lock().unwrap();
+            vp.content_height = 100;
+            vp.viewport_height = 24;
+        }
+        // Scrolled up, so scrolling down has somewhere to go.
+        {
+            let ts = Arc::make_mut(&mut state.transcript_state);
+            ts.scroll_offset = 5;
+            ts.autoscroll = false;
+        }
+        let shared = shared_state(state);
+        // Press on the third visible row, then drag to the bottom edge: the
+        // auto-scroll direction points down.
+        handle_mouse(press(2, 2), &shared);
+        handle_mouse(drag(2, 23), &shared);
+        {
+            let state = lock_state(&shared);
+            assert_eq!(
+                state.ui_state.selection_auto_scroll_dir, 1,
+                "the pointer on the bottom edge scrolls down"
+            );
+        }
+        let before = {
+            let state = lock_state(&shared);
+            state.ui_state.selection.as_ref().unwrap().anchor.row
+        };
+        // One auto-scroll tick.
+        {
+            let mut state = lock_state(&shared);
+            assert!(auto_scroll_step(&mut state), "the tick scrolls");
+        }
+        let after = {
+            let state = lock_state(&shared);
+            state.ui_state.selection.as_ref().unwrap().anchor.row
+        };
+        assert_eq!(
+            after,
+            before.saturating_sub(1),
+            "scrolling toward newer content moves the selection's rows with it"
+        );
+    }
+
+    #[test]
+    fn a_copy_that_falls_back_to_osc52_says_the_terminal_may_not_keep_it() {
+        // No native clipboard (headless CI) and OSC 52 available: the copy
+        // is *unverified*, and the feedback has to say so.
+        set_clipboard_override(None);
+        crate::osc52::set_fail_for_tests(false);
+        let shared = shared_state(state_with_rows(&["hello world"]));
+        handle_mouse(press(2, 0), &shared);
+        handle_mouse(drag(7, 0), &shared);
+        handle_mouse(release(7, 0), &shared);
+        let state = lock_state(&shared);
+        assert!(
+            state.run_state.status.contains("OSC 52"),
+            "the OSC 52 fallback is named in the feedback: {}",
+            state.run_state.status
+        );
+        set_clipboard_override(None);
+    }
+
+    #[test]
+    fn a_user_scroll_clears_the_selection() {
+        let mut state = state_with_rows(&["hello world"]);
+        // Lines for the scroll to move over.
+        Arc::make_mut(&mut state.transcript_state).lines.extend(
+            (0..10).map(|i| crate::state::TranscriptLine::AssistantText(format!("line {i}"))),
+        );
+        let shared = shared_state(state);
+        handle_mouse(press(2, 0), &shared);
+        {
+            let state = lock_state(&shared);
+            assert!(state.ui_state.selection.is_some());
+        }
+        handle_mouse(mouse(MouseEventKind::ScrollUp, 0, 0), &shared);
+        let state = lock_state(&shared);
+        assert!(
+            state.ui_state.selection.is_none(),
+            "the selection lives in screen-row space: scrolling invalidates it"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// v0.11: fine-grained keyboard scrolling.
+//
+// Pi ships `tui.altScreen.lineUp` / `lineDown` / `halfPageUp` /
+// `halfPageDown` (`references/pi-0.85.1/src/tui/keybindings.ts:168-183`)
+// with **no default key**; nini binds them on purpose (the deviation is
+// registered in `keys.rs` and in the implementation report). What these
+// tests pin down is the *behaviour* of the four actions:
+//
+//   - one line = exactly one rendered row;
+//   - half a page = half of `page_rows` (Pi's `max(1, floor(h / 2))`);
+//   - the existing page scroll still moves a whole page.
+//
+// The unit is the **rendered row**, the same unit Pi scrolls in
+// (`references/pi-0.85.1/src/tui/tui-alt-screen.ts:488-490`) and the same
+// unit `scroll_offset` counts. The page scroll keeps Pi's four-row overlap
+// (`PAGE_SCROLL_OVERLAP`, `tui-alt-screen.ts:74`), so a page moves
+// `page_rows - 4` rows.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod fine_scroll_tests {
+    use crate::keys::{Key, KeyCode, KeyModifiers};
+    use crate::state::AppState;
+    use std::sync::atomic::Ordering;
+
+    /// A state with `count` transcript lines and a published page size.
+    ///
+    /// The page size is published in **rendered rows** — the field is
+    /// `page_rows` since the `page_lines` → `page_rows` rename in
+    /// `state.rs`; only the storage name changed, not the assertions.
+    fn state_with_lines(count: usize, page_rows: usize) -> AppState {
+        let mut state = AppState::new("test-model");
+        for i in 0..count {
+            state.push_user(format!("line {i}"));
+        }
+        state.page_rows.store(page_rows, Ordering::Relaxed);
+        state
+    }
+
+    fn offset(state: &AppState) -> usize {
+        state.transcript_state.scroll_offset
+    }
+
+    fn shift(code: KeyCode) -> Key {
+        Key::new(code, KeyModifiers::SHIFT)
+    }
+
+    fn alt(code: KeyCode) -> Key {
+        Key::new(code, KeyModifiers::ALT)
+    }
+
+    #[test]
+    fn one_line_scroll_moves_exactly_one_transcript_line() {
+        let mut state = state_with_lines(20, 10);
+        super::apply_action(&mut state, shift(KeyCode::Up));
+        assert_eq!(offset(&state), 1, "one line up is one rendered row");
+        super::apply_action(&mut state, shift(KeyCode::Up));
+        assert_eq!(offset(&state), 2);
+        super::apply_action(&mut state, shift(KeyCode::Down));
+        assert_eq!(offset(&state), 1, "one line down is one rendered row");
+    }
+
+    #[test]
+    fn a_half_page_scroll_moves_half_a_page() {
+        let mut state = state_with_lines(40, 10);
+        super::apply_action(&mut state, alt(KeyCode::PageUp));
+        assert_eq!(offset(&state), 5, "half of a ten-line page");
+        super::apply_action(&mut state, alt(KeyCode::PageDown));
+        assert_eq!(offset(&state), 0);
+    }
+
+    #[test]
+    fn the_page_scroll_still_moves_a_whole_page() {
+        let mut state = state_with_lines(40, 10);
+        super::apply_action(&mut state, Key::new(KeyCode::PageUp, KeyModifiers::NONE));
+        assert_eq!(
+            offset(&state),
+            6,
+            "a page moves `page_rows - PAGE_SCROLL_OVERLAP` rows — the old \
+             expectation (10, a whole page) pinned the pre-row-unit \
+             semantics; Pi keeps a four-row overlap between pages \
+             (`PAGE_SCROLL_OVERLAP`, tui-alt-screen.ts:74)"
+        );
+    }
+
+    #[test]
+    fn the_fine_scroll_clamps_at_both_ends() {
+        let mut state = state_with_lines(5, 10);
+        // Down at the bottom stays at the bottom.
+        super::apply_action(&mut state, shift(KeyCode::Down));
+        assert_eq!(offset(&state), 0);
+        // Up past the top clamps to the oldest line.
+        for _ in 0..20 {
+            super::apply_action(&mut state, shift(KeyCode::Up));
+        }
+        assert_eq!(offset(&state), 4, "clamped to the last line");
+    }
+
+    #[test]
+    fn the_fine_scroll_turns_autoscroll_off_and_back_on() {
+        let mut state = state_with_lines(20, 10);
+        assert!(state.transcript_state.autoscroll);
+        super::apply_action(&mut state, shift(KeyCode::Up));
+        assert!(
+            !state.transcript_state.autoscroll,
+            "a scrolled-away transcript is not the live tail"
+        );
+        super::apply_action(&mut state, shift(KeyCode::Down));
+        assert!(
+            state.transcript_state.autoscroll,
+            "back at the bottom, the tail follows again"
+        );
+    }
+
+    /// Pi's `Math.max(1, …)` guard: a one-line page has no half, and a
+    /// half of zero would make the key do nothing at all.
+    #[test]
+    fn a_half_page_of_a_one_line_page_is_still_one_line() {
+        let mut state = state_with_lines(20, 1);
+        super::apply_action(&mut state, alt(KeyCode::PageUp));
+        assert_eq!(offset(&state), 1, "never a dead key");
+    }
 }

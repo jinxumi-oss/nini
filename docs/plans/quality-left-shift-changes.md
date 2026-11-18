@@ -39,3 +39,4 @@
 - 执行收口：提交本次质量左移改动（constraint.rs、lib.rs、edit.rs、write.rs、README/CHANGELOG 测试数同步 2184→2193、docs/quality-left-shift/、docs/plans/quality-left-shift-*）；AC8 标注待样本周期数据后采集定稿。
 - 门禁与回归：`cargo test --workspace` 退出码 0；`bash scripts/gate.sh` 通过（通过 12 / 失败 0 / 跳过 4）；README/CHANGELOG 测试数同步为实测 2193。
 - 计划状态：可行性计划与本记录状态更新为「完成（收口完成）」。
+- **复核说明（诚实校正）**：门禁通过证据（通过 12 / 失败 0 / 跳过 4）在 2026-11-17 复跑时记录；复核时当前 `scripts/gate.sh` 为红（8/4/4），根因为并发 in-flight 未跟踪 .rs（`crates/nini-core/tests/truncation_continues.rs`、`crates/nini-tui/src/osc52.rs`、`crates/nini-tui/src/selection.rs`）触发 `every_source_file_is_tracked_by_git`，属并发会话范围、不在本次质量左移范围；按约定不改 `gate.sh`/spec/fixture、不动并发会话改动。README/CHANGELOG 测试数与实测不符为上述 cargo test 失败后的下游症状，待并发 in-flight 落定后复跑门禁可恢复。

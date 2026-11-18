@@ -30,6 +30,11 @@
 //! `runtime::apply_action`, whose signature is identical on both sides,
 //! and through the `Key` constructors that already exist. No API was
 //! added to make this compile.
+//!
+//! **Unit change (worker C, this round).** `scroll_offset` counts
+//! **rendered rows** now, so "the top of the transcript" is the last
+//! *rendered* row, not the last transcript line. 钉的是旧的转录行语义，
+//! 本次因滚动单位改为渲染行而变。
 
 use nini_tui::keys::{Key, KeyCode, KeyModifiers};
 use nini_tui::render::render_frame;
@@ -80,12 +85,21 @@ fn home_scrolls_to_the_top_of_the_transcript() {
 
     apply_action(&mut state, home());
 
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧期望是「转录行总数 − 1」，新语义下是「渲染行总数 − 1」。
+    // 本夹具每条转录行恰好一个渲染行，所以两个数字相等，但只有后者
+    // 才是新语义下的正确答案。
+    let total_rows = state.transcript_viewport.lock().unwrap().content_height;
+    assert_eq!(
+        total_rows, 200,
+        "fixture precondition: 200 rendered rows, one per turn"
+    );
     assert_eq!(
         state.transcript_state.scroll_offset,
-        total - 1,
-        "Home must put the first line at the top of the viewport. \
-         `scroll_offset` counts TranscriptLines skipped from the bottom, so \
-         the top is `total - 1`."
+        total_rows - 1,
+        "Home must put the first row at the top of the viewport. \
+         `scroll_offset` counts rendered rows skipped from the bottom, so \
+         the top is `total rendered rows - 1`."
     );
     assert!(
         !state.transcript_state.autoscroll,
@@ -177,7 +191,9 @@ fn home_scrolls_even_with_text_in_the_prompt() {
     );
     assert_eq!(
         state.transcript_state.scroll_offset,
-        state.transcript_state.lines.len() - 1,
-        "and the transcript must be at the top"
+        state.transcript_viewport.lock().unwrap().content_height - 1,
+        "and the transcript must be at the top. 钉的是旧的转录行语义，本次因 \
+         滚动单位改为渲染行而变：旧期望是「转录行数 − 1」，新语义下是「渲染 \
+         行数 − 1」。"
     );
 }

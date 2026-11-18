@@ -65,6 +65,30 @@ pub fn copy(s: &str) -> Result<(), String> {
         .map_err(|e| format!("clipboard write failed: {e}"))
 }
 
+/// Read UTF-8 text from the system clipboard.
+///
+/// Returns `Ok(None)` when the clipboard holds no text (empty, or holds an
+/// image / rich format only) — that is a normal state, not an error, and the
+/// caller decides what to do next (e.g. fall through to an image-paste path).
+/// Returns `Err` only when the clipboard itself is unreachable (headless CI,
+/// a missing `$DISPLAY`/`$WAYLAND_DISPLAY`, or a bridge that refuses the
+/// connection) — mirroring [`copy`]'s "never report success we cannot
+/// verify" rule, a real failure must carry a human-readable reason rather
+/// than be silently swallowed.
+pub fn read() -> Result<Option<String>, String> {
+    let _guard = clipboard_guard();
+    let mut cb = arboard::Clipboard::new().map_err(|e| format!("clipboard unavailable: {e}"))?;
+    match cb.get_text() {
+        Ok(s) => Ok(Some(s)),
+        // No text content: empty clipboard, or an image/rich-only clipboard.
+        // Not an error — the caller falls through.
+        Err(arboard::Error::ContentNotAvailable) | Err(arboard::Error::ClipboardNotSupported) => {
+            Ok(None)
+        }
+        Err(e) => Err(format!("clipboard read failed: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +125,24 @@ mod tests {
             "two threads were inside the clipboard at once, which is the \
              arrangement that crashes arboard on macOS"
         );
+    }
+
+    /// `read` must mirror `copy`'s honesty rule: a real failure carries a
+    /// human-readable reason naming the clipboard subsystem, and never echoes
+    /// the (potentially sensitive) clipboard contents back in the error.
+    /// The positive path (a real clipboard) cannot be asserted in CI, so we
+    /// assert the negative one only.
+    #[test]
+    fn read_reports_a_real_failure_honestly() {
+        match read() {
+            Ok(_) => {}
+            Err(reason) => {
+                assert!(
+                    reason.contains("clipboard"),
+                    "error must name the failing subsystem, got: {reason}"
+                );
+            }
+        }
     }
 
     /// v0.9.2 (P0-4) — the regression this module exists to prevent.

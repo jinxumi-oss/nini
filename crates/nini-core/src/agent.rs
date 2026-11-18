@@ -42,10 +42,28 @@ pub const MAX_TOOL_ITERATIONS: usize = 0;
 /// nini-only; Pi has no equivalent — there, a model that keeps calling
 /// the same tool burns tokens until the user presses Esc. Without *some*
 /// bound, "no cap" would mean "no bound, ever", which is not what a
-/// default should promise. 1000 turns is two orders of magnitude above a
-/// real long task (a 60-step refactor is 60), so it is only reached when
-/// something is genuinely stuck.
-pub const RUNAWAY_TURN_BACKSTOP: usize = 1000;
+/// default should promise. 72 小时不间断工作（v0.17）要求这个兜底在 72
+/// 小时内不触发：约 13 秒/轮，72 小时 ≈ 20_000 轮，所以这里取 20_000；
+/// 用户显式设了 `max_iterations` 时不受此值影响。10_000 轮（≈14.4 小时）
+/// 在 72 小时连续工作里仍会触发，必须至少覆盖整个工作日。
+pub const RUNAWAY_TURN_BACKSTOP: usize = 20_000;
+
+/// 连续长度截断的容忍上限（v0.17）。
+///
+/// 截断是模型侧失败（输出上限），不是 nini 的失败。nini 的职责是
+/// **把这一轮接住并继续**，而不是把任务扔回给用户。上限的作用是
+/// 兜住「模型每次都截断」这种真正的死局：超过它就结束运行并汇报，
+/// 而不是永远烧输出预算。
+pub const MAX_CONSECUTIVE_TRUNCATIONS: usize = 5;
+
+/// 长度截断后塞回上下文的继续提示（v0.17）。
+///
+/// 英文：nini 的系统提示词是英文（`crates/nini-cli/src/prompt_setup.rs:70`
+/// 「You are nini, a Pi-compatible Rust coding agent.」），提示词同语言。
+const TRUNCATION_CONTINUATION_NOTICE: &str = "[TRUNCATED RESPONSE — CONTINUE]\n\n\
+Your previous response was cut off by the output token limit before it finished, and it did not make any tool call.\n\
+Continue the task now: take the next concrete step (call a tool), or — if the task is already done — report the result.\n\
+Do not repeat the previous output.";
 
 /// Agent event emitted to consumers (UI, logs, etc.).
 /// Phase indicator surfaced to the UI / extension host. Mirrors the five
@@ -216,6 +234,14 @@ pub enum AgentError {
     /// versus "this thing was not going to stop on its own".
     #[error("runaway guard: {turns} turns without settling — the history is kept; send another message to continue, or check whether the model is looping on one tool call")]
     RunawayGuard { turns: usize },
+    /// v0.17（72h 不间断）：连续长度截断超过上限，运行结束并汇报。
+    ///
+    /// 截断是模型侧失败（输出上限），不是 nini 的失败；nini 已经把这一轮
+    /// 接住并继续了若干次（每个截断都丢掉半截输出、塞一句继续提示），
+    /// 仍然每次都截断 → 这是真正的死局，结束运行并给出可操作的汇报：
+    /// 历史保留，用户可再发一条消息继续。
+    #[error("the response was truncated {attempts} times in a row (output token limit) and produced no tool call; the task is unfinished — the history is kept, so send another message to continue")]
+    RepeatedTruncation { attempts: usize },
     #[error("invalid state: {0}")]
     InvalidState(String),
 }
@@ -780,6 +806,13 @@ pub struct RunConfig {
     /// does not have, which truncated long tasks before they delivered.
     /// See `MAX_TOOL_ITERATIONS`.
     pub max_iterations: usize,
+    /// nini 自己那道「用户没设上限时的兜底」（见 [`RUNAWAY_TURN_BACKSTOP`]）。
+    /// `None` = 用默认值。
+    ///
+    /// v0.17：默认值提到 20_000 轮（72 小时 ÷ 约 13 秒/轮）之后，跑满兜底的
+    /// 测试要 20000 轮（十几分钟）。这个字段让**测试**能注入一个小的上限来验证
+    /// 兜底本身，生产默认值保持 72 小时口径。
+    pub runaway_turn_backstop: Option<usize>,
     pub tool_context: ToolContext,
     /// Compaction settings (context window + reserve).
     pub compaction: crate::compaction::CompactionSettings,
@@ -841,6 +874,7 @@ impl RunConfig {
             max_tokens: Some(8192),
             temperature: None,
             max_iterations: MAX_TOOL_ITERATIONS,
+            runaway_turn_backstop: None,
             tool_context: ToolContext::default(),
             compaction: crate::compaction::CompactionSettings::default(),
             retry: crate::agent::RetrySettings::default(),
@@ -900,6 +934,14 @@ pub struct Agent {
     /// until `max_iterations` trips, and the user sees `TooManyIterations`
     /// — a message that says nothing about context.
     overflow_recovery_attempted: bool,
+    /// v0.17 (72h 不间断)：本轮连续发生的**长度截断**次数。
+    ///
+    /// 截断是模型侧失败（输出上限），nini 把它当「这一轮没写完」：
+    /// 丢掉半截输出、塞一句继续提示、继续同一轮。计数超过
+    /// [`MAX_CONSECUTIVE_TRUNCATIONS`] 才结束运行并汇报，兜住
+    /// 「模型每次都截断」这种真正的死局（避免永远烧输出预算）。
+    /// 任何没有发生截断的一轮 → 清零。
+    consecutive_truncations: usize,
     /// v0.10 (fix): estimated tokens at the last in-run threshold
     /// compaction. Used only to detect a compaction that did not actually
     /// shrink the context, so the loop cannot compact forever.
@@ -965,6 +1007,7 @@ impl Agent {
             phase: AgentPhase::Idle,
             retry_attempt: 0,
             overflow_recovery_attempted: false,
+            consecutive_truncations: 0,
             last_compaction_tokens: None,
             hooks,
         }
@@ -1719,14 +1762,14 @@ impl Agent {
                 let turn_cap = if config.max_iterations > 0 {
                     config.max_iterations
                 } else {
-                    RUNAWAY_TURN_BACKSTOP
+                    config.runaway_turn_backstop.unwrap_or(RUNAWAY_TURN_BACKSTOP)
                 };
                 if iteration > turn_cap {
                     if config.max_iterations > 0 {
                         Err(AgentError::TooManyIterations(config.max_iterations))?;
                     } else {
                         Err(AgentError::RunawayGuard {
-                            turns: RUNAWAY_TURN_BACKSTOP,
+                            turns: turn_cap,
                         })?;
                     }
                 }
@@ -1841,6 +1884,8 @@ impl Agent {
                 // `agent.continue()`). Without it the failed assistant turn
                 // is appended *after* the compaction and the two disagree.
                 let mut retry_after_compaction = false;
+                // v0.17（72h 不间断）：截断后丢掉本轮、重新请求同一轮。
+                let mut continue_after_truncation = false;
 
                 {
                     use futures_util::StreamExt;
@@ -1984,13 +2029,100 @@ impl Agent {
                                 // at the session layer, once the rejection has
                                 // been reported; the in-run threshold check
                                 // below does the same job on the next turn.
-                                let truncated_answer = crate::overflow::is_recoverable_length(
-                                    &stop_reason,
-                                    usage.output_tokens,
-                                    config.max_tokens.unwrap_or(0),
-                                ) && tool_calls.is_empty();
-                                let recoverable = overflowed || truncated_answer;
+                                // v0.17（72h 不间断）：**长度截断不是终点**。
+                                //
+                                // 现象（用户截图）：模型把同一句 "Let me read scrollbar.rs."
+                                // 复读了二十几遍、撞上输出上限；nini 把这一轮当成「结束」，
+                                // 转录里留下一行红字 "Response was truncated before completion."，
+                                // **任务停在半路**，用户必须手动说「继续」。
+                                //
+                                // 旧路径两条都会结束运行：
+                                //   a) output_tokens < max_tokens → recoverable → 压缩 + 重试**一次**；
+                                //      第二次仍截断 → "recovery failed after one compact-and-retry attempt"
+                                //      → 运行结束（agent.rs:1225-1253）。
+                                //   b) output_tokens >= max_tokens（模型把输出预算烧光，截图正是这种）
+                                //      → 不进 recover 分支 → 这一轮正常结束 → 循环顶部 pending 为空
+                                //      → **运行结束**。
+                                //
+                                // 新路径：截断 = 这一轮没写完。半截输出**不进模型的重试上下文**
+                                // （Pi 同款：agent-session.ts:2194 "The message remains in session history
+                                // but is excluded from retry context"），塞一句继续提示，然后**继续同一轮**。
+                                // 连续截断超过 MAX_CONSECUTIVE_TRUNCATIONS 才结束运行，并给出明确汇报。
+                                let length_truncated = stop_reason == "length" && tool_calls.is_empty();
+                                if length_truncated {
+                                    self.consecutive_truncations += 1;
+                                    if self.consecutive_truncations > MAX_CONSECUTIVE_TRUNCATIONS {
+                                        Err(AgentError::RepeatedTruncation {
+                                            attempts: MAX_CONSECUTIVE_TRUNCATIONS,
+                                        })?;
+                                    }
+                                    last_usage = usage;
+                                    // 这一轮到此为止：半截输出交给 session/transcript（和普通一轮一样），
+                                    // 但**不**进 self.messages（= 模型的重试上下文）。
+                                    yield AgentEvent::TurnEnd {
+                                        stop_reason: stop_reason.clone(),
+                                        usage: last_usage.clone(),
+                                    };
+                                    // 压缩：给模型一份「进度摘要」+ 更小的上下文（Pi 同款：
+                                    // agent-session.ts:2194 —— 截断后压缩再重试）。
+                                    //
+                                    // 形状照抄 `recover_from_overflow` 里已有的顺序
+                                    // （begin_auto_compaction → Compacting 相位 + PhaseChanged
+                                    // → compact_history_via_hook → end_auto_compaction →
+                                    // Working 相位 + PhaseChanged），但**不**调用
+                                    // `recover_from_overflow` 本身：它会把上一轮 assistant
+                                    // 消息从上下文里 pop 掉，而在截断续跑里那半截输出要交给
+                                    // transcript（不进入重试上下文），不能 pop。
+                                    // 注意：`reason` 只是显示用（Display 会渲染成
+                                    // "compacting:length"），别处不匹配它。
+                                    self.begin_auto_compaction();
+                                    self.set_phase(AgentPhase::Compacting {
+                                        reason: "length".to_string(),
+                                        progress: None,
+                                    });
+                                    yield AgentEvent::PhaseChanged(AgentPhase::Compacting {
+                                        reason: "length".to_string(),
+                                        progress: None,
+                                    });
+                                    if let Some(result) = self.compact_history_via_hook() {
+                                        // 事件顺序对齐 `recover_from_overflow`：先落下
+                                        // 压缩生命周期（`end_auto_compaction`），再报
+                                        // Compacted。反过来会让消费者看到「仍在压缩」时
+                                        // 已经收到压缩结果（review finding 2026-11-16）。
+                                        self.end_auto_compaction();
+                                        yield AgentEvent::Compacted {
+                                            summary: result.summary.clone(),
+                                            tokens_before: result.tokens_before,
+                                        };
+                                    } else {
+                                        self.end_auto_compaction();
+                                    }
+                                    self.set_phase(AgentPhase::Working);
+                                    yield AgentEvent::PhaseChanged(AgentPhase::Working);
+                                    // 继续提示（User 角色，和 [CONTEXT SUMMARY] 同一约定）。
+                                    self.messages.push(Message {
+                                        role: Role::User,
+                                        content: vec![ContentBlock::Text {
+                                            text: TRUNCATION_CONTINUATION_NOTICE.to_string(),
+                                        }],
+                                        timestamp: 0,
+                                    });
+                                    // 这一轮还没完：循环必须继续。`has_more_tool_calls` 是循环顶部守卫
+                                    // 唯一的「继续」信号（agent.rs:1655），必须显式置 true——上一轮若是
+                                    // 「无工具调用且被 terminate」，它此时是 false，守卫会直接结束运行。
+                                    has_more_tool_calls = true;
+                                    // 丢掉本轮（半截输出不进上下文），重新请求。
+                                    continue_after_truncation = true;
+                                    break 'outer;
+                                }
+                                // 任何没有发生截断的一轮 → 计数清零。
+                                self.consecutive_truncations = 0;
+                                // 恢复既有不变量（v0.17 改动 1 只把 `last_usage = usage`
+                                // 留在截断分支里）：普通一轮/上下文溢出轮也要更新上一次的
+                                // 用量快照，否则 `estimated_tokens()` 永远用旧的估计，
+                                // 既会跳过阈值压缩，也会让上下窗口估计失真。
                                 last_usage = usage;
+                                let recoverable = overflowed;
                                 // v0.10 (fix): the threshold conjunct that
                                 // used to guard this block is gone. Pi's
                                 // overflow branch does not consult the
@@ -2263,7 +2395,7 @@ impl Agent {
                 // whole — no assistant message, no tool calls, no `turn_end`.
                 // The next iteration rebuilds the request from the compacted
                 // history.
-                if retry_after_compaction {
+                if retry_after_compaction || continue_after_truncation {
                     continue;
                 }
 
@@ -4080,7 +4212,13 @@ mod steering_followup_hook_tests {
                 tool_name: "nope".into(),
             }),
             ToolRegistry::new(),
-            RunConfig::new("test-model"),
+            RunConfig {
+                // v0.17（补处 2）：ToolCallProvider 每轮都发同一工具调用、永不
+                // 结束，会一直跑到兜底；注入小上限避免真跑满兜底（默认 20_000 轮
+                // 会拖垮 nini-core 套件）。断言不变。
+                runaway_turn_backstop: Some(5),
+                ..RunConfig::new("test-model")
+            },
             hooks.clone(),
         );
 
@@ -4124,7 +4262,13 @@ mod steering_followup_hook_tests {
                 tool_name: "nope".into(),
             }),
             ToolRegistry::new(),
-            RunConfig::new("test-model"),
+            RunConfig {
+                // v0.17（补处 2）：ToolCallProvider 每轮都发同一工具调用、永不
+                // 结束，会一直跑到兜底；注入小上限避免真跑满兜底（默认 20_000 轮
+                // 会拖垮 nini-core 套件）。断言不变。
+                runaway_turn_backstop: Some(5),
+                ..RunConfig::new("test-model")
+            },
             hooks,
         );
 
@@ -4362,7 +4506,14 @@ mod tool_lifecycle_hook_tests {
         Agent::with_hooks(
             Arc::new(OneToolCallProvider),
             ToolRegistry::new().register(tool),
-            RunConfig::new("test-model"),
+            RunConfig {
+                // v0.17（补处 2）：这些测试的 provider 每轮都重复发同一工具
+                // 调用，会一直跑到兜底。注入小上限验证兜底行为——否则默认
+                // 20_000 轮会让这 5 个测试各跑十几分钟。断言不变（只检查钩子
+                // 被调用、消息日志存在），注入只是让兜底尽早触发。
+                runaway_turn_backstop: Some(5),
+                ..RunConfig::new("test-model")
+            },
             Arc::new(crate::agent_hooks::NoopHooks),
         )
     }

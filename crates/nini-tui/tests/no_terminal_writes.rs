@@ -48,6 +48,16 @@ use std::path::{Path, PathBuf};
 /// their result and exit, and they never open a TUI.
 const STDOUT_WHITELIST: &[(&str, usize, &str)] = &[
     (
+        "crates/nini-tui/src/osc52.rs",
+        1,
+        "OSC 52 — the escape sequence that asks the **terminal** to put text \
+         on the clipboard, used as the fallback when the process has no native \
+         clipboard (headless, SSH without a bridge, tmux without \
+         `set-clipboard`). It is one write of an escape sequence, not text, so \
+         it cannot corrupt the painted frame the way a stray print does. It is \
+         in its own module so this exemption stays a single, reviewable line",
+    ),
+    (
         "crates/nini-cli/src/demo.rs",
         1,
         "`nini demo` is a one-shot command: it runs a scripted task, prints the \

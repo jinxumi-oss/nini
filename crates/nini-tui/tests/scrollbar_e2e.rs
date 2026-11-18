@@ -164,6 +164,9 @@ fn the_thumb_moves_up_when_scrolled_up() {
     let mut state = state_with(80, nini_tui::scrollbar::ScrollbarMode::Always);
     state.mark_scroll_activity();
 
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧语义下 60 是「跳过 60 条转录行」，新语义下是「跳过 60 个渲染行」。
+    // 本夹具每条转录行一个渲染行，所以滑块位置不变。
     Arc::make_mut(&mut state.transcript_state).scroll_offset = 60;
     Arc::make_mut(&mut state.transcript_state).autoscroll = false;
 

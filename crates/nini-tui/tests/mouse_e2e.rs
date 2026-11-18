@@ -5,7 +5,13 @@
 //! moves the viewport, the rendered thumb follows it.
 //!
 //! Pi's equivalents are `tui-alt-screen.ts:741-760` (drag) and the
-//! `wheelScrollLines` option (default 3).
+//! `wheelScrollLines` option (default 1, `tui-alt-screen.ts:264`).
+//!
+//! **Unit change (worker C, this round).** `scroll_offset` counts
+//! **rendered rows** now, not transcript lines, so every "rows" number
+//! below is a screen row. 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变。
+//! The fixtures here use one-row turns, so the numbers mostly did not
+//! move — but they now mean rows.
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use nini_tui::render::render_frame;
@@ -71,21 +77,41 @@ fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
     }
 }
 
+/// The same event with a modifier held — crossterm reports Alt on a mouse
+/// event as `KeyModifiers::ALT` (the SGR button code's Alt bit).
+fn mouse_with(
+    kind: MouseEventKind,
+    col: u16,
+    row: u16,
+    modifiers: crossterm::event::KeyModifiers,
+) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column: col,
+        row,
+        modifiers,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // wheel
 // ---------------------------------------------------------------------------
 
 #[test]
 fn the_wheel_scrolls_up_and_back_down() {
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧语义下一格滚轮 = 一条转录行，新语义下 = 一个渲染行（Pi 的
+    // `wheelScrollLines` 默认值 1，`tui-alt-screen.ts:264`）。本夹具每条
+    // 转录行恰好一个渲染行，所以数值仍是 1。
     let shared = primed(80, nini_tui::scrollbar::ScrollbarMode::Always);
 
     handle_mouse(mouse(MouseEventKind::ScrollUp, 40, 10), &shared);
     let up = offset(&shared);
-    assert_eq!(up, 3, "Pi's wheelScrollLines default");
+    assert_eq!(up, 1, "Pi's wheelScrollLines default, in rendered rows");
 
     handle_mouse(mouse(MouseEventKind::ScrollDown, 40, 10), &shared);
     assert_eq!(offset(&shared), 0);
-    assert_eq!(up, 3, "and the scroll really happened");
+    assert_eq!(up, 1, "and the scroll really happened");
 }
 
 #[test]
@@ -95,7 +121,20 @@ fn the_wheel_stops_at_the_ends() {
         handle_mouse(mouse(MouseEventKind::ScrollUp, 40, 10), &shared);
     }
     let top = offset(&shared);
-    assert_eq!(top, 79, "clamped to lines.len() - 1");
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧语义下的上限是 `lines.len() - 1`（转录行数），新语义下是
+    // 「渲染行总数 − 1」。本夹具的每条转录行渲染成两行，所以两个上限
+    // 不再相等（79 ≠ 159）——这正是单位换掉的证据。
+    let total_rows = viewport_of(&shared).content_height;
+    assert!(
+        total_rows > 80,
+        "fixture precondition: 80 transcript lines render as {total_rows} rows"
+    );
+    assert_eq!(
+        top,
+        total_rows - 1,
+        "clamped to the total rendered rows - 1"
+    );
 
     for _ in 0..200 {
         handle_mouse(mouse(MouseEventKind::ScrollDown, 40, 10), &shared);
@@ -120,6 +159,41 @@ fn scrolling_up_disables_autoscroll_and_returns_to_the_tail_restores_it() {
         nini_tui::runtime::lock_state(&shared)
             .transcript_state
             .autoscroll
+    );
+}
+
+/// Pi multiplies the wheel step by 5 when Alt is held:
+/// `ALT_WHEEL_SCROLL_MULTIPLIER = 5` (`tui-alt-screen.ts:75`) applied in
+/// `getWheelScrollLines` (`tui-alt-screen.ts:968-971`), which reads the Alt
+/// bit of the SGR mouse button code. crossterm surfaces the same modifier
+/// as `KeyModifiers::ALT`.
+#[test]
+fn alt_plus_the_wheel_scrolls_five_times_farther() {
+    let shared = primed(80, nini_tui::scrollbar::ScrollbarMode::Always);
+
+    handle_mouse(
+        mouse_with(
+            MouseEventKind::ScrollUp,
+            40,
+            10,
+            crossterm::event::KeyModifiers::ALT,
+        ),
+        &shared,
+    );
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧语义下是「五条转录行」，新语义下是「五个渲染行」。
+    assert_eq!(
+        offset(&shared),
+        5,
+        "one Alt+wheel notch is five rendered rows"
+    );
+
+    // Without Alt the same gesture is a single row, so the ratio is 5:1.
+    handle_mouse(mouse(MouseEventKind::ScrollUp, 40, 10), &shared);
+    assert_eq!(
+        offset(&shared),
+        6,
+        "a plain wheel notch is one rendered row"
     );
 }
 
@@ -205,6 +279,8 @@ fn dragging_from_the_rail_scrolls_to_the_grab_point() {
     );
     // The pointer went from near the bottom of the rail to the top of it,
     // so this must be a real jump rather than a one-line nudge.
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧语义下这里是「跳过 5 条转录行」，新语义下是「跳过 5 个渲染行」。
     assert!(
         after > 5,
         "a drag across the rail covers most of the history; got {after}"
@@ -528,5 +604,124 @@ fn the_wheel_needs_no_viewport_only_a_transcript() {
     let shared = shared_state(state); // never drawn
 
     handle_mouse(mouse(MouseEventKind::ScrollUp, 40, 10), &shared);
-    assert_eq!(offset(&shared), 3, "the wheel acts on line counts alone");
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧语义下滚轮按「转录行」计数，新语义下按「渲染行」计数；未渲染过的
+    // 状态只能退回转录行数作为总行数的估计。
+    assert_eq!(
+        offset(&shared),
+        1,
+        "the wheel acts on rendered-row counts alone"
+    );
+}
+
+/// Item 4: a drag must not span the whole transcript in one event.
+///
+/// Pi maps **every** drag event to an absolute proportional position —
+/// `scrollScrollbarToPointer`
+/// (`references/pi-0.85.1/src/tui/tui-alt-screen.ts:1056-1066`), called per
+/// event from `handleScrollbarMouseEvent` (`:1079-1088`) — so a single event
+/// can jump many lines at once. nini keeps Pi's complete proportional mapping
+/// for the first event of a drag and low-pass filters the *increments* of the
+/// events after it. That is an intentional deviation from Pi, registered in
+/// `runtime.rs::handle_mouse` and pinned here.
+///
+/// The proof is two drags with the same start (the thumb's top) and the same
+/// end pointer row. The one-event drag lands on the absolute mapping; the
+/// two-event drag lands short of it, because the second event's increment was
+/// filtered instead of applied in full.
+#[test]
+fn a_drag_smooths_incremental_steps() {
+    // The end of the track: the pointer's furthest possible position.
+    let end_row = {
+        let shared = primed(80, nini_tui::scrollbar::ScrollbarMode::Always);
+        viewport_of(&shared).y
+    };
+
+    // Run 1: one event, straight to the end of the track.
+    let single = primed(80, nini_tui::scrollbar::ScrollbarMode::Always);
+    let vp = viewport_of(&single);
+    let col = vp.x + vp.width - 1;
+    let thumb_top = thumb_rows(&single).first().copied().unwrap_or(0) as u16;
+    handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), col, thumb_top),
+        &single,
+    );
+    handle_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), col, end_row),
+        &single,
+    );
+    let one_event = offset(&single);
+
+    // The absolute mapping for that pointer position, computed from the
+    // row geometry alone: the press was on the thumb's top row (grab offset
+    // 0) and the pointer ended at the top of the track (thumb offset 0).
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧语义下拖拽的落点用 `line_offset_for_thumb_offset`（渲染行 → 转录行）
+    // 换算，上限按转录行数夹紧；新语义下拖拽的落点本身就是渲染行
+    // （`scroll_rows_for_thumb_offset`），上限按渲染行总数夹紧。
+    let (geometry, total_rows) = {
+        let state = nini_tui::runtime::lock_state(&single);
+        let viewport = *state.transcript_viewport.lock().unwrap();
+        let geometry = viewport
+            .geometry(state.transcript_state.scroll_offset)
+            .unwrap();
+        let total_rows = viewport.content_height;
+        (geometry, total_rows)
+    };
+    let absolute = nini_tui::scrollbar::scroll_rows_for_thumb_offset(0, &geometry)
+        .unwrap()
+        .min(total_rows.saturating_sub(1));
+    assert_eq!(
+        one_event, absolute,
+        "the first event of a drag keeps Pi's complete proportional mapping"
+    );
+    assert!(one_event > 0, "the drag really moved");
+
+    // Run 2: the same start and the same end, but through an intermediate
+    // row. The intermediate point is a *third* of the way up the track, not
+    // the middle: with two equal legs the increments are equal too, and a
+    // low pass passes a constant increment through unchanged — nothing
+    // would be observable. With a short first leg and a long second one,
+    // the filtered increment is visibly smaller than the raw one.
+    let two = primed(80, nini_tui::scrollbar::ScrollbarMode::Always);
+    let vp = viewport_of(&two);
+    let col = vp.x + vp.width - 1;
+    let thumb_top = thumb_rows(&two).first().copied().unwrap_or(0) as u16;
+    let mid_row = thumb_top - (thumb_top - end_row) / 3;
+    handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), col, thumb_top),
+        &two,
+    );
+    handle_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), col, mid_row),
+        &two,
+    );
+    let after_mid = offset(&two);
+    assert!(
+        after_mid > 0 && after_mid < one_event,
+        "the first event lands between the tail and the end: {after_mid}"
+    );
+    handle_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), col, end_row),
+        &two,
+    );
+    let two_events = offset(&two);
+
+    assert!(
+        two_events < one_event,
+        "the second event's increment was low-pass filtered, so the same end \
+         position is reached more slowly: {two_events} vs {one_event}"
+    );
+    assert!(
+        two_events > after_mid,
+        "but it still moved: {two_events} vs {after_mid}"
+    );
+    // And nothing ever left the transcript.
+    for at in [after_mid, two_events] {
+        assert!(
+            at <= total_rows - 1,
+            "the drag must stay inside the transcript: {at} of {total_rows} \
+             rendered rows"
+        );
+    }
 }

@@ -274,6 +274,11 @@ pub fn parse_action(name: &str) -> Option<KeyAction> {
         "ClearInput" => ClearInput,
         "ScrollUp" => ScrollUp,
         "ScrollDown" => ScrollDown,
+        // v0.11：行/半页滚动的新动作。不登记的后果同上（静默忽略）。
+        "LineUp" => LineUp,
+        "LineDown" => LineDown,
+        "HalfPageUp" => HalfPageUp,
+        "HalfPageDown" => HalfPageDown,
         // v0.17 (R14)：R14 新增的三个动作。不登记它们的后果很具体：
         // `keybindings.json` 里写 `"action": "DequeueMessages"` 会被**静默
         // 忽略**（`parse_action` 返回 None），用户以为改绑了，其实没有。
@@ -415,6 +420,26 @@ mod tests {
     #[test]
     fn parse_action_unknown() {
         assert!(parse_action("NonExistent").is_none());
+    }
+
+    /// v0.11：行/半页滚动的新动作必须能被 `keybindings.json` 认出来。
+    ///
+    /// 理由同上：不认就是**静默忽略**。
+    #[test]
+    fn the_fine_scroll_actions_can_be_rebound() {
+        assert!(matches!(parse_action("LineUp"), Some(KeyAction::LineUp)));
+        assert!(matches!(
+            parse_action("LineDown"),
+            Some(KeyAction::LineDown)
+        ));
+        assert!(matches!(
+            parse_action("HalfPageUp"),
+            Some(KeyAction::HalfPageUp)
+        ));
+        assert!(matches!(
+            parse_action("HalfPageDown"),
+            Some(KeyAction::HalfPageDown)
+        ));
     }
 
     /// B35：Pi 的 `app.session.*` 键位必须能被 `keybindings.json` 认出来。

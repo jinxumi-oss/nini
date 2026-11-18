@@ -401,18 +401,6 @@ pub fn is_context_overflow_with_signals(
     false
 }
 
-/// Returns true if the model hit `length` stop with output_tokens
-/// below `desired_max` — caller can retry after compaction.
-///
-/// v0.10 (fix): Pi's `isRecoverableLength` requires `desiredMaxOutput > 0`
-/// (`overflow.ts:172`). Without it, an unset `max_tokens` (which resolves to
-/// 0 here) compared as `0 < 0` is false — but any *negative* drift, and any
-/// provider that reports a tiny non-zero limit, could classify an ordinary
-/// truncation as recoverable.
-pub fn is_recoverable_length(stop_reason: &str, output_tokens: u32, desired_max: u32) -> bool {
-    stop_reason == "length" && desired_max > 0 && output_tokens < desired_max
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

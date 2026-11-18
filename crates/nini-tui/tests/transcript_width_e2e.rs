@@ -727,11 +727,13 @@ fn cjk_tool_result_reports_cells_not_bytes() {
 // 7. Shrinking the transcript must not blank the viewport (v0.8.9 P1-5)
 // ---------------------------------------------------------------------------
 //
-// `scroll_offset` counts lines from the *bottom*. Every operation that
-// removes lines (compaction folding, `/clear`, `/new`, session reload)
-// invalidated it, and the renderer translated the stale value into an
-// item-space skip that ran past the end of the transcript — leaving the
-// whole area blank with a meaningless `↓ 59 more` in the corner.
+// `scroll_offset` counts **rendered rows** from the *bottom* (it counted
+// transcript lines before this round — 钉的是旧的转录行语义，本次因滚动单位
+// 改为渲染行而变). Every operation that removes lines (compaction folding,
+// `/clear`, `/new`, session reload) invalidated it, and the renderer
+// translated the stale value into an item-space skip that ran past the end
+// of the transcript — leaving the whole area blank with a meaningless
+// `↓ 59 more` in the corner.
 //
 // Reproduced at 40x24 with 60 tool-result lines (~5 items each):
 //
@@ -750,9 +752,16 @@ fn long_scrolled_state() -> AppState {
         s.push_tool_result(&format!("t{i}"), "read", true, content, Some(1));
     }
     // Scroll all the way up, the way repeated PageUp would.
+    //
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧语义下 `scroll_offset = lines.len() - 1`（59 条转录行）就是「到顶」；
+    // 新语义下 `scroll_offset` 数的是渲染行，到顶的值必须用渲染行总数。
+    // 渲染一帧，渲染路径会发布这个数（`viewport.content_height`）。
+    let _ = frame_rows(&s, NARROW.0, NARROW.1);
+    let total_rows = s.transcript_viewport.lock().unwrap().content_height;
     let ts = Arc::make_mut(&mut s.transcript_state);
     ts.autoscroll = false;
-    ts.scroll_offset = ts.lines.len().saturating_sub(1);
+    ts.scroll_offset = total_rows.saturating_sub(1);
     s
 }
 
@@ -824,7 +833,9 @@ fn compaction_resets_the_scroll_viewport() {
     );
     assert_eq!(
         ts.scroll_offset, 0,
-        "scroll_offset must be reset after the line count changed"
+        "scroll_offset must be reset after the line count changed. 钉的是旧的 \
+         转录行语义，本次因滚动单位改为渲染行而变：旧语义下这里数的是转录行， \
+         新语义下数的是渲染行，但「归零」这个契约不变。"
     );
 }
 
@@ -874,6 +885,10 @@ fn scroll_indicator_does_not_quote_an_impossible_line_count() {
     // `↓ N more` used to echo the raw offset, so after a stale-offset
     // blank frame it claimed 999 lines were hidden above a transcript
     // that has 60.
+    //
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧语义下 N 是转录行数，新语义下 N 是渲染行数；「不得引用不可能的
+    // 偏移量」这个契约不变。
     let mut s = long_scrolled_state();
     {
         let ts = Arc::make_mut(&mut s.transcript_state);

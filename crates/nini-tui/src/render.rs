@@ -544,19 +544,111 @@ fn render_stats_line(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     f.render_widget(Paragraph::new(RLine::from(spans)), area);
 }
 
+/// The context-window segment of the stats line's left half, as a
+/// half-open span range `[start, end)` that must be kept **whole**.
+///
+/// The left half is laid out as brand → phase → status → diff →
+/// `[ctx segment]` → tokens → cost, where the ctx segment is the
+/// `"  •  "` separator + the `ctx …%` label + the progress bar.
+/// The context segment is user-visible context, so it must never be
+/// cut by the left-half truncation — a long status summary used to be
+/// cut together with it, so the user saw neither the summary nor the
+/// context. Only the segments before and after it (status/diff and
+/// tokens/cost) may be truncated.
+fn context_keep_range(spans: &[Span<'static>]) -> Option<(usize, usize)> {
+    let mut idx = spans
+        .iter()
+        .position(|s| s.content.as_ref().contains("ctx "))?;
+    let mut start = idx;
+    if start > 0
+        && spans[start - 1]
+            .content
+            .as_ref()
+            .starts_with("  \u{2022}  ")
+    {
+        start = idx - 1;
+    }
+    // The segment is separator + label + progress bar (the bar is the
+    // span right after the label).
+    let end = (idx + 2).min(spans.len());
+    Some((start, end))
+}
+
 /// Truncate a span list to `max` cells from the right, appending `…` to
 /// the span the cut lands in. Used for the stats line's left half, where
 /// the head (brand + phase) matters more than the tail (token counts).
+///
+/// The context-window segment is always kept whole (`context_keep_range`);
+/// the segments before it (status / diff) and after it (tokens / cost)
+/// are truncated with whatever budget is left, so a long summary no
+/// longer shrinks the context segment with it.
+/// When the line carries no context segment, plain tail truncation is
+/// used (the old behaviour).
+///
+/// **Intentional deviation from Pi** (user-authorised): Pi's footer
+/// truncation is not in the pinned reference subset
+/// (`references/pi-0.85.1/src/tui/` has no footer component), so the
+/// rule "the context segment is never sacrificed" is nini's own UX
+/// decision, not a Pi-parity claim.
 fn truncate_spans_tail(spans: &[Span<'static>], max: usize) -> Vec<Span<'static>> {
-    if max == 0 {
-        return Vec::new();
-    }
     let total = line_width(spans);
     if total <= max {
         return spans.to_vec();
     }
-    // Everything after this many cells is dropped.
-    let keep_to = max.saturating_sub(1);
+
+    let keep_range = context_keep_range(spans);
+    match keep_range {
+        Some((keep_start, keep_end)) => {
+            let keep = &spans[keep_start..keep_end];
+            let keep_w = line_width(keep);
+            let max_other = max.saturating_sub(keep_w);
+
+            // Segments before the context segment: whole if they fit,
+            // otherwise truncated with the remaining budget.
+            let before = &spans[..keep_start];
+            let before_w = line_width(before);
+            let before = if before_w <= max_other {
+                before.to_vec()
+            } else {
+                truncate_tail(before, max_other)
+            };
+
+            // The context segment: kept whole, whatever the budget.
+            let mut out: Vec<Span<'static>> = before.iter().cloned().collect();
+            out.extend(keep.iter().cloned());
+
+            // Segments after the context segment: whole if they fit,
+            // otherwise truncated with the remaining budget.
+            let after = &spans[keep_end..];
+            let after_w = line_width(after);
+            let after_budget = max_other.saturating_sub(before_w);
+            let after = if after_w <= after_budget {
+                after.to_vec()
+            } else {
+                truncate_tail(after, after_budget)
+            };
+            out.extend(after.iter().cloned());
+            out
+        }
+        None => {
+            // No context segment: plain tail truncation (old behaviour).
+            truncate_tail(spans, max)
+        }
+    }
+}
+
+/// Truncate a span list to `max_cells` cells from the right, appending
+/// `…` to the span the cut lands in. Used by `truncate_spans_tail` for the
+/// segments that are not kept whole (status / diff / tokens / cost).
+fn truncate_tail(spans: &[Span<'static>], max_cells: usize) -> Vec<Span<'static>> {
+    if max_cells == 0 {
+        return Vec::new();
+    }
+    let total = line_width(spans);
+    if total <= max_cells {
+        return spans.to_vec();
+    }
+    let keep_to = max_cells.saturating_sub(1);
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut acc = 0usize;
     let mut cut_done = false;
@@ -571,8 +663,10 @@ fn truncate_spans_tail(spans: &[Span<'static>], max: usize) -> Vec<Span<'static>
             continue;
         }
         let keep = keep_to.saturating_sub(acc);
-        let tail = truncate_cells(s.content.as_ref(), keep + 1);
-        out.push(Span::styled(tail, s.style));
+        out.push(Span::styled(
+            truncate_cells(s.content.as_ref(), keep + 1),
+            s.style,
+        ));
         cut_done = true;
     }
     out
@@ -720,6 +814,10 @@ fn prompt_cursor_geometry(text: &str, cursor_byte: usize, inner_width: usize) ->
     }
 }
 
+// `lines_needed_for_items` is no longer used by the renderer itself —
+// the page step is published in rendered rows — but this module's tests
+// still cover it, so the import survives under `cfg(test)`.
+#[cfg(test)]
 use crate::scrollbar::lines_needed_for_items;
 
 fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
@@ -735,9 +833,9 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     //
     // Fix: render all items, then truncate to `visible_height`. For
     // autoscroll keep the TAIL (latest, chat-style). For user-scrolled
-    // view, translate `scroll_offset` (TranscriptLine count) to an
-    // item-space offset via per-line item counts, so the user-scroll
-    // window is also correct.
+    // view, `scroll_offset` counts **rendered rows** skipped from the
+    // tail — the same unit as the viewport and as Pi's own `scrollTop` —
+    // so the user-scroll window is placed directly in row space.
     //
     // v0.8.4 (ux-001) history: previous logic only used `scroll_offset`
     // for upward scroll and otherwise showed `[0..visible_height]` —
@@ -771,10 +869,10 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // fix is `TranscriptState::reset_view` at every line-shrinking
     // call site; this is the cheap guarantee that a missed one degrades
     // to "shows the top" instead of "shows an empty box".
-    let scroll_offset = state
-        .transcript_state
-        .scroll_offset
-        .min(total_lines.saturating_sub(1));
+    //
+    // The clamp itself needs the transcript's height in *rows*, which is
+    // only known after the per-line row counts below.
+    let scroll_offset = state.transcript_state.scroll_offset;
 
     // First pass: per-line item counts. Used for user-scroll item-space
     // offset translation, and for the overflow indicator count.
@@ -827,6 +925,12 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         items_per_line.push(count);
     }
     let total_items: usize = items_per_line.iter().sum();
+    // The scroll position is bounded by the transcript's height in
+    // rendered rows: `scroll_offset` counts rows, so the last legal
+    // position is the very first row of the transcript. A stale offset
+    // (the transcript shrank) is clamped here rather than allowed to
+    // blank the view.
+    let scroll_offset = scroll_offset.min(total_items.saturating_sub(1));
 
     // v0.10.3: the overflow indicators used to be painted **on top of**
     // the transcript's first and last row, so `↑ N more above` ate the
@@ -867,17 +971,24 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // correct — following the output means being at the bottom.
     let mut items_skipped_from_bottom: usize = 0;
 
-    // v0.10: publish how many lines one page covers, so PageUp scrolls a
-    // page instead of the single line it used to scroll. Computed here
-    // because this is the only scope that has both the per-line row counts
-    // and the viewport height; `ScrollUp` had neither and guessed `1`.
-    state.page_lines.store(
-        lines_needed_for_items(&items_per_line, visible_height, total_lines).max(1),
-        Ordering::Relaxed,
-    );
+    // v0.10: publish how many rows one page covers, so PageUp scrolls a
+    // page instead of the single line it used to scroll. The unit is the
+    // rendered row — the same unit `scroll_offset` counts and the same
+    // one Pi pages by — so a page is exactly what the reader sees at
+    // once.
+    state
+        .page_rows
+        .store(visible_height.max(1), Ordering::Relaxed);
+    // The transcript's height in rendered rows, published for
+    // `TranscriptState::clamp_view`: only the renderer knows how tall
+    // each line is.
+    state
+        .transcript_state
+        .total_rendered_rows
+        .store(total_items, Ordering::Relaxed);
     // v0.10: hand the mouse the row counts it cannot compute itself. A
     // scrollbar drag arrives as a pixel offset and has to become a
-    // `scroll_offset`, which counts lines.
+    // `scroll_offset`, which counts rendered rows.
     if let Ok(mut heights) = state.line_heights.lock() {
         *heights = items_per_line.clone();
     }
@@ -917,7 +1028,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     };
 
     // Choose the visible slice.
-    let mut visible_items: Vec<ListItem> = Vec::with_capacity(visible_height.min(total_items));
+    let mut visible_items: Vec<RenderedRow> = Vec::with_capacity(visible_height.min(total_items));
     let mut hidden_above_items: usize = 0;
 
     if total_items <= visible_height {
@@ -932,85 +1043,80 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
             ));
         }
     } else if autoscroll {
-        // Tail-aligned: keep the latest `visible_height` items.
+        // Tail-aligned: keep the latest `visible_height` rows.
         hidden_above_items = total_items - visible_height;
         let mut budget = visible_height;
         for i in (0..total_lines).rev() {
             let count = items_per_line[i];
-            if count <= budget {
-                let line_items = items_for_line(
-                    &lines[i],
-                    theme,
-                    area.width as usize,
-                    highlight_for(i),
-                    &executing,
-                );
-                visible_items = line_items
-                    .into_iter()
-                    .chain(visible_items.into_iter())
-                    .collect();
-                budget -= count;
-                if budget == 0 {
-                    break;
-                }
-            } else {
-                // Single line bigger than entire visible area — tail-truncate.
-                let mut line_items = items_for_line(
-                    &lines[i],
-                    theme,
-                    area.width as usize,
-                    highlight_for(i),
-                    &executing,
-                );
-                let start = line_items.len() - budget;
-                visible_items = line_items
-                    .split_off(start)
-                    .into_iter()
-                    .chain(visible_items.into_iter())
-                    .collect();
-                break;
-            }
-        }
-    } else {
-        // User-scrolled view: translate `scroll_offset` (TranscriptLine
-        // count) to an item-space offset.
-        let mut items_to_skip_from_bottom: usize = 0;
-        let mut lines_skipped = 0;
-        for i in (0..total_lines).rev() {
-            if lines_skipped >= scroll_offset {
-                break;
-            }
-            items_to_skip_from_bottom += items_per_line[i];
-            lines_skipped += 1;
-        }
-        // Captured before the loop below consumes it. The scrollbar needs the
-        // same number, and recomputing it here would mean running the same
-        // two loops twice per frame.
-        items_skipped_from_bottom = items_to_skip_from_bottom;
-
-        // Now collect items from the bottom, skipping
-        // `items_to_skip_from_bottom` items, until we have visible_height.
-        let mut budget = visible_height;
-        for i in (0..total_lines).rev() {
-            let count = items_per_line[i];
-            let skip_here = items_to_skip_from_bottom.min(count);
-            items_to_skip_from_bottom -= skip_here;
-            let take_from_line = count - skip_here;
-            if take_from_line == 0 || budget == 0 {
+            // A line taller than the whole viewport is not a special
+            // case any more: the window takes the last `budget` rows of
+            // it — its tail — which is what the reader is looking at.
+            let take = count.min(budget);
+            if take == 0 {
                 continue;
             }
-            let take = take_from_line.min(budget);
-            let mut line_items = items_for_line(
+            let line_items = items_for_line(
                 &lines[i],
                 theme,
                 area.width as usize,
                 highlight_for(i),
                 &executing,
             );
-            let start = line_items.len() - take;
+            let start = count - take;
             visible_items = line_items
-                .split_off(start)
                 .into_iter()
+                .skip(start)
+                .take(take)
+                .chain(visible_items.into_iter())
+                .collect();
+            budget -= take;
+            if budget == 0 {
+                break;
+            }
+        }
+    } else {
+        // User-scrolled view: `scroll_offset` counts **rendered rows**
+        // skipped from the tail — the same unit as the viewport, the
+        // scrollbar and Pi's own `scrollTop`.
+        //
+        // The walk starts at the last line and goes up, so a line that
+        // is taller than the viewport is no longer a special case: the
+        // skip lands *inside* it and the window starts there. That is
+        // what makes the middle of a long assistant message reachable —
+        // the old line-based skip could only ever land on a line
+        // boundary, and a line taller than the screen was tail-
+        // truncated, so its middle was never on screen.
+        //
+        // The scrollbar's unit is the same number, so it is published
+        // as-is instead of being converted.
+        items_skipped_from_bottom = scroll_offset;
+
+        let mut rows_to_skip_from_bottom = scroll_offset;
+        let mut budget = visible_height;
+        for i in (0..total_lines).rev() {
+            let count = items_per_line[i];
+            let skip_here = rows_to_skip_from_bottom.min(count);
+            rows_to_skip_from_bottom -= skip_here;
+            let take_from_line = count - skip_here;
+            if take_from_line == 0 || budget == 0 {
+                continue;
+            }
+            let take = take_from_line.min(budget);
+            let line_items = items_for_line(
+                &lines[i],
+                theme,
+                area.width as usize,
+                highlight_for(i),
+                &executing,
+            );
+            // The skipped rows are the *last* `skip_here` rows of this
+            // line (the walk goes up from the tail), so the visible part
+            // of the line ends right above them.
+            let start = take_from_line - take;
+            visible_items = line_items
+                .into_iter()
+                .skip(start)
+                .take(take)
                 .chain(visible_items.into_iter())
                 .collect();
             budget -= take;
@@ -1025,11 +1131,10 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     //
     // The scrollbar's geometry is expressed in rows, and the mouse's
     // hit-test has to use the *same* number the renderer drew the thumb
-    // with. It used to use `transcript_state.scroll_offset`, which counts
-    // `TranscriptLine`s instead of rows: a different unit, and one that
-    // only coincides with the row count when every line happens to be
-    // one row tall. Publishing the number the renderer actually used is
-    // what keeps the visible thumb and the hittable thumb the same thing.
+    // with. `transcript_state.scroll_offset` counts rendered rows as
+    // well now, so the two units agree; publishing the number the
+    // renderer actually used keeps the visible thumb and the hittable
+    // thumb the same thing.
     state
         .items_skipped_from_bottom
         .store(items_skipped_from_bottom, Ordering::Relaxed);
@@ -1058,6 +1163,13 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
 
     // v0.8.4 (ux-001): welcome card for empty cold-start state.
     if visible_items.is_empty() && total_lines == 0 && state.input.text.is_empty() {
+        // The published rows describe the **visible screen rows**; the
+        // welcome card is not one of them, so the previous frame's rows
+        // have to go — a stale row would let a mouse press select text
+        // that is no longer on screen.
+        if let Ok(mut rows) = state.screen_text_rows.lock() {
+            rows.clear();
+        }
         render_welcome_card(f, theme, area);
         return;
     }
@@ -1105,7 +1217,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // because the failure mode is an empty screen — cheap insurance
     // against a future refactor of the item math above.
     if visible_items.is_empty() && total_lines > 0 {
-        let mut tail: Vec<ListItem> = Vec::with_capacity(visible_height);
+        let mut tail: Vec<RenderedRow> = Vec::with_capacity(visible_height);
         for line in lines.iter().rev() {
             let mut items = items_for_line(
                 line,
@@ -1129,8 +1241,41 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         visible_items = tail;
     }
 
+    // R1 + R2: publish the plain text of every visible screen row and apply
+    // the active selection highlight. Both run after the visible slice is
+    // chosen, so they describe exactly what the `List` will draw.
+    //
+    // The visible items are drawn top-to-bottom into `content_area`, so item
+    // `i` is the screen row `content_area.y + i` — i.e. screen row index
+    // `i` once indexed by `screen_y - content_area.y`. The whole row vector
+    // is rebuilt every frame (including the empty case), so a cleared
+    // transcript never keeps the previous frame's rows.
+    //
+    // The highlight has to be applied **before** the rows are wrapped into
+    // `ListItem`s: ratatui 0.29 keeps the item's content private, so the
+    // spans cannot be touched afterwards.
+    let sel = state.ui_state.selection.clone();
+    let mut screen_text_rows: Vec<String> = Vec::with_capacity(visible_items.len());
+    let mut list_items: Vec<ListItem> = Vec::with_capacity(visible_items.len());
+    for (i, row) in visible_items.into_iter().enumerate() {
+        let RenderedRow { mut line, text } = row;
+        if let Some(sel) = sel.as_ref() {
+            // The row index is the item's index in the visible slice — the
+            // same index the published `screen_text_rows` uses
+            // (`screen_y - content_area.y`), which is the space
+            // `SelectionPoint.row` lives in.
+            let n = text.chars().count();
+            apply_selection_row_highlight(&mut line, i, sel, n);
+        }
+        screen_text_rows.push(text);
+        list_items.push(ListItem::new(line));
+    }
+    if let Ok(mut rows) = state.screen_text_rows.lock() {
+        *rows = screen_text_rows;
+    }
+
     // (debug prints removed)
-    let list = List::new(visible_items)
+    let list = List::new(list_items)
         .block(Block::default().borders(Borders::NONE))
         .style(Style::default());
     // v0.10.3: the list goes into the **content** area, which is one row
@@ -1168,6 +1313,8 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // v0.10.3: like its counterpart, it gets a row of its own — the
     // transcript area's last row, which the content no longer uses.
     if needs_bottom_indicator {
+        // `scroll_offset` counts rendered rows, so this is the number of
+        // rows below the fold.
         let hidden = scroll_offset;
         let label = format!(" \u{2193} {hidden} more ");
         let style = theme.fg_style("accent").add_modifier(Modifier::BOLD);
@@ -1254,13 +1401,120 @@ fn highlight_row(
     line
 }
 
-fn items_for_line(
+/// Plain text of one rendered transcript row, taken from its spans.
+///
+/// `items_for_line` builds `RLine`s whose spans already carry the
+/// terminal-safe (`ascii_safe`) content and per-span styling, so
+/// concatenating the span contents is exactly the text the `List` drew —
+/// the source the renderer publishes into `screen_text_rows`.
+fn row_plain_text_of_line(line: &RLine<'static>) -> String {
+    let mut text = String::new();
+    for span in line.spans.iter() {
+        text.push_str(&span.content.as_ref());
+    }
+    text
+}
+
+/// Apply the active selection highlight to one visible screen row's spans.
+///
+/// The selection lives in screen-row space: `screen_row` is the row's index
+/// into the published `screen_text_rows` (`screen_y - content_area.y`). The
+/// character offsets `(cs, ce)` inside the row's text are the selection's
+/// interval, computed from the ordered anchor/focus against the row text.
+/// Only the character range `[cs, ce)` is reversed; spans outside it keep
+/// their style, so a click on a few characters highlights only those. The
+/// selection is already expressed in character offsets, so no display-width
+/// conversion is needed here — CJK characters stay whole characters even
+/// though each takes two display columns.
+fn apply_selection_row_highlight(
+    line: &mut RLine<'static>,
+    screen_row: usize,
+    sel: &crate::selection::Selection,
+    n: usize,
+) {
+    let (start, end) = sel.ordered();
+    if screen_row < start.row || screen_row > end.row {
+        return;
+    }
+    let (cs, ce): (usize, usize) = if screen_row == start.row {
+        let start_col = start.col.min(n);
+        let end_col = end.col.min(n);
+        (start_col, end_col)
+    } else if screen_row == end.row {
+        (0, end.col.min(n))
+    } else {
+        (0, n)
+    };
+    if ce <= cs {
+        return;
+    }
+    let cs = cs.min(n);
+    let ce = ce.max(cs.min(n));
+    if ce <= cs {
+        return;
+    }
+    highlight_char_interval(line, cs, ce);
+}
+
+/// Reverse-annotate the character range `[cs, ce)` of `line`'s spans.
+///
+/// Spans are cut at character boundaries so a span holding both the interval
+/// edges keeps the two pieces with different styles; a span entirely inside
+/// the interval becomes a single reversed span.
+fn highlight_char_interval(line: &mut RLine<'static>, cs: usize, ce: usize) {
+    let mut out = Vec::with_capacity(line.spans.len());
+    // `cum` counts the characters seen before this span — the interval is
+    // expressed in **character** offsets, while Rust slices by **byte**
+    // offsets. A CJK character is three bytes and two columns, so mixing
+    // the two cuts a character in half (and panics on the boundary).
+    let mut cum = 0usize;
+    for span in line.spans.iter() {
+        let content = span.content.as_ref();
+        let chars: Vec<char> = content.chars().collect();
+        let len = chars.len();
+        if len == 0 {
+            out.push(span.clone());
+            continue;
+        }
+        // The part of the interval that falls inside this span.
+        let a = cs.saturating_sub(cum).min(len);
+        let b = ce.saturating_sub(cum).min(len).max(a);
+        if b <= a {
+            out.push(span.clone());
+            continue;
+        }
+        // Character offsets → byte offsets inside this span's text.
+        let byte_of = |idx: usize| -> usize { chars[..idx].iter().map(|c| c.len_utf8()).sum() };
+        let (ba, bb) = (byte_of(a), byte_of(b));
+        let style = span.style;
+        if ba > 0 {
+            out.push(Span::styled(content[..ba].to_string(), style));
+        }
+        out.push(Span::styled(
+            content[ba..bb].to_string(),
+            style.add_modifier(Modifier::REVERSED),
+        ));
+        if bb < content.len() {
+            out.push(Span::styled(content[bb..].to_string(), style));
+        }
+        cum += len;
+    }
+    line.spans = out;
+}
+
+/// Build the rendered `RLine`s for one transcript line, without the
+/// `ListItem` wrapper. `items_for_line` uses this and adds the wrapper;
+/// `render_transcript` uses it to publish the visible screen rows and apply
+/// selection highlighting. The wrapper is needed because ratatui's
+/// `ListItem::content` is `pub(crate)` inside ratatui and is not visible
+/// from this crate, so the spans of a finished item cannot be read back.
+fn render_line_rl(
     line: &TranscriptLine,
     theme: &Theme,
     area_width: usize,
     highlight: SearchHighlight,
     executing: &std::collections::HashSet<String>,
-) -> Vec<ListItem<'static>> {
+) -> Vec<RLine<'static>> {
     // v0.8.9 (P1-3): one width for every branch. Only the ToolResult
     // arm used to receive it, which is why a 210-character user message
     // rendered as `> STARTAAAA…` with its tail silently gone — the
@@ -1461,7 +1715,37 @@ fn items_for_line(
                 .collect::<Vec<_>>();
             highlight_row(RLine::from(spans), highlight, theme)
         })
-        .map(ListItem::new)
+        .collect()
+}
+
+/// A rendered transcript row: the line plus the plain text it shows.
+///
+/// ratatui 0.29 keeps `ListItem`'s content private, so the text of a row
+/// cannot be read back from the widget — it has to travel with it. The
+/// mouse selection needs exactly that text: it is what the user selects,
+/// what gets highlighted and what gets copied.
+struct RenderedRow {
+    /// The row's line. It is wrapped into a `ListItem` only **after** the
+    /// selection highlight has been applied, because the wrapping is what
+    /// hides the spans.
+    line: RLine<'static>,
+    /// The plain text of the row (the spans' contents, concatenated).
+    text: String,
+}
+
+fn items_for_line(
+    line: &TranscriptLine,
+    theme: &Theme,
+    area_width: usize,
+    highlight: SearchHighlight,
+    executing: &std::collections::HashSet<String>,
+) -> Vec<RenderedRow> {
+    render_line_rl(line, theme, area_width, highlight, executing)
+        .into_iter()
+        .map(|l| {
+            let text = row_plain_text_of_line(&l);
+            RenderedRow { line: l, text }
+        })
         .collect()
 }
 
@@ -2332,6 +2616,55 @@ mod status_tests {
             lines
         );
     }
+
+    /// Regression (paired with the context-segment fix in the production
+    /// code): the old tail truncation cut from the right, so a long status
+    /// summary took the `ctx %` segment down with it — the user saw
+    /// neither the summary in full nor the context. After the fix the
+    /// context segment (separator + label + progress bar) is always kept
+    /// whole; only the segments before and after it are truncated.
+    ///
+    /// The discriminator is the **whole** context segment: under the old
+    /// truncation that segment was cut, so an assertion on the complete
+    /// segment fails there and passes here.
+    #[test]
+    fn truncate_spans_tail_keeps_the_context_segment_when_the_summary_is_long() {
+        let summary = Span::raw(
+            "compacted: folded 50 entries into a summary (1234 tokens before); context now starts at abc123",
+        );
+        // The real stats line builds the context segment out of three
+        // spans: the separator, the label and the progress bar.
+        let sep = Span::raw("  \u{2022}  ");
+        let pct = Span::raw("ctx 50% ");
+        let bar = Span::raw("[\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}]");
+        let tokens = Span::raw("  \u{2022}  in 1000K out 1000K");
+        let spans = vec![summary, sep.clone(), pct.clone(), bar.clone(), tokens];
+        let ctx_segment = format!(
+            "{}{}{}",
+            sep.content.as_ref(),
+            pct.content.as_ref(),
+            bar.content.as_ref()
+        );
+
+        // A budget that leaves room for the context segment plus a little
+        // slack: the summary before it and the tokens after it give way,
+        // the context segment does not.
+        let ctx_w = display_width(ctx_segment.as_str());
+        let budget = ctx_w + 20;
+        let out = truncate_spans_tail(&spans, budget);
+        let text: String = out.iter().map(|s| s.content.as_ref()).collect();
+
+        assert!(
+            line_width(&out) <= budget,
+            "truncated line must not exceed the budget ({budget}), got {}",
+            line_width(&out)
+        );
+        assert!(
+            text.contains(&ctx_segment),
+            "the whole ctx% segment (separator + label + progress bar) must \
+            survive the truncation, got: {text}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2553,7 +2886,7 @@ mod cursor_and_scroll_tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| render_frame(f, &state)).unwrap();
 
-        let published = state.page_lines();
+        let published = state.page_rows();
         assert!(
             published > 1,
             "after a real render, one page must be more than one line; \
@@ -2640,5 +2973,176 @@ mod cursor_and_scroll_tests {
                  the behaviour claim in the doc comment needs updating"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod screen_row_publish_tests {
+    use super::*;
+    use crate::selection::{Selection, SelectionPoint};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::sync::Arc;
+
+    /// Build a single rendered row from given (content, style) spans.
+    fn make_row(spans: Vec<(String, Style)>) -> RLine<'static> {
+        let row = RLine::from(
+            spans
+                .iter()
+                .map(|(content, style)| Span::styled(content.clone(), *style))
+                .collect::<Vec<_>>(),
+        );
+        row
+    }
+
+    /// Render only the transcript into a 80x24 TestBackend.
+    fn render_transcript_frame(state: &crate::state::AppState) {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f: &mut ratatui::Frame| render_transcript(f, state, &Theme::default(), f.area()))
+            .unwrap();
+    }
+
+    #[test]
+    fn published_rows_match_the_rendered_rows() {
+        let mut state = AppState::default();
+        state.run_state.mode = RunMode::Editing;
+        Arc::make_mut(&mut state.transcript_state)
+            .lines
+            .extend((0..3).map(|i: usize| TranscriptLine::AssistantText(format!("hello {i}"))));
+        render_transcript_frame(&state);
+
+        // The published rows are exactly the rows the renderer produced —
+        // the same rows the `List` draws. (An assistant message renders as
+        // its text **plus** a blank separator row, so the count is not the
+        // number of messages.)
+        let expected: Vec<String> = state
+            .transcript_state
+            .lines
+            .iter()
+            .flat_map(|l| {
+                items_for_line(
+                    l,
+                    &Theme::default(),
+                    80,
+                    SearchHighlight::None,
+                    &std::collections::HashSet::new(),
+                )
+            })
+            .map(|r| r.text)
+            .collect();
+
+        let published = state.screen_text_rows.lock().unwrap().clone();
+        assert_eq!(
+            published, expected,
+            "published screen rows must equal the transcript rows that were drawn"
+        );
+        assert!(
+            published.iter().any(|t| t == "hello 0"),
+            "the assistant text must be among the published rows: {published:?}"
+        );
+    }
+
+    #[test]
+    fn empty_transcript_publishes_an_empty_vec() {
+        let mut state = AppState::default();
+        state.run_state.mode = RunMode::Editing;
+        Arc::make_mut(&mut state.transcript_state)
+            .lines
+            .extend((0..2).map(|i: usize| TranscriptLine::AssistantText(format!("second {i}"))));
+        render_transcript_frame(&state);
+        assert_eq!(
+            state.screen_text_rows.lock().unwrap().len(),
+            4,
+            "two assistant messages render as four screen rows (text + blank)"
+        );
+
+        // Clear the transcript (input stays non-empty so the welcome-card
+        // path does not trigger) and render again: the published rows must
+        // be replaced with an empty Vec, not kept from the previous frame.
+        Arc::make_mut(&mut state.transcript_state).lines.clear();
+        state.input.text = "clear the transcript".to_string();
+        render_transcript_frame(&state);
+
+        let published = state.screen_text_rows.lock().unwrap().clone();
+        assert!(
+            published.is_empty(),
+            "a cleared transcript must publish empty rows, got {published:?}"
+        );
+    }
+
+    #[test]
+    fn selection_highlight_covers_only_the_interval() {
+        let row = make_row(vec![
+            ("abcd".to_string(), Style::default()),
+            ("efgh".to_string(), Style::default()),
+            ("ijkl".to_string(), Style::default()),
+        ]);
+        let mut rline = row;
+        let sel = Selection {
+            anchor: SelectionPoint { row: 0, col: 2 },
+            focus: SelectionPoint { row: 0, col: 7 },
+        };
+        // interval chars [2, 7) of "abcdefghijkl"
+        apply_selection_row_highlight(&mut rline, 0, &sel, 12);
+
+        let spans = &rline.spans;
+        assert_eq!(spans.len(), 5);
+        assert_eq!(spans[0].content.as_ref(), "ab");
+        assert!(!spans[0].style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(spans[1].content.as_ref(), "cd");
+        assert!(spans[1].style.add_modifier.contains(Modifier::REVERSED));
+        // The interval [2, 7) covers "cdefg": the third span ("efgh")
+        // splits into the highlighted "efg" and the plain "h".
+        assert_eq!(spans[2].content.as_ref(), "efg");
+        assert!(spans[2].style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(spans[3].content.as_ref(), "h");
+        assert!(!spans[3].style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(spans[4].content.as_ref(), "ijkl");
+        assert!(!spans[4].style.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn cjk_row_highlight_maps_the_char_interval_to_display_columns() {
+        // One CJK ideograph is two display columns; the highlight must cut
+        // the row at character offsets regardless of that width.
+        let row = make_row(vec![
+            ("你好".to_string(), Style::default()),
+            ("世界".to_string(), Style::default()),
+        ]);
+        let mut rline = row;
+        let sel = Selection {
+            anchor: SelectionPoint { row: 0, col: 1 },
+            focus: SelectionPoint { row: 0, col: 3 },
+        };
+        let n = row_plain_text_of_line(&rline).chars().count();
+        assert_eq!(n, 4);
+        apply_selection_row_highlight(&mut rline, 0, &sel, n);
+
+        let highlighted: Vec<&str> = Vec::new();
+        let plain: Vec<&str> = Vec::new();
+        let mut highlighted = highlighted;
+        let mut plain = plain;
+        for sp in rline.spans.iter() {
+            if sp.style.add_modifier.contains(Modifier::REVERSED) {
+                highlighted.push(sp.content.as_ref());
+            } else {
+                plain.push(sp.content.as_ref());
+            }
+        }
+        let highlighted_text = highlighted.concat();
+        let plain_text = plain.concat();
+        assert_eq!(
+            highlighted_text, "好世",
+            "the interval [1, 3) covers 好 and 世"
+        );
+        assert_eq!(plain_text, "你界", "the rest of the row keeps its style");
+        assert_eq!(
+            crate::width::display_width(&highlighted_text),
+            4,
+            "the highlighted chars occupy 4 display columns (2 per CJK char)"
+        );
+        assert_eq!(crate::width::display_width("你好世界"), 8);
     }
 }

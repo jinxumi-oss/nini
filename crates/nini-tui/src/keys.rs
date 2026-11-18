@@ -204,6 +204,30 @@ pub enum KeyAction {
     /// `PageUp`, once per screenful, where `PageUp` counts
     /// *TranscriptLines* and one of those can render across fifty rows.
     ScrollToTop,
+    /// Scroll the transcript up by exactly one TranscriptLine.
+    ///
+    /// Pi: `tui.altScreen.lineUp` (`references/pi-0.85.1/src/tui/keybindings.ts:180-183`)
+    /// — Pi implements it (`tui-alt-screen.ts:744-751`, `scrollBy(-1)`) but
+    /// ships it with **no default key** (`defaultKeys: []`). See the
+    /// deviation note on the default binding below.
+    LineUp,
+    /// Scroll the transcript down by exactly one TranscriptLine.
+    ///
+    /// Pi: `tui.altScreen.lineDown` (`references/pi-0.85.1/src/tui/keybindings.ts:176-179`)
+    /// — implemented (`tui-alt-screen.ts:748-751`), no default key in Pi.
+    LineDown,
+    /// Scroll the transcript up by half a page.
+    ///
+    /// Pi: `tui.altScreen.halfPageUp` (`references/pi-0.85.1/src/tui/keybindings.ts:168-171`)
+    /// — implemented as `scrollBy(-max(1, floor(viewportHeight / 2)))`
+    /// (`tui-alt-screen.ts:736-742`), no default key in Pi.
+    HalfPageUp,
+    /// Scroll the transcript down by half a page.
+    ///
+    /// Pi: `tui.altScreen.halfPageDown` (`references/pi-0.85.1/src/tui/keybindings.ts:172-175`)
+    /// — implemented as `scrollBy(max(1, floor(viewportHeight / 2)))`
+    /// (`tui-alt-screen.ts:736-742`), no default key in Pi.
+    HalfPageDown,
     /// Toggle collapsed/expanded state on the focused transcript line.
     /// Default binding: Ctrl+O. Operates on the line at the current
     /// scroll offset (so the line currently visible at the top of the
@@ -520,6 +544,54 @@ pub fn default_keymap() -> Vec<KeyBinding> {
         KeyBinding {
             key: Key::new(KeyCode::PageDown, KeyModifiers::NONE),
             action: ScrollDown,
+        },
+        // Fine-grained scrolling: one line / half a page.
+        //
+        // **UX deviation from Pi — registered on purpose.**
+        //
+        // Pi *has* these four actions (`references/pi-0.85.1/src/tui/keybindings.ts:168-183`):
+        // `tui.altScreen.halfPageUp` / `halfPageDown` / `lineUp` / `lineDown`,
+        // and Pi implements them (`tui-alt-screen.ts:736-751`:
+        // half page = `max(1, floor(viewportHeight / 2))`, line = `1`).
+        // But Pi ships all four with `defaultKeys: []` — **no key presses
+        // them at all** unless the user writes a keymap by hand.
+        //
+        // nini binds them by default: a mouse wheel is not always
+        // available (a trackpad without a wheel, a remote/SSH session), and
+        // "PageUp = one whole screenful" is too coarse to read a long
+        // answer line by line. This is a deliberate divergence from Pi's
+        // default surface, not an accident — it is recorded here, in the
+        // tests (`keys.rs` `fine_scroll_keys_are_bound` and
+        // `runtime.rs` `fine_scroll_tests`) and in the implementation
+        // report.
+        //
+        // The chords were picked because **neither Pi nor nini uses them**
+        // (Pi's `ctrl+up` / `ctrl+shift+up` are `previousPrompt`,
+        // `ctrl+down` / `ctrl+shift+down` are `nextPrompt`,
+        // `ctrl+pageUp` / `ctrl+pageDown` are the editor's paging, and
+        // `alt+up` is `app.message.dequeue`), so no chord in this table
+        // forks a meaning a Pi user already knows.
+        //
+        // Terminal-delivery caveat: `Shift+Up` / `Shift+Down` arrive as
+        // `CSI 1;2A` / `CSI 1;2B` and `Alt+PageUp` / `Alt+PageDown` as
+        // `CSI 5;3~` / `CSI 6;3~` on xterm-family terminals (crossterm
+        // decodes both). `Shift+PageUp` is deliberately *not* used: the
+        // terminal itself intercepts it for scrollback.
+        KeyBinding {
+            key: Key::new(KeyCode::Up, KeyModifiers::SHIFT),
+            action: LineUp,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::Down, KeyModifiers::SHIFT),
+            action: LineDown,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::PageUp, KeyModifiers::ALT),
+            action: HalfPageUp,
+        },
+        KeyBinding {
+            key: Key::new(KeyCode::PageDown, KeyModifiers::ALT),
+            action: HalfPageDown,
         },
         // v0.8.4 (ux-001): Shift+End snaps back to the live message
         // after the user scrolled up with PageUp / k.
@@ -897,6 +969,104 @@ mod tests {
             "the same key is bound more than once; `resolve` returns the \
              first, so every later binding is unreachable:\n  {}",
             conflicts.join("\n  ")
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // v0.11: the four fine-grained scroll actions.
+    //
+    // **Registered deviation from Pi.** Pi ships `tui.altScreen.lineUp` /
+    // `lineDown` / `halfPageUp` / `halfPageDown`
+    // (`references/pi-0.85.1/src/tui/keybindings.ts:168-183`) with
+    // `defaultKeys: []` — no key presses them. nini binds all four by
+    // default, on purpose: "PageUp = one whole screenful" is too coarse
+    // to read a long answer, and a mouse wheel is not always available.
+    //
+    // This test is where the deviation is registered: it pins the four
+    // chords, so removing one (or letting Pi's empty default win) fails
+    // the build instead of silently narrowing the feature.
+    //
+    // The chords are `Shift+Up` / `Shift+Down` / `Alt+PageUp` /
+    // `Alt+PageDown` because **neither Pi nor nini uses them**: Pi's
+    // `ctrl+up` / `ctrl+shift+up` are `previousPrompt`, `ctrl+down` /
+    // `ctrl+shift+down` are `nextPrompt`, `ctrl+pageUp` / `ctrl+pageDown`
+    // are the editor's paging, and `alt+up` is `app.message.dequeue`.
+    // No chord here forks a meaning a Pi user already knows.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn fine_scroll_keys_are_bound() {
+        let km = default_keymap();
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Up, KeyModifiers::SHIFT)),
+            KeyAction::LineUp
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Down, KeyModifiers::SHIFT)),
+            KeyAction::LineDown
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::PageUp, KeyModifiers::ALT)),
+            KeyAction::HalfPageUp
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::PageDown, KeyModifiers::ALT)),
+            KeyAction::HalfPageDown
+        );
+
+        // The bindings are in the table itself, not produced by the
+        // `resolve` fallback (which only ever yields `Insert`/`Noop`).
+        let binding = |action: KeyAction| km.iter().find(|b| b.action == action).map(|b| b.key);
+        assert_eq!(
+            binding(KeyAction::LineUp),
+            Some(Key::new(KeyCode::Up, KeyModifiers::SHIFT))
+        );
+        assert_eq!(
+            binding(KeyAction::LineDown),
+            Some(Key::new(KeyCode::Down, KeyModifiers::SHIFT))
+        );
+        assert_eq!(
+            binding(KeyAction::HalfPageUp),
+            Some(Key::new(KeyCode::PageUp, KeyModifiers::ALT))
+        );
+        assert_eq!(
+            binding(KeyAction::HalfPageDown),
+            Some(Key::new(KeyCode::PageDown, KeyModifiers::ALT))
+        );
+    }
+
+    /// The new chords must not take over a key that already meant
+    /// something else.
+    #[test]
+    fn fine_scroll_keys_do_not_shadow_existing_ones() {
+        let km = default_keymap();
+        // The page keys keep their full-screen meaning.
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::PageUp, KeyModifiers::NONE)),
+            KeyAction::ScrollUp
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::PageDown, KeyModifiers::NONE)),
+            KeyAction::ScrollDown
+        );
+        // The bare arrows keep moving the cursor.
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Up, KeyModifiers::NONE)),
+            KeyAction::MoveUp
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Down, KeyModifiers::NONE)),
+            KeyAction::MoveDown
+        );
+        // Pi's chords for other things are untouched: `ctrl+up` is
+        // `previousPrompt` in Pi, `alt+up` is `app.message.dequeue`.
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Up, KeyModifiers::CTRL)),
+            KeyAction::Noop
+        );
+        assert_eq!(
+            resolve(&km, Key::new(KeyCode::Up, KeyModifiers::ALT)),
+            KeyAction::DequeueMessages
         );
     }
 }

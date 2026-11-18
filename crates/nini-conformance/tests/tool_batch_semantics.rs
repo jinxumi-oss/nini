@@ -151,7 +151,13 @@ async fn run_batch(tools: Vec<Arc<dyn Tool>>) -> usize {
     let mut agent = nini_core::agent::Agent::new(
         Arc::new(BatchProvider { calls }),
         registry,
-        RunConfig::new("test-model"),
+        RunConfig {
+            // v0.17（补处 2）：BatchProvider 永远重复发工具调用、永不结束，会一直
+            // 跑到兜底；注入小上限让这套用例不必真跑满兜底（否则默认 20_000 轮
+            // 会拖垮 conformance 套件，任务要求套件不能变几十分钟）。断言不变。
+            runaway_turn_backstop: Some(5),
+            ..RunConfig::new("test-model")
+        },
     );
     use futures_util::StreamExt;
     let s = agent.run(nini_core::AgentMessage::user("go"));
@@ -382,7 +388,12 @@ async fn calls_with(tool: Arc<dyn Tool>, n_tool_calls: usize) -> usize {
             n_tool_calls,
         }),
         registry,
-        RunConfig::new("test-model"),
+        RunConfig {
+            // v0.17（补处 2）：CountingProvider 永不终止的轮次会一直跑到兜底，
+            // 注入小上限避免真跑满兜底（默认 20_000 轮会拖垮套件）；断言不变。
+            runaway_turn_backstop: Some(5),
+            ..RunConfig::new("test-model")
+        },
     );
     use futures_util::StreamExt;
     let s = agent.run(nini_core::AgentMessage::user("go"));

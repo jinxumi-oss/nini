@@ -16,6 +16,15 @@
 //!
 //! Driven through `runtime::apply_action` and read off a `TestBackend`
 //! frame, the same discipline as `transcript_scroll_to_top.rs`.
+//!
+//! **Unit change (worker C, this round).** `scroll_offset` counts
+//! **rendered rows** now, and a page is one screen of rendered rows minus
+//! Pi's four-row overlap. 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变。
+//! This file's fixture is one row per turn and it never renders a frame
+//! before scrolling, so the page size is the unpublished default (one
+//! row) and the numbers below did not move — they are rows now, not
+//! turns. The screen-sized page is pinned in
+//! `scroll_row_granularity.rs`.
 
 use nini_tui::keys::{Key, KeyCode, KeyModifiers};
 use nini_tui::render::render_frame;
@@ -102,6 +111,9 @@ fn a_cold_transcript_shows_its_tail_not_its_head() {
 
 #[test]
 fn a_scrolled_up_transcript_says_how_much_is_hidden_below() {
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // `↓ N more` 的 N 现在是渲染行数，`scroll_offset` 也是渲染行数，
+    // 两者的相等关系不变。
     let mut state = transcript(200);
     for _ in 0..3 {
         apply_action(&mut state, page_up());
@@ -170,6 +182,9 @@ fn scrolling_down_at_the_tail_cannot_underflow() {
 
 #[test]
 fn scrolling_down_back_to_the_tail_restores_autoscroll() {
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧期望「两次翻页 = 2 条转录行」，新语义下是 2 个渲染行（本夹具
+    // 未渲染过，页长取未发布的默认值 1 行，故数值不变）。
     let mut state = transcript(200);
     apply_action(&mut state, page_up());
     apply_action(&mut state, page_up());

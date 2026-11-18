@@ -1114,23 +1114,23 @@ pub struct AppState {
     /// Invalidate with [`AppState::invalidate_item_counts`] whenever
     /// line *indices* shift.
     pub item_cache: Arc<StdMutex<TranscriptItemCache>>,
-    /// v0.10: how many `TranscriptLine`s one page of scrolling covers.
+    /// v0.10: how many **rendered rows** one page of scrolling covers.
     ///
     /// Published by the render path, because that is the only place that
-    /// knows both the per-line row counts and the viewport height — and
-    /// `ScrollUp` used to guess. It guessed `1`, which meant a single
-    /// PageUp moved anywhere from one to fifty rows depending on which
-    /// line it landed on: a folded tool result is many rows tall, a
-    /// divider is one.
+    /// knows the viewport height — and `ScrollUp` used to guess. It
+    /// guessed `1`, which meant a single PageUp moved one row.
+    ///
+    /// The unit is the rendered row, like `scroll_offset` and like Pi's
+    /// own `scrollTop`: a page is what the reader can see at once.
     ///
     /// Atomic rather than a plain field for the same reason as
     /// `item_cache`: `render_frame` takes `&AppState` and must not mutate.
     /// The value is recomputed every frame, so a stale read costs one
     /// keypress and self-corrects on the next frame.
-    pub page_lines: Arc<AtomicUsize>,
+    pub page_rows: Arc<AtomicUsize>,
     /// v0.10.2: the inner width of the prompt box, in cells.
     ///
-    /// Published by the render path for the same reason as `page_lines`:
+    /// Published by the render path for the same reason as `page_rows`:
     /// it is the only place the width exists. Vertical caret motion is
     /// defined over *visual* rows — soft-wrapped, not just `\n`-separated
     /// — so the key handler needs it. Pi has the identical dependency and
@@ -1178,23 +1178,35 @@ pub struct AppState {
     /// rows, not in lines.
     ///
     /// The mouse used to hit-test the scrollbar with
-    /// `transcript_state.scroll_offset`, which counts `TranscriptLine`s —
+    /// `transcript_state.scroll_offset`, which counted `TranscriptLine`s —
     /// a *different unit* from the one the renderer drew the thumb with.
     /// With one-row lines the two coincide and the bug is invisible; with
     /// a wrapped assistant message or a tall tool result they do not, and
     /// a press on the visible thumb landed somewhere else entirely, so the
     /// thumb jumped.
     ///
-    /// The mouse now uses this number, so the render and the hit-test
-    /// always speak the same unit.
+    /// `scroll_offset` now counts rendered rows too, so the two units
+    /// agree. This number stays as the scrollbar's own unit.
     pub items_skipped_from_bottom: Arc<AtomicUsize>,
     /// v0.10: milliseconds since the epoch of the last scroll action, used
     /// by the scrollbar's `auto` mode to fade itself out
     /// (`scroll-view.ts` `transientScrollbarVisible` + a 1000 ms timer).
     /// nini compares timestamps rather than owning a timer, which gives the
     /// same result with no background task. Atomic for the same reason as
-    /// `page_lines`: the render path takes `&AppState`.
+    /// `page_rows`: the render path takes `&AppState`.
     pub scroll_activity: Arc<AtomicU64>,
+    /// v0.11: the plain text of every visible transcript screen row, as
+    /// published by the render path.
+    ///
+    /// Mouse text selection works in screen-row space: the mouse hits a
+    /// `(row, col)` against these rows, and the selected text is the
+    /// concatenation of the rows between the anchor and the focus. The
+    /// renderer is the only place that knows the text of each screen row
+    /// (it builds it from `TranscriptLine`s via `items_for_line`, applying
+    /// wrap, indentation and styling), so it publishes the plain text it
+    /// actually drew. `Vec<String>` rather than an `AtomicUsize` count
+    /// because the mouse needs the text itself, not just a length.
+    pub screen_text_rows: Arc<StdMutex<Vec<String>>>,
     /// v0.8.5: `Arc<TranscriptState>` so that `AppState::clone()` is
     /// O(1) instead of deep-cloning every TranscriptLine (each
     /// ToolResult can carry ~25 KB of file content, so 14 parallel
@@ -1306,10 +1318,10 @@ impl TranscriptItemCache {
 /// scroll_offset for the viewport.
 #[derive(Debug)]
 pub struct TranscriptState {
-    // v0.8.9 (P1-5): `scroll_offset` is an index counted from the
-    // bottom of `lines`, so any operation that *shrinks* `lines`
-    // invalidates it. Leaving it behind is not cosmetic — the
-    // renderer's user-scroll branch skips items from the bottom until
+    // v0.8.9 (P1-5): `scroll_offset` is an offset counted from the
+    // bottom of the transcript, so any operation that *shrinks* the
+    // transcript invalidates it. Leaving it behind is not cosmetic — the
+    // renderer's user-scroll branch skips rows from the bottom until
     // the row budget runs out, and with a stale offset the budget
     // never runs out, so the transcript renders completely blank.
     // `reset_view` is the single place that snaps the viewport back to
@@ -1320,10 +1332,27 @@ pub struct TranscriptState {
     pub lines: Vec<TranscriptLine>,
     /// Auto-scroll transcript to the bottom on new lines.
     pub autoscroll: bool,
-    /// Number of lines scrolled up from the bottom (0 = at bottom).
+    /// How many **rendered rows** the viewport sits above the live tail
+    /// (0 = at the bottom).
+    ///
+    /// The unit is the rendered row, not the `TranscriptLine`. One line
+    /// can be hundreds of rows tall (a long assistant message), so a
+    /// line-based offset made one page jump over far more than a screen
+    /// of content, and the middle of a long message was unreachable.
+    /// Pi's scroll primitive is the rendered row too (`tui-alt-screen.ts`:
+    /// `scrollTop` indexes content rows), so this matches it.
+    ///
     /// Increases when user presses PageUp; decreases on PageDown;
     /// resets to 0 when user is back at bottom and `autoscroll` is true.
     pub scroll_offset: usize,
+    /// How many **rendered rows** the whole transcript occupies, as
+    /// measured by the renderer.
+    ///
+    /// Published by the render path — it is the only place that knows
+    /// how tall each `TranscriptLine` is — and read by `clamp_view`,
+    /// which bounds `scroll_offset`. A stale value only makes the bound
+    /// wrong for a frame; the renderer clamps as well.
+    pub total_rendered_rows: AtomicUsize,
 }
 
 // =================================================================
@@ -1717,6 +1746,39 @@ pub struct UiState {
     /// over the bar's column, cleared on release. `None` therefore means
     /// "not dragging", which is what every mouse event checks first.
     pub scrollbar_drag: Option<crate::runtime::ScrollbarDrag>,
+    /// v0.11: an active mouse text selection over the transcript, or
+    /// `None` when none is active.
+    ///
+    /// `anchor` is where the press started and never moves during the
+    /// drag; `focus` follows the pointer. `granularity` is the unit a
+    /// click operates on (character / word / line, set by the click
+    /// count) and is used when the press starts a selection. `dragged`
+    /// distinguishes a click (no drag, clears on release) from a real
+    /// drag (selection persists on release so the text can be copied).
+    pub selection: Option<crate::selection::Selection>,
+    pub selection_granularity: crate::selection::SelectionGranularity,
+    pub selection_dragged: bool,
+    /// R3: the most recent transcript mouse click, used to advance the
+    /// click count (1 → character, 2 → word, 3 → line) like Pi's
+    /// `getClickCount` (`tui-alt-screen.ts:1220`).
+    pub last_click: Option<crate::state::MouseClickRecord>,
+    /// R3: the range the selection started with (the press's range).
+    ///
+    /// Pi keeps the same thing as `selectionInitialRange`
+    /// (`references/pi-0.85.1/src/tui/tui-alt-screen.ts:214`): the drag
+    /// compares the range under the pointer with the **initial** range, not
+    /// with the current selection — otherwise a drag that crosses the start
+    /// flips the anchor and the next mouse move flips it back.
+    pub selection_initial: Option<(
+        crate::selection::SelectionPoint,
+        crate::selection::SelectionPoint,
+    )>,
+    /// R3: which edge the dragged selection is on: -1 = top (older
+    /// content), 1 = bottom (newer), 0 = not dragging.
+    ///
+    /// Pi's `selectionAutoScrollDirection`
+    /// (`references/pi-0.85.1/src/tui/tui-alt-screen.ts:1258`).
+    pub selection_auto_scroll_dir: i8,
     /// Set by F1 to signal that the help selector should close on the
     /// next loop iteration (avoids the user having to press Esc).
     pub close_help: bool,
@@ -1754,6 +1816,28 @@ pub struct UiState {
     pub executing_tools: std::collections::HashSet<String>,
 }
 
+/// The most recent transcript mouse click, used for Pi-aligned click
+/// counting (see `UiState::last_click`).
+///
+/// Pi's `getClickCount` (`tui-alt-screen.ts:1220`): a second press within
+/// 500ms on the same row + the same word bumps the count, the next one to
+/// 3, and otherwise the count starts at 1. The recorded row, word bounds
+/// and timestamp are what lets the runtime keep checking that rule.
+#[derive(Debug, Clone)]
+pub struct MouseClickRecord {
+    /// When the click landed (for the 500ms window).
+    pub clicked_at: std::time::Instant,
+    /// Row index in `screen_text_rows` where it landed.
+    pub row: Option<usize>,
+    /// Display column where it landed.
+    pub col: Option<usize>,
+    /// The word bounds (`selection::word_bounds`) at the click position, so
+    /// a later press can be matched to "the same word".
+    pub word: Option<(usize, usize)>,
+    /// Click count accumulated so far: 1 = character, 2 = word, 3 = line.
+    pub count: u32,
+}
+
 // =================================================================
 // Clone / Default impls (hand-written due to Box<dyn SelectorState>)
 // =================================================================
@@ -1778,17 +1862,25 @@ impl TranscriptState {
         self.scroll_offset = 0;
     }
 
-    /// Clamp `scroll_offset` to something the current line count can
+    /// Clamp `scroll_offset` to something the current transcript can
     /// actually satisfy. Returns `true` if it had to be corrected.
     ///
-    /// The renderer's user-scroll path translates `scroll_offset`
-    /// (lines) into an item-space skip. If that skip exceeds the total
-    /// item count, the row budget is never consumed and the transcript
-    /// comes out blank. Clamping here means the worst case of a missed
-    /// `reset_view` is "the user sees the top of the transcript"
-    /// instead of "the user sees an empty box".
+    /// `scroll_offset` counts rendered rows skipped from the tail, so
+    /// the bound is the total number of rendered rows minus one (the
+    /// very first row). The total is published by the render path
+    /// (`total_rendered_rows`), because only the renderer knows how
+    /// tall each line is.
+    ///
+    /// If that skip exceeds the transcript's height, the row budget is
+    /// never consumed and the transcript comes out blank. Clamping here
+    /// means the worst case of a missed `reset_view` is "the user sees
+    /// the top of the transcript" instead of "the user sees an empty
+    /// box".
     pub fn clamp_view(&mut self) -> bool {
-        let max = self.lines.len().saturating_sub(1);
+        let max = self
+            .total_rendered_rows
+            .load(Ordering::Relaxed)
+            .saturating_sub(1);
         if self.scroll_offset > max {
             self.scroll_offset = max;
             true
@@ -1804,6 +1896,7 @@ impl Clone for TranscriptState {
             lines: self.lines.clone(),
             autoscroll: self.autoscroll,
             scroll_offset: self.scroll_offset,
+            total_rendered_rows: AtomicUsize::new(self.total_rendered_rows.load(Ordering::Relaxed)),
         }
     }
 }
@@ -1814,6 +1907,7 @@ impl Default for TranscriptState {
             lines: Vec::new(),
             autoscroll: true,
             scroll_offset: 0,
+            total_rendered_rows: AtomicUsize::new(0),
         }
     }
 }
@@ -1940,6 +2034,14 @@ impl Clone for UiState {
             help_extended: self.help_extended,
             fullscreen_scrollbar: self.fullscreen_scrollbar,
             scrollbar_drag: self.scrollbar_drag,
+            // v0.11 (mouse selection): 选区是「当前 UI 状态」的一部分，
+            // 跟 scrollbar_drag 一样按值复制。
+            selection: self.selection.clone(),
+            selection_granularity: self.selection_granularity,
+            selection_dragged: self.selection_dragged,
+            last_click: self.last_click.clone(),
+            selection_initial: self.selection_initial,
+            selection_auto_scroll_dir: self.selection_auto_scroll_dir,
             close_help: self.close_help,
             search: self.search.clone(),
             // Box<dyn> is not Clone — drop selector (mirrors v0.8.0 clone_for_render)
@@ -1967,6 +2069,12 @@ impl Default for UiState {
             help_extended: false,
             fullscreen_scrollbar: crate::scrollbar::ScrollbarMode::default(),
             scrollbar_drag: None,
+            selection: None,
+            selection_granularity: crate::selection::SelectionGranularity::Character,
+            selection_dragged: false,
+            last_click: None,
+            selection_initial: None,
+            selection_auto_scroll_dir: 0,
             close_help: false,
             search: None,
             selector: None,
@@ -1991,11 +2099,12 @@ impl Clone for AppState {
             // coincident line, and `invalidate_item_counts` for the
             // from-scratch case.
             item_cache: Arc::clone(&self.item_cache),
-            page_lines: Arc::clone(&self.page_lines),
+            page_rows: Arc::clone(&self.page_rows),
             prompt_inner_width: Arc::clone(&self.prompt_inner_width),
             line_heights: Arc::clone(&self.line_heights),
             transcript_viewport: Arc::clone(&self.transcript_viewport),
             items_skipped_from_bottom: Arc::clone(&self.items_skipped_from_bottom),
+            screen_text_rows: Arc::clone(&self.screen_text_rows),
             provider_fallback_reason: self.provider_fallback_reason.clone(),
             scroll_activity: Arc::clone(&self.scroll_activity),
             run_state: self.run_state.clone(),
@@ -2012,11 +2121,12 @@ impl Default for AppState {
             input: InputBuffer::new(),
             transcript_state: Arc::new(TranscriptState::default()),
             item_cache: Arc::new(StdMutex::new(TranscriptItemCache::default())),
-            page_lines: Arc::new(AtomicUsize::new(1)),
+            page_rows: Arc::new(AtomicUsize::new(1)),
             prompt_inner_width: Arc::new(AtomicUsize::new(0)),
             line_heights: Arc::new(StdMutex::new(Vec::new())),
             transcript_viewport: Arc::new(StdMutex::new(crate::scrollbar::Viewport::default())),
             items_skipped_from_bottom: Arc::new(AtomicUsize::new(0)),
+            screen_text_rows: Arc::new(StdMutex::new(Vec::new())),
             provider_fallback_reason: None,
             scroll_activity: Arc::new(AtomicU64::new(0)),
             run_state: RunState::default(),
@@ -2720,20 +2830,20 @@ impl AppState {
             .push(TranscriptLine::Divider);
     }
 
-    /// Rows one page of transcript scrolling covers, as published by the
-    /// render path. Falls back to 1 before the first frame.
-    pub fn page_lines(&self) -> usize {
-        self.page_lines.load(Ordering::Relaxed).max(1)
+    /// Rendered rows one page of transcript scrolling covers, as published
+    /// by the render path. Falls back to 1 before the first frame.
+    pub fn page_rows(&self) -> usize {
+        self.page_rows.load(Ordering::Relaxed).max(1)
     }
 
     /// How many **rendered rows** the transcript viewport is above the live
     /// tail, as published by the render path.
     ///
-    /// This is the scrollbar's unit. `transcript_state.scroll_offset` is
-    /// *not*: that counts `TranscriptLine`s, and one line can be many
-    /// rows tall. The scrollbar's geometry must be computed from this
-    /// number, or the thumb the user sees and the thumb the mouse hits
-    /// are two different things.
+    /// This is the scrollbar's unit, and `transcript_state.scroll_offset`
+    /// counts the same thing now: rendered rows skipped from the tail.
+    /// The scrollbar's geometry must be computed from this number, or
+    /// the thumb the user sees and the thumb the mouse hits are two
+    /// different things.
     pub fn items_skipped_from_bottom(&self) -> usize {
         self.items_skipped_from_bottom.load(Ordering::Relaxed)
     }
@@ -3366,10 +3476,10 @@ impl AppState {
     /// typed a query, read `2/2`, pressed `n`, and the screen did not
     /// change by a single cell.
     ///
-    /// `scroll_offset` counts **TranscriptLines skipped from the bottom**,
-    /// which is what the renderer translates into an item-space skip. So
-    /// putting line `i` at the top of the viewport means skipping every
-    /// line below it: `total - 1 - i`.
+    /// `scroll_offset` counts **rendered rows skipped from the bottom**,
+    /// which is what the renderer walks back from the tail. So putting
+    /// line `i` at the top of the viewport means skipping every row of
+    /// every line below it.
     ///
     /// Deliberately *not* "scroll only if the match is already off
     /// screen": the renderer does not report what is visible back into
@@ -3388,11 +3498,19 @@ impl AppState {
         if idx >= total {
             return;
         }
+        // The rows below the match: the renderer publishes the per-line
+        // row counts (`line_heights`), so the exact number is known.
+        // Without them (no frame yet, or the transcript grew since the
+        // last one) the one-row-per-line estimate is the best we have.
+        let rows_below = match self.line_heights.lock() {
+            Ok(heights) if heights.len() == total => heights[idx + 1..].iter().sum(),
+            _ => total - 1 - idx,
+        };
         // Leaving autoscroll on would ignore scroll_offset entirely
         // (render_transcript takes the tail-aligned branch), so the flag
         // has to come off for a search to be able to look backwards.
         Arc::make_mut(&mut self.transcript_state).autoscroll = false;
-        Arc::make_mut(&mut self.transcript_state).scroll_offset = total.saturating_sub(1 + idx);
+        Arc::make_mut(&mut self.transcript_state).scroll_offset = rows_below;
     }
 
     /// Advance to the next match (wraps at the end).

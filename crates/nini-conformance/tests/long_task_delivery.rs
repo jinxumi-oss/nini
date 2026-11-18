@@ -251,6 +251,10 @@ async fn an_explicit_cap_still_stops_the_run() {
 /// that calls the same tool forever would otherwise spend tokens forever.
 #[tokio::test]
 async fn an_uncapped_run_that_never_settles_stops_at_the_backstop() {
+    // v0.17（补处 2）：runaway 兜底做成可注入（RunConfig::runaway_turn_backstop），
+    // 生产默认值保持 20_000（RUNAWAY_TURN_BACKSTOP）；这个测试只验证兜底本身，
+    // 注入小上限让它不必真跑满兜底。
+    const BACKSTOP_TURNS: usize = 5;
     let calls = Arc::new(AtomicUsize::new(0));
     let mut agent = Agent::new(
         // Every turn is a tool call, so the run never settles on its own.
@@ -259,7 +263,10 @@ async fn an_uncapped_run_that_never_settles_stops_at_the_backstop() {
             tool_steps: usize::MAX,
         }),
         ToolRegistry::new().register(Arc::new(Echo)),
-        RunConfig::new("test-model"),
+        RunConfig {
+            runaway_turn_backstop: Some(BACKSTOP_TURNS),
+            ..RunConfig::new("test-model")
+        },
     );
 
     let (_text, error) = drain(&mut agent).await;
@@ -274,7 +281,7 @@ async fn an_uncapped_run_that_never_settles_stops_at_the_backstop() {
         "the error must say what the user can do next: {err}"
     );
     assert!(
-        calls.load(Ordering::SeqCst) <= nini_core::agent::RUNAWAY_TURN_BACKSTOP + 1,
+        calls.load(Ordering::SeqCst) <= BACKSTOP_TURNS + 1,
         "the run must stop at the backstop, not later"
     );
 }

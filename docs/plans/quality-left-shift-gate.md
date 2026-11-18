@@ -26,6 +26,7 @@
 ## 三、回归与门禁证据
 - 回归：`cargo test --workspace` → 退出码 0（全绿）；`bash scripts/gate.sh` → 通过（通过 12 / 失败 0 / 跳过 4；README/CHANGELOG 测试数已同步为实测 2193）。
 - 测试数同步：本次新增测试使实测测试数 2184→2193，README 徽章/正文与 CHANGELOG 顶部计数同步为 2193（门禁 T4 要求对外声明与实测精确相等）。
+- **复核说明（诚实校正）**：门禁通过（通过 12 / 失败 0 / 跳过 4）在 2026-11-17 复跑时记录；复核时当前 `gate.sh` 为红（8/4/4），根因为并发 in-flight 未跟踪 .rs（`truncation_continues.rs`、`osc52.rs`、`selection.rs`）触发 `every_source_file_is_tracked_by_git`，属并发会话范围、不在本次质量左移范围；按约定不改 `gate.sh`/spec/fixture、不动并发会话改动。README/CHANGELOG 测试数与实测不符为上述 cargo test 失败后的下游症状，待并发 in-flight 落定后复跑门禁恢复。
 
 ## 四、范围控制
 - 改动落点：`crates/nini-core/src/constraint.rs`、`lib.rs`、`crates/nini-tools/src/edit.rs`、`write.rs`（阶段1）；`docs/quality-left-shift/`（阶段2/3 产物）；`/home/jin/quality-red-team/`（阶段3 红队 runner）；`/home/jin/toolchains/`（工具链）；README/CHANGELOG 测试数同步。

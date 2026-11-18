@@ -33,11 +33,13 @@ pub mod keyhint;
 pub mod keys;
 pub mod markdown;
 pub mod mermaid;
+pub mod osc52;
 pub mod render;
 pub mod rich;
 pub mod runtime;
 /// Transcript scrollbar (v0.10) — geometry aligned with Pi's `layout.ts`.
 pub mod scrollbar;
+pub mod selection;
 pub mod selector;
 pub mod selectors;
 pub mod settings;

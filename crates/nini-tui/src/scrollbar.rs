@@ -33,7 +33,7 @@
 //! # Positions, and why nini's are inverted
 //!
 //! Pi's `scrollTop` is measured from the top of the content. nini's
-//! `scroll_offset` counts `TranscriptLine`s skipped **from the bottom**, and
+//! `scroll_offset` counts **rendered rows** skipped **from the bottom**, and
 //! the render pass works in that direction too. So everything here takes
 //! `items_skipped_from_bottom` and derives the top-down position:
 //!
@@ -216,8 +216,11 @@ pub fn now_millis() -> u64 {
 /// How many `TranscriptLine`s it takes to cover `items` rendered rows,
 /// counting from the bottom up — the same direction the renderer skips in.
 ///
-/// Mirrors the user-scroll branch in `render.rs` so the number PageUp uses
-/// and the number PageUp actually moves stay the same thing.
+/// **Legacy, test-only.** The scroll unit is now the **rendered row**
+/// (see `scroll_rows_for_thumb_offset`); the renderer stopped using this
+/// conversion when it moved to row-scrolling, so the function survives
+/// only for the tests that pin the old line↔row arithmetic.
+#[cfg(test)]
 pub fn lines_needed_for_items(items_per_line: &[usize], items: usize, total: usize) -> usize {
     let mut remaining = items;
     let mut lines = 0usize;
@@ -273,9 +276,10 @@ impl Viewport {
     }
 }
 
-/// Convert a thumb offset within the track into a `scroll_offset`.
+/// Convert a thumb offset within the track into a scroll offset in
+/// **rendered rows**.
 ///
-/// Pi's half of the drag (`tui-alt-screen.ts:741-760`):
+/// Pi's half of the drag (`tui-alt-screen.ts:741-760`, `:1056-1066`):
 ///
 /// ```ts
 /// const maxThumbOffset = geometry.trackHeight - geometry.thumbHeight;
@@ -284,12 +288,44 @@ impl Viewport {
 /// scrollView.scrollTo(scrollTop);
 /// ```
 ///
-/// Then the part Pi does not have to write: turning a top-down row position
-/// into nini's bottom-up line count, using the row heights the renderer
-/// measured.
+/// Then the part Pi does not have to write: nini measures the scroll
+/// position from the **bottom**, so the rows skipped from the bottom are
+/// `maxScrollTop - scrollTop`. The unit is the rendered row, the same unit
+/// `scroll_offset` counts and the same unit the scrollbar's geometry is
+/// expressed in — no row-height conversion is needed any more.
 ///
 /// `None` when there is nothing to scroll, which is also the signal that a
 /// drag should not start.
+pub fn scroll_rows_for_thumb_offset(
+    thumb_offset: usize,
+    geometry: &ScrollbarGeometry,
+) -> Option<usize> {
+    if geometry.max_scroll_top == 0 {
+        return None;
+    }
+    let max_thumb_offset = (geometry.track_height - geometry.thumb_height) as usize;
+    let thumb_offset = thumb_offset.min(max_thumb_offset);
+
+    // Pi's `scrollTop`, measured from the top.
+    let scroll_top = if max_thumb_offset == 0 {
+        0
+    } else {
+        ((thumb_offset as f64 / max_thumb_offset as f64) * geometry.max_scroll_top as f64).round()
+            as usize
+    };
+
+    // nini measures from the bottom, in rendered rows.
+    Some(geometry.max_scroll_top.saturating_sub(scroll_top))
+}
+
+/// Convert a thumb offset within the track into a `scroll_offset` counted
+/// in **transcript lines**.
+///
+/// **Legacy, test-only.** The scroll unit is the rendered row; this
+/// function still answers in lines and therefore needs the row heights the
+/// renderer measured. Its remaining callers are this file's own unit
+/// tests; the runtime uses [`scroll_rows_for_thumb_offset`].
+#[cfg(test)]
 pub fn line_offset_for_thumb_offset(
     line_heights: &[usize],
     thumb_offset: usize,
@@ -319,17 +355,26 @@ pub fn line_offset_for_thumb_offset(
 }
 
 /// Rows a wheel notch moves, matching Pi's `wheelScrollLines`
-/// (`tui-alt-screen.ts:144-146`), whose default is 3.
+/// (`tui-alt-screen.ts:264`), whose default is 1.
 ///
-/// Expressed in *lines* because that is the unit `scroll_offset` counts, so
-/// this is not Pi's arithmetic exactly — that difference is the line-vs-cell
-/// gap already recorded in the plan.
+/// One wheel event moves one **rendered row** — the same unit
+/// `scroll_offset` counts and the same unit Pi's `scrollTop` uses
+/// (`references/pi-0.85.1/src/tui/tui-alt-screen.ts:488-490`).
 pub fn wheel_lines() -> usize {
     WHEEL_SCROLL_LINES
 }
 
-/// Pi's `wheelScrollLines` default.
-pub const WHEEL_SCROLL_LINES: usize = 3;
+/// Pi's `wheelScrollLines` default (`tui-alt-screen.ts:264`: `?? 1`),
+/// counted in **rendered rows**.
+pub const WHEEL_SCROLL_LINES: usize = 1;
+
+/// How many rows a page scroll keeps in view, so consecutive pages overlap.
+///
+/// Pi's `PAGE_SCROLL_OVERLAP` (`references/pi-0.85.1/src/tui/tui-alt-screen.ts:74`),
+/// used by `pageUp`/`pageDown` (`tui-alt-screen.ts:724-734`): a page moves
+/// `max(1, viewportHeight - PAGE_SCROLL_OVERLAP)` rows, so four rows of the
+/// previous page stay on screen.
+pub const PAGE_SCROLL_OVERLAP: usize = 4;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,6 +685,6 @@ mod tests {
     #[test]
     fn the_wheel_moves_pi_s_default_number_of_lines() {
         assert_eq!(wheel_lines(), WHEEL_SCROLL_LINES);
-        assert_eq!(wheel_lines(), 3);
+        assert_eq!(wheel_lines(), 1);
     }
 }

@@ -789,6 +789,10 @@ fn markdown_in_assistant_text_renders() {
 /// REGRESSION: scroll_offset clips transcript to last N lines.
 #[test]
 fn scroll_offset_clips_to_last_n_lines() {
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // `scroll_offset = 20` 现在是「离开尾部 20 个渲染行」，旧语义下是
+    // 「离开尾部 20 条转录行」；本夹具每条转录行一个渲染行，所以仍是
+    // 「显示最后 30 行」。
     let mut state = AppState::new("test");
     // Push 50 lines.
     for i in 0..50 {
@@ -810,6 +814,8 @@ fn scroll_offset_clips_to_last_n_lines() {
 /// REGRESSION: scroll_offset=0 shows from beginning (no clip).
 #[test]
 fn scroll_offset_zero_shows_from_beginning() {
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 0 仍是「贴在实时尾部」，单位变了，含义不变。
     let mut state = AppState::new("test");
     state.push_user("first");
     state.push_user("second");

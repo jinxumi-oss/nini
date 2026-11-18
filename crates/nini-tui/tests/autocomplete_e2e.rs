@@ -232,6 +232,11 @@ fn popup_navigation_wraps_up() {
             },
         ],
         selected: 0,
+        // The completion popup's own scroll offset — **not** the
+        // transcript's. The transcript's `scroll_offset` counts rendered
+        // rows since this round (it counted transcript lines before — 钉的是
+        // 旧的转录行语义，本次因滚动单位改为渲染行而变); the popup's unit is
+        // unchanged, so this expectation did not move.
         scroll_offset: 0,
         max_visible: 8,
     };

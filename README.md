@@ -17,9 +17,9 @@ rewrite*, *Rust implementation of Pi*, *Pi agent 的 Rust 版本*, *Pi 的 Rust 
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-[![Status](https://img.shields.io/badge/status-v1.0.0-green)](https://github.com/jinxumi-oss/nini/releases)
+[![Status](https://img.shields.io/badge/status-v1.0.2-green)](https://github.com/jinxumi-oss/nini/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2193%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
+[![Tests](https://img.shields.io/badge/tests-2208%20passing-green)](https://github.com/jinxumi-oss/nini/actions)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 nini is a Rust reimplementation of [Pi](https://github.com/earendil-works/pi),
@@ -108,7 +108,7 @@ What that means in practice, and nothing more:
   toolchain
 - **No license riders** — pure MIT, unlike forks carrying OpenAI/Anthropic
   redistribution restrictions
-- **2193 unit + integration tests**, including property-based SSE fuzz and
+- **2208 unit + integration tests**, including property-based SSE fuzz and
   end-to-end wire-format tests that drive a real HTTP server
 - **Built-in tools you can extend** — bash, read, write, edit, grep, find
 - **Streaming TUI** with slash-command autocomplete

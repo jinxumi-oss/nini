@@ -110,6 +110,9 @@ fn wheel_wraps_completion_popup() {
 
 #[test]
 fn wheel_does_not_scroll_transcript_when_popup_open() {
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // 旧语义下这里比较的是「转录行数」，新语义下是「渲染行数」；
+    // 「弹窗打开时滚轮不滚转录」这个契约不变。
     let mut state = AppState::default();
     state.run_state.mode = RunMode::Editing;
     state.ui_state.completion = Some(popup_with_items());

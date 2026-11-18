@@ -118,6 +118,9 @@ fn the_overflow_indicator_does_not_eat_the_first_row_of_the_transcript() {
 
 #[test]
 fn the_user_scroll_indicator_does_not_eat_the_last_row_of_the_transcript() {
+    // 钉的是旧的转录行语义，本次因滚动单位改为渲染行而变：
+    // `scroll_offset = 1` 现在是「离开尾部一个渲染行」，旧语义下是
+    // 「离开尾部一条转录行」；本夹具每行一个渲染行，行为不变。
     let mut state = transcript(200);
     {
         let ts = Arc::make_mut(&mut state.transcript_state);
@@ -145,11 +148,13 @@ fn the_user_scroll_indicator_does_not_eat_the_last_row_of_the_transcript() {
 /// A stale scroll offset must not conjure a hint about content that is
 /// not there.
 ///
-/// `scroll_offset` counts lines skipped from the bottom, and it can
-/// outlive the content it referred to: the transcript is cleared, a
-/// turn ends, a tool result replaces a longer block. The hint used to
-/// believe the offset and paint "↓ N more" while **every** line was
-/// already on screen — and it took a row the content could have used.
+/// `scroll_offset` counts rendered rows skipped from the bottom (it
+/// counted transcript lines before this round — 钉的是旧的转录行语义，本次
+/// 因滚动单位改为渲染行而变), and it can outlive the content it referred
+/// to: the transcript is cleared, a turn ends, a tool result replaces a
+/// longer block. The hint used to believe the offset and paint "↓ N more"
+/// while **every** line was already on screen — and it took a row the
+/// content could have used.
 #[test]
 fn a_stale_scroll_offset_does_not_invent_a_hint() {
     let mut state = transcript(5); // everything fits

@@ -27,6 +27,11 @@ const DEFAULT_CONTEXT_WINDOW: u32 = 200_000;
 const DEFAULT_RESERVE_TOKENS: u32 = 16_384;
 const DEFAULT_KEEP_RECENT_TOKENS: u32 = 20_000;
 
+/// Pi (`tui-alt-screen.ts:272`): `options.copyOnSelect ?? true` — the
+/// 「选择即复制」switch is on by default, and a user can turn it off in
+/// `settings.json`.
+pub const COPY_ON_SELECT_DEFAULT: bool = true;
+
 /// Top-level user settings plus runtime knobs (theme + model + thinking
 /// + compaction budget).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -57,6 +62,12 @@ pub struct Settings {
     /// `showUserMessageSelector()` has no counterpart here yet.
     #[serde(default = "default_double_escape_action")]
     pub double_escape_action: String,
+    /// Mouse select ends with auto-copying the selection to the system
+    /// clipboard. Pi: `tui-alt-screen.ts:272` — `options.copyOnSelect
+    /// ?? true`, on by default. Turned off, a drag-only selection
+    /// stays highlighted without copying.
+    #[serde(default = "default_copy_on_select")]
+    pub copy_on_select: bool,
 }
 
 fn default_context_window() -> u32 {
@@ -72,6 +83,10 @@ fn default_double_escape_action() -> String {
     "tree".to_string()
 }
 
+fn default_copy_on_select() -> bool {
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -82,6 +97,7 @@ impl Default for Settings {
             reserve_tokens: DEFAULT_RESERVE_TOKENS,
             keep_recent_tokens: DEFAULT_KEEP_RECENT_TOKENS,
             double_escape_action: default_double_escape_action(),
+            copy_on_select: default_copy_on_select(),
         }
     }
 }
@@ -93,6 +109,23 @@ impl Settings {
 
     pub fn model_name_or_default(opt: &Option<Settings>) -> Option<String> {
         opt.as_ref().and_then(|s| s.model_name())
+    }
+}
+
+/// Read `copy_on_select` from the runtime settings file.
+///
+/// The file is missing, malformed, or lacks the field — or no
+/// settings file is configured at all — every case falls back to
+/// [`COPY_ON_SELECT_DEFAULT`], so old `settings.json` files still
+/// parse (thanks to `#[serde(default)]` on the field).
+pub fn copy_on_select_from_settings(path: Option<&std::path::Path>) -> bool {
+    match path {
+        Some(p) => {
+            SettingsManager::load_from_disk(PathBuf::from(p))
+                .settings
+                .copy_on_select
+        }
+        None => COPY_ON_SELECT_DEFAULT,
     }
 }
 
@@ -488,5 +521,61 @@ mod theme_resolution_tests {
             std::env::remove_var("NINI_AGENT_DIR");
             std::env::remove_var("HOME");
         }
+    }
+
+    #[test]
+    fn copy_on_select_default_is_true() {
+        assert_eq!(COPY_ON_SELECT_DEFAULT, true);
+        assert!(Settings::default().copy_on_select);
+    }
+
+    #[test]
+    fn copy_on_select_missing_file_falls_back_to_default() {
+        // File absent → default true, via `Some(nonexistent path)`.
+        assert!(copy_on_select_from_settings(None));
+        assert!(copy_on_select_from_settings(Some(std::path::Path::new(
+            "/nonexistent/copy_on_select_settings.json"
+        ))));
+    }
+
+    #[test]
+    fn copy_on_select_disabled_and_enabled_from_settings_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+
+        std::fs::write(&path, r#"{"theme":"dark","copy_on_select":false}"#).unwrap();
+        assert!(
+            !copy_on_select_from_settings(Some(path.as_path())),
+            "copy_on_select:false should be read back as false"
+        );
+
+        std::fs::write(&path, r#"{"theme":"dark","copy_on_select":true}"#).unwrap();
+        assert!(copy_on_select_from_settings(Some(path.as_path())));
+    }
+
+    #[test]
+    fn copy_on_select_default_for_settings_without_the_field() {
+        // Old settings.json files (no copy_on_select field) must still
+        // load fully, with the new field at its default. `#[serde(
+        // default)]` is what makes that possible.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        std::fs::write(&path, r#"{"theme":"dark","context_window":200000}"#).unwrap();
+
+        let m = SettingsManager::load_from_disk(path.clone());
+        assert!(
+            copy_on_select_from_settings(Some(path.as_path())),
+            "old file should fall back to the default copy_on_select"
+        );
+        assert_eq!(m.settings.context_window, 200_000);
+        assert_eq!(m.settings.copy_on_select, true);
+    }
+
+    #[test]
+    fn copy_on_select_default_for_malformed_settings_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        std::fs::write(&path, r#"{"theme":"dark","copy_on_select":}"#).unwrap();
+        assert!(copy_on_select_from_settings(Some(path.as_path())));
     }
 }

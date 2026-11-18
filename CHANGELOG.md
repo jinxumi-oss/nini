@@ -1,3 +1,49 @@
+## v1.0.2 — TUI 上下文滚动：单位改成渲染行，长消息能逐屏看完
+
+**症状**（用户实测截图）：在最后一页往上翻，内容整段消失——同一条超长助手消息（几百个
+渲染行）被**整条跳过**，中间内容从未被渲染；相邻两屏也没有接续。
+
+**根因**：`scroll_offset` 计的是**转录行**（TranscriptLine），而视口、滚动条几何、翻页步长
+全是**渲染行**。一条消息渲染成几百行时：翻页步长在**底部**测量（底部行多为 1 行），
+作用点却在当前区域 → 一次翻页跨过远超一屏的渲染行；单行超过视口时渲染器只能取该行
+**尾部**（tail-truncate），行中间永远看不到；翻页 0 行重叠 ⇒ 相邻两屏内容不连续。
+
+**修复**（向 Pi 对齐：Pi 的 `scrollTop` 单位就是渲染行，`tui-alt-screen.ts:488-490`）：
+
+| | 旧 | 新 |
+|---|---|---|
+| 滚动位置单位 | 转录行（整条跳过） | **渲染行**（可停在大行内部） |
+| 翻页步长 | 一屏（底部测量的转录行数），0 行重叠 | 一屏 **渲染行** − **4 行重叠**（Pi `PAGE_SCROLL_OVERLAP`，`:74`） |
+| 滚轮 | 3 转录行/格 | **1 渲染行**/格，**Alt+滚轮 ×5** |
+| 键盘滚动 | 只有整屏一档 | 逐行（`Shift+↑/↓`）+ 半页（`Alt+PageUp/Down`）+ 整页（`PageUp/Down`） |
+| 滚动条拖拽 | 逐事件绝对比例映射，单事件可跨多行 | 增量平滑：首事件完整映射，其后事件增量 50% 低通 |
+| 超长消息 | 只能看尾部 | 可逐屏看完任意一段 |
+
+**三处有意的偏差**（写在这里，免得被当成 bug）：
+
+1. **滚动条拖拽的增量平滑**。Pi 是逐事件绝对比例映射、无插值（`tui-alt-screen.ts:1056-1066`、
+   `:1068-1088`）；nini 对增量做低通，拖起来更连续。
+2. **状态行的上下文段永不牺牲**。长摘要状态（如 compaction 摘要）曾经把 `ctx %` 段一起裁掉，
+   用户既看不全摘要、也看不到上下文；现在只裁 status/diff 与 tokens/cost。Pi 的 footer 截断
+   不在参照子集内，所以这是 nini 自定的 UX 决策。
+3. **逐行/半页给了默认键**。Pi 有这两个动作但默认不绑定（`tui/keybindings.ts:168-185`）。
+
+**随本版一起发布**（此前几轮已完成、此前未发版的在途工作）：
+
+- **鼠标文本选择与复制粘贴**：左键拖拽选区（双击选词、三击选行）、选择即复制、右键粘贴、
+  OSC 52 兜底、边缘自动滚动；复制成功的反馈移到状态栏（不再每复制一次就往转录里插一行）。
+  实现见 `crates/nini-tui/src/selection.rs`、`crates/nini-tui/src/osc52.rs`。
+- **输出被截断时接住并继续**（`crates/nini-core/src/agent.rs`）：模型侧长度截断不再把任务扔回
+  给用户——丢掉半截输出、塞一句继续提示、继续下一轮；连续截断超过容忍上限才结束并汇报。
+  oracle：`crates/nini-core/tests/truncation_continues.rs`。
+- **质量左移工具链**（`crates/nini-core/src/constraint.rs`、`docs/quality-left-shift/`）：对
+  改动增量做静态约束检查（副作用跨界、注释占比等），把问题挡在进主干之前。
+
+台账/oracle：`crates/nini-tui/tests/scroll_row_granularity.rs`（4 条）、`crates/nini-tui/tests/mouse_e2e.rs`、
+`crates/nini-tui/tests/scrollbar_units.rs`、`crates/nini-core/tests/truncation_continues.rs`。
+
+2208 tests, all green.
+
 ## v1.0.1 — `/resume` 打开交互式会话选择器（B34）+ Pi 选择器四件套（B35）
 
 **症状**：`/resume` 是一堵文本墙。屏幕上最多 50 行

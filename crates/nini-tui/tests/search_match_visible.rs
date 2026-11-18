@@ -31,6 +31,13 @@
 //! `render_frame` — exists on both sides of the fix. The colours are
 //! read as literal hex from the palette so the test states the intended
 //! colour rather than mirroring the implementation's lookup path.
+//!
+//! **Unit change (worker C, this round).** The viewport follows the hit
+//! by writing `scroll_offset`, which counts **rendered rows** now (it
+//! counted transcript lines before this round — 钉的是旧的转录行语义，本次
+//! 因滚动单位改为渲染行而变). The assertions here are behavioural — "the
+//! hit is on screen" — so they hold under either unit; the row-level
+//! arithmetic is pinned in `scroll_row_granularity.rs`.
 
 use nini_tui::render::render_frame;
 use nini_tui::state::AppState;
