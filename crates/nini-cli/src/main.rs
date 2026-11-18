@@ -1108,4 +1108,147 @@ mod cli_wiring_tests {
             "the flag did not beat the settings file"
         );
     }
+
+    /// v1.0.3: the `retry` block of `settings.json` has to reach the
+    /// `RunConfig`.
+    ///
+    /// nini parsed the block (`nini_core::settings::RetrySettings`) and
+    /// nobody ever handed it to the agent — the block was decoration.
+    /// Pi reads it from the same place (`settings-manager.ts:882-886`).
+    ///
+    /// The keys nini's parser knows are `max_retries` / `base_delay_ms`
+    /// (`nini_core::settings::RetrySettings`); Pi's camelCase spelling
+    /// (`maxRetries` / `baseDelayMs`) is not among them.
+    #[test]
+    fn the_settings_file_retry_block_reaches_the_run_config() {
+        let mut settings = nini_core::settings::Settings::default();
+        settings.retry = Some(nini_core::settings::RetrySettings {
+            max_retries: Some(5),
+            base_delay_ms: Some(100),
+        });
+
+        let run_cfg = run_config_for(&[], &settings);
+        assert_eq!(
+            run_cfg.retry.max_retries, 5,
+            "the settings file's `max_retries` did not reach the `RunConfig`"
+        );
+        assert_eq!(
+            run_cfg.retry.base_delay_ms, 100,
+            "the settings file's `base_delay_ms` did not reach the `RunConfig`"
+        );
+    }
+
+    /// v1.0.3: no `retry` block means the defaults — Pi's
+    /// (`maxRetries ?? 3`, `baseDelayMs ?? 2000`) and nini's.
+    #[test]
+    fn no_retry_block_in_the_settings_file_means_the_defaults() {
+        let settings = nini_core::settings::Settings::default();
+        assert!(settings.retry.is_none(), "the default must carry no block");
+
+        let run_cfg = run_config_for(&[], &settings);
+        assert_eq!(
+            run_cfg.retry.max_retries,
+            nini_core::agent::DEFAULT_MAX_RETRIES,
+            "the default number of retries was not used"
+        );
+        assert_eq!(
+            run_cfg.retry.base_delay_ms,
+            nini_core::agent::DEFAULT_RETRY_BASE_MS,
+            "the default retry delay was not used"
+        );
+    }
+
+    /// v1.0.3: an *empty* block, and a half-filled one, fall back per
+    /// field — a block that names only `max_retries` must not silently
+    /// zero the delay.
+    #[test]
+    fn an_empty_or_half_filled_retry_block_falls_back_per_field() {
+        let mut settings = nini_core::settings::Settings::default();
+        settings.retry = Some(nini_core::settings::RetrySettings {
+            max_retries: None,
+            base_delay_ms: None,
+        });
+
+        let run_cfg = run_config_for(&[], &settings);
+        assert_eq!(
+            run_cfg.retry.max_retries,
+            nini_core::agent::DEFAULT_MAX_RETRIES,
+            "an empty `retry` block did not fall back to the default"
+        );
+        assert_eq!(
+            run_cfg.retry.base_delay_ms,
+            nini_core::agent::DEFAULT_RETRY_BASE_MS,
+            "an empty `retry` block did not fall back to the default"
+        );
+
+        // Half filled: the named field is applied, the unnamed one falls
+        // back — the two are independent.
+        settings.retry = Some(nini_core::settings::RetrySettings {
+            max_retries: Some(5),
+            base_delay_ms: None,
+        });
+        let run_cfg = run_config_for(&[], &settings);
+        assert_eq!(
+            run_cfg.retry.max_retries, 5,
+            "the named field was not applied"
+        );
+        assert_eq!(
+            run_cfg.retry.base_delay_ms,
+            nini_core::agent::DEFAULT_RETRY_BASE_MS,
+            "the unnamed field did not fall back to the default"
+        );
+    }
+
+    /// v1.0.3: the `retry` block has to reach **all three** assembly
+    /// doors — the same drift the tool-concurrency ceiling already paid
+    /// for once (a limit in the TUI, nothing in `-p`).
+    #[test]
+    fn the_settings_file_retry_block_reaches_all_three_assembly_doors() {
+        let mut settings = nini_core::settings::Settings::default();
+        settings.retry = Some(nini_core::settings::RetrySettings {
+            max_retries: Some(5),
+            base_delay_ms: Some(100),
+        });
+
+        let args = args_from(&[]);
+        let cfg = app_config_from_args(&args);
+
+        // Door 1: the TUI.
+        let (tui_cfg, _) = app::build_tui_run_config(
+            &settings,
+            std::path::Path::new("/tmp"),
+            &ToolRegistry::new(),
+            &cfg,
+        );
+        assert_eq!(
+            tui_cfg.retry.max_retries, 5,
+            "the TUI door dropped the settings file's retry policy"
+        );
+        assert_eq!(
+            tui_cfg.retry.base_delay_ms, 100,
+            "the TUI door dropped the settings file's retry policy"
+        );
+
+        // Door 2: `nini demo`.
+        let demo_cfg = crate::demo::demo_run_config(&cfg, &settings, "test-model", String::new());
+        assert_eq!(
+            demo_cfg.retry.max_retries, 5,
+            "the demo door dropped the settings file's retry policy"
+        );
+        assert_eq!(
+            demo_cfg.retry.base_delay_ms, 100,
+            "the demo door dropped the settings file's retry policy"
+        );
+
+        // Door 3: `nini -p`.
+        let print_cfg = crate::demo::print_run_config(&cfg, &settings, "test-model", String::new());
+        assert_eq!(
+            print_cfg.retry.max_retries, 5,
+            "the print door dropped the settings file's retry policy"
+        );
+        assert_eq!(
+            print_cfg.retry.base_delay_ms, 100,
+            "the print door dropped the settings file's retry policy"
+        );
+    }
 }

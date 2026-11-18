@@ -315,6 +315,12 @@ nini reads and writes the same file formats as Pi v0.85.1:
 | Sessions | `~/.nini/agent/sessions/<project>/<timestamp>.jsonl` |
 | Slash commands | the same 23 names (plus 5 nini-only ones); the argument hints differ — Pi declares a hint only for `model`, `thinking` and `login` |
 
+The `retry` section of `settings.json` really takes effect: it decides how many
+times a transient error is retried (`maxRetries`, default 3) and how long the
+backoff waits before the first retry (`baseDelayMs`, default 2000 ms, doubling
+with every attempt); Pi's camelCase spelling and nini's snake_case are both
+read.
+
 You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.
 

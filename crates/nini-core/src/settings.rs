@@ -118,9 +118,41 @@ pub struct Settings {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RetrySettings {
-    #[serde(default)]
+    /// How many times a transient error is retried before the run gives up.
+    ///
+    /// Pi: `settings-manager.ts:882-886` reads
+    /// `this.settings.retry?.maxRetries ?? 3` — so Pi's spelling is
+    /// `maxRetries` and the default is **3**, the same number nini
+    /// uses (`agent.rs`: `DEFAULT_MAX_RETRIES`).
+    ///
+    /// Pi's camelCase spelling (`maxRetries`) and nini's snake_case
+    /// (`max_retries`) are **both** read; the canonical spelling here
+    /// is the snake_case one, like every other key of this struct.
+    /// Without the alias a file written for Pi was silently ignored —
+    /// the settings looked right and the retries did not move.
+    ///
+    /// Unknown keys are tolerated (the `Settings` parse is a "v1
+    /// subset"), so a file written for Pi is not rejected by nini
+    /// either.
+    #[serde(default, alias = "maxRetries")]
     pub max_retries: Option<u32>,
-    #[serde(default)]
+    /// How long to wait before the first retry, in milliseconds. The
+    /// delay doubles with every attempt (`base * 2^(n-1)`), so three
+    /// retries wait 2000 / 4000 / 8000 ms.
+    ///
+    /// Pi: `settings-manager.ts:882-886` reads
+    /// `this.settings.retry?.baseDelayMs ?? 2000` — so Pi's spelling is
+    /// `baseDelayMs` and the default is **2000 ms**, the same number
+    /// nini uses (`agent.rs`: `DEFAULT_RETRY_BASE_MS`).
+    ///
+    /// Pi's camelCase spelling (`baseDelayMs`) and nini's snake_case
+    /// (`base_delay_ms`) are **both** read; the canonical spelling here
+    /// is the snake_case one, like every other key of this struct.
+    ///
+    /// Unknown keys are tolerated (the `Settings` parse is a "v1
+    /// subset"), so a file written for Pi is not rejected by nini
+    /// either.
+    #[serde(default, alias = "baseDelayMs")]
     pub base_delay_ms: Option<u64>,
 }
 
@@ -1165,6 +1197,56 @@ mod tests {
             "an illegal value in the project file must not take the user-level \
              `toolExecution` down with it"
         );
+    }
+
+    /// The `retry` section is read under **Pi's** camelCase spelling, so a
+    /// settings file written for Pi is not silently ignored.
+    #[test]
+    fn retry_settings_are_read_under_the_camel_case_keys() {
+        let parsed: Settings =
+            serde_json::from_str(r#"{"retry": {"maxRetries": 5, "baseDelayMs": 500}}"#)
+                .expect("parses");
+        let retry = parsed.retry.expect("the `retry` section was not read");
+        assert_eq!(
+            retry.max_retries,
+            Some(5),
+            "Pi's `maxRetries` key was not read"
+        );
+        assert_eq!(
+            retry.base_delay_ms,
+            Some(500),
+            "Pi's `baseDelayMs` key was not read"
+        );
+    }
+
+    /// nini's own snake_case spelling keeps working — the camelCase key
+    /// is an **alias**, not a replacement.
+    #[test]
+    fn retry_settings_are_read_under_the_snake_case_keys() {
+        let parsed: Settings =
+            serde_json::from_str(r#"{"retry": {"max_retries": 5, "base_delay_ms": 500}}"#)
+                .expect("parses");
+        let retry = parsed.retry.expect("the `retry` section was not read");
+        assert_eq!(
+            retry.max_retries,
+            Some(5),
+            "the snake_case `max_retries` key was not read"
+        );
+        assert_eq!(
+            retry.base_delay_ms,
+            Some(500),
+            "the snake_case `base_delay_ms` key was not read"
+        );
+    }
+
+    /// An empty `retry` section leaves both knobs unset, so the run's
+    /// defaults (3 retries, 2000 ms base delay) stand.
+    #[test]
+    fn an_empty_retry_section_leaves_both_knobs_at_their_defaults() {
+        let parsed: Settings = serde_json::from_str(r#"{"retry": {}}"#).expect("parses");
+        let retry = parsed.retry.expect("the `retry` section was not read");
+        assert_eq!(retry.max_retries, None);
+        assert_eq!(retry.base_delay_ms, None);
     }
 
     #[test]

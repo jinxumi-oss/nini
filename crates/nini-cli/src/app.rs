@@ -379,6 +379,22 @@ pub(crate) fn build_tui_run_config(
         // in `AppConfig::resolved_tool_execution`, shared with the
         // `demo`/`-p` door so the two cannot drift apart.
         tool_execution: cfg.resolved_tool_execution(settings),
+        // v1.0.3: the retry policy the settings file declares. Pi reads it
+        // from the same place (`settings-manager.ts:882-886`); nini parsed
+        // `settings.json`'s `retry` block but never handed it to the agent,
+        // so the block was decoration.
+        retry: nini_core::agent::RetrySettings {
+            max_retries: settings
+                .retry
+                .as_ref()
+                .and_then(|r| r.max_retries)
+                .unwrap_or(nini_core::agent::DEFAULT_MAX_RETRIES),
+            base_delay_ms: settings
+                .retry
+                .as_ref()
+                .and_then(|r| r.base_delay_ms)
+                .unwrap_or(nini_core::agent::DEFAULT_RETRY_BASE_MS),
+        },
         // v0.16 (max_tokens): the model's own ceiling from models.json
         // (see `model_max_tokens`). Falls back to `RunConfig::new`'s 8192
         // when the model declares none.

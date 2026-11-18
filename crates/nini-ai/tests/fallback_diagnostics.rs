@@ -19,8 +19,7 @@
 //!     if let Some(e) = last_err { failures.push(...); yield Err(e) }  // ← records, then returns
 //!     else { failures.push(...); return }
 //! }
-//! yield Err(Http(summary))            // every failure was transient
-//! yield Err(NotImplemented(summary))  // at least one failure was not
+//! yield Err(ChainExhausted { message, transient })  // the chain gave up
 //! ```
 //!
 //! The exhausted error is reachable **only** when every iteration took the
@@ -41,10 +40,12 @@
 //! EMPTY-TAIL out = []
 //! ```
 //!
-//! (The exhausted error is `Http` today when **every** failure was
-//! transient (5xx/408/429/transport/broken stream) — the chain never got
-//! a verdict from any server, so the agent layer must replay it. See
-//! `crates/nini-ai/src/fallback.rs`.)
+//! (The exhausted error is a `ChainExhausted` today: the message carries
+//! the per-provider diagnostics and the `transient` flag carries the
+//! verdict — **every** failure was transient (5xx/408/429/transport/broken
+//! stream) means the chain never got a verdict from any server, so the
+//! agent layer must replay it; at least one permanent failure (or an
+//! empty stream) means it must not. See `crates/nini-ai/src/fallback.rs`.)
 
 //! invariant: 3bf4815d —— 声明本文件守住了哪几条历史不变量。
 //! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
@@ -150,18 +151,25 @@ fn an_exhausted_chain_names_every_key_it_tried_and_why() {
     ]);
 
     let out = collect(&fb);
-    // The terminal error's *kind* depends on the chain: `Http` when every
-    // failure was transient (the agent replays the whole chain), and
-    // `NotImplemented` when one of them was not. This chain is all
-    // transient — but the diagnostics below must hold either way.
-    let msg = out
+    // The terminal error is always a `ChainExhausted`: the message
+    // carries the per-provider diagnostics, the `transient` flag carries
+    // the verdict (this chain is all transient — the agent replays the
+    // whole chain; a chain with a permanent failure in it is not).
+    let (msg, transient) = out
         .iter()
         .filter_map(|e| match e {
-            Err(ProviderError::Http(m)) | Err(ProviderError::NotImplemented(m)) => Some(m.as_str()),
+            Err(ProviderError::ChainExhausted { message, transient }) => {
+                Some((message.as_str(), *transient))
+            }
             _ => None,
         })
         .next()
         .unwrap_or_else(|| panic!("no exhausted-chain error; got {out:?}"));
+
+    assert!(
+        transient,
+        "every failure in this chain was transient — the chain is worth another try: {out:?}"
+    );
 
     assert!(
         msg.contains("3"),
@@ -206,14 +214,22 @@ fn a_provider_that_returns_200_with_zero_events_is_named_not_dropped() {
         "a chain where every provider yielded zero events produced no events AND no \
          error — the user gets silence, which is the failure this file exists to forbid"
     );
-    let msg = out
+    let (msg, transient) = out
         .iter()
         .filter_map(|e| match e {
-            Err(ProviderError::NotImplemented(m)) => Some(m.as_str()),
+            Err(ProviderError::ChainExhausted { message, transient }) => {
+                Some((message.as_str(), *transient))
+            }
             _ => None,
         })
         .next()
-        .unwrap_or_else(|| panic!("no NotImplemented error; got {out:?}"));
+        .unwrap_or_else(|| panic!("no exhausted-chain error; got {out:?}"));
+
+    assert!(
+        !transient,
+        "a gateway that answered and had nothing to say is not transient — the chain must \
+         not be replayed: {out:?}"
+    );
 
     assert!(
         msg.contains("key-broken-gateway: empty stream (0 events)")
@@ -271,5 +287,37 @@ fn a_non_retryable_failure_is_yielded_unchanged() {
         !out.iter()
             .any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "must not appear")),
         "auth failures are not retryable: got {out:?}"
+    );
+}
+
+/// A **verdict of the server's own** (401) is not a chain failure either: it is
+/// yielded unchanged, so the chain never reaches the "exhausted" branch at all.
+///
+/// This is the other half of the exhausted-chain contract: the `ChainExhausted`
+/// error (and its `transient` flag) is only ever built for chains that ran out
+/// of providers **without** a verdict.
+#[test]
+fn a_server_verdict_never_becomes_a_chain_exhaustion() {
+    let fb = FallbackProvider::new(vec![
+        stub("key-unauthorized", vec![http(401)]),
+        stub("key-other", vec![text_delta("must not appear"), stop()]),
+    ]);
+
+    let out = collect(&fb);
+    assert!(
+        out.iter()
+            .any(|e| matches!(e, Err(ProviderError::Api { status: 401, .. }))),
+        "the 401 must be yielded unchanged; got {out:?}"
+    );
+    assert!(
+        !out.iter()
+            .any(|e| matches!(e, Err(ProviderError::ChainExhausted { .. }))),
+        "a permanent verdict stops the chain there — the exhausted error must not be \
+         built at all: got {out:?}"
+    );
+    assert!(
+        !out.iter()
+            .any(|e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "must not appear")),
+        "a 401 is not retryable: got {out:?}"
     );
 }

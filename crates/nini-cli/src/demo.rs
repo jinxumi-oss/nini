@@ -68,6 +68,23 @@ fn assemble_run_config(
         // `AppConfig::resolved_tool_execution`, shared with the TUI door
         // so the two cannot drift apart.
         tool_execution: tool_cfg.resolved_tool_execution(settings),
+        // v1.0.3: the retry policy the settings file declares. Same wiring
+        // as the TUI door (`app::build_tui_run_config`): a limit that holds
+        // in the TUI and evaporates in `nini demo` / `nini -p` is not a
+        // limit. Pi reads it from the same place
+        // (`settings-manager.ts:882-886`).
+        retry: nini_core::agent::RetrySettings {
+            max_retries: settings
+                .retry
+                .as_ref()
+                .and_then(|r| r.max_retries)
+                .unwrap_or(nini_core::agent::DEFAULT_MAX_RETRIES),
+            base_delay_ms: settings
+                .retry
+                .as_ref()
+                .and_then(|r| r.base_delay_ms)
+                .unwrap_or(nini_core::agent::DEFAULT_RETRY_BASE_MS),
+        },
         // Same as the TUI door: the model's own ceiling from models.json.
         max_tokens: Some(model_ceiling.unwrap_or(8192)),
         ..RunConfig::new(model.to_string())

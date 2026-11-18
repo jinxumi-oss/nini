@@ -265,6 +265,10 @@ nini 读写与 Pi v0.85.1 完全相同的文件格式：
 | 会话 | `~/.nini/agent/sessions/<project>/<timestamp>.jsonl` |
 | 斜杠命令 | 23 个名字一致（另加 5 条 nini 独有）；参数提示不一致——Pi 只对 `model`、`thinking`、`login` 声明参数提示 |
 
+`settings.json` 的 `retry` 段现在真的生效：它决定瞬时错误重试几次（`maxRetries`，
+默认 3）与退避多久（`baseDelayMs`，默认 2000ms，每次翻倍）；Pi 的 camelCase 拼写与
+nini 的 snake_case 都认。
+
 你可以在一个终端跑 `nini -p`、另一个终端跑 `pi`——两边写的是同一种
 session JSONL。
 

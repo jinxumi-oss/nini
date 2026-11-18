@@ -381,16 +381,23 @@ pub fn is_transient_provider_error(status: u16, text: &str) -> bool {
 ///
 /// The **fallback chain** delivers its verdict through this very
 /// function. A chain whose every failure was transient (5xx / 408 / 429
-/// / a transport failure / a broken stream) ends as `Http` — which is
-/// transient here, so the whole chain is replayed — while a chain that
-/// hit a permanent failure (401 / 400 / auth / invalid request) or an
-/// empty stream ends as `NotImplemented`, which is permanent here and is
-/// not replayed. The *kind* carries that verdict; the summary inside it
-/// only carries the diagnostics.
+/// / a transport failure / a broken stream) ends as
+/// `ChainExhausted { transient: true }` — transient here, so the whole
+/// chain is replayed — while a chain that hit a permanent failure (401 /
+/// 400 / auth / invalid request) or an empty stream ends as
+/// `ChainExhausted { transient: false }`, which is permanent here and is
+/// not replayed. The `transient` flag carries that verdict; the message
+/// inside it only carries the diagnostics.
 pub fn is_transient_provider_failure(e: &ProviderError) -> bool {
     match e {
         ProviderError::Http(_) | ProviderError::Io(_) => true,
         ProviderError::Api { status, message } => is_transient_provider_error(*status, message),
+        // The fallback chain's own verdict — transient only when *every*
+        // failure along the chain was transient. The text heuristic
+        // cannot decide this one: the summary quotes the providers'
+        // errors verbatim, so a permanent chain ("… HTTP 400: Bad
+        // Request") would read as transient through its own numbers.
+        ProviderError::ChainExhausted { transient, .. } => *transient,
         // A malformed request (an illegal URL, a redirect loop) and
         // nini's own "not implemented / chain exhausted" diagnostics
         // are permanent: the text heuristics would match a "503"
@@ -2211,7 +2218,7 @@ impl Agent {
                                     Some(config.compaction.context_window),
                                     &crate::overflow::OverflowSignals::default(),
                                 );
-                                // Pi parity (agent-session.ts:697-699): a
+                                // Pi parity (agent-session.ts:695-699): a
                                 // **successful** assistant turn clears the
                                 // one-shot overflow-recovery bound.
                                 //
@@ -2225,13 +2232,24 @@ impl Agent {
                                 // failed after one attempt", while Pi would
                                 // compact once more and carry on.
                                 //
-                                // The reset is deliberately **not**
-                                // unconditional: a turn that is itself an
-                                // overflow has not produced a usable answer,
-                                // and letting it clear the bound would turn
-                                // "compact once and retry" into "compact
-                                // forever".
-                                if !overflowed && !matches!(stop_reason.as_str(), "error" | "length") {
+                                // Pi has **no** further guard there — the
+                                // reset does not ask whether the turn itself
+                                // was an overflow, and neither does this one:
+                                //   * Case 1 (the request was refused → compact
+                                //     + replay): the assistant message's stop
+                                //     reason is "error" (or "length"), so the
+                                //     bound is **not** cleared here and the
+                                //     one-shot limit still holds — the run
+                                //     cannot compact forever. (And when the
+                                //     same turn does replay, the recovery
+                                //     sets the bound again right here.)
+                                //   * Case 2 (the response completed but the
+                                //     input was over the window): the turn is
+                                //     compacted and **not** replayed, so
+                                //     clearing the bound cannot loop — it
+                                //     only drops a bound left over from an
+                                //     earlier turn.
+                                if !matches!(stop_reason.as_str(), "error" | "length") {
                                     self.overflow_recovery_attempted = false;
                                 }
                                 // v0.10 (fix): a length stop that *carried
@@ -5490,6 +5508,102 @@ mod compaction_recovery_tests {
             agent.maybe_compact_at_threshold().is_none(),
             "the second turn compacted again from an unchanged context — this \
              is an infinite compaction loop wearing a threshold check's clothes"
+        );
+    }
+
+    /// A provider whose answer **completes** (stop reason "stop") while
+    /// the input is over the window — Pi's Case 2.
+    struct OversizedStop;
+    impl crate::provider::Provider for OversizedStop {
+        fn name(&self) -> &'static str {
+            "oversized-stop"
+        }
+        fn capabilities(&self) -> crate::provider::Capabilities {
+            crate::provider::Capabilities::default()
+        }
+        fn stream(
+            &self,
+            _req: crate::provider::Request,
+        ) -> std::pin::Pin<
+            Box<
+                dyn futures_util::Stream<
+                        Item = Result<crate::provider::StreamEvent, crate::provider::ProviderError>,
+                    > + Send
+                    + 'static,
+            >,
+        > {
+            Box::pin(futures_util::stream::iter(vec![Ok(
+                crate::provider::StreamEvent::MessageStop {
+                    stop_reason: "stop".into(),
+                    usage: crate::provider::Usage {
+                        input_tokens: 10_000,
+                        output_tokens: 1,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
+                    },
+                },
+            )]))
+        }
+    }
+
+    /// A turn that **completed** clears the one-shot overflow-recovery
+    /// bound — even when the turn was itself over the window.
+    ///
+    /// Pi resets `_overflowRecoveryAttempted` on every assistant message
+    /// whose stop reason is neither "error" nor "length", with **no**
+    /// "and not an overflow" guard
+    /// (`references/pi-0.85.1/src/session/agent-session.ts:695-699`).
+    /// nini used to add that guard, so the bound survived a turn that
+    /// had produced an answer (Pi's Case 2 — the response completed, the
+    /// input was over the window) and the *next* overflow was refused with
+    /// "recovery failed after one attempt", although Pi would have
+    /// compacted once more.
+    ///
+    /// The bound still guards the road that matters: an overflow that is
+    /// replayed carries the stop reason "error" / "length", which does
+    /// **not** clear it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_completed_but_oversized_turn_clears_the_overflow_bound() {
+        use futures_util::StreamExt;
+
+        let mut cfg = RunConfig::new("test-model");
+        cfg.compaction.context_window = 100;
+        let mut agent = Agent::new(
+            Arc::new(OversizedStop),
+            crate::tool::ToolRegistry::new(),
+            cfg,
+        );
+        // The Case 2 path runs a compaction; this one really rewrites
+        // the history.
+        agent.set_compaction_hook(CompactionHook::new(|_msgs| {
+            Some(CompactionResult {
+                summary: "S".into(),
+                tokens_before: 10_000,
+                tokens_after: 10,
+                messages: vec![Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: "compacted".into(),
+                    }],
+                    timestamp: 0,
+                }],
+            })
+        }));
+
+        // The bound as an earlier turn left it.
+        agent.overflow_recovery_attempted = true;
+
+        {
+            let s = agent.run(crate::AgentMessage::user("hi"));
+            tokio::pin!(s);
+            while let Some(_ev) = s.next().await {}
+        }
+
+        assert!(
+            !agent.overflow_recovery_attempted,
+            "the one-shot overflow bound survived a turn that completed \
+             successfully — the next overflow would be refused although Pi \
+             would compact once more"
         );
     }
 }

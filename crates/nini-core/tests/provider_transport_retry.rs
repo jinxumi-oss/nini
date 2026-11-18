@@ -48,7 +48,11 @@
 //!   retried — the request never left, so sending it again would only
 //!   produce the same failure;
 //! * a request the server refused (401) is still *not* retried — the
-//!   retry must not become "retry everything".
+//!   retry must not become "retry everything";
+//! * the fallback chain's own "gave up" verdict has its **own**
+//!   variant (`ChainExhausted`): it is transient only when *every*
+//!   failure along the chain was transient — the numbers quoted inside
+//!   the summary decide nothing.
 
 use nini_core::agent::{
     is_transient_provider_error, is_transient_provider_failure, Agent, RunConfig,
@@ -521,6 +525,8 @@ async fn an_exhausted_retry_budget_still_names_the_cause() {
 #[test]
 fn the_transient_classifier_truth_table() {
     // Transport failures: no HTTP response at all → transient.
+    // (`Http` keeps this meaning to itself — the fallback chain's "gave
+    // up" verdict has its own variant, see below.)
     assert!(is_transient_provider_failure(&ProviderError::Http(
         "error sending request for url (https://x)".into()
     )));
@@ -553,4 +559,46 @@ fn the_transient_classifier_truth_table() {
     assert!(!is_transient_provider_failure(&ProviderError::Sse(
         "the stream ended early".into()
     )));
+}
+
+// ---------------------------------------------------------------------------
+// 9. The fallback chain's own verdict
+// ---------------------------------------------------------------------------
+
+/// The chain's verdict is a variant of its own.
+///
+/// `Http` says "the request never produced a response"; "the whole chain
+/// gave up" is a different fact with a different consequence — replay
+/// the chain or do not. The chain carries that consequence in its
+/// `transient` flag, and the message only carries the diagnostics.
+#[test]
+fn a_chain_exhaustion_is_transient_only_when_every_failure_was() {
+    let transient = ProviderError::ChainExhausted {
+        message: "all 2 fallback providers exhausted: openai: HTTP 500: internal; \
+                  backup: HTTP 503: service unavailable"
+            .into(),
+        transient: true,
+    };
+    assert!(
+        is_transient_provider_failure(&transient),
+        "a chain whose every failure was transient must be replayed: {transient}"
+    );
+
+    // The message quotes a "503" on purpose: the **flag** decides, not
+    // the text — a chain that hit a permanent failure must not be
+    // replayed just because some quoted error looks transient.
+    let permanent_message = "all 2 fallback providers exhausted: openai: HTTP 400: Bad Request \
+                             (upstream said 503); backup: HTTP 401: unauthorized"
+        .to_string();
+    let permanent = ProviderError::ChainExhausted {
+        message: permanent_message.clone(),
+        transient: false,
+    };
+    assert!(
+        !is_transient_provider_failure(&permanent),
+        "a chain that hit a permanent failure must not be replayed: {permanent}"
+    );
+
+    // The summary is the whole message — no prefix hides it.
+    assert_eq!(permanent.to_string(), permanent_message);
 }

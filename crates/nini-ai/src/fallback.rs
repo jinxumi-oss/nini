@@ -25,6 +25,13 @@
 //! A non-retryable error (4xx other than 429, auth, parse, etc.)
 //! immediately fails the stream. So does any error from a provider
 //! after it has produced at least one event.
+//!
+//! A provider whose stream ends **without** a `MessageStop` after it
+//! has already produced events is a failure too: the chain stops there
+//! (the next provider's answer would be spliced onto the half-answer
+//! already emitted) and the failure is **reported** as an error. A run
+//! that ends without a conclusion and without a complaint is the worst
+//! of both outcomes.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -92,6 +99,11 @@ fn kind_of(err: &ProviderError) -> String {
         ),
         ProviderError::Json(_) => "json-parse".to_string(),
         ProviderError::NotImplemented(_) => "not-implemented".to_string(),
+        // The chain gave up: every provider was tried and none produced
+        // a result. This is the fallback chain's *terminal* error — it
+        // never comes from a single provider — so the label is here to
+        // keep the match exhaustive.
+        ProviderError::ChainExhausted { .. } => "chain exhausted".to_string(),
     }
 }
 
@@ -280,11 +292,11 @@ impl Provider for FallbackProvider {
             // 429, a transport failure, a stream that broke)? If yes,
             // nothing in the chain was refused on its merits: no key is
             // bad, no request is malformed, no gateway is misconfigured.
-            // The terminal error is then reported as `Http`, so the
-            // agent layer treats it as transient and replays the whole
-            // chain (a user with `--fallback-keys` used to die on the
-            // first network hiccup — and, before this rule, on the very
-            // common "every key answered 500" too).
+            // The terminal error carries that verdict in its `transient`
+            // flag, so the agent layer replays the whole chain (a user
+            // with `--fallback-keys` used to die on the first network
+            // hiccup — and, before this rule, on the very common "every
+            // key answered 500" too).
             //
             // An **empty stream** ("empty stream (0 events)") is NOT
             // transient: the gateway answered and had nothing to say
@@ -387,13 +399,25 @@ impl Provider for FallbackProvider {
                 } else {
                     // Partial response: events were produced but the
                     // stream ended without MessageStop. Falling back now
-                    // would splice two responses together, so the stream
-                    // ends here — but the label must be true, and
-                    // "empty stream (0 events)" is a lie about it.
+                    // would splice two responses together, so the chain
+                    // cannot go on — but the failure must be **reported**:
+                    // this branch used to `return` with no error at all,
+                    // so the run ended in silence (no conclusion and no
+                    // complaint), which is the worst of both worlds.
+                    //
+                    // The error is raised here and now, in place:
+                    // `Sse` says exactly what happened — the response
+                    // came, the stream died — and it carries no transient
+                    // keyword, so the agent layer's text heuristic does
+                    // not replay it. A half answer must not be replayed.
                     failures.push(format!(
                         "{}: stream ended without MessageStop",
                         provider.name()
                     ));
+                    yield Err(ProviderError::Sse(format!(
+                        "{}: the stream ended without MessageStop",
+                        provider.name()
+                    )));
                 }
                 return;
             }
@@ -414,27 +438,23 @@ impl Provider for FallbackProvider {
                     summary.push_str(&f);
                 }
             }
-            // The terminal error carries the same diagnostics in either
-            // case; only its *kind* differs, and that kind is what the
-            // agent layer reads to decide whether the chain is worth
-            // another try.
+            // The terminal error is always a `ChainExhausted`: it carries
+            // the per-provider diagnostics in `message` and the verdict
+            // in `transient`, and the agent layer reads that flag to
+            // decide whether the chain is worth another try.
             //
-            // * **Every** recorded failure was transient (5xx / 408 /
-            //   429 / a transport failure / a stream that broke):
-            //   nothing in the chain was refused on its merits — no key
-            //   is bad, no request is malformed, no gateway is
-            //   misconfigured. The terminal error is `Http`, which the
-            //   agent layer classifies as transient: the whole chain is
-            //   replayed.
-            // * At least one failure was not transient — an empty
-            //   stream (the gateway answered and had nothing to say):
-            //   the terminal error is `NotImplemented`, nini's own "the
-            //   chain gave up" diagnostic, and the chain is not
-            //   replayed.
+            // * `transient == true` — **every** recorded failure was
+            //   transient (5xx / 408 / 429 / a transport failure / a
+            //   stream that broke): nothing in the chain was refused on
+            //   its merits — no key is bad, no request is malformed, no
+            //   gateway is misconfigured. The whole chain is replayed.
+            // * `transient == false` — at least one failure was not
+            //   transient (an empty stream: the gateway answered and had
+            //   nothing to say): the chain is not replayed.
             //
             // Two facts that are easy to get wrong:
             //
-            // (a) The agent layer judges that **kind**, not the text: the
+            // (a) The agent layer judges that **flag**, not the text: the
             //     summary quotes the inner errors verbatim — including
             //     their status codes ("primary: HTTP 500: internal") —
             //     and a text heuristic would read the "500" in there as
@@ -446,13 +466,13 @@ impl Provider for FallbackProvider {
             //     error unchanged (`yield Err(e)`) and stops. The
             //     "exhausted" summary is for chains that ran out of
             //     providers without a verdict.
-            if all_failures_transient {
-                // Nothing in the chain was refused on its merits → the
-                // chain is worth one more try.
-                yield Err(ProviderError::Http(summary));
-            } else {
-                yield Err(ProviderError::NotImplemented(summary));
-            }
+            // Nothing in the chain was refused on its merits → the chain
+            // is worth one more try; otherwise it is not. The verdict
+            // travels as a flag, next to the per-provider diagnostics.
+            yield Err(ProviderError::ChainExhausted {
+                message: summary,
+                transient: all_failures_transient,
+            });
         })
     }
 }
@@ -719,11 +739,11 @@ mod tests {
 
     /// A chain where **every** failure is a transport failure never got
     /// a verdict from any server: this is the network, not the request,
-    /// so the terminal error must be transport-shaped — the agent layer
-    /// then retries the whole chain instead of dying on the first
-    /// hiccup. The per-provider diagnostics must survive.
+    /// so the terminal error must be transient — the agent layer then
+    /// retries the whole chain instead of dying on the first hiccup.
+    /// The per-provider diagnostics must survive.
     #[test]
-    fn a_chain_of_transport_failures_ends_transport_shaped() {
+    fn a_chain_of_transport_failures_ends_chain_exhausted_and_transient() {
         let fb = FallbackProvider::new(vec![
             stub("primary", vec![mk_http()]),
             stub("secondary", vec![mk_http()]),
@@ -734,14 +754,18 @@ mod tests {
             .find_map(|e| e.err())
             .unwrap_or_else(|| panic!("expected an error"));
         match err {
-            ProviderError::Http(msg) => {
+            ProviderError::ChainExhausted { message, transient } => {
                 assert!(
-                    msg.contains("primary: network/transport")
-                        && msg.contains("secondary: network/transport"),
-                    "the diagnostics must survive in the transport-shaped error: {msg}"
+                    transient,
+                    "a chain that never got a verdict must be worth another try"
+                );
+                assert!(
+                    message.contains("primary: network/transport")
+                        && message.contains("secondary: network/transport"),
+                    "the diagnostics must survive in the exhausted error: {message}"
                 );
             }
-            other => panic!("expected ProviderError::Http, got {other:?}"),
+            other => panic!("expected ProviderError::ChainExhausted, got {other:?}"),
         }
     }
 
@@ -793,7 +817,13 @@ mod tests {
             .find_map(|e| e.err())
             .unwrap_or_else(|| panic!("expected an error"));
         assert!(
-            matches!(err, ProviderError::Http(_)),
+            matches!(
+                err,
+                ProviderError::ChainExhausted {
+                    transient: true,
+                    ..
+                }
+            ),
             "a chain of transient failures must end in the replayable kind: got {err:?}"
         );
         assert!(
@@ -815,7 +845,13 @@ mod tests {
             .find_map(|e| e.err())
             .unwrap_or_else(|| panic!("expected an error"));
         assert!(
-            matches!(err, ProviderError::NotImplemented(_)),
+            matches!(
+                err,
+                ProviderError::ChainExhausted {
+                    transient: false,
+                    ..
+                }
+            ),
             "an empty stream must not look transient: got {err:?}"
         );
         assert!(
@@ -954,6 +990,43 @@ mod tests {
             |e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "should-not-appear"),
         );
         assert!(no_secondary, "no fallback after partial response");
+    }
+
+    /// A provider that produced events but **no** `MessageStop` used to
+    /// end the whole chain in silence: no error, no conclusion — the
+    /// user could not tell a broken stream from a hang.
+    ///
+    /// The chain cannot go on (the next provider's answer would be
+    /// spliced onto the half-answer already emitted), so the failure is
+    /// reported in place, naming the provider that died.
+    #[test]
+    fn a_stream_that_ends_without_message_stop_is_reported() {
+        let fb = FallbackProvider::new(vec![
+            stub("primary", vec![mk_text("half an answer")]),
+            stub("secondary", vec![mk_text("must-not-appear"), mk_stop()]),
+        ]);
+        let out = collect(&fb);
+        let err = out
+            .iter()
+            .find_map(|e| match e {
+                Err(e) => Some(e.clone()),
+                Ok(_) => None,
+            })
+            .unwrap_or_else(|| panic!("a silent end is the worst outcome: {out:?}"));
+        assert!(
+            matches!(&err, ProviderError::Sse(m) if m.contains("primary")),
+            "the failure must be reported and name the provider: got {err:?}"
+        );
+        assert!(
+            !out.iter().any(
+                |e| matches!(e, Ok(StreamEvent::TextDelta { text }) if text == "must-not-appear")
+            ),
+            "the chain must not go on: the next answer would be spliced onto the half-answer"
+        );
+        assert!(
+            !nini_core::agent::is_transient_provider_failure(&err),
+            "a half answer must not be replayed: {err:?}"
+        );
     }
 
     #[test]

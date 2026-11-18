@@ -286,17 +286,25 @@ pub enum ProviderError {
     /// The request went out and no usable HTTP response came back
     /// (dns error / connection refused / operation timed out).
     ///
-    /// The fallback chain also uses it to carry its **summary** when
-    /// the chain is exhausted and *every* failure was transient (5xx /
-    /// 408 / 429 / a transport failure / a broken stream): nothing in
-    /// the chain was refused on its merits, so the agent layer must
-    /// read it as transient and replay the chain. A chain that hit a
-    /// permanent failure (401 / 400 / auth / invalid request) or an
-    /// empty stream ends as `NotImplemented` instead — that one is not
-    /// replayed. The *kind* carries that verdict; the summary inside it
-    /// only carries the diagnostics.
+    /// This variant says **only** that: the request never produced a
+    /// response. A fallback chain that ran out of providers has its own
+    /// variant (`ChainExhausted`), so the two meanings never share one.
     #[error("transport error: {0}")]
     Http(String),
+    /// The fallback chain gave up: every provider (and every key) was
+    /// tried and none of them produced a result.
+    ///
+    /// `transient` says whether **every** failure along the chain was a
+    /// transient one (a busy server, a network blip). When it is true, the
+    /// agent layer replays the whole chain; when it is false, at least one
+    /// failure was permanent (a bad key, a malformed request) or the
+    /// provider had nothing to say, and replaying would only produce the
+    /// same verdict.
+    ///
+    /// The message carries the per-provider diagnostics ("all 2 fallback
+    /// providers exhausted: openai: HTTP 500: internal; backup: …").
+    #[error("{message}")]
+    ChainExhausted { message: String, transient: bool },
     #[error("sse error: {0}")]
     Sse(String),
     #[error("api error ({status}): {message}")]
