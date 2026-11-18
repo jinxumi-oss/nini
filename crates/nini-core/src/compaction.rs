@@ -2,6 +2,13 @@
 //! turns and replace with a single compaction entry.
 //!
 //! Mirrors spec `packages/agent/src/harness/compaction/compaction.ts`.
+//! The vendored copy of that module in this repo is
+//! `references/spec-v0.85.1/compaction/compaction.ts` — the
+//! `references/pi-0.85.1/` snapshot ships the published package only
+//! (`src/session/` holds just `agent-session.ts`, which imports the
+//! compaction harness as `./compaction/index.ts` — not vendored). So
+//! every line reference to Pi's compaction code in this file points at
+//! the spec copy, otherwise nobody can check it.
 //!
 //! Phase 2 scope: **pure local logic only** — no LLM summarization. The
 //! `compact()` function produces a deterministic summary string by
@@ -9,6 +16,32 @@
 //! from the entry stream. This gives us a working `compact` action for
 //! testing even without provider credentials. Real LLM summarization is
 //! a follow-up.
+//!
+//! # Token estimation: three estimators, one authority
+//!
+//! This module carries **three** token estimators. They are deliberately
+//! different, and their numbers are *not* interchangeable:
+//!
+//! | estimator | what it adds | who uses it |
+//! |---|---|---|
+//! | [`estimate_legacy_message_tokens`] | role base + tool-use **name** + tool result | **the compaction budget's authority** — cut-point accumulation and [`estimate_entries_tokens`] |
+//! | [`estimate_message_tokens`] | no role base, tool-use name not counted | `compact()` — sizing the summary it just produced |
+//! | [`estimate_provider_messages_tokens`] | no role base, tool-use name not counted | the agent's status-bar ctx% |
+//!
+//! The last two compute the same formula; they differ only in where
+//! they are called from. The first one is on a different scale, so the
+//! ctx% in the status bar and the compaction budget are **different
+//! numbers by construction** — a test pins that.
+//!
+//! **Known deviation from Pi (intentionally kept).** Pi takes the
+//! provider-reported usage as the truth: `estimateContextTokens`
+//! (`references/spec-v0.85.1/compaction/compaction.ts:213-241`) starts
+//! from the last assistant usage and only *adds* estimates for the
+//! messages after it. nini does the same in `Agent::estimated_tokens()`
+//! — prefer the last usage, fall back to
+//! `estimate_provider_messages_tokens` when there is no usage snapshot
+//! — but the *compaction* path has no usage to fall back on and
+//! therefore always estimates.
 
 use crate::entries::SessionEntry;
 use crate::entries::StringOrContentBlocks;
@@ -120,10 +153,48 @@ pub fn is_cjk(c: char) -> bool {
     )
 }
 
-/// Estimate tokens for a single entry (message or system/tool result).
+/// Estimate tokens for a single entry (message entry or summary entry).
+///
+/// v0.18 (context-management): counts exactly **two** things:
+/// 1. every entry that carries a `message` — via
+///    [`estimate_legacy_message_tokens`];
+/// 2. entries of type [`crate::LegacyEntryType::Compaction`] — their
+///    `summary` text, via [`estimate_string_tokens`].
+///
+/// (2) exists because previously only `message` entries were counted, so
+/// a prior compaction summary sitting in the entry stream contributed 0
+/// tokens to the cut-point accumulation and the token budget could be
+/// spent twice (once on the summary, once again on the content it
+/// summarizes).
+///
+/// What it does **not** count:
+/// - **Images.** `provider::ContentBlock` has no image variant (only
+///   Text / ToolUse / ToolResult) and a Pi image is degraded to a
+///   placeholder *text* before it reaches this type
+///   (`crate::conversion::NON_VISION_USER_IMAGE_PLACEHOLDER`), so there
+///   is no "image block" to meet here. Pi's `ESTIMATED_IMAGE_CHARS`
+///   (4800 **characters**,
+///   `references/spec-v0.85.1/compaction/compaction.ts:251`) therefore
+///   does not apply to nini.
+/// - **Thinking.** Same reason: `provider::ContentBlock` has no
+///   thinking variant. An imported Pi thinking block is carried as plain
+///   text (`crate::legacy_from_block`), so it is counted — as text.
+/// - **`LegacyEntryType::BranchSummary` summaries — known deviation.**
+///   Pi counts them (`references/spec-v0.85.1/compaction/compaction.ts:302-306`:
+///   `branchSummary` / `compactionSummary` → `summary.length`); nini does
+///   not (yet). Consequence: a branch summary in the entry stream costs
+///   0 tokens to the cut-point budget. **Open question** — whether to
+///   count it is undecided; a test pins the current behaviour.
+///
+/// Pi reference: `references/spec-v0.85.1/compaction/compaction.ts:270-310`
+/// (`estimateTokens`).
 fn estimate_entry_tokens(entry: &Entry) -> u32 {
     if let Some(msg) = &entry.message {
         estimate_legacy_message_tokens(msg)
+    } else if entry.entry_type == crate::LegacyEntryType::Compaction {
+        // `references/spec-v0.85.1/compaction/compaction.ts:302-306`:
+        // the summary text counts.
+        estimate_string_tokens(entry.summary.as_deref().unwrap_or(""))
     } else {
         0
     }
@@ -159,7 +230,18 @@ fn is_user_turn_boundary(entries: &[Entry], i: usize) -> bool {
 
 /// Estimate tokens for a single message using a per-glyph heuristic that
 /// accounts for ASCII vs CJK characters.
-/// Image blocks are estimated at 4800 tokens (matches spec `ESTIMATED_IMAGE_CHARS`).
+///
+/// No role base and no tool-use name are added here — that is
+/// [`estimate_legacy_message_tokens`]'s job. `compact()` uses this one to
+/// size the summary it just built.
+///
+/// There is **no image branch**: `provider::ContentBlock` has no image
+/// variant (Text / ToolUse / ToolResult only) and a Pi image is degraded
+/// to a placeholder *text* before it gets here, so an image is counted
+/// as the text of that placeholder. Pi's `ESTIMATED_IMAGE_CHARS`
+/// (`references/spec-v0.85.1/compaction/compaction.ts:251`) is 4800
+/// **characters** — 1200 tokens at Pi's chars/4 — and it does not apply
+/// to this function.
 pub fn estimate_message_tokens(msg: &AgentMessage) -> u32 {
     let mut total_tokens: u32 = 0;
     for block in &msg.content {
@@ -168,7 +250,8 @@ pub fn estimate_message_tokens(msg: &AgentMessage) -> u32 {
                 total_tokens = total_tokens.saturating_add(estimate_string_tokens(text));
             }
             ContentBlock::ToolUse { input, .. } => {
-                // Name + input JSON length
+                // Input JSON only — the tool *name* is not counted here
+                // (only `estimate_legacy_message_tokens` counts it).
                 let s = serde_json::to_string(input).unwrap_or_default();
                 total_tokens = total_tokens.saturating_add(estimate_string_tokens(&s));
             }
@@ -185,7 +268,12 @@ pub fn estimate_messages_tokens(messages: &[AgentMessage]) -> u32 {
     messages.iter().map(estimate_legacy_message_tokens).sum()
 }
 
-/// Estimate tokens for provider-layer messages.
+/// Estimate tokens for provider-layer messages — the agent's ctx%.
+///
+/// No role base, no tool-use name: this is the "how much is the provider
+/// holding right now" number shown in the status bar. It is deliberately
+/// **not** the compaction budget; see the module header for the three
+/// estimators and who owns which.
 pub fn estimate_provider_messages_tokens(messages: &[Message]) -> u32 {
     messages
         .iter()
@@ -210,33 +298,68 @@ pub fn estimate_provider_messages_tokens(messages: &[Message]) -> u32 {
         .sum()
 }
 
-/// Estimate tokens for a AgentMessage (nini internal use).
+/// Estimate tokens for an `AgentMessage` (nini internal use).
+///
+/// **The compaction budget's authority**: every token the cut-point
+/// accumulation spends goes through here (via `estimate_entry_tokens`).
+///
+/// v0.18: **CJK-aware** and complete — it uses the per-glyph estimator
+/// ([`estimate_string_tokens`]) instead of the old raw `chars / 4`, and
+/// it counts tool results (real context the model sees) instead of
+/// skipping them.
+///
+/// The per-role base (System 1 / User 1 / Assistant 2 / Tool 1) is
+/// **nini's own** — Pi has no per-message overhead at all: its
+/// `estimateTokens`
+/// (`references/spec-v0.85.1/compaction/compaction.ts:270-310`) only
+/// counts characters and divides by 4, with no role base. The base is an
+/// intentional deviation from Pi: it exists to cover the systematic
+/// under-count nini suffers when the provider reports no usage and every
+/// message therefore looks smaller than it really is.
+///
+/// The old byte-based `chars / 4` charged 0.75 token per CJK glyph
+/// (3 bytes / 4); the new per-glyph rate is 0.5. So the old number was
+/// about **1.5x** too high for CJK — not 3x. The 3x figure only holds
+/// against Pi's *character*-based `chars / 4` (0.25 token per CJK glyph
+/// vs 0.75 for bytes).
+///
+/// Tool results are counted. There is no separate thinking branch:
+/// `provider::ContentBlock` has no thinking variant, and an imported Pi
+/// thinking block is carried as plain text and counted as text.
 pub fn estimate_legacy_message_tokens(msg: &AgentMessage) -> u32 {
-    // Rough heuristic: chars / 4
-    let mut chars: usize = match msg.role {
-        Role::System => 6,
-        Role::User => 4,
-        Role::Assistant => 9,
-        Role::Tool => 4,
+    // Per-message overhead — nini's own base (Pi has none); see above.
+    let mut tokens: u32 = match msg.role {
+        Role::System => 1,
+        Role::User => 1,
+        Role::Assistant => 2,
+        Role::Tool => 1,
     };
     for block in &msg.content {
         match block {
-            ContentBlock::Text { text } => chars += text.len(),
-            ContentBlock::ToolUse { name, input, .. } => {
-                chars += name.len() + input.to_string().len();
+            ContentBlock::Text { text } => {
+                tokens = tokens.saturating_add(estimate_string_tokens(text));
             }
-            ContentBlock::ToolResult { .. } => {} // tool results already counted elsewhere
+            ContentBlock::ToolUse { name, input, .. } => {
+                tokens = tokens.saturating_add(estimate_string_tokens(name));
+                let s = serde_json::to_string(input).unwrap_or_default();
+                tokens = tokens.saturating_add(estimate_string_tokens(&s));
+            }
+            ContentBlock::ToolResult { content, .. } => {
+                tokens = tokens.saturating_add(estimate_string_tokens(content));
+            }
         }
     }
-    (chars / 4) as u32
+    tokens
 }
 
-/// Estimate tokens for a slice of entries (counts only message entries).
+/// Estimate tokens for a slice of entries (message entries and prior
+/// compaction summaries).
+///
+/// Sums `estimate_entry_tokens` over the slice, so it is on the
+/// compaction budget's scale. Branch summaries are **not** included —
+/// see `estimate_entry_tokens` for that known deviation.
 pub fn estimate_entries_tokens(entries: &[Entry]) -> u32 {
-    entries
-        .iter()
-        .filter_map(|e| e.message.as_ref().map(estimate_legacy_message_tokens))
-        .sum()
+    entries.iter().map(estimate_entry_tokens).sum()
 }
 
 /// A cut-point: an index into the entries slice where compaction can safely
@@ -622,12 +745,15 @@ where
     });
 
     // Compute the tokens for retained entries + the new compaction entry.
-    let retained_tokens: u32 = prep
-        .retained
-        .iter()
-        .filter_map(|e| e.message.as_ref())
-        .map(estimate_legacy_message_tokens)
-        .sum();
+    //
+    // Two estimators, on purpose — they are NOT the same scale:
+    // - the summary is sized with `estimate_message_tokens` (no role base);
+    // - the retained entries are sized with `estimate_entry_tokens`, i.e.
+    //   the legacy budget estimator, which is the scale the cut decision
+    //   was made on.
+    // So `tokens_after` mixes the two, and `tokens_before`
+    // (`estimate_entries_tokens`) is not directly comparable with it.
+    let retained_tokens: u32 = prep.retained.iter().map(estimate_entry_tokens).sum();
     let tokens_after = summary_tokens + retained_tokens;
 
     let _ = settings; // reserved for future size limits on summary
@@ -1034,8 +1160,9 @@ mod tests {
     // ============================================================
     #[test]
     fn estimate_text_message() {
-        let m = AgentMessage::user("hello world"); // 11 chars / 4 = 3 tokens
-        assert_eq!(estimate_legacy_message_tokens(&m), 3);
+        // v0.18: base (1) + 11 ASCII chars → 3 tokens = 4.
+        let m = AgentMessage::user("hello world");
+        assert_eq!(estimate_legacy_message_tokens(&m), 4);
     }
 
     #[test]
@@ -1057,7 +1184,180 @@ mod tests {
             timestamp: 0,
         };
         let tokens = estimate_legacy_message_tokens(&m);
-        assert!(tokens > 0);
+        // base(2) + name "read"(4 chars → 1) + input JSON (19 chars → 5)
+        assert_eq!(tokens, 8);
+    }
+
+    #[test]
+    fn estimate_legacy_message_counts_tool_results() {
+        // v0.18: tool results are real context; the old estimator skipped
+        // them entirely ("already counted elsewhere" — they were not).
+        let m = Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "x".repeat(40),
+                is_error: false,
+            }],
+            timestamp: 0,
+        };
+        let tokens = estimate_legacy_message_tokens(&m);
+        assert_eq!(tokens, 1 + 10); // base 1 + 40 chars / 4
+    }
+
+    #[test]
+    fn estimate_legacy_message_is_cjk_aware() {
+        // v0.18: the old byte-based `chars / 4` charged ~1.5x the new
+        // per-glyph rate for CJK (0.75 vs 0.5 token per glyph).
+        let m = AgentMessage::user("你好世界你好世界"); // 8 CJK chars → 4 tokens
+        assert_eq!(estimate_legacy_message_tokens(&m), 1 + 4);
+    }
+
+    #[test]
+    fn estimate_legacy_message_role_bases() {
+        // The per-role base is nini's own (Pi's `estimateTokens` has no
+        // role base at all) — pin it so a change to the table is visible.
+        let system = Message {
+            role: Role::System,
+            content: vec![],
+            timestamp: 0,
+        };
+        assert_eq!(estimate_legacy_message_tokens(&system), 1);
+
+        let assistant = Message {
+            role: Role::Assistant,
+            content: vec![],
+            timestamp: 0,
+        };
+        assert_eq!(estimate_legacy_message_tokens(&assistant), 2);
+
+        // The base is additive on top of the content estimate.
+        let system_with_text = Message {
+            role: Role::System,
+            content: vec![ContentBlock::Text {
+                text: "hello world".into(), // 11 ASCII chars → 3 tokens
+            }],
+            timestamp: 0,
+        };
+        assert_eq!(estimate_legacy_message_tokens(&system_with_text), 1 + 3);
+        assert_eq!(
+            estimate_legacy_message_tokens(&system_with_text)
+                - estimate_legacy_message_tokens(&system),
+            3
+        );
+    }
+
+    #[test]
+    fn estimate_entries_counts_prior_compaction_summaries() {
+        // v0.18: a prior compaction summary in the entry stream is context
+        // too; the old estimator skipped every non-message entry and the
+        // cut-point budget was spent twice on the same content.
+        let compaction_entry = Entry {
+            id: "c0".into(),
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
+            entry_type: LegacyEntryType::Compaction,
+            message: None,
+            summary: Some("x".repeat(100).into()), // 25 tokens
+            from_id: None,
+            custom_type: None,
+            data: None,
+        };
+        let summary_tokens = estimate_entries_tokens(&[compaction_entry]);
+        assert_eq!(summary_tokens, 25);
+    }
+
+    #[test]
+    fn estimate_entries_ignores_branch_summary_entries() {
+        // KNOWN DEVIATION (undecided): Pi counts branch-summary text
+        // (`references/spec-v0.85.1/compaction/compaction.ts:302-306`),
+        // nini does not — a branch summary costs 0 tokens to the
+        // cut-point budget. This test pins the *current* behaviour; if
+        // branch summaries ever start counting, this test must change.
+        let branch_entry = Entry {
+            id: "b0".into(),
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
+            entry_type: LegacyEntryType::BranchSummary,
+            message: None,
+            summary: Some("x".repeat(100).into()), // would be 25 tokens
+            from_id: None,
+            custom_type: None,
+            data: None,
+        };
+        assert_eq!(estimate_entries_tokens(&[branch_entry]), 0);
+    }
+
+    #[test]
+    fn estimate_entries_counts_messages_and_compaction_summaries_together() {
+        // Mixed stream: a plain message entry plus a compaction summary
+        // entry. Both count, and the compaction summary counts as *text*
+        // (no role base — it is not a message).
+        let user = make_user_entry("u1", "hello world", None, 1); // base 1 + 3
+        let compaction_entry = Entry {
+            id: "c0".into(),
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
+            entry_type: LegacyEntryType::Compaction,
+            message: None,
+            summary: Some("x".repeat(100).into()), // 25 tokens
+            from_id: None,
+            custom_type: None,
+            data: None,
+        };
+        let total = estimate_entries_tokens(&[user, compaction_entry]);
+        assert_eq!(total, 4 + 25);
+        // Same split as summing the two estimators by hand.
+        assert_eq!(
+            total,
+            estimate_legacy_message_tokens(&AgentMessage::user("hello world"))
+                + estimate_string_tokens(&"x".repeat(100))
+        );
+    }
+
+    #[test]
+    fn estimate_provider_messages_tokens_differs_from_legacy_budget() {
+        // The status-bar ctx% and the compaction budget are different
+        // numbers by construction: the ctx% estimator has no role base
+        // and does not count the tool-use name.
+        let user_msgs = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hello world".into(), // 11 ASCII chars → 3 tokens
+            }],
+            timestamp: 0,
+        }];
+        assert_eq!(estimate_provider_messages_tokens(&user_msgs), 3);
+        assert_eq!(estimate_legacy_message_tokens(&user_msgs[0]), 4);
+        // The gap is exactly the role base.
+        assert_eq!(
+            estimate_legacy_message_tokens(&user_msgs[0])
+                - estimate_provider_messages_tokens(&user_msgs),
+            1
+        );
+
+        // With a tool call the gap grows by the tool name as well:
+        // legacy = base 2 + name "read" (4 chars → 1) + input JSON
+        // (19 chars → 5) = 8; ctx% = input JSON only = 5.
+        let tool_msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "read".into(),
+                input: serde_json::json!({"path": "/tmp/foo"}),
+            }],
+            timestamp: 0,
+        }];
+        assert_eq!(estimate_legacy_message_tokens(&tool_msgs[0]), 8);
+        assert_eq!(estimate_provider_messages_tokens(&tool_msgs), 5);
+        assert_eq!(
+            estimate_legacy_message_tokens(&tool_msgs[0])
+                - estimate_provider_messages_tokens(&tool_msgs),
+            3 // role base 2 + tool name 1
+        );
     }
 
     // ============================================================
