@@ -293,6 +293,13 @@ pub fn is_retryable_error(msg: &str) -> bool {
         || m.contains("internal server error")
         || m.contains("upstream")
         || m.contains("overloaded")
+        // A transport failure that reached us as *text* (e.g. a provider
+        // reported it inside an SSE error event, or the error was
+        // flattened into a string before the agent saw it). reqwest's
+        // wording for "the request never got an HTTP response" is
+        // "error sending request for url" — without this, the most
+        // transient failure there is would not be retried.
+        || m.contains("error sending request")
 }
 
 /// Whether an HTTP status code is a *transient* (retryable) failure.
@@ -334,6 +341,34 @@ pub fn is_transient_provider_error(status: u16, text: &str) -> bool {
         return is_retryable_error(text);
     }
     is_transient_status(status)
+}
+
+/// Whether a provider failure is transient, judged from the **error
+/// object** rather than from its text.
+///
+/// `Http` and `Io` mean the request never produced a usable response
+/// body — DNS / connect / TLS / timeout, or a body that broke halfway
+/// through. There is nothing the server said about it, so the only
+/// verdict available is "the network blinked", which is the most
+/// transient failure there is. In the rare case the request itself was
+/// malformed (an illegal URL, a redirect loop) the failure is
+/// permanent; those come back immediately, so retrying them costs a
+/// couple of seconds, and the reason is spelled out in the message
+/// anyway.
+///
+/// `Api` carries the server's own status and body and keeps the
+/// existing status-based verdict. Every other variant (auth, invalid
+/// request, json, sse, not implemented) has no HTTP status of its own,
+/// so it keeps its pre-existing behaviour: status `0` → the text
+/// heuristic decides.
+pub fn is_transient_provider_failure(e: &ProviderError) -> bool {
+    match e {
+        ProviderError::Http(_) | ProviderError::Io(_) => true,
+        ProviderError::Api { status, message } => is_transient_provider_error(*status, message),
+        // Every other variant keeps the behaviour it had before this
+        // function existed: no status is known, so the text decides.
+        other => is_transient_provider_error(0, &other.to_string()),
+    }
 }
 
 /// The HTTP status and the readable text of a provider error.
@@ -1445,17 +1480,30 @@ impl Agent {
     /// the request is rebuilt); this method only decides *whether* to
     /// retry and puts the agent into the `Retrying` phase.
     ///
+    /// `produced_output` says whether the failed attempt already
+    /// streamed something to the user (text, reasoning, a tool call).
+    /// **A retry is only allowed before the first output**: content
+    /// that already reached the user cannot be taken back, so replaying
+    /// the request would show the same passage twice — in the terminal
+    /// and in the session file. Pi retries in the HTTP layer, before
+    /// anything is produced
+    /// (`references/pi-0.85.1/src/api/openai-codex-responses.ts:381-451`
+    /// — the retry loop wraps only `fetch`, `processStream` runs after
+    /// it), and nini's own fallback chain does the same
+    /// (`crates/nini-ai/src/fallback.rs:199` — `if retryable &&
+    /// !had_event`).
+    ///
     /// Returns `Some(attempt)` when the request may be retried. The
     /// caller yields the `PhaseChanged` event and breaks out of the
     /// stream loop.
     fn begin_transient_retry(
         &mut self,
-        status: u16,
-        text: &str,
+        transient: bool,
+        produced_output: bool,
         config: &RunConfig,
         abort: &AbortHandle,
     ) -> Option<u32> {
-        if !is_transient_provider_error(status, text) {
+        if !transient || produced_output {
             return None;
         }
         if self.retry_attempt >= config.retry.max_retries {
@@ -1846,6 +1894,13 @@ impl Agent {
                 // Stream provider response, accumulating into assistant message
                 // and tracking pending tool calls.
                 let mut assistant_text = String::new();
+                // v1.0.3 (bugfix): has this attempt already streamed
+                // something to the user? If yes, the turn cannot be
+                // replayed — the text that already went out would come
+                // out a second time (in the terminal *and* in the
+                // session file). Retry is only allowed while this is
+                // false, i.e. before the first byte of output.
+                let mut produced_output = false;
                 let mut tool_calls: Vec<PendingToolCall> = Vec::new();
                 // v0.8.9 (P0-5): tool calls are accumulated in a map
                 // keyed by id, not in a single `current_call` slot.
@@ -1904,10 +1959,12 @@ impl Agent {
                                 // Ignore for now; could surface model id.
                             }
                             Some(Ok(StreamEvent::TextDelta { text })) => {
+                                produced_output = true;
                                 assistant_text.push_str(&text);
                                 yield AgentEvent::TextDelta { text };
                             }
                             Some(Ok(StreamEvent::ThinkingDelta { text })) => {
+                                produced_output = true;
                                 // v0.8: surface reasoning to the TUI
                                 // without appending to assistant_text
                                 // (which becomes the user-visible
@@ -1915,6 +1972,7 @@ impl Agent {
                                 yield AgentEvent::ThinkingDelta { text };
                             }
                             Some(Ok(StreamEvent::ToolCallStart { id, name })) => {
+                                produced_output = true;
                                 // A second Start for the same id would
                                 // otherwise strand the first one's
                                 // accumulated args, so close it out
@@ -1946,6 +2004,10 @@ impl Agent {
                                 }
                             }
                             Some(Ok(StreamEvent::ToolCallStop { id, input_json })) => {
+                                // The Stop is yielded even when no Start
+                                // was seen for this id, so it counts as
+                                // output: a replay would show it twice.
+                                produced_output = true;
                                 // Keyed by id, so a Stop that arrives
                                 // for call 0 while call 1 is still
                                 // streaming no longer strands call 1.
@@ -2193,11 +2255,20 @@ impl Agent {
                                 // The same routine the HTTP-error arm
                                 // uses — one sequence, two exits — so the
                                 // retry semantics cannot drift apart.
-                                // This arm has no HTTP status (the error
-                                // arrived inside a 200 response), so the
-                                // text decides.
+                                // No error object here — the failure arrived
+                                // as an SSE error event inside a 200
+                                // response, so there is no HTTP status and
+                                // the text decides.
+                                // `produced_output` keeps the "retry only
+                                // before the first output" rule in force
+                                // for this exit too.
                                 if let Some(attempt) =
-                                    self.begin_transient_retry(0, &message, &config, &abort)
+                                    self.begin_transient_retry(
+                                        is_transient_provider_error(0, &message),
+                                        produced_output,
+                                        &config,
+                                        &abort,
+                                    )
                                 {
                                     // Pi parity: switch to Retrying phase
                                     // and signal the stream consumer to
@@ -2320,9 +2391,17 @@ impl Agent {
                                 // failure, and a 400 that happens to
                                 // mention "timeout" is still a request
                                 // the client has to fix.
-                                if let Some(attempt) =
-                                    self.begin_transient_retry(status, &text, &config, &abort)
-                                {
+                                // The error object decides here: a transport
+                                // failure (Http / Io) never produced a
+                                // usable HTTP response — DNS / connect /
+                                // TLS / timeout — and is worth another
+                                // attempt.
+                                if let Some(attempt) = self.begin_transient_retry(
+                                    is_transient_provider_failure(&e),
+                                    produced_output,
+                                    &config,
+                                    &abort,
+                                ) {
                                     yield AgentEvent::PhaseChanged(
                                         AgentPhase::Retrying { attempt },
                                     );

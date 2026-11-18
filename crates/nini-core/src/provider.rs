@@ -301,9 +301,93 @@ pub enum ProviderError {
     NotImplemented(String),
 }
 
+/// Describe a reqwest failure **with its cause**.
+///
+/// reqwest's own `Display` for a request error only says "error sending
+/// request for url (…)" — it names the request but never says what
+/// broke. The real reason (dns error / connection refused / operation
+/// timed out) lives in the `source` chain, so it is collected here and
+/// appended, separated by ": ".
+///
+/// The head of the sentence is always `e.to_string()`, so the request
+/// context comes first; the collected causes are de-duplicated and
+/// empty strings are skipped.
+///
+/// **The cause is kept in preference to the URL.** The head is capped
+/// at 256 characters and the causes get 256 of their own, so the whole
+/// text stays inside 512 characters — but when the two do not fit, the
+/// *head* is the one that shrinks (a shortened URL still says "which
+/// request"; a shortened cause says nothing at all). A "…" marks every
+/// cut, on a character boundary, so the text stays valid UTF-8.
+///
+/// Note on what `ProviderError::Http` means: this function is reached
+/// for *every* reqwest failure, including the few that are permanent
+/// (an illegal URL, a redirect loop). The message says which one it
+/// is — that is the whole point of keeping the cause.
+fn describe_reqwest_error(e: &reqwest::Error) -> String {
+    const MAX_TOTAL: usize = 512;
+    const MAX_HEAD: usize = 256;
+    const MAX_CAUSES: usize = 256;
+
+    let head = e.to_string();
+
+    // Collect the source chain: de-duplicated, empty strings skipped.
+    let mut causes: Vec<String> = Vec::new();
+    let mut source = std::error::Error::source(e);
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        let text = text.trim();
+        if !text.is_empty() && text != head.trim() && !causes.iter().any(|c| c == text) {
+            causes.push(text.to_string());
+        }
+        source = cause.source();
+    }
+
+    // A timeout whose cause chain does not mention it still has to say
+    // so — "timed out" is the only clue the caller gets.
+    if e.is_timeout()
+        && !causes
+            .iter()
+            .any(|c| c.to_lowercase().contains("timed out"))
+    {
+        causes.push("operation timed out".to_string());
+    }
+
+    // The cause is what the reader needs: it gets its own budget and is
+    // always kept (up to MAX_CAUSES).
+    let cause_text = truncate_chars(&causes.join(": "), MAX_CAUSES);
+
+    // The head may lose characters so the cause can fit — a shortened
+    // URL still names the request, a shortened cause names nothing.
+    let head_budget = MAX_HEAD.min(MAX_TOTAL.saturating_sub(cause_text.chars().count() + 2));
+    let head = truncate_chars(&head, head_budget);
+
+    if cause_text.is_empty() {
+        head
+    } else {
+        format!("{head}: {cause_text}")
+    }
+}
+
+/// Truncate to at most `max` characters, marking the cut with "…".
+///
+/// Truncation happens on a character boundary, so a multi-byte UTF-8
+/// character is never split in half.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out: String = s.chars().take(max - 1).collect();
+    out.push('…');
+    out
+}
+
 impl From<reqwest::Error> for ProviderError {
     fn from(e: reqwest::Error) -> Self {
-        ProviderError::Http(e.to_string())
+        ProviderError::Http(describe_reqwest_error(&e))
     }
 }
 
