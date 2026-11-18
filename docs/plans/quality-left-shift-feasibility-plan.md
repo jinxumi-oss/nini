@@ -18,7 +18,7 @@
 
 ## 2. 可行性评估（初步结论）
 
-**已核实背景**：nini 为 Pi 的 clean-room Rust 重写（v1.0.1，`/home/jin/nini`，8 crate workspace），agent loop 单层折叠；硬上限 MAX_TOOL_ITERATIONS=50、DEFAULT_MAX_PARALLEL_TOOLS=8、max_tokens=8192、重试 3/500ms；`agent_hooks.rs` 已预留 M2 `before_execute`/`after_execute`（Tool trait），当前仅 M1 上下文钩子；`nini-tools/src/mutation_queue.rs` 串行化文件写操作（变更/写管线）；nini 无 subagent、无后台/定时器、无 extension 运行时、无危险命令硬闸，已有 fixtures/conformance 测试（66 tests，oracle=真实 Pi 源码）；现有 72h 断点计划（`plan.md` + `docs/plans/long-task-72h-continuity-*`）进行中，含 4 处断点 D1–D4，约束为不改压缩/max_iterations/依赖、禁止为通过而编辑既有测试；方案来源为概念页 `concepts/agent-quality-engineering-constraint-2026-11.md`（五层体系、三禁例、先拦截后自动合并、验证为瓶颈、指标），评估结论为「质量左移 / 效率增益」而非算力/吞吐增益，能否变快取决于「门在合并/发版、验证局部化、规则先精简」。
+**已核实背景**：nini 为 Pi 的 clean-room Rust 重写（v1.0.1，`/home/jin/nini`，8 crate workspace），agent loop 单层折叠；硬上限 MAX_TOOL_ITERATIONS=50、DEFAULT_MAX_PARALLEL_TOOLS=8、max_tokens=8192、重试 3/500ms（当时的口径；现在的退避基数是 2000ms，见 `DEFAULT_RETRY_BASE_MS`，v1.0.3 起）；`agent_hooks.rs` 已预留 M2 `before_execute`/`after_execute`（Tool trait），当前仅 M1 上下文钩子；`nini-tools/src/mutation_queue.rs` 串行化文件写操作（变更/写管线）；nini 无 subagent、无后台/定时器、无 extension 运行时、无危险命令硬闸，已有 fixtures/conformance 测试（66 tests，oracle=真实 Pi 源码）；现有 72h 断点计划（`plan.md` + `docs/plans/long-task-72h-continuity-*`）进行中，含 4 处断点 D1–D4，约束为不改压缩/max_iterations/依赖、禁止为通过而编辑既有测试；方案来源为概念页 `concepts/agent-quality-engineering-constraint-2026-11.md`（五层体系、三禁例、先拦截后自动合并、验证为瓶颈、指标），评估结论为「质量左移 / 效率增益」而非算力/吞吐增益，能否变快取决于「门在合并/发版、验证局部化、规则先精简」。
 
 **组件与落点映射表**：
 

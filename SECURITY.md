@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-The release line is `v1.0.0` (latest). Only the latest release is supported;
+The release line is `v1.0.3` (latest). Only the latest release is supported;
 we do not backport security fixes to older releases.
 
 ## Reporting a vulnerability

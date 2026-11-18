@@ -1,3 +1,99 @@
+## v1.0.3 — 一次网络抖动不再让整轮工作作废：传输失败会重试并说清原因
+
+**症状**（用户截图）：一次网络抖动后整轮直接死掉，报错还不说原因：
+
+```
+[error] provider error: http error: error sending request for url (https://maas-api.cn-huabei-1.xf-yun.com/v2/chat/completions)
+```
+
+同一批修掉的还有三件用户能直接撞上的事：地址拼错（非法 URL）也要白等 2+4+8 秒才报错；
+`settings.json` 里写了 `{"retry": {...}}` 完全没效果；界面上的上下文百分比对中文会话算不准。
+
+**根因**（五处）
+
+1. **传输层失败被拍平，原因掉在 source 链里**。reqwest 的传输层失败（DNS / 连接 / TLS / 超时）
+   一律变成 `ProviderError::Http(String)`，而 `to_string()` 只留下 "error sending request for url"——
+   真正的原因（`dns error` / `connection refused` / `operation timed out`）没人去读。
+2. **agent 层的重试判定与 fallback 链不是同一套口径**。agent 层只看 HTTP 状态码与文本，
+   传输失败的措辞一个都不匹配 → 不重试、整轮作废；而同一仓的 fallback 链早就把
+   `ProviderError::Http` 当可重试（`fallback.rs:122`）——agent loop 是唯一不一致的地方。
+3. **退避基数与 Pi 不一致**。`DEFAULT_RETRY_BASE_MS` 是 500（Pi 是 2000），退避 `base × 2^(n-1)`
+   → 一次 1~3 秒的常见抖动在 0.5/1/2 秒之后就放弃了。
+4. **「这次失败是不是瞬时的」没有专门的位置**。`ProviderError::Http` 一身兼两职（传输失败 /
+   chain 耗尽），耗尽后的终态只能从 summary 文本里启发式地猜；`ProviderError::Sse`
+   （响应来了、流死了）在 core 与 fallback 链里一个可重试一个不可重试。
+5. **token 估算按「字节数 / 4」**。中文一个字 3 字节，同样一段中文被算成 3 倍字符量 →
+   压缩预算与上下文百分比都偏大。
+
+**修复**
+
+- **错误说清原因**：`provider.rs` 新增 `describe_reqwest_error`，沿 source 链收集真正的原因；
+  URL 可让位、原因不让（头 ≤256、原因 ≤256，总长 ≤512，按字符截断不切坏 UTF-8）。
+  前缀 `http error:` → `transport error:`（传输失败根本没有 HTTP）。
+- **传输失败会重试**：agent 层新增 `is_transient_provider_failure`——Http / Io（没拿到可用的
+  响应）一律可重试；Api 仍由状态码决定；其余变体维持改动前的文本兜底（不收窄语义）。
+  `ProviderError::Sse` 显式归入可重试，与 fallback 链同口径。
+- **重试只发生在「还没产出任何内容」时**：已经流给用户的内容收不回来，重放会让它在终端和
+  session 文件里出现两遍。Pi 在 HTTP 层、产出之前重试
+  （`openai-codex-responses.ts:381-451`），fallback 链同口径（`fallback.rs:199`）。
+- **退避对齐 Pi**：`DEFAULT_RETRY_BASE_MS` 500 → 2000（Pi `settings-manager.ts:882-886`：
+  maxRetries 3 / baseDelayMs 2000，退避 `base × 2^(n-1)`）→ 2/4/8 秒。
+- **非法地址立即失败**：`From<reqwest::Error>` 按 kind 分流，`is_builder() || is_redirect()`
+  （URL 非法 / 重定向成环，永久性）→ `InvalidRequest`，其余 → `Http`；agent 层不再白等 2+4+8 秒。
+- **chain 耗尽有专用变体**：新增 `ChainExhausted { message: String, transient: bool }`，agent 层按
+  这个**标志**决定要不要重放整条链（不再靠 summary 里的 "500" 被文本启发式误判）；`Http` 回到原义
+  ——「请求发出去了但没有可用的响应」。
+- **fallback 链的诊断带原因**：`kind_of` 的 `Http` / `Io` / `InvalidRequest` 分支剥掉 reqwest 冗余的
+  URL 片段、括号**配平**扫描（URL 里带括号也不会切错），截断规则与 `brief_reason` 同风格；链耗尽的
+  终态判据从「全是传输失败」改成「全是**瞬时失败**」（5xx / 408 / 429 / Http / Io / Sse）→
+  瞬时耗尽才重放，含永久性失败或 empty-stream 的链不重放；「有事件但没有 MessageStop」不再
+  静默结束（那会给出没有结论也没有错误的一轮），而是 `Err(ProviderError::Sse(...))`（含 provider 名字）。
+- **settings 的 `retry` 段真的生效**：TUI 门（`app.rs`）与 demo / `-p` 门（`demo.rs`）把
+  `settings.retry` 灌进 `RunConfig.retry`——此前它被解析、被覆盖，然后就没人读了；并接受 Pi 的
+  camelCase 别名 `maxRetries` / `baseDelayMs`（照着 Pi 的 settings.json 写以前会被静默忽略）。
+- **溢出恢复对齐 Pi**：`recover_from_overflow` 增加 `will_retry` 参数
+  （`agent-session.ts:2164-2170`：`willRetry = stopReason !== "stop"`）→ 成功完成的响应**压缩但不
+  重放**，也不消耗「一次恢复」预算；溢出恢复预算的复位规则改成 Pi 的
+  `stopReason !== "error" && !== "length"`（`agent-session.ts:695-699`）→ 一次「成功完成但输入超窗」
+  的响应也会清掉预算，下一次溢出还能再恢复一次。
+- **token 估算改成 CJK 感知**：按字形分类（CJK 2 字/token、ASCII 4 字/token、其它 3 字/token）
+  + 每条消息的 role base（System 1 / User 1 / Assistant 2 / Tool 1），tool name / input JSON /
+  tool result 全部计入；条目级估算开始计入压缩摘要（`LegacyEntryType::Compaction` 的 summary）——
+  此前它躺在 entry 流里对 cut-point 预算贡献 0，预算会被花两遍。
+
+| | 旧 | 新 |
+|---|---|---|
+| 传输失败（DNS / 连接 / TLS / 超时） | 不重试，整轮作废 | 重试（2 / 4 / 8 秒），且只在还没产出内容时 |
+| 报错内容 | `http error: error sending request for url` | `transport error: … dns error: failed to lookup address information` |
+| 非法 URL / 重定向成环 | 当成传输失败，等 2+4+8 秒 | 立即 `invalid request`，不重试 |
+| 退避基数 | 500 ms（0.5 / 1 / 2 秒） | **2000 ms**（2 / 4 / 8 秒，对齐 Pi） |
+| chain 耗尽 | 靠 summary 文本猜要不要重放 | 专用变体 `ChainExhausted { transient }`，按标志判 |
+| SSE 解析失败 | core 不可重试 / fallback 可重试 | 两边同口径：可重试 |
+| `settings.json` 的 `retry` 段 | 解析了但没人读 | 生效（TUI / demo / `-p` 三条入口） |
+| 溢出恢复 | 成功完成也重放；预算永不复位 | 成功完成只压缩不重放；预算按 Pi 规则复位 |
+| token 估算 | 字节数 / 4 | CJK 2 字/token + ASCII 4 字/token + role base，计入 tool 细节与压缩摘要 |
+
+**四处有意的偏差**（写在这里，免得被当成 bug）：
+
+1. **token 估算不跟 Pi 的 `chars / 4`**。Pi 的 `estimateTokens`
+   （`references/spec-v0.85.1/compaction/compaction.ts:270-310`）按字符数 / 4 估，中文会话会被
+   低估约 3 倍；nini 的会话里中文占比高，改成按字形分类更接近真实消耗。role base
+   （System 1 / User 1 / Assistant 2 / Tool 1）同样是 nini 自定的，不是「mirroring Pi」。
+2. **重试次数仍由 `settings.retry` 决定**，默认沿用 3 次（与 Pi 一致）；本轮动的只是退避基数。
+3. **「整条链全瞬时才重放」是 nini 自定的口径**：Pi 侧没有 chain 耗尽这个概念，nini 的 fallback
+   链按这条规则决定终态，避免把 401 / 400 当成抖动再打一遍。
+4. **溢出恢复的预算复位按 Pi 的 `stopReason` 判定**（`"error"` / `"length"` 不复位，其余复位），
+   而不是按「上一轮有没有溢出过」——后者会让一次成功轮之后再也恢复不了。
+
+**已知偏差（本轮未动，留给后续决策）**：分支摘要（`BranchSummary`）的摘要不计 token（Pi 计）；
+`ctx%` 与压缩预算不同源；压缩路径没有 provider usage 可回落；含图会话仍被严重低估。
+
+台账/oracle：`crates/nini-core/tests/provider_transport_retry.rs`、
+`crates/nini-core/tests/overflow_replay_guard.rs`、`crates/nini-ai/tests/fallback_diagnostics.rs`、
+`crates/nini-conformance/tests/overflow_recovery.rs`。
+
+2253 tests, all green.
+
 ## v1.0.2 — TUI 上下文滚动：单位改成渲染行，长消息能逐屏看完
 
 **症状**（用户实测截图）：在最后一页往上翻，内容整段消失——同一条超长助手消息（几百个

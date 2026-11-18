@@ -95,14 +95,14 @@ v0.9.2 一整版都在清这个。
 
 ---
 
-## 2. 当前状态（2026-11-06，v1.0.0 已发布 + 收尾）
+## 2. 当前状态（2026-11-19，v1.0.3 待发布 + 收尾）
 
 > 数字以脚本/实测为准，来源写在「证据」列。**手工数字会过期**——本表在每次改动后重算。
 
 | 目标项 | 声明 | 证据 | 差距 |
 |---|---|---|---|
-| 版本 | **v1.0.0** | `Cargo.toml` version = 1.0.0；`nini --version` 自报同一数字（`crates/nini-cli/tests/build_identity.rs` 把二进制/manifest/CHANGELOG 三方放在一起比）；Cargo.lock 的 8 个 crate 版本随之更新（`cargo build --release --offline` 自动更新） | **已发布**：tag `v1.0.0`（annotated，tagger `nini-bot`），release 资产 `nini-x86_64-unknown-linux-gnu.tar.xz`（内含 `nini` 一个顶层文件，`install.sh` 按这两个名字取）+ `.sha256`（内容是提取后目录里的 `nini` 的哈希，使 `install.sh` 的 `sha256sum -c` 能通过）。**用户环境同步**：`scripts/build-release.sh --install` 把发布产物装到 `~/.local/bin/nini`（临时文件 + `mv` 原子替换，运行中的旧进程不受影响），并要求安装字节的 sha256 与 release sidecar **完全一致**——v1.0.0 之前没有这一步（且 `build-release.sh` 误以为 `~/.local/bin/nini` 是指向 `target/` 的软链），导致打完 tag 与 tarball 后终端仍跑旧二进制 |
-| 测试 | **2100 通过 / 0 失败**（另有 1 个 doctest 被 ignore：TUI 的 `dynamic_border` 示例需要 TTY） | 本机全量 `cargo test --workspace`（2026-11-07） | 无 |
+| 版本 | **v1.0.3** | `Cargo.toml` version = 1.0.3；`nini --version` 自报同一数字（`crates/nini-cli/tests/build_identity.rs` 把二进制/manifest/CHANGELOG 三方放在一起比）；Cargo.lock 的 8 个 crate 版本随之更新（`cargo build --release --offline` 自动更新） | **待发布**：v1.0.3 的 tag / 资产 / 用户环境同步本轮**尚未做**（`~/.local/bin/nini` 目前仍是 v1.0.2）——本轮只改版本号与对外声明。已发布版本的流程：tag `v1.0.0`（annotated，tagger `nini-bot`），release 资产 `nini-x86_64-unknown-linux-gnu.tar.xz`（内含 `nini` 一个顶层文件，`install.sh` 按这两个名字取）+ `.sha256`（内容是提取后目录里的 `nini` 的哈希，使 `install.sh` 的 `sha256sum -c` 能通过）。**用户环境同步**：`scripts/build-release.sh --install` 把发布产物装到 `~/.local/bin/nini`（临时文件 + `mv` 原子替换，运行中的旧进程不受影响），并要求安装字节的 sha256 与 release sidecar **完全一致**——v1.0.0 之前没有这一步（且 `build-release.sh` 误以为 `~/.local/bin/nini` 是指向 `target/` 的软链），导致打完 tag 与 tarball 后终端仍跑旧二进制 |
+| 测试 | **2253 通过 / 0 失败**（另有 1 个 doctest 被 ignore：TUI 的 `dynamic_border` 示例需要 TTY） | 本机全量 `cargo test --workspace`（2026-11-19） | 无 |
 | 命令面 | 23 + 5 | `registry.rs` 28 条 = Pi 23 ∪ nini 5 | `/share` 已从 stub 改为**明说本机不做云端分享并指向 `/export`**（Pi 的 `/share` 要 gh 账号或云端，与 nini「不出网」原则冲突，登记为 B10 伪差距） |
 | 格式兼容 | JSONL v4 + legacy-v3 | `nini-conformance` 14 个 test 文件 | 无 |
 | 行为 oracle | **符号引用全部可解析（drift=0）**；台账的 `nini_state` **每条都能 grep 到代码符号**（`crates/nini-core/tests/ledger_anchors.rs`）；行为层 **Pi 侧可执行对照物 ≥1**（真 Pi 0.85.1 录制的会话） | `python3 scripts/pi-oracle-lock.py --verify-refs`；`crates/nini-tui/tests/behavior_parity.rs` | 其余 oracle 仍只断言 nini 侧（依据已是机器可解析的符号引用，不再依赖行号）——**C1 已闭**，剩下的覆盖度是另一件事 |
@@ -111,6 +111,8 @@ v0.9.2 一整版都在清这个。
 | 差距台账 | **56 条**（A 9 / B 37 / C 5 / D 5），**open 1、fixed 45、fake 10、blocked-owner 0**、可机器判定 43 | `python3 scripts/parity-gap.py --json` | 差距表不再手工维护；`fake` = 伪差距（描述失真或产品原则差异，不是待修的缺口）—— 2026-11-02 关掉 **4 条真差距**（B4a `!cmd` 流式可中止、B20 工具「执行开始」事件的时机、D1 三个符号接线、B8 mermaid 的明确降级占位），新登记 **B22**（mermaid 的**真图**渲染仍未做——缺布局引擎，且 Pi 的渲染实现不在快照里）与 **B23**（`/export` 默认省略 thinking 是有意的产品决定，但注释承诺的 `--include-thinking` flag 此前根本不存在，v0.16 补上）；**2026-11-05 上午复核**：台账有 **6 条**（B21/B22/B24/B25/C3/C4）的 `status` 写着 `open`，而它们**自己的 `exit_criterion` 就写着「要先有 owner 决策」**——字段与判据打架，改挂决策号并转为 `blocked-owner`。**2026-11-06 复核**：D5 那条 open 已收窄（仍缺 provider 级 `oauth` 无实现、model 级 `cost` 计价属产品决定、Pi 口径差异 ② 需单独设计轮），并在台账 `nini_state` 里写清，未冒充支持。
 **2026-11-05 下午：owner 拍板了全部 8 个决策，台账关账** —— `blocked-owner` 归零，只剩 **D5 一条 open**（它的判据本来就写着「本轮不实现，在此之前保持 open」）。拍板与落地：**R5** = 补 28 个 provider 薄壳（不做 4 个新协议 + 1 个 OAuth）；**R10** = `/clone` 对齐 Pi（fork-at-leaf + 切 session，无参数）；**R11** = 不做扩展运行时，关账；**R12** = 不做 mermaid 真图；**R13** = 接 thinking×7 + 删 legacy×6 并显式提示；**R14** = `Ctrl+U`/`Ctrl+X`/`Ctrl+Z` 三项（`Ctrl+C`/`Ctrl+T` 保留 nini 语义并登记理由）；**R9** = 本轮不做语法高亮、判据改成「9 个槽各能出对应颜色」；**R4** = 不做凭据存储，保持 env-var-only。决策材料与留痕见 [`plans/owner-decision-packs.md`](./plans/owner-decision-packs.md)；其中 **B24**（18 个主题槽悬空 + 一处读不存在的槽）与 **B25**（三处键位语义分叉 + 5 个 Pi 有 nini 无的键）是 v0.16 之后第一轮 TUI 工作新登记的；v0.16 之后的 provider/agent 层关掉 **4 条真差距**（**B27** HTTP 错误体被丢弃、**B28** HTTP 400 不触发压缩重试、**B29** 空 user 消息被序列化成空串、**B30** HTTP 路径不重试瞬时错误），新登记 **B31**（供应商错误码通道是 nini 独有的增强，Pi 同样识别不了讯飞的 10907 → **伪差距**，但要人来养）；同一轮工作的**独立审查**又关掉 **2 条真差距**（**B32** 溢出恢复的一次性上限永不复位——Pi 在成功的一轮后会复位、**B33** Anthropic 侧 assistant 轮的空白 text 未过滤——Pi 同样过滤） |
 | 能力面投入 | — | 自 v0.9.1（2026-10-05，`f01f0a5`）起：`nini-tui` 净 **+11214 行**、`nini-ai` 净 **+1891 行**；提交数 `nini-tui` 185 / `nini-core` 105 / `nini-ai` 31（自 2026-10-12 起：92 / 49 / 7） | 单侧化仍在（行数比 5.9x），但**「`nini-ai` 最后一次提交停在 10-12」这句已过期**——本轮 provider/agent 层的工作把它推到 2026-11-05，见 §3 |
+
+**本轮（2026-11-19，v1.0.3）**：**传输层失败会重试并说清原因**（重试 3 次、退避 2/4/8 秒，且只在还没产出内容时重放；报错带上 `dns error` 等真正原因）；**`settings.json` 的 `retry` 段真的生效**（TUI / demo / `-p` 三条入口，并接受 Pi 的 `maxRetries` / `baseDelayMs`）；**token 估算 CJK 感知**（CJK 2 字/token + ASCII 4 字/token + role base，计入 tool 细节与压缩摘要）。**证据**：`crates/nini-core/tests/provider_transport_retry.rs`、`crates/nini-core/tests/overflow_replay_guard.rs`、`crates/nini-ai/tests/fallback_diagnostics.rs`、`crates/nini-conformance/tests/overflow_recovery.rs`。退避基数已对齐 Pi（`DEFAULT_RETRY_BASE_MS` = 2000）；B27/B28/B30/B32 的 fixed 结论不变；token 估算的已知偏差（分支摘要不计、`ctx%` 与压缩预算不同源）见 CHANGELOG v1.0.3。
 
 ---
 
