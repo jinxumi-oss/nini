@@ -19,7 +19,8 @@
 //!     if let Some(e) = last_err { failures.push(...); yield Err(e) }  // ← records, then returns
 //!     else { failures.push(...); return }
 //! }
-//! yield Err(NotImplemented("all N fallback providers exhausted ..."))
+//! yield Err(Http(summary))            // every failure was transient
+//! yield Err(NotImplemented(summary))  // at least one failure was not
 //! ```
 //!
 //! The exhausted error is reachable **only** when every iteration took the
@@ -39,6 +40,11 @@
 //! EXHAUSTED  out = [Err(NotImplemented("all 2 fallback providers exhausted without producing a result"))]
 //! EMPTY-TAIL out = []
 //! ```
+//!
+//! (The exhausted error is `Http` today when **every** failure was
+//! transient (5xx/408/429/transport/broken stream) — the chain never got
+//! a verdict from any server, so the agent layer must replay it. See
+//! `crates/nini-ai/src/fallback.rs`.)
 
 //! invariant: 3bf4815d —— 声明本文件守住了哪几条历史不变量。
 //! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，
@@ -144,14 +150,18 @@ fn an_exhausted_chain_names_every_key_it_tried_and_why() {
     ]);
 
     let out = collect(&fb);
+    // The terminal error's *kind* depends on the chain: `Http` when every
+    // failure was transient (the agent replays the whole chain), and
+    // `NotImplemented` when one of them was not. This chain is all
+    // transient — but the diagnostics below must hold either way.
     let msg = out
         .iter()
         .filter_map(|e| match e {
-            Err(ProviderError::NotImplemented(m)) => Some(m.as_str()),
+            Err(ProviderError::Http(m)) | Err(ProviderError::NotImplemented(m)) => Some(m.as_str()),
             _ => None,
         })
         .next()
-        .unwrap_or_else(|| panic!("no NotImplemented error; got {out:?}"));
+        .unwrap_or_else(|| panic!("no exhausted-chain error; got {out:?}"));
 
     assert!(
         msg.contains("3"),
@@ -159,7 +169,7 @@ fn an_exhausted_chain_names_every_key_it_tried_and_why() {
     );
     for expected in [
         "key-ratelimited: HTTP 429",
-        "key-network: network/transport",
+        "key-network: network/transport: connection reset",
         "key-gateway: HTTP 503",
     ] {
         assert!(

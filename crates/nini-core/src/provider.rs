@@ -283,7 +283,19 @@ where
 /// Provider error type.
 #[derive(Debug, Error, Clone)]
 pub enum ProviderError {
-    #[error("http error: {0}")]
+    /// The request went out and no usable HTTP response came back
+    /// (dns error / connection refused / operation timed out).
+    ///
+    /// The fallback chain also uses it to carry its **summary** when
+    /// the chain is exhausted and *every* failure was transient (5xx /
+    /// 408 / 429 / a transport failure / a broken stream): nothing in
+    /// the chain was refused on its merits, so the agent layer must
+    /// read it as transient and replay the chain. A chain that hit a
+    /// permanent failure (401 / 400 / auth / invalid request) or an
+    /// empty stream ends as `NotImplemented` instead — that one is not
+    /// replayed. The *kind* carries that verdict; the summary inside it
+    /// only carries the diagnostics.
+    #[error("transport error: {0}")]
     Http(String),
     #[error("sse error: {0}")]
     Sse(String),
@@ -320,10 +332,13 @@ pub enum ProviderError {
 /// request"; a shortened cause says nothing at all). A "…" marks every
 /// cut, on a character boundary, so the text stays valid UTF-8.
 ///
-/// Note on what `ProviderError::Http` means: this function is reached
-/// for *every* reqwest failure, including the few that are permanent
-/// (an illegal URL, a redirect loop). The message says which one it
-/// is — that is the whole point of keeping the cause.
+/// Note on what `ProviderError::Http` means: it is the *transport*
+/// failure variant — the request went out and no usable HTTP response
+/// came back (dns error / connection refused / operation timed out).
+/// The two permanent failures (an illegal URL, a redirect loop) never
+/// reach it: they are classified as `InvalidRequest` instead, so the
+/// agent does not retry them. The message says which one it is — that
+/// is the whole point of keeping the cause.
 fn describe_reqwest_error(e: &reqwest::Error) -> String {
     const MAX_TOTAL: usize = 512;
     const MAX_HEAD: usize = 256;
@@ -387,7 +402,16 @@ fn truncate_chars(s: &str, max: usize) -> String {
 
 impl From<reqwest::Error> for ProviderError {
     fn from(e: reqwest::Error) -> Self {
-        ProviderError::Http(describe_reqwest_error(&e))
+        let text = describe_reqwest_error(&e);
+        if e.is_builder() || e.is_redirect() {
+            // The request never left: an illegal URL or a redirect loop
+            // is a configuration error, and sending it again would only
+            // produce the same failure. `InvalidRequest` is not retried
+            // by the agent layer.
+            ProviderError::InvalidRequest(text)
+        } else {
+            ProviderError::Http(text)
+        }
     }
 }
 

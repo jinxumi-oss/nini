@@ -8,7 +8,7 @@
 //! whole turn with:
 //!
 //! ```text
-//! [error] provider error: http error: error sending request for url (https://…)
+//! [error] provider error: transport error: error sending request for url (https://…)
 //! ```
 //!
 //! Two things are wrong with that:
@@ -42,6 +42,11 @@
 //!   already reached the user cannot be taken back;
 //! * the error the user finally sees carries the **cause**, and the
 //!   cause is never what the length cap cuts;
+//! * a transport failure says "transport error", not "http error" —
+//!   there was no HTTP response at all;
+//! * a *permanent* failure (an illegal URL, a redirect loop) is not
+//!   retried — the request never left, so sending it again would only
+//!   produce the same failure;
 //! * a request the server refused (401) is still *not* retried — the
 //!   retry must not become "retry everything".
 
@@ -188,7 +193,10 @@ fn a_transport_failure_is_classified_as_transient() {
 
     // The text path (no HTTP status available) must agree.
     assert!(
-        is_transient_provider_error(0, "http error: error sending request for url (https://x)"),
+        is_transient_provider_error(
+            0,
+            "transport error: error sending request for url (https://x)"
+        ),
         "a transport failure that arrived as text must be transient too"
     );
 }
@@ -247,6 +255,140 @@ async fn a_transport_error_keeps_the_cause() {
     assert!(
         message.contains("error sending request for url"),
         "the request context was dropped from the transport error: {message}"
+    );
+    // A connection failure is a *transport* failure: the variant must
+    // stay `Http`, and the prefix must not claim there was an HTTP
+    // response — there was none.
+    let err = client
+        .get("http://127.0.0.1:1/never")
+        .send()
+        .await
+        .expect_err("connecting to a closed port must fail");
+    let err = ProviderError::from(err);
+    assert!(
+        matches!(err, ProviderError::Http(_)),
+        "a connection failure must stay `Http`: {err:?}"
+    );
+    assert!(
+        err.to_string().starts_with("transport error:"),
+        "a transport failure must not be called an http error: {err}"
+    );
+    assert!(
+        is_transient_provider_failure(&err),
+        "a connection failure must be transient: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 3b. A request that never left is permanent
+// ---------------------------------------------------------------------------
+
+/// An illegal URL never reaches the network: the failure is a
+/// configuration error, so sending it again would only produce the
+/// same error after the same 2 + 4 + 8 seconds of waiting (Pi's
+/// `baseDelayMs: 2000`). It must
+/// be classified as `InvalidRequest` (not retried) — and it must say
+/// "invalid request", not "transport error", because no transport was
+/// ever involved.
+#[tokio::test(flavor = "current_thread")]
+async fn an_illegal_url_is_permanent_and_not_retried() {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let err = client
+        .get("not a url")
+        .send()
+        .await
+        .expect_err("an illegal URL must fail");
+    let err = ProviderError::from(err);
+
+    assert!(
+        matches!(err, ProviderError::InvalidRequest(_)),
+        "an illegal URL must be `InvalidRequest`, not a retryable failure: {err:?}"
+    );
+    assert!(
+        !is_transient_provider_failure(&err),
+        "an illegal URL must not be transient: {err}"
+    );
+    assert!(
+        err.to_string().starts_with("invalid request:"),
+        "the permanent failure must say so: {err}"
+    );
+
+    // The classification alone is not the claim: the **agent** must not
+    // replay the request either. One call, no Retrying phase, and the
+    // error the user finally reads says what broke.
+    let (provider, calls) = ScriptProvider::new(vec![Step::FailForever(err.clone())]);
+    let mut agent = Agent::new(provider, ToolRegistry::new(), config());
+
+    let (events, error) = drain(&mut agent).await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "an illegal URL was retried: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|ev| matches!(
+            ev,
+            AgentEvent::PhaseChanged(nini_core::agent::AgentPhase::Retrying { .. })
+        )),
+        "the run entered the Retrying phase: {events:?}"
+    );
+    let error = error.expect("the turn must fail");
+    assert!(
+        error.contains("invalid request"),
+        "the permanent failure must say so: {error}"
+    );
+    assert!(
+        error.contains("builder error"),
+        "the reason must survive: {error}"
+    );
+}
+
+/// A permanent failure whose **text** looks transient must not be
+/// retried either.
+///
+/// The text heuristic matches "500"/"503" anywhere in the message, and
+/// a request that never left carries such a number in its own text —
+/// a redirect loop to "…/deploy-503" is the shape that used to be
+/// mistaken for a transient failure, and the agent then sat out the
+/// whole backoff (2 s + 4 s + 8 s) before the same permanent failure
+/// came back. The **kind** decides, not the text.
+#[tokio::test(flavor = "current_thread")]
+async fn an_invalid_request_that_looks_transient_in_its_text_is_not_retried() {
+    let err = ProviderError::InvalidRequest(
+        "error following redirect for url (https://api.example.com/deploy-503): \
+         too many redirects"
+            .into(),
+    );
+    assert!(
+        !is_transient_provider_failure(&err),
+        "a request that never left must not be transient: {err}"
+    );
+
+    let (provider, calls) = ScriptProvider::new(vec![Step::FailForever(err.clone())]);
+    let mut agent = Agent::new(provider, ToolRegistry::new(), config());
+
+    let (events, error) = drain(&mut agent).await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a permanent failure was retried: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|ev| matches!(
+            ev,
+            AgentEvent::PhaseChanged(nini_core::agent::AgentPhase::Retrying { .. })
+        )),
+        "the run entered the Retrying phase: {events:?}"
+    );
+    let error = error.expect("the turn must fail");
+    assert!(
+        error.contains("invalid request"),
+        "the permanent failure must say so: {error}"
     );
 }
 

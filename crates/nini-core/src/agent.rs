@@ -260,9 +260,20 @@ impl From<ToolError> for AgentError {
 /// in v0.84.3 for compaction; we use 3 for general LLM streaming too).
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
 
-/// Default base delay between retry attempts. Doubled each attempt:
-/// attempt 1 → 0.5s, attempt 2 → 1s, attempt 3 → 2s.
-pub const DEFAULT_RETRY_BASE_MS: u64 = 500;
+/// Default base delay between retry attempts. Doubled each attempt.
+///
+/// Pi parity (`references/pi-0.85.1/src/core/settings-manager.ts:882-886`):
+/// the agent layer retries a transient failure **3** times with
+/// `baseDelayMs: 2000`, and the delay grows as
+/// `baseDelayMs * 2 ** (retryAttempt - 1)`
+/// (`references/pi-0.85.1/src/session/agent-session.ts:2894-2921`) →
+/// 2000 / 4000 / 8000 ms.
+///
+/// nini used 500 ms, i.e. 500 / 1000 / 2000 (3.5 s in total). That is
+/// too short for the common network blip: a request that fails because
+/// the connection was reset for one or two seconds was given up on while
+/// Pi — which waits 2 s before the first retry — would have carried on.
+pub const DEFAULT_RETRY_BASE_MS: u64 = 2000;
 
 /// Returns true if an error message looks transient/retryable. Mirrors the
 /// heuristics Pi uses in `agent-session.js` to classify whether to retry
@@ -350,23 +361,43 @@ pub fn is_transient_provider_error(status: u16, text: &str) -> bool {
 /// body — DNS / connect / TLS / timeout, or a body that broke halfway
 /// through. There is nothing the server said about it, so the only
 /// verdict available is "the network blinked", which is the most
-/// transient failure there is. In the rare case the request itself was
-/// malformed (an illegal URL, a redirect loop) the failure is
-/// permanent; those come back immediately, so retrying them costs a
-/// couple of seconds, and the reason is spelled out in the message
-/// anyway.
+/// transient failure there is.
 ///
 /// `Api` carries the server's own status and body and keeps the
-/// existing status-based verdict. Every other variant (auth, invalid
-/// request, json, sse, not implemented) has no HTTP status of its own,
+/// existing status-based verdict.
+///
+/// `InvalidRequest` and `NotImplemented` are **permanent**: a request
+/// that never left (an illegal URL, a redirect loop) and nini's own
+/// "the chain gave up" diagnostic fail exactly the same way the next
+/// time. The text heuristic must not decide these two — it matches
+/// "500"/"503" *anywhere* in the message, and both of them carry such
+/// a number in their own text ("…/deploy-503", "primary: HTTP 500:
+/// internal"). Retrying them would only burn the backoff (2 s + 4 s +
+/// 8 s) before the same permanent failure comes back.
+///
+/// Every other variant (auth, json, sse) has no HTTP status of its own,
 /// so it keeps its pre-existing behaviour: status `0` → the text
 /// heuristic decides.
+///
+/// The **fallback chain** delivers its verdict through this very
+/// function. A chain whose every failure was transient (5xx / 408 / 429
+/// / a transport failure / a broken stream) ends as `Http` — which is
+/// transient here, so the whole chain is replayed — while a chain that
+/// hit a permanent failure (401 / 400 / auth / invalid request) or an
+/// empty stream ends as `NotImplemented`, which is permanent here and is
+/// not replayed. The *kind* carries that verdict; the summary inside it
+/// only carries the diagnostics.
 pub fn is_transient_provider_failure(e: &ProviderError) -> bool {
     match e {
         ProviderError::Http(_) | ProviderError::Io(_) => true,
         ProviderError::Api { status, message } => is_transient_provider_error(*status, message),
-        // Every other variant keeps the behaviour it had before this
-        // function existed: no status is known, so the text decides.
+        // A malformed request (an illegal URL, a redirect loop) and
+        // nini's own "not implemented / chain exhausted" diagnostics
+        // are permanent: the text heuristics would match a "503"
+        // inside a URL.
+        ProviderError::InvalidRequest(_) | ProviderError::NotImplemented(_) => false,
+        // The rest (auth / json / sse) keep the pre-existing
+        // behaviour: no HTTP status of their own → the text decides.
         other => is_transient_provider_error(0, &other.to_string()),
     }
 }
@@ -734,7 +765,7 @@ impl Default for RetrySettings {
     fn default() -> Self {
         Self {
             max_retries: 3,
-            base_delay_ms: 500,
+            base_delay_ms: DEFAULT_RETRY_BASE_MS,
         }
     }
 }
@@ -1258,9 +1289,11 @@ impl Agent {
     /// The one and only overflow-recovery sequence.
     ///
     /// Pi's `_checkCompaction` Case 1 → `_runAutoCompaction("overflow",
-    /// willRetry = true)` (`agent-session.ts:2132`), with the one-shot bound
-    /// of `_overflowRecoveryAttempted` (`:2172`) and the failed assistant
-    /// turn dropped before the summary is written (`:2019`).
+    /// willRetry = true)` (`agent-session.ts:2164` computes `willRetry`,
+    /// `:2201` runs the auto-compaction), with the one-shot bound of
+    /// `_overflowRecoveryAttempted` (`:2172`, set at `:2196`) and the
+    /// failed assistant turn dropped before the summary is written
+    /// (`:2199`).
     ///
     /// **Everything that can detect an overflow goes through here.** There
     /// used to be two copies of this sequence — one in the `MessageStop`
@@ -1274,33 +1307,69 @@ impl Agent {
     /// `detail` is the provider's own words, appended to the "nothing left
     /// to compact" message so the user can see what the server said.
     ///
-    /// `must_have_changed` says whether the retry has to carry a
-    /// **different** history than the one that was refused. It is set for
-    /// the HTTP exit (a 400/413 is the server's explicit verdict on
-    /// *this* request: a retry that carries the very same conversation is
-    /// the very same request) and cleared for the mid-stream error path,
-    /// where Pi's own behaviour — compact, retry, and report if it fails
-    /// again — is what the conformance oracle pins
-    /// (`nini-conformance/tests/overflow_recovery.rs`).
+    /// The **second** parameter, `must_have_changed`, says whether the
+    /// retry has to carry a **different** history than the one that was
+    /// refused. It is set for the HTTP exit (a 400/413 is the server's
+    /// explicit verdict on *this* request: a retry that carries the very
+    /// same conversation is the very same request) and cleared for the
+    /// mid-stream error path, where Pi's own behaviour — compact, retry,
+    /// and report if it fails again — is what the conformance oracle
+    /// pins (`nini-conformance/tests/overflow_recovery.rs`).
+    ///
+    /// It is a **guard of the replay path**, nothing more: it can only
+    /// ever *refuse* a replay (`will_retry && must_have_changed`). It
+    /// never decides whether the user is told — a compaction that changed
+    /// nothing is reported on every path, replay or not (see the
+    /// "history did not change" report below).
     ///
     /// "Different" is **verbatim difference of content**, not "smaller".
     /// A summary of a tiny history is longer than the history it
     /// replaces; the compaction still worked, and refusing to retry there
     /// throws the whole recovery away.
     ///
+    /// The **third** parameter, `will_retry`, says whether the caller is
+    /// going to **replay** the request after this routine returns. It is
+    /// Pi's `willRetry`:
+    ///
+    /// ```text
+    /// const willRetry = assistantMessage.stopReason !== "stop";
+    /// // Case 2: the response completed successfully. Compact, but do not retry because
+    /// // agent.continue() cannot continue from a completed assistant response.
+    /// if (!willRetry) {
+    ///     return await this._runAutoCompaction("overflow", false);
+    /// }
+    /// ```
+    /// (`references/pi-0.85.1/src/session/agent-session.ts:2164-2170`)
+    ///
+    /// Pi's `"stop"` is nini's `"stop"` / `"end_turn"` — a response that
+    /// *completed*. A completed response is compacted but **never**
+    /// replayed; an unfinished one (`length`, `error`, …) is compacted
+    /// **and** replayed.
+    ///
+    /// `will_retry == false` therefore means: compact, do not touch the
+    /// one-shot recovery budget, do not drop the assistant message, and
+    /// hand the caller `retry: false` — the caller keeps the answer it
+    /// already has.
+    ///
     /// Returns the events to yield in order. `retry == true` means the
     /// compaction succeeded and the caller must rebuild the request from
     /// the compacted history (`retry_after_compaction = true; break
-    /// 'outer`); `retry == false` means the run is over and the caller must
-    /// `return` — every event explaining why is in `events`.
+    /// 'outer`); `retry == false` means the request must not be replayed —
+    /// every event explaining why is in `events`.
     fn recover_from_overflow(
         &mut self,
         detail: Option<&str>,
         must_have_changed: bool,
+        will_retry: bool,
     ) -> OverflowRecovery {
         let mut events = Vec::new();
 
-        if self.overflow_recovery_attempted {
+        // The one-shot bound only guards a **replay**: Pi checks
+        // `_overflowRecoveryAttempted` *after* the `!willRetry` early
+        // return (`agent-session.ts:2167-2172`), so a completed response
+        // that merely gets compacted neither consumes the budget nor is
+        // refused by it.
+        if will_retry && self.overflow_recovery_attempted {
             // Pi: one recovery, then say so (`agent-session.ts:2172`).
             // Without this bound, a compaction that cannot shrink the
             // context re-sends the identical oversized request until
@@ -1329,7 +1398,9 @@ impl Agent {
                 retry: false,
             };
         }
-        self.overflow_recovery_attempted = true;
+        if will_retry {
+            self.overflow_recovery_attempted = true;
+        }
 
         // Drop the failed assistant turn before compacting: Pi removes it
         // from state so the summary is not written *about* the error
@@ -1340,7 +1411,10 @@ impl Agent {
         // message is normally the user turn (or a tool result) that was
         // just sent. Popping it unconditionally would delete a real turn
         // from the history that is about to be compacted.
-        if matches!(self.messages.last().map(|m| m.role), Some(Role::Assistant)) {
+        //
+        // Pi's Case 2 (`!willRetry`) keeps the completed assistant message:
+        // it is the answer, and it goes into the history like any other.
+        if will_retry && matches!(self.messages.last().map(|m| m.role), Some(Role::Assistant)) {
             self.messages.pop();
         }
 
@@ -1395,29 +1469,75 @@ impl Agent {
                 // veto refused to retry precisely the small-history runs
                 // the recovery exists for. What matters is whether the
                 // compaction did *anything* to the history.
+                //
+                // v0.13: the **report** is unconditional, the **veto** is
+                // not. A compaction that changed nothing is a fact the
+                // user needs on every path: the old rule only reported
+                // it when the veto could fire (`must_have_changed`), and
+                // the MessageStop arm passes `must_have_changed =
+                // false` — so on the "compact, do not replay" road the
+                // run said nothing at all, the user believed the context
+                // had been fixed, and the next round hit the same wall.
                 let after_key = history_content_key(&self.messages);
-                if must_have_changed && before_key == after_key {
-                    let mut message = "Context overflow recovery compacted the \
+                if before_key == after_key {
+                    // The compaction did **nothing**: the history is
+                    // verbatim what it was before. With a replay that
+                    // means "the retry would be the same request" —
+                    // refused. Without a replay there is no retry to
+                    // talk about, but the user must still learn that
+                    // the compaction did not help: the context is
+                    // still over the window, and the next round will
+                    // hit the same wall. Silently swallowing it would
+                    // leave the user believing the context was fixed.
+                    let mut message = if will_retry {
+                        "Context overflow recovery compacted the \
                          conversation but the history did not change — the retry \
                          would be the same request the server just refused. \
                          Try reducing context or switching to a larger-context model."
-                        .to_string();
+                            .to_string()
+                    } else {
+                        "Context overflow recovery compacted the \
+                         conversation but the history did not change — the context \
+                         is still over the window. \
+                         Try reducing context or switching to a larger-context model."
+                            .to_string()
+                    };
                     if let Some(detail) = detail {
                         message.push_str(&format!(" (server said: {detail})"));
                     }
                     events.push(AgentEvent::Error { message });
-                    self.set_phase(AgentPhase::Idle);
-                    events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
-                    return OverflowRecovery {
-                        events,
-                        retry: false,
-                    };
+                    if will_retry && must_have_changed {
+                        // The replay path's guard: the request the
+                        // server just refused would be sent again
+                        // verbatim. Refused — the run ends here.
+                        self.set_phase(AgentPhase::Idle);
+                        events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
+                        return OverflowRecovery {
+                            events,
+                            retry: false,
+                        };
+                    }
+                    if !will_retry {
+                        // Pi Case 2: the turn is **not** over — the
+                        // answer stands. No `Idle` here: the caller
+                        // still finishes the turn normally.
+                        self.set_phase(AgentPhase::Working);
+                        events.push(AgentEvent::PhaseChanged(AgentPhase::Working));
+                        return OverflowRecovery {
+                            events,
+                            retry: false,
+                        };
+                    }
+                    // A replay that is not guarded by `must_have_changed`
+                    // (the mid-stream error path): the report is the
+                    // whole consequence — Pi's rule there is "compact,
+                    // retry, and report if it fails again".
                 }
                 self.set_phase(AgentPhase::Working);
                 events.push(AgentEvent::PhaseChanged(AgentPhase::Working));
                 OverflowRecovery {
                     events,
-                    retry: true,
+                    retry: will_retry,
                 }
             }
             None => {
@@ -1428,12 +1548,32 @@ impl Agent {
                 // `aborted: true` 结束，UI 说「Auto-compaction cancelled」。
                 if self.compaction_aborted {
                     self.end_auto_compaction();
-                    self.set_phase(AgentPhase::Idle);
-                    events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
-                    events.push(AgentEvent::TurnEnd {
-                        stop_reason: "compaction cancelled".to_string(),
-                        usage: Usage::default(),
-                    });
+                    if will_retry {
+                        // Pi: the turn ends here, and the CLI renders
+                        // this stop reason ("Auto-compaction cancelled.",
+                        // `crates/nini-cli/src/app.rs:857-862`).
+                        self.set_phase(AgentPhase::Idle);
+                        events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
+                        events.push(AgentEvent::TurnEnd {
+                            stop_reason: "compaction cancelled".to_string(),
+                            usage: Usage::default(),
+                        });
+                    } else {
+                        // Pi Case 2: the turn is **not** over — the answer
+                        // stands. No `TurnEnd` here: the caller still emits
+                        // the real one for this turn.
+                        //
+                        // The wording must not read like a failure: the
+                        // user pressed Esc, the answer they already have
+                        // is still the answer, and nothing went wrong.
+                        events.push(AgentEvent::Error {
+                            message: "auto-compaction cancelled — \
+                                      the answer above stands."
+                                .to_string(),
+                        });
+                        self.set_phase(AgentPhase::Working);
+                        events.push(AgentEvent::PhaseChanged(AgentPhase::Working));
+                    }
                     return OverflowRecovery {
                         events,
                         retry: false,
@@ -1443,10 +1583,20 @@ impl Agent {
                 // oversized history and overflow identically. Pi's
                 // `compact()` returns false in this situation and the run
                 // ends; silently looping to `max_iterations` was the bug.
-                let mut message = "Context overflow and nothing left to \
+                //
+                // Without a replay there is no run to end: the answer the
+                // user already has stays, and the sentence must not claim
+                // the run is over.
+                let mut message = if will_retry {
+                    "Context overflow and nothing left to \
                     compact — ending this run. Start a new session or run \
                     /compact."
-                    .to_string();
+                } else {
+                    "Context overflow and nothing left to \
+                    compact — the answer above stands. Start a new session \
+                    or run /compact."
+                }
+                .to_string();
                 if let Some(detail) = detail {
                     message.push_str(&format!(" (server said: {detail})"));
                 }
@@ -1455,8 +1605,13 @@ impl Agent {
                 // 「压缩结束了」—— 标志必须落下，否则它会**永久**为真，而
                 // TUI 会把之后每一次提交都收进队列且永不执行。
                 self.end_auto_compaction();
-                self.set_phase(AgentPhase::Idle);
-                events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
+                if will_retry {
+                    self.set_phase(AgentPhase::Idle);
+                    events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
+                } else {
+                    self.set_phase(AgentPhase::Working);
+                    events.push(AgentEvent::PhaseChanged(AgentPhase::Working));
+                }
                 OverflowRecovery {
                     events,
                     retry: false,
@@ -2192,22 +2347,62 @@ impl Agent {
                                 // and an estimate that says otherwise is
                                 // exactly what left the run with no way
                                 // forward (`agent-session.ts#isContextOverflow-2021`).
+                                //
+                                // Pi's口径 (`references/pi-0.85.1/src/session/agent-session.ts:2164-2170`):
+                                //
+                                // ```text
+                                // const willRetry = assistantMessage.stopReason !== "stop";
+                                // // Case 2: the response completed successfully. Compact, but do not retry because
+                                // // agent.continue() cannot continue from a completed assistant response.
+                                // if (!willRetry) {
+                                //     return await this._runAutoCompaction("overflow", false);
+                                // }
+                                // ```
+                                //
+                                // nini 实际会收到的 stop_reason 取值 —— 两个方言各一套：
+                                //
+                                // * OpenAI 方言（`crates/nini-ai/src/openai.rs:722-725`）
+                                //   直接透传服务端的 `finish_reason`：
+                                //   `"stop"` / `"length"` / `"tool_calls"` / `"content_filter"`；
+                                // * Anthropic 方言（`crates/nini-ai/src/anthropic.rs:277`）：
+                                //   `"end_turn"` / `"max_tokens"` / `"tool_use"`。
+                                //
+                                // 对应关系：Pi 的 `"stop"` ≡ nini 的 `"stop"` / `"end_turn"`
+                                // （纯文本回答）→ **压缩但绝不重放**；
+                                // `"tool_use"` / `"tool_calls"` ≡ Pi 的 `"toolUse"`，
+                                // `"length"` / `"max_tokens"` ≡ Pi 的 `"length"`
+                                // → **压缩并重放**。
+                                //
+                                // 额外的 `!produced_output` 是**有意**的偏离：
+                                // 已经流给用户的内容收不回来 —— Pi 能把那条
+                                // assistant 消息从 agent state 里删掉再重放，nini
+                                // 删不掉终端里已经流出去的字，重放会让同一段话
+                                // 显示两遍（终端 + 会话文件）。
+                                let will_retry = !matches!(stop_reason.as_str(), "stop" | "end_turn")
+                                    && !produced_output;
                                 if recoverable {
                                     // v0.12 (fix): the recovery sequence lives in
                                     // one place now (`recover_from_overflow`), so
                                     // this arm, the `StreamEvent::Error` arm and
                                     // the HTTP-error arm cannot drift apart.
-                                    let recovery = self.recover_from_overflow(None, false);
+                                    let recovery = self.recover_from_overflow(None, false, will_retry);
                                     for ev in recovery.events {
                                         yield ev;
                                     }
-                                    if recovery.retry {
-                                        retry_after_compaction = true;
-                                        break 'outer;
+                                    if will_retry {
+                                        if recovery.retry {
+                                            retry_after_compaction = true;
+                                            break 'outer;
+                                        }
+                                        // The recovery failed (or was cancelled) and
+                                        // the events above say so; the run is over.
+                                        return;
                                     }
-                                    // The recovery failed (or was cancelled) and
-                                    // the events above say so; the run is over.
-                                    return;
+                                    // Pi Case 2: compacted, **not** replayed. The
+                                    // turn ends normally below — the answer stays,
+                                    // the assistant message goes into the history
+                                    // like any other, and the oversized context
+                                    // is the *next* round's problem.
                                 }
                             }
                             Some(Ok(StreamEvent::Error { message })) => {
@@ -2236,19 +2431,41 @@ impl Agent {
                                         ),
                                     },
                                 );
+                                // Pi: `willRetry = assistantMessage.stopReason !== "stop"`
+                                // (`references/pi-0.85.1/src/session/agent-session.ts:2164-2170`).
+                                // The stop reason here is Pi's `"error"`, so Pi
+                                // **would** replay: the response did not
+                                // complete.
+                                //
+                                // nini's deviation: `!produced_output`. Content
+                                // that already reached the user cannot be taken
+                                // back — Pi deletes the failed assistant message
+                                // from its state and replays, nini cannot
+                                // un-print the terminal, so a replay would show
+                                // the same passage twice (terminal *and*
+                                // session file). So nini compacts (Pi does too)
+                                // but does not replay.
+                                let will_retry = !produced_output;
                                 if overflowed {
                                     // v0.12 (fix): shared with the other two
                                     // overflow paths — see
                                     // `Agent::recover_from_overflow`.
-                                    let recovery = self.recover_from_overflow(Some(&message), false);
+                                    let recovery =
+                                        self.recover_from_overflow(Some(&message), false, will_retry);
                                     for ev in recovery.events {
                                         yield ev;
                                     }
-                                    if recovery.retry {
-                                        retry_after_compaction = true;
-                                        break 'outer;
+                                    if will_retry {
+                                        if recovery.retry {
+                                            retry_after_compaction = true;
+                                            break 'outer;
+                                        }
+                                        return;
                                     }
-                                    return;
+                                    // No replay: the failure is surfaced as it
+                                    // is — the user sees the real provider error,
+                                    // not a second attempt hidden behind a
+                                    // compaction.
                                 }
                                 // Transient? Retry the current request.
                                 //
@@ -2367,18 +2584,36 @@ impl Agent {
                                         Some(config.compaction.context_window),
                                         &signals,
                                     );
+                                    // Pi: `willRetry = assistantMessage.stopReason !== "stop"`
+                                    // (`references/pi-0.85.1/src/session/agent-session.ts:2164-2170`).
+                                    // The stop reason here is Pi's `"error"`, so Pi
+                                    // **would** replay: the response did not
+                                    // complete.
+                                    //
+                                    // nini's deviation: `!produced_output`.
+                                    // Already-streamed content cannot be taken
+                                    // back — Pi deletes the failed assistant
+                                    // message from its state and replays, nini
+                                    // cannot un-print the terminal, so a replay
+                                    // would show the same passage twice.
+                                    let will_retry = !produced_output;
                                     if overflowed {
                                         // The same recovery the other two arms
                                         // use — one compact-and-retry, then stop.
-                                        let recovery = self.recover_from_overflow(Some(&text), true);
+                                        let recovery =
+                                            self.recover_from_overflow(Some(&text), true, will_retry);
                                         for ev in recovery.events {
                                             yield ev;
                                         }
-                                        if recovery.retry {
-                                            retry_after_compaction = true;
-                                            break 'outer;
+                                        if will_retry {
+                                            if recovery.retry {
+                                                retry_after_compaction = true;
+                                                break 'outer;
+                                            }
+                                            return;
                                         }
-                                        return;
+                                        // No replay: the failure is surfaced as
+                                        // it is.
                                     }
                                 }
                                 // Not an overflow. A transient failure
@@ -3779,17 +4014,18 @@ mod retry_settings_tests {
 
     #[test]
     fn default_retry_settings_match_pi() {
-        // Pi default: max 3 retries, base delay 500ms.
+        // Pi default: max 3 retries, base delay 2000ms
+        // (`references/pi-0.85.1/src/core/settings-manager.ts:882-886`).
         let s = RetrySettings::default();
         assert_eq!(s.max_retries, 3);
-        assert_eq!(s.base_delay_ms, 500);
+        assert_eq!(s.base_delay_ms, 2000);
     }
 
     #[test]
     fn runconfig_default_uses_retry_settings_default() {
         let cfg = RunConfig::new("test-model");
         assert_eq!(cfg.retry.max_retries, 3);
-        assert_eq!(cfg.retry.base_delay_ms, 500);
+        assert_eq!(cfg.retry.base_delay_ms, 2000);
     }
 
     #[test]

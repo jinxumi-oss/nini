@@ -71,14 +71,119 @@ fn kind_of(err: &ProviderError) -> String {
                 format!("HTTP {status}: {reason}")
             }
         }
-        ProviderError::Http(_) => "network/transport".to_string(),
-        ProviderError::Io(_) => "I/O".to_string(),
+        // v0.13: the transport label used to be bare ("network/transport",
+        // "I/O") — the *reason* was thrown away a second time, right
+        // where the user reads it. The provider layer already carries
+        // the real cause ("dns error: failed to lookup address
+        // information: Name or service not known"), so the label quotes
+        // it too.
+        ProviderError::Http(message) => {
+            with_reason("network/transport", &transport_reason(message))
+        }
+        ProviderError::Io(message) => with_reason("I/O", &transport_reason(message)),
         ProviderError::Sse(_) => "SSE parse".to_string(),
         ProviderError::Auth(_) => "auth".to_string(),
-        ProviderError::InvalidRequest(_) => "invalid-request".to_string(),
+        // The request never left (an illegal URL, a redirect loop): the
+        // reason says **which** one it was, and this summary is the last
+        // place the user sees it.
+        ProviderError::InvalidRequest(message) => with_reason(
+            "invalid-request",
+            &cut_reason(reason_without_url(message), 200),
+        ),
         ProviderError::Json(_) => "json-parse".to_string(),
         ProviderError::NotImplemented(_) => "not-implemented".to_string(),
     }
+}
+
+/// A short label plus the reason behind it, or the label alone when
+/// there is no reason to quote.
+fn with_reason(label: &str, reason: &str) -> String {
+    if reason.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label}: {reason}")
+    }
+}
+
+/// The transport failure's cause, without reqwest's redundant URL.
+///
+/// reqwest's own `Display` opens with "error sending request for url
+/// (https://…)". The URL is redundant here: the label already says
+/// network/transport, and the user knows which provider they asked.
+/// The cause is what the user cannot guess — it follows the URL.
+///
+/// Messages without that prefix are taken as they are.
+fn transport_reason(message: &str) -> String {
+    const MAX: usize = 160;
+    cut_reason(reason_without_url(message), MAX)
+}
+
+/// The cause behind a failure, with reqwest's URL taken off.
+///
+/// reqwest puts the request context in parentheses — "error sending
+/// request for url (https://…)" for a transport failure, "error
+/// following redirect for url (https://…)" for a redirect loop — and
+/// the cause follows the closing parenthesis.
+///
+/// The URL may contain parentheses of its own (a query value like
+/// `?tag=(beta)`), so the closing parenthesis is found by
+/// **balancing** the brackets, not by taking the first one.
+///
+/// Messages without such a prefix are taken as they are.
+fn reason_without_url(message: &str) -> &str {
+    const PREFIXES: [&str; 2] = [
+        "error sending request for url (",
+        "error following redirect for url (",
+    ];
+    for prefix in PREFIXES {
+        let Some(rest) = message.strip_prefix(prefix) else {
+            continue;
+        };
+        return match closing_paren(rest) {
+            // Everything after the closing paren is the cause; the
+            // separating ": " goes with it.
+            Some(i) => rest[i + 1..].trim_start().trim_start_matches(':').trim(),
+            None => rest.trim(),
+        };
+    }
+    message.trim()
+}
+
+/// The index of the `)` that closes the `(` a prefix left open.
+///
+/// `rest` starts right after that `(`, so the depth starts at 1 and
+/// every `(` inside the URL opens another level.
+fn closing_paren(rest: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A reason cut to `max` characters, with the cut marked by "…".
+///
+/// The same rule as [`brief_reason`]: the cut is on a character
+/// boundary, so a multi-byte character is never split in half.
+fn cut_reason(reason: &str, max: usize) -> String {
+    if reason.is_empty() {
+        return String::new();
+    }
+    if reason.chars().count() <= max {
+        return reason.to_string();
+    }
+    let mut out: String = reason.chars().take(max).collect();
+    out.push('…');
+    out
 }
 
 /// The server's explanation, without the `request failed: <status>` prefix.
@@ -108,10 +213,12 @@ fn brief_reason(message: &str) -> String {
     out
 }
 
-/// v0.7.5 — classify a ProviderError as retryable. 5xx and 429 from
-/// the upstream are always retryable. Network/transport errors
-/// (`Http`, `Io`) are too. JSON/SSE parse errors and auth errors
-/// are NOT retryable (different key won't help).
+/// v0.7.5 — classify a ProviderError as retryable. 5xx, 408 and 429
+/// from the upstream are always retryable. Network/transport errors
+/// (`Http`, `Io`) are too, and so is a stream that broke (`Sse`): the
+/// request was worth sending once and may well be worth sending
+/// again. JSON parse errors and auth errors are NOT retryable (a
+/// different key won't help).
 fn is_retryable(err: &ProviderError) -> bool {
     match err {
         ProviderError::Api { status, .. } => {
@@ -167,6 +274,24 @@ impl Provider for FallbackProvider {
             // empty stream). Without this, debugging required enabling
             // RUST_LOG and reading anthropic.rs traces.
             let mut failures: Vec<String> = Vec::new();
+
+            // v0.13: was EVERY failure in this chain a **transient** one
+            // — judged by this module's own `is_retryable` (5xx / 408 /
+            // 429, a transport failure, a stream that broke)? If yes,
+            // nothing in the chain was refused on its merits: no key is
+            // bad, no request is malformed, no gateway is misconfigured.
+            // The terminal error is then reported as `Http`, so the
+            // agent layer treats it as transient and replays the whole
+            // chain (a user with `--fallback-keys` used to die on the
+            // first network hiccup — and, before this rule, on the very
+            // common "every key answered 500" too).
+            //
+            // An **empty stream** ("empty stream (0 events)") is NOT
+            // transient: the gateway answered and had nothing to say
+            // (a misconfigured gateway that buffers the whole response,
+            // or a model that emits nothing) — two seconds later it
+            // answers the same way.
+            let mut all_failures_transient = true;
 
             for provider in providers.iter() {
                 let any_event_emitted = any_event_emitted.clone();
@@ -224,6 +349,21 @@ impl Provider for FallbackProvider {
                 // previously a zero-event provider ended the whole stream
                 // silently, with no event and no error at all.
                 if let Some(e) = last_err {
+                    // Transient or not is this module's own question, and
+                    // `is_retryable` is where it is answered: 5xx / 408 /
+                    // 429, a transport failure (`Http` / `Io`) and a
+                    // stream that broke (`Sse`) are worth another try; a
+                    // verdict (`Api`: 401 / 400 / …), a request that never
+                    // left (`InvalidRequest`) and a client-side fault
+                    // (`Auth` / `Json`) are not.
+                    //
+                    // A permanent verdict never reaches the "exhausted"
+                    // branch below — it is yielded unchanged — so the flag
+                    // only ever decides the fate of the transient
+                    // failures.
+                    if !is_retryable(&e) {
+                        all_failures_transient = false;
+                    }
                     failures.push(format!("{}: {}", provider.name(), kind_of(&e)));
                     if provider_failed_retryably {
                         // Try the next provider.
@@ -237,6 +377,11 @@ impl Provider for FallbackProvider {
                     // response into one chunk instead of streaming,
                     // or with a model that emits nothing. Record it and
                     // keep walking the chain.
+                    //
+                    // It is **not** transient: the gateway answered and
+                    // had nothing to say — two seconds later it answers
+                    // the same way.
+                    all_failures_transient = false;
                     failures.push(format!("{}: empty stream (0 events)", provider.name()));
                     continue;
                 } else {
@@ -269,7 +414,45 @@ impl Provider for FallbackProvider {
                     summary.push_str(&f);
                 }
             }
-            yield Err(ProviderError::NotImplemented(summary));
+            // The terminal error carries the same diagnostics in either
+            // case; only its *kind* differs, and that kind is what the
+            // agent layer reads to decide whether the chain is worth
+            // another try.
+            //
+            // * **Every** recorded failure was transient (5xx / 408 /
+            //   429 / a transport failure / a stream that broke):
+            //   nothing in the chain was refused on its merits — no key
+            //   is bad, no request is malformed, no gateway is
+            //   misconfigured. The terminal error is `Http`, which the
+            //   agent layer classifies as transient: the whole chain is
+            //   replayed.
+            // * At least one failure was not transient — an empty
+            //   stream (the gateway answered and had nothing to say):
+            //   the terminal error is `NotImplemented`, nini's own "the
+            //   chain gave up" diagnostic, and the chain is not
+            //   replayed.
+            //
+            // Two facts that are easy to get wrong:
+            //
+            // (a) The agent layer judges that **kind**, not the text: the
+            //     summary quotes the inner errors verbatim — including
+            //     their status codes ("primary: HTTP 500: internal") —
+            //     and a text heuristic would read the "500" in there as
+            //     transient and replay a chain that has already had its
+            //     verdict.
+            // (b) A **permanent** failure never reaches this branch: as
+            //     soon as a provider gives a verdict of its own (401 /
+            //     400 / auth / invalid request) the chain yields that
+            //     error unchanged (`yield Err(e)`) and stops. The
+            //     "exhausted" summary is for chains that ran out of
+            //     providers without a verdict.
+            if all_failures_transient {
+                // Nothing in the chain was refused on its merits → the
+                // chain is worth one more try.
+                yield Err(ProviderError::Http(summary));
+            } else {
+                yield Err(ProviderError::NotImplemented(summary));
+            }
         })
     }
 }
@@ -310,6 +493,15 @@ mod tests {
         Err(ProviderError::Api {
             status: 401,
             message: "unauthorized".into(),
+        })
+    }
+
+    /// A refusal whose wording carries **no** transient keyword — the
+    /// status alone must decide.
+    fn mk_400() -> Result<StreamEvent, ProviderError> {
+        Err(ProviderError::Api {
+            status: 400,
+            message: "the request was rejected".into(),
         })
     }
 
@@ -448,6 +640,239 @@ mod tests {
             message: "internal".to_string(),
         };
         assert_eq!(kind_of(&err), "HTTP 500");
+    }
+
+    /// A transport failure must say **why** it failed, and must not
+    /// waste the reader's time on the URL they already know.
+    ///
+    /// reqwest's own wording is "error sending request for url
+    /// (https://…): dns error: …". The URL is redundant (the label
+    /// already says "network/transport", and the user knows which
+    /// provider they asked); the cause is the part nobody can guess.
+    #[test]
+    fn the_transport_label_carries_the_reason_and_not_the_url() {
+        let err = ProviderError::Http(
+            "error sending request for url (https://api.openai.com/v1/chat/completions): \
+             dns error: failed to lookup address information: Name or service not known"
+                .into(),
+        );
+        let label = kind_of(&err);
+        assert_eq!(
+            label,
+            "network/transport: dns error: failed to lookup address information: \
+             Name or service not known",
+            "the transport label must quote the cause"
+        );
+        assert!(
+            !label.contains("https://"),
+            "the URL is redundant — the label already says network/transport: {label:?}"
+        );
+    }
+
+    /// An `I/O` failure has the same problem and the same fix.
+    #[test]
+    fn the_io_label_carries_the_reason() {
+        let err = ProviderError::Io("connection reset by peer".into());
+        assert_eq!(kind_of(&err), "I/O: connection reset by peer");
+    }
+
+    /// A request that never left has a reason too, and it says **which**
+    /// one it was — "builder error" (an illegal URL) or a redirect
+    /// loop.
+    #[test]
+    fn the_invalid_request_label_carries_the_reason() {
+        let err =
+            ProviderError::InvalidRequest("builder error: relative URL without a base".into());
+        assert_eq!(
+            kind_of(&err),
+            "invalid-request: builder error: relative URL without a base",
+            "the reason must survive into the summary"
+        );
+
+        let err = ProviderError::InvalidRequest(
+            "error following redirect for url (https://api.example.com/deploy-503): \
+             too many redirects"
+                .into(),
+        );
+        assert_eq!(
+            kind_of(&err),
+            "invalid-request: too many redirects",
+            "the URL must be taken off, the cause must stay"
+        );
+    }
+
+    /// A URL that contains parentheses of its own must not cut the cause
+    /// short: the brackets are **balanced**, not guessed.
+    #[test]
+    fn the_transport_label_survives_a_url_with_parentheses() {
+        let err = ProviderError::Http(
+            "error sending request for url (https://api.example.com/v1/models?tag=(beta)): \
+             dns error: failed to lookup address information"
+                .into(),
+        );
+        let label = kind_of(&err);
+        assert_eq!(
+            label, "network/transport: dns error: failed to lookup address information",
+            "the URL must be cut off at its **closing** parenthesis: {label:?}"
+        );
+    }
+
+    /// A chain where **every** failure is a transport failure never got
+    /// a verdict from any server: this is the network, not the request,
+    /// so the terminal error must be transport-shaped — the agent layer
+    /// then retries the whole chain instead of dying on the first
+    /// hiccup. The per-provider diagnostics must survive.
+    #[test]
+    fn a_chain_of_transport_failures_ends_transport_shaped() {
+        let fb = FallbackProvider::new(vec![
+            stub("primary", vec![mk_http()]),
+            stub("secondary", vec![mk_http()]),
+        ]);
+        let out = collect(&fb);
+        let err = out
+            .into_iter()
+            .find_map(|e| e.err())
+            .unwrap_or_else(|| panic!("expected an error"));
+        match err {
+            ProviderError::Http(msg) => {
+                assert!(
+                    msg.contains("primary: network/transport")
+                        && msg.contains("secondary: network/transport"),
+                    "the diagnostics must survive in the transport-shaped error: {msg}"
+                );
+            }
+            other => panic!("expected ProviderError::Http, got {other:?}"),
+        }
+    }
+
+    /// A **permanent** verdict is yielded unchanged: the chain stops
+    /// there, and the "exhausted" summary is never built.
+    ///
+    /// A 401 is not retryable, so the original error is what the user
+    /// sees — and the agent layer does not replay it either.
+    #[test]
+    fn a_chain_with_a_permanent_verdict_yields_that_verdict_unchanged() {
+        let fb = FallbackProvider::new(vec![
+            stub("primary", vec![mk_401()]),
+            stub("secondary", vec![mk_http()]),
+        ]);
+        let out = collect(&fb);
+        let err = out
+            .into_iter()
+            .find_map(|e| e.err())
+            .unwrap_or_else(|| panic!("expected an error"));
+        assert!(
+            matches!(err, ProviderError::Api { status: 401, .. }),
+            "a 401 must be yielded unchanged, never as a transport failure: got {err:?}"
+        );
+        assert!(
+            !nini_core::agent::is_transient_provider_failure(&err),
+            "a refused request must not be replayed by the agent layer: {err:?}"
+        );
+    }
+
+    /// A chain whose every failure was **transient** is worth another
+    /// try — and that includes the very common shape: every key answered
+    /// 500.
+    ///
+    /// The old rule only counted *transport* failures, so a chain of 500s
+    /// ended as `NotImplemented` — nini's own "the chain gave up"
+    /// diagnostic — and the agent layer, which reads the kind and not the
+    /// text, did not replay it. That was worse than before: the summary
+    /// quotes "HTTP 500" verbatim, and the old text heuristic used to
+    /// replay it.
+    #[test]
+    fn a_chain_of_transient_failures_ends_replayable() {
+        let fb = FallbackProvider::new(vec![
+            stub("primary", vec![mk_5xx()]),
+            stub("secondary", vec![mk_5xx()]),
+        ]);
+        let out = collect(&fb);
+        let err = out
+            .into_iter()
+            .find_map(|e| e.err())
+            .unwrap_or_else(|| panic!("expected an error"));
+        assert!(
+            matches!(err, ProviderError::Http(_)),
+            "a chain of transient failures must end in the replayable kind: got {err:?}"
+        );
+        assert!(
+            nini_core::agent::is_transient_provider_failure(&err),
+            "a chain of transient failures must be replayed by the agent layer: {err:?}"
+        );
+    }
+
+    /// An empty stream is **not** transient: the gateway answered and
+    /// had nothing to say (a misconfigured gateway that buffers the whole
+    /// response, or a model that emits nothing) — two seconds later it
+    /// answers the same way. The chain must not be replayed.
+    #[test]
+    fn a_chain_with_an_empty_stream_is_not_replayed() {
+        let fb = FallbackProvider::new(vec![stub("primary", vec![]), stub("secondary", vec![])]);
+        let out = collect(&fb);
+        let err = out
+            .into_iter()
+            .find_map(|e| e.err())
+            .unwrap_or_else(|| panic!("expected an error"));
+        assert!(
+            matches!(err, ProviderError::NotImplemented(_)),
+            "an empty stream must not look transient: got {err:?}"
+        );
+        assert!(
+            !nini_core::agent::is_transient_provider_failure(&err),
+            "an empty stream must not be replayed by the agent layer: {err:?}"
+        );
+    }
+
+    /// The terminal error's *kind* is what the agent layer reads to
+    /// decide whether a retry could help — so the behaviour worth
+    /// pinning down is not "which variant" but "will the agent replay
+    /// the request".
+    ///
+    /// A chain whose every failure was a transport failure never got a
+    /// verdict from any server: this is the network, and the agent must
+    /// replay the whole chain.
+    #[test]
+    fn a_transport_only_chain_is_replayed_by_the_agent_layer() {
+        let fb = FallbackProvider::new(vec![
+            stub("primary", vec![mk_http()]),
+            stub("secondary", vec![mk_http()]),
+        ]);
+        let out = collect(&fb);
+        let err = out
+            .into_iter()
+            .find_map(|e| e.err())
+            .unwrap_or_else(|| panic!("expected an error"));
+        assert!(
+            nini_core::agent::is_transient_provider_failure(&err),
+            "a chain that never got a verdict from any server must be \
+             replayed by the agent layer: {err:?}"
+        );
+    }
+
+    /// A chain that got a **verdict** is not replayed: the request was
+    /// refused, and sending it again would only produce the same
+    /// refusal.
+    ///
+    /// A 4xx is not retryable, so the chain stops at the refusal and
+    /// that refusal is the terminal error. Its wording carries no
+    /// transient keyword ("the request was rejected") — the status
+    /// alone has to decide.
+    #[test]
+    fn a_chain_with_a_server_verdict_is_not_replayed_by_the_agent_layer() {
+        let fb = FallbackProvider::new(vec![
+            stub("primary", vec![mk_400()]),
+            stub("secondary", vec![mk_http()]),
+        ]);
+        let out = collect(&fb);
+        let err = out
+            .into_iter()
+            .find_map(|e| e.err())
+            .unwrap_or_else(|| panic!("expected an error"));
+        assert!(
+            !nini_core::agent::is_transient_provider_failure(&err),
+            "a refused request must not be replayed by the agent layer: {err:?}"
+        );
     }
 
     #[test]

@@ -14,15 +14,23 @@
 //!              && usage.input + cacheRead >= contextWindow * 0.99
 //!
 //!  agent-session.ts:2132  _checkCompaction(assistantMessage)
+//!      const willRetry = assistantMessage.stopReason !== "stop"   (:2164)
 //!      Case 1 (recoverable) → _runAutoCompaction("overflow", willRetry)
 //!      Case 2 (threshold)   → _runAutoCompaction("threshold", willRetry=false)
 //!      — called UNCONDITIONALLY after every assistant message (:1098)
 //!
+//!  agent-session.ts:2164-2170  the response **completed** (Pi's
+//!                          stopReason === "stop") → compact, but do NOT
+//!                          retry: "agent.continue() cannot continue from a
+//!                          completed assistant response."
+//!
 //!  agent-session.ts:2172  if (this._overflowRecoveryAttempted) → emit the error
 //!                          "Context overflow recovery failed after one
 //!                           compact-and-retry attempt…" and STOP
+//!                          (the check sits AFTER the !willRetry early return)
 //!  agent-session.ts#messages.slice(0, -1)  messages.slice(0, -1)  — drop the failed assistant
 //!                          from the state that gets compacted and retried
+//!                          (Case 1 only — a completed response keeps its message)
 //! ```
 //!
 //! # The defect this pins down
@@ -45,7 +53,8 @@
 use futures_util::Stream;
 use nini_core::agent::{Agent, CompactionHook, CompactionResult, RunConfig};
 use nini_core::provider::{
-    Capabilities, Provider, ProviderError, Request, StreamEvent, Usage as PUsage,
+    Capabilities, ContentBlock, Message, Provider, ProviderError, Request, Role, StreamEvent,
+    Usage as PUsage,
 };
 use nini_core::tool::{Tool, ToolContext, ToolOutput, ToolRegistry, ToolSpec};
 use std::collections::VecDeque;
@@ -259,7 +268,15 @@ async fn drain(agent: &mut Agent) -> Vec<nini_core::AgentEvent> {
 }
 
 /// A hook that compacts: counts calls, records what it saw, and returns a
-/// short history — the "session already folded it" case.
+/// folded history — the "session already folded it" case.
+///
+/// The fold has to be **real**. The old stub kept "the last two messages",
+/// which on a one- or two-message history handed back exactly what it was
+/// given: the compaction changed nothing, and the agent reports that
+/// ("…the history did not change…") as an error — a fact about the
+/// *compaction*, not about the overflow these oracles are about. So the
+/// stub folds the history into a summary message, like a real compaction
+/// does.
 fn compacting_hook(log: Arc<HookLog>) -> CompactionHook {
     CompactionHook::new(move |messages| {
         log.calls.fetch_add(1, Ordering::SeqCst);
@@ -276,7 +293,13 @@ fn compacting_hook(log: Arc<HookLog>) -> CompactionHook {
             })
             .unwrap_or_default();
         log.seen.lock().unwrap().push(last);
-        let keep: Vec<_> = messages.iter().rev().take(2).rev().cloned().collect();
+        let keep = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "[summary]".into(),
+            }],
+            timestamp: 0,
+        }];
         Some(CompactionResult {
             summary: "[summary]".into(),
             tokens_before: 999_999,
@@ -559,6 +582,18 @@ fn the_overflow_detector_covers_pis_three_cases() {
 /// "length"`, so this case was invisible: the turn succeeded, the context
 /// kept growing, and the next few requests died on a provider that may or
 /// may not have started complaining.
+///
+/// The turn is compacted — but **not** replayed: Pi's `willRetry` is
+/// `stopReason !== "stop"`, and this response *completed*
+/// (`references/pi-0.85.1/src/session/agent-session.ts:2164-2170`):
+///
+/// ```text
+/// // Case 2: the response completed successfully. Compact, but do not retry because
+/// // agent.continue() cannot continue from a completed assistant response.
+/// if (!willRetry) {
+///     return await this._runAutoCompaction("overflow", false);
+/// }
+/// ```
 #[tokio::test(flavor = "current_thread")]
 async fn a_successful_response_over_the_window_compacts() {
     let (provider, calls, _sizes) = ScriptProvider::new(vec![
@@ -581,9 +616,11 @@ async fn a_successful_response_over_the_window_compacts() {
          window did not trigger compaction; the old detector only matched \
          error text and `length` stops"
     );
-    assert!(
-        calls.load(Ordering::SeqCst) >= 2,
-        "no retry after compacting"
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the completed response was replayed — Pi compacts a completed \
+         response but does not retry it (agent-session.ts:2164-2170): {events:?}"
     );
     assert!(
         !events
