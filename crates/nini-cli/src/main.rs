@@ -947,16 +947,17 @@ mod cli_wiring_tests {
         );
     }
 
-    /// v0.15: the settings file alone must reach **all three** assembly
+    /// v0.15: the settings file alone must reach **both** assembly
     /// doors.
     ///
-    /// The TUI, `nini demo` and `nini -p` are three doors into the same
-    /// `RunConfig`. A mode that reaches one and dies in the other two is
-    /// a mode that behaves differently depending on how nini was
-    /// started — the exact failure this repo already paid for once with
-    /// the tool-concurrency ceiling.
+    /// The TUI and the `nini demo` / `nini -p` entry (the two share one
+    /// `assemble_run_config`) are two doors into the same `RunConfig`. A
+    /// mode that reaches one and dies in the other is a mode that
+    /// behaves differently depending on how nini was started — the exact
+    /// failure this repo already paid for once with the tool-concurrency
+    /// ceiling.
     #[test]
-    fn the_settings_file_reaches_all_three_assembly_doors() {
+    fn the_settings_file_reaches_both_assembly_doors() {
         let mut settings = nini_core::settings::Settings::default();
         settings.tool_execution = Some(nini_core::tool::ToolExecutionMode::Sequential);
 
@@ -977,20 +978,20 @@ mod cli_wiring_tests {
             "the TUI door dropped the settings file's execution mode"
         );
 
-        // Door 2: `nini demo`.
+        // Door 2: `nini demo` / `nini -p` — one shared assembly
+        // function (`assemble_run_config`).
         assert_eq!(
             crate::demo::demo_run_config(&cfg, &settings, "test-model", String::new())
                 .tool_execution,
             nini_core::tool::ToolExecutionMode::Sequential,
-            "the demo door dropped the settings file's execution mode"
+            "the `nini demo` door (shared `assemble_run_config`) dropped the settings file's execution mode"
         );
 
-        // Door 3: `nini -p`.
         assert_eq!(
             crate::demo::print_run_config(&cfg, &settings, "test-model", String::new())
                 .tool_execution,
             nini_core::tool::ToolExecutionMode::Sequential,
-            "the print door dropped the settings file's execution mode"
+            "the `nini -p` door (shared `assemble_run_config`) dropped the settings file's execution mode"
         );
     }
 
@@ -1118,7 +1119,8 @@ mod cli_wiring_tests {
     ///
     /// The keys nini's parser knows are `max_retries` / `base_delay_ms`
     /// (`nini_core::settings::RetrySettings`); Pi's camelCase spelling
-    /// (`maxRetries` / `baseDelayMs`) is not among them.
+    /// (`maxRetries` / `baseDelayMs`) is accepted as an **alias** — both
+    /// spellings are read (the snake_case one is canonical).
     #[test]
     fn the_settings_file_retry_block_reaches_the_run_config() {
         let mut settings = nini_core::settings::Settings::default();
@@ -1199,11 +1201,16 @@ mod cli_wiring_tests {
         );
     }
 
-    /// v1.0.3: the `retry` block has to reach **all three** assembly
+    /// v1.0.3: the `retry` block has to reach **both** assembly
     /// doors — the same drift the tool-concurrency ceiling already paid
     /// for once (a limit in the TUI, nothing in `-p`).
+    ///
+    /// There are **two** assembly paths, not three: the TUI's own
+    /// `build_tui_run_config`, and the `assemble_run_config` that
+    /// `nini demo` (`demo_run_config`) and `nini -p`
+    /// (`print_run_config`) share.
     #[test]
-    fn the_settings_file_retry_block_reaches_all_three_assembly_doors() {
+    fn the_settings_file_retry_block_reaches_both_assembly_doors() {
         let mut settings = nini_core::settings::Settings::default();
         settings.retry = Some(nini_core::settings::RetrySettings {
             max_retries: Some(5),
@@ -1229,26 +1236,26 @@ mod cli_wiring_tests {
             "the TUI door dropped the settings file's retry policy"
         );
 
-        // Door 2: `nini demo`.
+        // Door 2: `nini demo` / `nini -p` — one shared assembly
+        // function (`assemble_run_config`).
         let demo_cfg = crate::demo::demo_run_config(&cfg, &settings, "test-model", String::new());
         assert_eq!(
             demo_cfg.retry.max_retries, 5,
-            "the demo door dropped the settings file's retry policy"
+            "the `nini demo` door (shared `assemble_run_config`) dropped the settings file's retry policy"
         );
         assert_eq!(
             demo_cfg.retry.base_delay_ms, 100,
-            "the demo door dropped the settings file's retry policy"
+            "the `nini demo` door (shared `assemble_run_config`) dropped the settings file's retry policy"
         );
 
-        // Door 3: `nini -p`.
         let print_cfg = crate::demo::print_run_config(&cfg, &settings, "test-model", String::new());
         assert_eq!(
             print_cfg.retry.max_retries, 5,
-            "the print door dropped the settings file's retry policy"
+            "the `nini -p` door (shared `assemble_run_config`) dropped the settings file's retry policy"
         );
         assert_eq!(
             print_cfg.retry.base_delay_ms, 100,
-            "the print door dropped the settings file's retry policy"
+            "the `nini -p` door (shared `assemble_run_config`) dropped the settings file's retry policy"
         );
     }
 }
