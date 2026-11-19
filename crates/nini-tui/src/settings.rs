@@ -16,8 +16,11 @@
 //! }
 //! ```
 //!
-//! Unknown top-level keys are ignored. Missing fields fall back to
-//! defaults so a partial file still loads.
+//! Unknown top-level keys are ignored on load — and **preserved on
+//! write**: the TUI only owns the keys above, so `flush` merges its own
+//! keys into the file instead of replacing it (see
+//! `SettingsManager::flush`). Missing fields fall back to defaults so a
+//! partial file still loads.
 
 use std::path::PathBuf;
 
@@ -218,9 +221,36 @@ impl SettingsManager {
 
     /// Persist the in-memory settings to disk. Best-effort: a failed
     /// write is logged but does not crash the TUI.
+    ///
+    /// The file is **merged**, not overwritten: the keys the TUI owns
+    /// (`theme`, `default_model`, `default_thinking_level`,
+    /// `context_window`, `reserve_tokens`, `keep_recent_tokens`,
+    /// `double_escape_action`, `copy_on_select`) are written over the
+    /// ones already there, and every other key is left exactly as the
+    /// user wrote it.
+    ///
+    /// Why: `settings.json` has two readers. `nini-core`'s loader
+    /// (`crates/nini-core/src/settings.rs`) reads keys this struct has
+    /// no field for — `retry`, `max_iterations`, `max_parallel_tools`,
+    /// `tool_execution`, `provider`, `model`, … — and serialising this
+    /// struct on its own deleted every one of them. A user who wrote
+    /// `{"retry": {...}}` lost their retry settings the moment they
+    /// changed the theme in the TUI, with nothing said about it.
+    ///
+    /// A file that is missing, unreadable or not a JSON object degrades
+    /// to the previous behaviour (only the TUI's own keys are written) —
+    /// a broken file must not make the flush fail.
     pub fn flush(&mut self) -> Result<(), String> {
         let path = self.settings_path();
-        let json = serde_json::to_string_pretty(&self.settings)
+        let mut doc = merge_base(&path);
+        let own =
+            serde_json::to_value(&self.settings).map_err(|e| format!("settings serialize: {e}"))?;
+        if let serde_json::Value::Object(own) = own {
+            for (key, value) in own {
+                doc.insert(key, value);
+            }
+        }
+        let json = serde_json::to_string_pretty(&serde_json::Value::Object(doc))
             .map_err(|e| format!("settings serialize: {e}"))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -252,6 +282,23 @@ impl SettingsManager {
             }
             Err(_) => Self::default(),
         }
+    }
+}
+
+/// The document the TUI's own keys are written into: the user's file as
+/// it stands, or an empty object when there is nothing usable to merge
+/// into (missing, unreadable, or not a JSON object).
+///
+/// A file that cannot be read or parsed must not make the flush fail —
+/// the TUI's own keys are still worth writing — so the fallback is the
+/// old behaviour, not an error.
+fn merge_base(path: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return serde_json::Map::new();
+    };
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
     }
 }
 
