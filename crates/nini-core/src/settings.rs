@@ -55,6 +55,14 @@ pub struct Settings {
     /// puts a ceiling back. `maxIterations` is accepted as an alias
     /// because it is nini's own camelCase spelling — **Pi 0.85.1 has no
     /// such key**; this is nini's knob, not a Pi setting.
+    ///
+    /// The TUI **keeps** this key when it saves its own settings: since
+    /// v1.0.3 `SettingsManager::flush()`
+    /// (`crates/nini-tui/src/settings.rs:243`) **merges** the TUI's own
+    /// keys into the user-level `settings.json` instead of replacing the
+    /// whole file, so a key the TUI does not manage — this one,
+    /// `max_parallel_tools`, `tool_execution`, `retry`, … — is written
+    /// back unchanged.
     #[serde(default, alias = "maxIterations")]
     pub max_iterations: Option<usize>,
     /// v0.14: ceiling on tool calls running at once. `0` / absent = no
@@ -68,11 +76,13 @@ pub struct Settings {
     /// has no such key** (nor a `maxIterations` one); this is nini's
     /// knob, not a Pi setting.
     ///
-    /// Known limit: the **user-level** file's key is wiped when the TUI
-    /// saves its settings (`crates/nini-tui/src/settings.rs` flushes
-    /// only its own `Settings` struct) — the same thing that already
-    /// happens to `maxIterations`. The project-level
-    /// `.nini/settings.json` is not written back and is unaffected.
+    /// The TUI **keeps** this key when it saves its own settings, just
+    /// like `maxIterations`: since v1.0.3 `SettingsManager::flush()`
+    /// (`crates/nini-tui/src/settings.rs:243`) **merges** the TUI's own
+    /// keys into the user-level `settings.json` instead of replacing the
+    /// whole file, so a key the TUI does not manage — this one,
+    /// `max_iterations`, `tool_execution`, `retry`, … — is written back
+    /// unchanged.
     #[serde(default, alias = "maxParallelTools")]
     pub max_parallel_tools: Option<usize>,
     /// v0.15: the batch-level tool execution mode.
@@ -106,12 +116,13 @@ pub struct Settings {
     /// Known limit: like `maxIterations`, one illegal value makes the
     /// **whole file** be ignored — the loader does not read half a file.
     ///
-    /// Known limit: the **user-level** file's key is wiped when the TUI
-    /// saves its settings (`crates/nini-tui/src/settings.rs` flushes
-    /// only its own `Settings` struct, which has no `tool_execution`
-    /// field) — the same thing that already happens to `maxIterations`.
-    /// The project-level `.nini/settings.json` is not written back and is
-    /// unaffected.
+    /// The TUI **keeps** this key when it saves its own settings, just
+    /// like `maxIterations`: since v1.0.3 `SettingsManager::flush()`
+    /// (`crates/nini-tui/src/settings.rs:243`) **merges** the TUI's own
+    /// keys into the user-level `settings.json` instead of replacing the
+    /// whole file, so a key the TUI does not manage — this one,
+    /// `max_iterations`, `max_parallel_tools`, `retry`, … — is written
+    /// back unchanged.
     #[serde(default, alias = "toolExecution")]
     pub tool_execution: Option<crate::tool::ToolExecutionMode>,
 }
@@ -1109,21 +1120,22 @@ mod tests {
         );
     }
 
-    /// v0.15 (审查修正): the known limit — "the TUI's settings flush wipes
-    /// this key" — must be **written down** next to the key.
+    /// v1.0.3: the guarantee — "the TUI's settings flush **keeps** this
+    /// key" — must be **written down** next to the key.
     ///
-    /// `crates/nini-tui/src/settings.rs` persists a `Settings` struct that
-    /// has no `tool_execution` field, so every TUI settings write drops
-    /// the key from the user-level file. The neighbouring
-    /// `max_parallel_tools` records the very same limit; the new key
-    /// shipped without it, which is how a documented knob disappears
+    /// `crates/nini-tui/src/settings.rs`'s `SettingsManager::flush()`
+    /// merges the TUI's own keys into the file instead of replacing it,
+    /// so a key the TUI does not manage (`tool_execution`, …) survives a
+    /// TUI settings write. The neighbouring `max_iterations` and
+    /// `max_parallel_tools` record the very same guarantee; a knob that
+    /// vanishes on the next save is how a documented setting disappears
     /// without anybody noticing.
     ///
     /// A comment cannot be asserted at runtime, so this asserts the
     /// **source text**: the doc comment of the field must name the TUI
-    /// flush and the wiping.
+    /// flush and the keeping.
     #[test]
-    fn the_tool_execution_key_records_the_tui_flush_limit() {
+    fn the_tool_execution_key_records_that_the_tui_flush_keeps_it() {
         let source =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/settings.rs"))
                 .expect("read settings.rs");
@@ -1135,10 +1147,15 @@ mod tests {
             .expect("the field's doc comment starts with its version");
         let doc = &source[doc_start..field_at];
         assert!(
-            doc.contains("TUI") && doc.contains("flush") && doc.contains("wiped"),
-            "the tool_execution doc comment must record the known limit that the \
-             TUI's settings flush wipes the key (crates/nini-tui/src/settings.rs) — \
+            doc.contains("TUI") && doc.contains("flush") && doc.contains("keeps"),
+            "the tool_execution doc comment must record the guarantee that the \
+             TUI's settings flush keeps the key (crates/nini-tui/src/settings.rs) — \
              found: {doc}"
+        );
+        assert!(
+            !doc.contains("wiped"),
+            "the tool_execution doc comment must not claim the key is wiped any \
+             more — the TUI's flush keeps it: {doc}"
         );
     }
 

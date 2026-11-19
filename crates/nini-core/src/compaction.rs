@@ -26,12 +26,12 @@
 //! |---|---|---|
 //! | [`estimate_legacy_message_tokens`] | role base + tool-use **name** + tool result | **the compaction budget's authority** — cut-point accumulation and [`estimate_entries_tokens`] |
 //! | [`estimate_message_tokens`] | no role base, tool-use name not counted | `compact()` — sizing the summary it just produced |
-//! | [`estimate_provider_messages_tokens`] | no role base, tool-use name not counted | the agent's status-bar ctx% |
+//! | [`estimate_provider_messages_tokens`] | no role base, tool-use name not counted | **the threshold-compaction trigger** (`Agent::estimated_tokens`) and the agent-side fallback when there is no usage snapshot — **not** the status bar's ctx% (that number comes from the provider-reported usage) |
 //!
 //! The last two compute the same formula; they differ only in where
 //! they are called from. The first one is on a different scale, so the
-//! ctx% in the status bar and the compaction budget are **different
-//! numbers by construction** — a test pins that.
+//! trigger's estimate and the compaction budget are **different numbers
+//! by construction** — a test pins that.
 //!
 //! **Known deviation from Pi (intentionally kept).** Pi takes the
 //! provider-reported usage as the truth: `estimateContextTokens`
@@ -268,12 +268,18 @@ pub fn estimate_messages_tokens(messages: &[AgentMessage]) -> u32 {
     messages.iter().map(estimate_legacy_message_tokens).sum()
 }
 
-/// Estimate tokens for provider-layer messages — the agent's ctx%.
+/// Estimate tokens for provider-layer messages — the compaction
+/// trigger's estimate.
 ///
 /// No role base, no tool-use name: this is the "how much is the provider
-/// holding right now" number shown in the status bar. It is deliberately
-/// **not** the compaction budget; see the module header for the three
-/// estimators and who owns which.
+/// holding right now" number `Agent::estimated_tokens()` uses to decide
+/// whether the context window is full enough to compact, and the
+/// fallback it estimates with when the agent has no usage snapshot yet.
+/// It is deliberately **not** the compaction budget; see the module
+/// header for the three estimators and who owns which.
+///
+/// The status bar's ctx% is **not** this number: it comes from the
+/// provider-reported usage.
 pub fn estimate_provider_messages_tokens(messages: &[Message]) -> u32 {
     messages
         .iter()
@@ -1320,9 +1326,9 @@ mod tests {
 
     #[test]
     fn estimate_provider_messages_tokens_differs_from_legacy_budget() {
-        // The status-bar ctx% and the compaction budget are different
-        // numbers by construction: the ctx% estimator has no role base
-        // and does not count the tool-use name.
+        // The compaction trigger's estimate and the compaction budget are
+        // different numbers by construction: the trigger estimator has no
+        // role base and does not count the tool-use name.
         let user_msgs = vec![Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -1341,7 +1347,7 @@ mod tests {
 
         // With a tool call the gap grows by the tool name as well:
         // legacy = base 2 + name "read" (4 chars → 1) + input JSON
-        // (19 chars → 5) = 8; ctx% = input JSON only = 5.
+        // (19 chars → 5) = 8; trigger estimate = input JSON only = 5.
         let tool_msgs = vec![Message {
             role: Role::Assistant,
             content: vec![ContentBlock::ToolUse {

@@ -33,19 +33,21 @@
 //! `return`ed — the whole fallback stream ended with no event and no error at
 //! all. Not a bad message. No message.
 //!
-//! # Reproduction (the pre-fix behaviour, for the record)
+//! # Reproduction (the shape of the exhausted error, for the record)
 //!
 //! ```text
-//! EXHAUSTED  out = [Err(NotImplemented("all 2 fallback providers exhausted without producing a result"))]
+//! EXHAUSTED  out = [Err(ChainExhausted { message: "all 2 fallback providers exhausted without producing a result", transient: false })]
 //! EMPTY-TAIL out = []
 //! ```
 //!
-//! (The exhausted error is a `ChainExhausted` today: the message carries
-//! the per-provider diagnostics and the `transient` flag carries the
-//! verdict — **every** failure was transient (5xx/408/429/transport/broken
-//! stream) means the chain never got a verdict from any server, so the
-//! agent layer must replay it; at least one permanent failure (or an
-//! empty stream) means it must not. See `crates/nini-ai/src/fallback.rs`.)
+//! (The exhausted error is a `ChainExhausted`: the message carries the
+//! per-provider diagnostics and the `transient` flag carries the verdict
+//! — **every** failure was worth replaying the chain (a transport
+//! failure / a transient verdict: 5xx / 408 / 429) means the chain
+//! never got a verdict from any server, so the agent layer must replay
+//! it; at least one failure that was not (a permanent failure, a broken
+//! stream, an empty stream) means it must not. See
+//! `crates/nini-ai/src/fallback.rs`.)
 
 //! invariant: 3bf4815d —— 声明本文件守住了哪几条历史不变量。
 //! 该标注让 scripts/invariants.py 认出这些断言；词法重叠看不出它们，

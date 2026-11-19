@@ -316,9 +316,10 @@ async fn a_second_overflow_after_a_good_turn_recovers_again() {
 async fn a_fallback_exhaustion_summary_is_not_an_overflow() {
     let summary = "all 3 fallback providers exhausted: openai: HTTP 400: \
                    Bad Request (code 10907)";
-    let (provider, calls) = ScriptProvider::new(vec![Step::Fail(ProviderError::NotImplemented(
-        summary.into(),
-    ))]);
+    let (provider, calls) = ScriptProvider::new(vec![Step::Fail(ProviderError::ChainExhausted {
+        message: summary.to_string(),
+        transient: false,
+    })]);
     let hook_calls = Arc::new(AtomicUsize::new(0));
     let mut agent = Agent::new(provider, ToolRegistry::new(), config());
     agent.set_compaction_hook(compacting_hook(hook_calls.clone()));

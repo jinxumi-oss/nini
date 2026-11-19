@@ -375,25 +375,43 @@ pub fn is_transient_provider_error(status: u16, text: &str) -> bool {
 /// internal"). Retrying them would only burn the backoff (2 s + 4 s +
 /// 8 s) before the same permanent failure comes back.
 ///
-/// `Sse` is **always** transient: the response arrived, the stream died
-/// halfway through (the parse / UTF-8 boundary broke) — the request was
-/// worth sending once and may well be worth sending again. This is the
-/// policy the fallback chain has applied all along
-/// (`crates/nini-ai/src/fallback.rs`: `Sse(_) => true`), so the very
-/// same failure was replayed inside a chain but silently dropped when
-/// the provider was called directly.
+/// `Sse` means the **response was not a valid SSE stream**: it is
+/// produced only by the SSE parser failing
+/// (`crates/nini-ai/src/openai.rs:171`, `anthropic.rs:149`,
+/// `openai_responses.rs:143` — `parser.feed(&chunk).map_err(…)`). A
+/// gateway that answers with HTML, a wrong content type, a broken
+/// field — that is **permanent**: the same request gets the same
+/// broken answer, and a retry only waits out the backoff (2 s + 4 s +
+/// 8 s) for the identical failure.
 ///
-/// The remaining variants (`Auth`, `Json`) have no HTTP status of their
-/// own, so they keep their pre-existing behaviour: status `0` → the
-/// text heuristic decides. A bad key or a malformed body fails the
-/// same way the next time.
+/// "The stream was cut in the middle" is **not** `Sse`: that is a
+/// reqwest body error, and it arrives as `Http` — which **is** retried
+/// (it is the transport failure above).
+///
+/// The fallback chain classifies `Sse` as retryable
+/// (`crates/nini-ai/src/fallback.rs:247` — `Sse(_) => true`), but that
+/// is a **different question**: the chain asks "shall I try the next
+/// key?", and the next key is a *different request* (another endpoint,
+/// another credential). This function asks "shall I send **this**
+/// request again?", and for a response that is not valid SSE the answer
+/// is no. The two must not be aligned by copy-paste — the chain has
+/// its own criterion for the replay
+/// (`crates/nini-ai/src/fallback.rs:269` — `worth_replaying_chain`),
+/// and that one agrees with this function.
+///
+/// The remaining variants (`Sse`, `Auth`, `Json`) have no HTTP status
+/// of their own, so they keep their pre-existing behaviour: status `0`
+/// → the text heuristic decides. A response that is not valid SSE, a
+/// bad key or a malformed body fail the same way the next time.
 ///
 /// The **fallback chain** delivers its verdict through this very
-/// function. A chain whose every failure was transient (5xx / 408 / 429
-/// / a transport failure / a broken stream) ends as
+/// function. A chain whose every failure was worth replaying (5xx / 408
+/// / 429 / a transport failure — the chain's own rule,
+/// `crates/nini-ai/src/fallback.rs:269`) ends as
 /// `ChainExhausted { transient: true }` — transient here, so the whole
 /// chain is replayed — while a chain that hit a permanent failure (401 /
-/// 400 / auth / invalid request) or an empty stream ends as
+/// 400 / auth / invalid request), a broken stream (`Sse` — the response
+/// was not a valid SSE), or an empty stream ends as
 /// `ChainExhausted { transient: false }`, which is permanent here and is
 /// not replayed. The `transient` flag carries that verdict; the message
 /// inside it only carries the diagnostics.
@@ -401,29 +419,24 @@ pub fn is_transient_provider_failure(e: &ProviderError) -> bool {
     match e {
         ProviderError::Http(_) | ProviderError::Io(_) => true,
         ProviderError::Api { status, message } => is_transient_provider_error(*status, message),
-        // The fallback chain's own verdict — transient only when *every*
-        // failure along the chain was transient. The text heuristic
-        // cannot decide this one: the summary quotes the providers'
-        // errors verbatim, so a permanent chain ("… HTTP 400: Bad
-        // Request") would read as transient through its own numbers.
+        // The fallback chain's own verdict — the chain ends as
+        // `transient` only when *every* failure along it was worth
+        // replaying (`crates/nini-ai/src/fallback.rs:269` —
+        // `worth_replaying_chain`: a transport failure, or a 5xx / 408 /
+        // 429 verdict; a broken stream — `Sse`, the response was not a
+        // valid SSE — is **not**). The text heuristic cannot decide
+        // this one: the summary quotes the providers' errors verbatim, so
+        // a permanent chain ("… HTTP 400: Bad Request") would read as
+        // transient through its own numbers.
         ProviderError::ChainExhausted { transient, .. } => *transient,
         // A malformed request (an illegal URL, a redirect loop) and
         // nini's own "not implemented / chain exhausted" diagnostics
         // are permanent: the text heuristics would match a "503"
         // inside a URL.
         ProviderError::InvalidRequest(_) | ProviderError::NotImplemented(_) => false,
-        // A stream that died halfway through (the response arrived, the
-        // parse/UTF-8 boundary broke) is worth another attempt — the
-        // same policy the fallback chain already applies
-        // (`crates/nini-ai/src/fallback.rs`: `Sse(_) => true`).
-        //
-        // The "only before the first output" rule still applies: a
-        // stream that already produced text must not be replayed (its
-        // output cannot be taken back), so this only fires when
-        // nothing was produced yet.
-        ProviderError::Sse(_) => true,
-        // The rest (auth / json) keep the pre-existing behaviour: no
-        // HTTP status of their own → the text decides.
+        // The rest (a response that is not valid SSE / auth / json) keep
+        // the pre-existing behaviour: no HTTP status of their own → the
+        // text decides.
         other => is_transient_provider_error(0, &other.to_string()),
     }
 }
@@ -1507,15 +1520,23 @@ impl Agent {
                 let after_key = history_content_key(&self.messages);
                 if before_key == after_key {
                     // The compaction did **nothing**: the history is
-                    // verbatim what it was before. With a replay that
-                    // means "the retry would be the same request" —
-                    // refused. Without a replay there is no retry to
-                    // talk about, but the user must still learn that
-                    // the compaction did not help: the context is
+                    // verbatim what it was before. The user must learn
+                    // that: the compaction did not help, the context is
                     // still over the window, and the next round will
                     // hit the same wall. Silently swallowing it would
                     // leave the user believing the context was fixed.
-                    let mut message = if will_retry {
+                    //
+                    // The wording follows what actually happens.
+                    // "The retry would be the same request the server
+                    // just refused" is only true where the replay is
+                    // really **refused** (`will_retry &&
+                    // must_have_changed`). On the report-only roads — a
+                    // replay that is not guarded by
+                    // `must_have_changed` (the mid-stream error path),
+                    // or no replay at all — the run goes on regardless,
+                    // and a sentence about "the retry" contradicts what
+                    // the code does next.
+                    let mut message = if will_retry && must_have_changed {
                         "Context overflow recovery compacted the \
                          conversation but the history did not change — the retry \
                          would be the same request the server just refused. \
@@ -1577,7 +1598,7 @@ impl Agent {
                     if will_retry {
                         // Pi: the turn ends here, and the CLI renders
                         // this stop reason ("Auto-compaction cancelled.",
-                        // `crates/nini-cli/src/app.rs:857-862`).
+                        // `crates/nini-cli/src/app.rs:872-878`).
                         self.set_phase(AgentPhase::Idle);
                         events.push(AgentEvent::PhaseChanged(AgentPhase::Idle));
                         events.push(AgentEvent::TurnEnd {
@@ -1671,7 +1692,7 @@ impl Agent {
     /// (`references/pi-0.85.1/src/api/openai-codex-responses.ts:381-451`
     /// — the retry loop wraps only `fetch`, `processStream` runs after
     /// it), and nini's own fallback chain does the same
-    /// (`crates/nini-ai/src/fallback.rs:199` — `if retryable &&
+    /// (`crates/nini-ai/src/fallback.rs:377` — `if retryable &&
     /// !had_event`).
     ///
     /// Returns `Some(attempt)` when the request may be retried. The

@@ -21,8 +21,9 @@
 //!    network errors
 //!    (`references/pi-0.85.1/src/api/openai-codex-responses.ts:441` —
 //!    "Network errors are retryable"), and nini's own fallback chain
-//!    already treats `ProviderError::Http` as retryable
-//!    (`crates/nini-ai/src/fallback.rs:122`). The agent loop was the only
+//!    classifies `ProviderError::Http` as retryable as well
+//!    (`crates/nini-ai/src/fallback.rs:246` — the `Http` arm of the
+//!    chain's own `is_retryable`). The agent loop was the only
 //!    place that disagreed.
 //!
 //! 2. **The cause was thrown away.** `From<reqwest::Error>` keeps only
@@ -37,14 +38,20 @@
 //!   retry path picks it up);
 //! * a transport failure is **retried**, and the turn completes when the
 //!   network comes back;
+//! * a **malformed SSE response** (the response is not valid SSE at
+//!   all) is **not** retried: it is permanent — the same request gets
+//!   the same broken answer, so a retry only waits out the backoff
+//!   (2 s + 4 s + 8 s) for the identical failure. The fallback chain
+//!   classifies it as retryable
+//!   (`crates/nini-ai/src/fallback.rs:247` — `Sse(_) => true`), but
+//!   that asks a different question ("shall I try the **next key**?"),
+//!   and the next key is a different request;
+//! * a stream that was **cut in the middle** is not an `Sse` at all:
+//!   it is a reqwest body error, which arrives as `Http` — and `Http`
+//!   is retried;
 //! * a retry happens only **before the first output** — a stream that
 //!   already produced text is not replayed, because the text that
 //!   already reached the user cannot be taken back;
-//! * a **broken stream** (the response arrived, the stream died at a
-//!   parse / UTF-8 boundary) is retried — the very policy the fallback
-//!   chain has always applied
-//!   (`crates/nini-ai/src/fallback.rs`: `Sse(_) => true`) — but only
-//!   before the first output;
 //! * the error the user finally sees carries the **cause**, and the
 //!   cause is never what the length cap cuts;
 //! * a transport failure says "transport error", not "http error" —
@@ -186,6 +193,28 @@ fn transport_failure() -> ProviderError {
     )
 }
 
+/// The causes a request to a closed loopback port can produce.
+///
+/// The port is closed, so the connection is refused — but a sandbox
+/// that forbids loopback traffic, or a host whose route to 127.0.0.1
+/// is gone, answers "network is unreachable" / "network is down"
+/// instead. Every one of them says the same thing for these tests:
+/// the request never got a response, and the cause must survive into
+/// the message the user reads. The set is deliberately wider than one
+/// wording so the test does not turn red on a host that is merely
+/// built differently.
+fn cause_survived(message: &str) -> bool {
+    [
+        "connection refused",
+        "refused",
+        "timed out",
+        "network is unreachable",
+        "network is down",
+    ]
+    .iter()
+    .any(|cause| message.contains(cause))
+}
+
 // ---------------------------------------------------------------------------
 // 1. A transport failure is transient
 // ---------------------------------------------------------------------------
@@ -256,9 +285,7 @@ async fn a_transport_error_keeps_the_cause() {
     let message = ProviderError::from(err).to_string();
 
     assert!(
-        message.contains("connection refused")
-            || message.contains("refused")
-            || message.contains("timed out"),
+        cause_survived(&message),
         "the cause was dropped from the transport error: {message}"
     );
     assert!(
@@ -454,10 +481,59 @@ async fn a_long_url_does_not_cut_the_cause() {
         message.chars().count()
     );
     assert!(
-        message.contains("connection refused")
-            || message.contains("refused")
-            || message.contains("timed out"),
+        cause_survived(&message),
         "the cause was cut off by the cap: {message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5b. A long URL keeps its closing parenthesis
+// ---------------------------------------------------------------------------
+
+/// The head may be cut — but the cut may not take the **closing
+/// parenthesis** with it.
+///
+/// reqwest's head is "error sending request for url (https://…)" and
+/// the fallback chain strips that URL by **balancing** the
+/// parentheses (`crates/nini-ai/src/fallback.rs:145`). A head cut in
+/// the middle of the URL leaves them unbalanced, the chain cannot find
+/// the end of the URL any more, and the URL stays where the cause
+/// should be — where the label's length cap swallows it. So the cut
+/// is placed **inside** the parentheses and the `)` is put back.
+#[tokio::test(flavor = "current_thread")]
+async fn a_long_url_keeps_the_closing_paren() {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let url = format!("http://127.0.0.1:1/{}", "a".repeat(600));
+    let err = client
+        .get(&url)
+        .send()
+        .await
+        .expect_err("connecting to a closed port must fail");
+    let message = ProviderError::from(err).to_string();
+
+    assert!(
+        message.contains(')'),
+        "the cut took the closing parenthesis with it: {message}"
+    );
+    assert!(
+        message.contains("…)"),
+        "the cut must stay inside the parentheses: {message}"
+    );
+    // What follows the closing parenthesis is the cause — the chain
+    // can still strip the URL and still read the reason.
+    let open = message
+        .find("url (")
+        .expect("the head must name the request");
+    let close = open
+        + message[open..]
+            .find(')')
+            .expect("the closing parenthesis must survive the cut");
+    assert!(
+        cause_survived(&message[close + 1..]),
+        "the cause must follow the URL, not be swallowed by it: {message}"
     );
 }
 
@@ -498,66 +574,68 @@ async fn a_mid_stream_failure_is_not_retried() {
 }
 
 // ---------------------------------------------------------------------------
-// 6b. A broken SSE stream is retried
+// 6b. A malformed SSE response is NOT retried
 // ---------------------------------------------------------------------------
 
-/// The response arrived, the stream died halfway through — the parse /
-/// UTF-8 boundary broke.
+/// The response was not a valid SSE stream — the parser failed.
 ///
-/// The fallback chain has always replayed this
-/// (`crates/nini-ai/src/fallback.rs`: `Sse(_) => true`), while the
-/// agent's own classifier let it fall through to the text heuristic,
-/// where "stream broke at a UTF-8 boundary" matches nothing: the very
-/// same failure was replayed inside a chain and given up on when the
-/// provider was called directly.
+/// That is **permanent**: a gateway that answers with HTML, a wrong
+/// content type or a broken field answers the same way the next
+/// time, so a retry only waits out the backoff (2 s + 4 s + 8 s) for
+/// the identical failure.
+///
+/// The fallback chain classifies `Sse` as retryable
+/// (`crates/nini-ai/src/fallback.rs:247` — `Sse(_) => true`), but it
+/// asks a different question: "shall I try the **next key**?", and the
+/// next key is a *different* request (another endpoint, another
+/// credential). The agent layer asks "shall I send **this** request
+/// again?" — and for a response that is not valid SSE the answer is no.
+///
+/// (A stream that was cut in the middle is not an `Sse`: that is a
+/// reqwest body error, which arrives as `Http` — and `Http` is
+/// retried.)
 #[tokio::test(flavor = "current_thread")]
-async fn a_broken_sse_stream_is_retried() {
-    assert!(
-        is_transient_provider_failure(&ProviderError::Sse(
-            "stream broke at a UTF-8 boundary".into()
-        )),
-        "a broken stream must be transient — the fallback chain already \
-         treats it as retryable"
-    );
-
-    let (provider, calls) = ScriptProvider::new(vec![
-        Step::Fail(ProviderError::Sse(
-            "stream broke at a UTF-8 boundary".into(),
-        )),
-        Step::Ok("done".into()),
-    ]);
+async fn a_malformed_sse_response_is_not_retried() {
+    let (provider, calls) = ScriptProvider::new(vec![Step::FailForever(ProviderError::Sse(
+        "the response is not a valid SSE stream".into(),
+    ))]);
     let mut agent = Agent::new(provider, ToolRegistry::new(), config());
 
     let (events, error) = drain(&mut agent).await;
 
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "a broken stream was not retried: {events:?}"
+        1,
+        "a malformed SSE response was retried: {events:?}"
     );
     assert!(
-        events.iter().any(|ev| matches!(
+        !events.iter().any(|ev| matches!(
             ev,
             AgentEvent::PhaseChanged(nini_core::agent::AgentPhase::Retrying { .. })
         )),
-        "the run never entered the Retrying phase: {events:?}"
+        "the run entered the Retrying phase: {events:?}"
     );
-    assert!(error.is_none(), "the run ended with {error:?}");
+    let error = error.expect("the turn must fail");
+    assert!(
+        error.contains("sse error"),
+        "the broken response was lost: {error}"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// 6c. A broken SSE stream that already produced text is not replayed
+// 6c. A malformed SSE response that already produced text is not replayed
 // ---------------------------------------------------------------------------
 
-/// The "retry only before the first output" rule still holds for a
-/// broken stream: the text that already reached the user cannot be
-/// taken back, so a replay would show it twice (terminal + session
-/// file).
+/// The "retry only before the first output" rule still holds — and for
+/// a malformed SSE response there is no retry at all any more (6b).
+/// What this pins down is the other half: the text that already
+/// reached the user is never replayed, so it cannot show up twice
+/// (terminal + session file).
 #[tokio::test(flavor = "current_thread")]
-async fn a_broken_sse_stream_after_output_is_not_replayed() {
+async fn a_malformed_sse_response_after_output_is_not_replayed() {
     let (provider, calls) = ScriptProvider::new(vec![Step::TextThenFail(
         "half a sentence".into(),
-        ProviderError::Sse("stream broke at a UTF-8 boundary".into()),
+        ProviderError::Sse("the response is not a valid SSE stream".into()),
     )]);
     let mut agent = Agent::new(provider, ToolRegistry::new(), config());
 
@@ -578,10 +656,10 @@ async fn a_broken_sse_stream_after_output_is_not_replayed() {
     let error = error.expect("the turn must fail");
     assert!(
         error.contains("sse error"),
-        "the broken stream was lost: {error}"
+        "the broken response was lost: {error}"
     );
     assert!(
-        error.contains("stream broke at a UTF-8 boundary"),
+        error.contains("the response is not a valid SSE stream"),
         "the cause was lost: {error}"
     );
 }
@@ -646,17 +724,17 @@ fn the_transient_classifier_truth_table() {
         message: "unauthorized".into(),
     }));
 
-    // A broken stream is **always** transient: the response arrived,
-    // the stream died halfway through. This is the policy the
-    // fallback chain has applied all along
-    // (`crates/nini-ai/src/fallback.rs`: `Sse(_) => true`) — the same
-    // failure used to be replayed inside a chain and dropped when the
-    // provider was called directly.
+    // A response that is not valid SSE is **permanent**: it falls back
+    // to the text heuristic, and a plain wording is not transient.
+    // (The fallback chain's `Sse(_) => true` asks a different
+    // question — "shall I try the next key?" — see the note above.)
+    assert!(!is_transient_provider_failure(&ProviderError::Sse(
+        "the stream ended early".into()
+    )));
+    // The text heuristic still sees what the text says: a body that
+    // quotes a 5xx is transient by its own words.
     assert!(is_transient_provider_failure(&ProviderError::Sse(
         "503 service unavailable".into()
-    )));
-    assert!(is_transient_provider_failure(&ProviderError::Sse(
-        "the stream ended early".into()
     )));
 
     // The remaining variants keep the text heuristic (no HTTP status):

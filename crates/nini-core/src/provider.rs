@@ -340,6 +340,15 @@ pub enum ProviderError {
 /// request"; a shortened cause says nothing at all). A "…" marks every
 /// cut, on a character boundary, so the text stays valid UTF-8.
 ///
+/// **The head keeps its closing parenthesis.** reqwest's head is
+/// "error sending request for url (https://…)" — the URL sits in
+/// parentheses, and the fallback chain strips that URL by **balancing**
+/// the parentheses (`crates/nini-ai/src/fallback.rs:145`). A head cut
+/// in the middle of the URL takes the `)` with it, the balance fails,
+/// and the URL stays where the cause should be — where the label's
+/// length cap swallows it. So the cut is placed **inside** the
+/// parentheses and the `)` is put back (see [`truncate_head`]).
+///
 /// Note on what `ProviderError::Http` means: it is the *transport*
 /// failure variant — the request went out and no usable HTTP response
 /// came back (dns error / connection refused / operation timed out).
@@ -383,13 +392,67 @@ fn describe_reqwest_error(e: &reqwest::Error) -> String {
     // The head may lose characters so the cause can fit — a shortened
     // URL still names the request, a shortened cause names nothing.
     let head_budget = MAX_HEAD.min(MAX_TOTAL.saturating_sub(cause_text.chars().count() + 2));
-    let head = truncate_chars(&head, head_budget);
+    let head = truncate_head(&head, head_budget);
 
     if cause_text.is_empty() {
         head
     } else {
         format!("{head}: {cause_text}")
     }
+}
+
+/// Truncate the request head to at most `max` characters, marking the
+/// cut with "…" — and keeping the closing parenthesis.
+///
+/// reqwest's head is "error sending request for url (https://…)": the
+/// URL sits in parentheses. A plain cut can land in the middle of the
+/// URL and take the `)` with it, and then the fallback chain — which
+/// strips the URL by **balancing** the parentheses
+/// (`crates/nini-ai/src/fallback.rs:145`) — cannot find the end of the
+/// URL any more: the URL stays in the label where the cause should be,
+/// and the label's length cap swallows the cause.
+///
+/// So the cut is placed **inside** the parentheses and the `)` is put
+/// back: "error sending request for url (https://example.com/long…)" —
+/// the URL is still shortenable and the chain can still strip it. A
+/// head without an open parenthesis ("builder error: …") is cut as
+/// usual.
+fn truncate_head(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    // One character goes to the cut mark, a second one to the ")" when
+    // the cut leaves a parenthesis open.
+    let keep = max - 1;
+    if keep >= 2 && leaves_paren_open(s, keep) {
+        let mut out: String = s.chars().take(keep - 1).collect();
+        out.push('…');
+        out.push(')');
+        out
+    } else {
+        let mut out: String = s.chars().take(keep).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// True when the first `n` characters of `s` leave a "(" open.
+///
+/// The depth counts nested parentheses, so a URL that carries its own
+/// ("…?tag=(beta)") does not close the outer one.
+fn leaves_paren_open(s: &str, n: usize) -> bool {
+    let mut depth = 0usize;
+    for c in s.chars().take(n) {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth > 0
 }
 
 /// Truncate to at most `max` characters, marking the cut with "…".

@@ -184,8 +184,11 @@ fn closing_paren(rest: &str) -> Option<usize> {
 
 /// A reason cut to `max` characters, with the cut marked by "…".
 ///
-/// The same rule as [`brief_reason`]: the cut is on a character
-/// boundary, so a multi-byte character is never split in half.
+/// The cut is on a character boundary, so a multi-byte character is
+/// never split in half, and the **total** length never exceeds `max`:
+/// the "…" is part of the budget. That is the same rule as
+/// `nini_core::provider`'s `truncate_chars`
+/// (`crates/nini-core/src/provider.rs`) — one convention for every cut.
 fn cut_reason(reason: &str, max: usize) -> String {
     if reason.is_empty() {
         return String::new();
@@ -193,7 +196,10 @@ fn cut_reason(reason: &str, max: usize) -> String {
     if reason.chars().count() <= max {
         return reason.to_string();
     }
-    let mut out: String = reason.chars().take(max).collect();
+    if max == 0 {
+        return String::new();
+    }
+    let mut out: String = reason.chars().take(max - 1).collect();
     out.push('…');
     out
 }
@@ -217,20 +223,19 @@ fn brief_reason(message: &str) -> String {
     if reason.is_empty() {
         return String::new();
     }
-    if reason.chars().count() <= MAX {
-        return reason.to_string();
-    }
-    let mut out: String = reason.chars().take(MAX).collect();
-    out.push('…');
-    out
+    cut_reason(reason, MAX)
 }
 
-/// v0.7.5 — classify a ProviderError as retryable. 5xx, 408 and 429
-/// from the upstream are always retryable. Network/transport errors
-/// (`Http`, `Io`) are too, and so is a stream that broke (`Sse`): the
-/// request was worth sending once and may well be worth sending
-/// again. JSON parse errors and auth errors are NOT retryable (a
-/// different key won't help).
+/// v0.7.5 — classify a ProviderError as retryable **for the next key**.
+/// 5xx, 408 and 429 from the upstream are always retryable.
+/// Network/transport errors (`Http`, `Io`) are too, and so is a stream
+/// that broke (`Sse`): the request was worth sending once and may well
+/// be worth sending again. JSON parse errors and auth errors are NOT
+/// retryable (a different key won't help).
+///
+/// This answers "shall the chain try the **next** key?" — it does not
+/// answer "shall the agent **replay the whole chain**?". The second
+/// question has its own criterion: [`worth_replaying_chain`].
 fn is_retryable(err: &ProviderError) -> bool {
     match err {
         ProviderError::Api { status, .. } => {
@@ -239,7 +244,35 @@ fn is_retryable(err: &ProviderError) -> bool {
             *status >= 500 || *status == 408 || *status == 429
         }
         ProviderError::Http(_) | ProviderError::Io(_) => true,
-        ProviderError::Sse(_) => true, // stream broke — try again from scratch
+        ProviderError::Sse(_) => true, // stream broke — try the next key
+        _ => false,
+    }
+}
+
+/// Is this failure worth **replaying the whole chain**?
+///
+/// This is a *different* question from [`is_retryable`], and the two
+/// answers are not the same:
+///
+/// * `is_retryable` asks "shall the chain try the **next** key?" — a
+///   stream that broke may well work on another key, because another
+///   key means **another request**.
+/// * this asks "shall the agent send the **same** chain again?" — the
+///   very same endpoints, the very same request. A response that was
+///   not a valid SSE (`Sse`) is a permanent property of that endpoint:
+///   the replay gets the same broken stream.
+///
+/// So the criterion is the narrower one: a transport failure
+/// (`Http` / `Io`) and a transient verdict (`Api` with 5xx / 408 / 429)
+/// are worth another round; a broken stream — and every other variant
+/// — is not.
+fn worth_replaying_chain(err: &ProviderError) -> bool {
+    match err {
+        ProviderError::Http(_) | ProviderError::Io(_) => true,
+        ProviderError::Api { status, .. } => *status >= 500 || *status == 408 || *status == 429,
+        // A broken stream ("the response was not a valid SSE") is not:
+        // the same chain means the same endpoint, and that endpoint
+        // answers the same way.
         _ => false,
     }
 }
@@ -287,22 +320,30 @@ impl Provider for FallbackProvider {
             // RUST_LOG and reading anthropic.rs traces.
             let mut failures: Vec<String> = Vec::new();
 
-            // v0.13: was EVERY failure in this chain a **transient** one
-            // — judged by this module's own `is_retryable` (5xx / 408 /
-            // 429, a transport failure, a stream that broke)? If yes,
-            // nothing in the chain was refused on its merits: no key is
-            // bad, no request is malformed, no gateway is misconfigured.
-            // The terminal error carries that verdict in its `transient`
-            // flag, so the agent layer replays the whole chain (a user
-            // with `--fallback-keys` used to die on the first network
-            // hiccup — and, before this rule, on the very common "every
-            // key answered 500" too).
+            // v0.13: was EVERY failure in this chain worth **replaying
+            // the whole chain** — judged by `worth_replaying_chain` (a
+            // transport failure, or a transient verdict: 5xx / 408 /
+            // 429)? If yes, nothing in the chain was refused on its
+            // merits: no key is bad, no request is malformed, no gateway
+            // is misconfigured. The terminal error carries that verdict
+            // in its `transient` flag, so the agent layer replays the
+            // whole chain (a user with `--fallback-keys` used to die on
+            // the first network hiccup — and, before this rule, on the
+            // very common "every key answered 500" too).
             //
-            // An **empty stream** ("empty stream (0 events)") is NOT
-            // transient: the gateway answered and had nothing to say
-            // (a misconfigured gateway that buffers the whole response,
-            // or a model that emits nothing) — two seconds later it
-            // answers the same way.
+            // Two kinds of failure are **not** worth replaying:
+            //
+            // * A **broken stream** (`Sse` — the response was not a
+            //   valid SSE): a permanent property of that endpoint. It
+            //   is still worth trying the **next** key (another key
+            //   means another request), but the replay sends the same
+            //   request to the same endpoint and gets the same broken
+            //   stream.
+            // * An **empty stream** ("empty stream (0 events)"): the
+            //   gateway answered and had nothing to say (a
+            //   misconfigured gateway that buffers the whole response,
+            //   or a model that emits nothing) — two seconds later it
+            //   answers the same way.
             let mut all_failures_transient = true;
 
             for provider in providers.iter() {
@@ -361,19 +402,26 @@ impl Provider for FallbackProvider {
                 // previously a zero-event provider ended the whole stream
                 // silently, with no event and no error at all.
                 if let Some(e) = last_err {
-                    // Transient or not is this module's own question, and
-                    // `is_retryable` is where it is answered: 5xx / 408 /
-                    // 429, a transport failure (`Http` / `Io`) and a
-                    // stream that broke (`Sse`) are worth another try; a
-                    // verdict (`Api`: 401 / 400 / …), a request that never
-                    // left (`InvalidRequest`) and a client-side fault
-                    // (`Auth` / `Json`) are not.
+                    // Two questions, two answers:
+                    //
+                    // * "shall the chain try the **next** key?" —
+                    //   `is_retryable`, answered above (it decided
+                    //   whether the chain walks on). A stream that
+                    //   broke may well work on another key: another
+                    //   key means another request.
+                    // * "shall the agent **replay this chain**?" —
+                    //   `worth_replaying_chain`, which is what the
+                    //   terminal error's `transient` flag carries. The
+                    //   same chain means the same endpoints and the
+                    //   same request, so a stream that broke (`Sse`) is
+                    //   *not* worth replaying, while a transport failure
+                    //   and a transient verdict (5xx / 408 / 429) are.
                     //
                     // A permanent verdict never reaches the "exhausted"
-                    // branch below — it is yielded unchanged — so the flag
-                    // only ever decides the fate of the transient
-                    // failures.
-                    if !is_retryable(&e) {
+                    // branch below — it is yielded unchanged — so the
+                    // flag only ever decides the fate of the failures
+                    // the chain walked past.
+                    if !worth_replaying_chain(&e) {
                         all_failures_transient = false;
                     }
                     failures.push(format!("{}: {}", provider.name(), kind_of(&e)));
@@ -444,13 +492,15 @@ impl Provider for FallbackProvider {
             // decide whether the chain is worth another try.
             //
             // * `transient == true` — **every** recorded failure was
-            //   transient (5xx / 408 / 429 / a transport failure / a
-            //   stream that broke): nothing in the chain was refused on
-            //   its merits — no key is bad, no request is malformed, no
-            //   gateway is misconfigured. The whole chain is replayed.
+            //   worth replaying the chain (a transport failure / a
+            //   transient verdict: 5xx / 408 / 429): nothing in the
+            //   chain was refused on its merits — no key is bad, no
+            //   request is malformed, no gateway is misconfigured. The
+            //   whole chain is replayed.
             // * `transient == false` — at least one failure was not
-            //   transient (an empty stream: the gateway answered and had
-            //   nothing to say): the chain is not replayed.
+            //   worth replaying (a stream that broke: the response was
+            //   not a valid SSE; an empty stream: the gateway answered
+            //   and had nothing to say): the chain is not replayed.
             //
             // Two facts that are easy to get wrong:
             //
@@ -529,6 +579,20 @@ mod tests {
         Err(ProviderError::Http("connection reset".into()))
     }
 
+    fn mk_503() -> Result<StreamEvent, ProviderError> {
+        Err(ProviderError::Api {
+            status: 503,
+            message: "service unavailable".into(),
+        })
+    }
+
+    /// The response was not a valid SSE: the stream broke.
+    fn mk_sse() -> Result<StreamEvent, ProviderError> {
+        Err(ProviderError::Sse(
+            "the response was not a valid SSE".into(),
+        ))
+    }
+
     /// Build a stub provider that emits a single fixed sequence.
     /// Events are stored in `Arc<[...]>` so the stub is Clone even though
     /// `Result<StreamEvent, ProviderError>` is not.
@@ -600,6 +664,25 @@ mod tests {
         assert!(!is_retryable(&mk_401().unwrap_err()));
         assert!(!is_retryable(&ProviderError::Auth("bad key".into())));
         assert!(!is_retryable(&ProviderError::Json("garbage".into())));
+    }
+
+    /// The cut is **inside** the budget: the "…" is part of the `max`
+    /// characters, exactly as in `nini_core::provider`'s
+    /// `truncate_chars` (`crates/nini-core/src/provider.rs`).
+    #[test]
+    fn the_cut_never_exceeds_the_budget() {
+        assert_eq!(cut_reason("abc", 5), "abc");
+        assert_eq!(cut_reason("abcdef", 5), "abcd…");
+        assert_eq!(cut_reason("abc", 0), "");
+        assert_eq!(cut_reason("", 5), "");
+
+        let cut = cut_reason(&"x".repeat(100), 10);
+        assert_eq!(
+            cut.chars().count(),
+            10,
+            "the cut must stay inside the budget"
+        );
+        assert!(cut.ends_with('…'), "the cut must be marked: {cut:?}");
     }
 
     /// The fallback summary must not throw the server's reason away a
@@ -829,6 +912,101 @@ mod tests {
         assert!(
             nini_core::agent::is_transient_provider_failure(&err),
             "a chain of transient failures must be replayed by the agent layer: {err:?}"
+        );
+    }
+
+    /// The two questions have two answers: a failure may well be worth
+    /// trying the **next** key and still not worth **replaying the
+    /// chain**.
+    ///
+    /// A broken stream is the case that shows the difference: another
+    /// key means another request, so the chain walks on; the same chain
+    /// means the same endpoint, and a response that was not a valid SSE
+    /// stays that way.
+    #[test]
+    fn the_replay_criterion_is_narrower_than_the_next_key_criterion() {
+        // Worth trying the next key — and worth replaying the chain.
+        assert!(is_retryable(&mk_http().unwrap_err()));
+        assert!(worth_replaying_chain(&mk_http().unwrap_err()));
+        assert!(worth_replaying_chain(&mk_5xx().unwrap_err()));
+        assert!(worth_replaying_chain(&mk_429().unwrap_err()));
+        assert!(worth_replaying_chain(&mk_503().unwrap_err()));
+
+        // Worth trying the next key — but NOT worth replaying the chain.
+        assert!(is_retryable(&mk_sse().unwrap_err()));
+        assert!(
+            !worth_replaying_chain(&mk_sse().unwrap_err()),
+            "a broken stream must not make the chain look replayable"
+        );
+
+        // Neither.
+        assert!(!worth_replaying_chain(&mk_401().unwrap_err()));
+        assert!(!worth_replaying_chain(&ProviderError::Auth(
+            "bad key".into()
+        )));
+        assert!(!worth_replaying_chain(&ProviderError::Json(
+            "garbage".into()
+        )));
+    }
+
+    /// A chain whose every failure is a **server verdict** (5xx) is
+    /// worth another round: the servers were busy, not the request.
+    /// The whole chain is replayed.
+    #[test]
+    fn a_chain_of_server_verdicts_is_replayed() {
+        let fb = FallbackProvider::new(vec![
+            stub("primary", vec![mk_5xx()]),
+            stub("secondary", vec![mk_503()]),
+        ]);
+        let out = collect(&fb);
+        let err = out
+            .into_iter()
+            .find_map(|e| e.err())
+            .unwrap_or_else(|| panic!("expected an error"));
+        assert!(
+            matches!(
+                err,
+                ProviderError::ChainExhausted {
+                    transient: true,
+                    ..
+                }
+            ),
+            "a chain of 5xx verdicts must end in the replayable kind: got {err:?}"
+        );
+        assert!(
+            nini_core::agent::is_transient_provider_failure(&err),
+            "a chain of 5xx verdicts must be replayed by the agent layer: {err:?}"
+        );
+    }
+
+    /// A broken stream is worth trying the **next** key, but not worth
+    /// **replaying the whole chain**: the replay sends the same request
+    /// to the same endpoints, and a response that was not a valid SSE
+    /// stays that way.
+    #[test]
+    fn a_chain_with_a_broken_stream_is_not_replayed() {
+        let fb = FallbackProvider::new(vec![
+            stub("primary", vec![mk_sse()]),
+            stub("secondary", vec![mk_503()]),
+        ]);
+        let out = collect(&fb);
+        let err = out
+            .into_iter()
+            .find_map(|e| e.err())
+            .unwrap_or_else(|| panic!("expected an error"));
+        assert!(
+            matches!(
+                err,
+                ProviderError::ChainExhausted {
+                    transient: false,
+                    ..
+                }
+            ),
+            "a broken stream must not make the chain look replayable: got {err:?}"
+        );
+        assert!(
+            !nini_core::agent::is_transient_provider_failure(&err),
+            "the agent layer must not replay a chain whose stream broke: got {err:?}"
         );
     }
 
