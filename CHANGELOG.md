@@ -94,7 +94,7 @@
 `crates/nini-core/tests/overflow_replay_guard.rs`、`crates/nini-ai/tests/fallback_diagnostics.rs`、
 `crates/nini-conformance/tests/overflow_recovery.rs`。
 
-2261 tests, all green.
+2271 tests, all green.
 
 ## v1.0.2 — TUI 上下文滚动：单位改成渲染行，长消息能逐屏看完
 
