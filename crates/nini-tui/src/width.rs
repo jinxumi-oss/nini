@@ -746,6 +746,207 @@ mod tests {
         assert_eq!(joined, "short");
         assert!(!joined.contains('…'));
     }
+
+    /// The pre-refactor `wrap_line`, kept as the oracle: one `Span` per
+    /// grapheme. The refactor changes the span *granularity*, not the text,
+    /// so this reference is what the new implementation is compared to.
+    fn reference_wrap_line(
+        line: ratatui::text::Line<'static>,
+        max_width: usize,
+    ) -> Vec<ratatui::text::Line<'static>> {
+        use ratatui::style::Style;
+        use ratatui::text::Span;
+        use unicode_segmentation::UnicodeSegmentation;
+
+        if max_width == 0 {
+            return vec![line];
+        }
+        let total: usize = line
+            .spans
+            .iter()
+            .map(|s| display_width(s.content.as_ref()))
+            .sum();
+        if total <= max_width {
+            return vec![line];
+        }
+
+        let mut units: Vec<(String, Style)> = Vec::with_capacity(total);
+        for span in &line.spans {
+            for g in UnicodeSegmentation::graphemes(span.content.as_ref(), true) {
+                units.push((g.to_string(), span.style));
+            }
+        }
+
+        let is_ws = |u: &(String, Style)| u.0.chars().all(char::is_whitespace);
+
+        let mut out: Vec<ratatui::text::Line<'static>> = Vec::new();
+        let mut cur: Vec<Span<'static>> = Vec::new();
+        let mut cur_w = 0usize;
+
+        let flush = |cur: &mut Vec<Span<'static>>, cur_w: &mut usize, out: &mut Vec<_>| {
+            while cur
+                .last()
+                .is_some_and(|s| s.content.chars().all(char::is_whitespace))
+            {
+                cur.pop();
+            }
+            out.push(ratatui::text::Line::from(std::mem::take(cur)));
+            *cur_w = 0;
+        };
+
+        let mut i = 0usize;
+        while i < units.len() {
+            let ws = is_ws(&units[i]);
+            let mut j = i;
+            let mut tok_w = 0usize;
+            while j < units.len() && is_ws(&units[j]) == ws {
+                tok_w += display_width(&units[j].0);
+                j += 1;
+            }
+            let token = &units[i..j];
+            i = j;
+
+            if cur_w + tok_w <= max_width {
+                for (t, st) in token {
+                    cur.push(Span::styled(t.clone(), *st));
+                }
+                cur_w += tok_w;
+                continue;
+            }
+
+            if tok_w > max_width {
+                flush(&mut cur, &mut cur_w, &mut out);
+                for (t, st) in token {
+                    let w = display_width(t);
+                    if cur_w + w > max_width && cur_w > 0 {
+                        flush(&mut cur, &mut cur_w, &mut out);
+                    }
+                    cur.push(Span::styled(t.clone(), *st));
+                    cur_w += w;
+                }
+                continue;
+            }
+
+            flush(&mut cur, &mut cur_w, &mut out);
+            if ws {
+                continue;
+            }
+            for (t, st) in token {
+                cur.push(Span::styled(t.clone(), *st));
+            }
+            cur_w += tok_w;
+        }
+
+        if !cur.is_empty() {
+            while cur
+                .last()
+                .is_some_and(|s| s.content.chars().all(char::is_whitespace))
+            {
+                cur.pop();
+            }
+            out.push(ratatui::text::Line::from(cur));
+        }
+
+        if out.is_empty() {
+            out.push(ratatui::text::Line::from(""));
+        }
+        out
+    }
+
+    fn line_text(line: &ratatui::text::Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// The new `wrap_line` must produce the *same text* as the old one, for
+    /// every input. The span structure differs on purpose (that is the
+    /// point of the refactor), so only the text is compared.
+    #[test]
+    fn wrap_line_text_matches_the_per_grapheme_reference() {
+        use ratatui::style::{Color, Style};
+        use ratatui::text::{Line, Span};
+
+        let bold = Style::default().fg(Color::Red);
+        let blue = Style::default().fg(Color::Blue);
+
+        let cases: Vec<Vec<Span<'static>>> = vec![
+            // Plain ASCII long enough to fold several times.
+            vec![Span::raw(
+                "the quick brown fox jumps over the lazy dog again and again and again",
+            )],
+            // CJK: two cells per glyph.
+            vec![Span::raw(
+                "中文路径很长需要从左边截断然后再从右边截断一次又一次才结束",
+            )],
+            // Emoji, including a skin-tone modifier.
+            vec![Span::raw(
+                "emoji 💭🧠 tail 👍🏽 and more text to force a fold here",
+            )],
+            // Combining marks.
+            vec![Span::raw(
+                "combining a\u{0301}e\u{0301}i\u{0301} and some more words",
+            )],
+            // One word that never fits on a line of its own.
+            vec![Span::raw(
+                "supercalifragilisticexpialidociousandthensomeevenmorecharacters",
+            )],
+            // Trailing whitespace on the line.
+            vec![Span::raw("trailing whitespace here   ")],
+            // Nothing but whitespace.
+            vec![Span::raw("   ")],
+            // A CRLF is one grapheme, and it counts as whitespace.
+            vec![Span::raw("mixed \r\n whitespace \r\n tokens here")],
+            // Several spaces inside a line.
+            vec![Span::raw(
+                "multiple   spaces   inside   a   line   that   folds",
+            )],
+            // Mixed styles.
+            vec![
+                Span::styled("bold ", bold),
+                Span::styled("plain ", Style::default()),
+                Span::styled("blue ", blue),
+                Span::styled("bold again ", bold),
+                Span::styled("tail   ", Style::default()),
+            ],
+            // A style boundary in the middle of a word.
+            vec![
+                Span::styled("mid", bold),
+                Span::styled("dleofoneverylongwordthatcannotfitanywhereatall", blue),
+            ],
+        ];
+
+        for case in cases {
+            for max in [1usize, 2, 3, 5, 8, 13, 40] {
+                let line = Line::from(case.clone());
+                let got: Vec<String> = wrap_line(line.clone(), max).iter().map(line_text).collect();
+                let want: Vec<String> = reference_wrap_line(line, max)
+                    .iter()
+                    .map(line_text)
+                    .collect();
+                assert_eq!(got, want, "case={case:?} max={max}");
+            }
+        }
+    }
+
+    /// A long line must not cost one span per character: consecutive
+    /// graphemes of the same style share a span, so the span count follows
+    /// the number of style runs, not the number of characters.
+    #[test]
+    fn wrap_line_span_count_does_not_grow_with_the_line_length() {
+        use ratatui::style::Style;
+        use ratatui::text::{Line, Span};
+
+        let line = Line::from(vec![Span::styled("a".repeat(1000), Style::default())]);
+        let out = wrap_line(line, 40);
+        let spans: usize = out.iter().map(|l| l.spans.len()).sum();
+        assert!(
+            spans < 100,
+            "1000 characters produced {spans} spans; the count must not scale with the line length"
+        );
+
+        // The text is untouched by the merge.
+        let joined: String = out.iter().map(line_text).collect();
+        assert_eq!(joined, "a".repeat(1000));
+    }
 }
 
 /// Fold one rendered line to `max_width` cells, keeping styles.
@@ -791,15 +992,53 @@ pub fn wrap_line(
     }
 
     // Grapheme per unit, so a wide glyph or an emoji with a skin tone never
-    // gets cut in half.
-    let mut units: Vec<(String, Style)> = Vec::with_capacity(total);
+    // gets cut in half. The graphemes borrow the original spans instead of
+    // being copied out one by one, and each one carries its width, measured
+    // once here instead of twice per grapheme.
+    let mut units: Vec<(&str, Style, usize)> = Vec::with_capacity(total);
     for span in &line.spans {
         for g in UnicodeSegmentation::graphemes(span.content.as_ref(), true) {
-            units.push((g.to_string(), span.style));
+            units.push((g, span.style, display_width(g)));
         }
     }
 
-    let is_ws = |u: &(String, Style)| u.0.chars().all(char::is_whitespace);
+    let is_ws = |u: &(&str, Style, usize)| u.0.chars().all(char::is_whitespace);
+
+    // Append one grapheme to the line being built. Graphemes of the same
+    // style share a single `Span`, so a line costs one span per style run
+    // instead of one span per grapheme.
+    fn push_unit(cur: &mut Vec<ratatui::text::Span<'static>>, t: &str, st: ratatui::style::Style) {
+        if let Some(last) = cur.last_mut() {
+            if last.style == st {
+                last.content.to_mut().push_str(t);
+                return;
+            }
+        }
+        cur.push(ratatui::text::Span::styled(t.to_string(), st));
+    }
+
+    // Trim the whitespace that a fold leaves at the end of a line. The old
+    // implementation popped whole grapheme spans; a merged span can mix
+    // whitespace with text (`"foo "`), so the tail is trimmed by character
+    // and a span that trims down to nothing is dropped.
+    fn trim_tail(cur: &mut Vec<ratatui::text::Span<'static>>) {
+        while cur
+            .last()
+            .is_some_and(|s| s.content.chars().all(char::is_whitespace))
+        {
+            cur.pop();
+        }
+        let mut emptied = false;
+        if let Some(last) = cur.last_mut() {
+            let content = last.content.to_mut();
+            let trimmed = content.trim_end().len();
+            content.truncate(trimmed);
+            emptied = content.is_empty();
+        }
+        if emptied {
+            cur.pop();
+        }
+    }
 
     let mut out: Vec<ratatui::text::Line<'static>> = Vec::new();
     let mut cur: Vec<Span<'static>> = Vec::new();
@@ -808,12 +1047,7 @@ pub fn wrap_line(
     // Push `cur` as a line, trimming the whitespace that a fold leaves at
     // the end. Pi does the same (`line.trimEnd()`, `utils.js:644`).
     let flush = |cur: &mut Vec<Span<'static>>, cur_w: &mut usize, out: &mut Vec<_>| {
-        while cur
-            .last()
-            .is_some_and(|s| s.content.chars().all(char::is_whitespace))
-        {
-            cur.pop();
-        }
+        trim_tail(cur);
         out.push(ratatui::text::Line::from(std::mem::take(cur)));
         *cur_w = 0;
     };
@@ -825,15 +1059,15 @@ pub fn wrap_line(
         let mut j = i;
         let mut tok_w = 0usize;
         while j < units.len() && is_ws(&units[j]) == ws {
-            tok_w += display_width(&units[j].0);
+            tok_w += units[j].2;
             j += 1;
         }
         let token = &units[i..j];
         i = j;
 
         if cur_w + tok_w <= max_width {
-            for (t, st) in token {
-                cur.push(Span::styled(t.clone(), *st));
+            for (t, st, _) in token {
+                push_unit(&mut cur, t, *st);
             }
             cur_w += tok_w;
             continue;
@@ -843,12 +1077,11 @@ pub fn wrap_line(
         // grapheme, which is Pi's `breakLongWord` (`utils.js:657`).
         if tok_w > max_width {
             flush(&mut cur, &mut cur_w, &mut out);
-            for (t, st) in token {
-                let w = display_width(t);
+            for (t, st, w) in token {
                 if cur_w + w > max_width && cur_w > 0 {
                     flush(&mut cur, &mut cur_w, &mut out);
                 }
-                cur.push(Span::styled(t.clone(), *st));
+                push_unit(&mut cur, t, *st);
                 cur_w += w;
             }
             continue;
@@ -860,19 +1093,14 @@ pub fn wrap_line(
             // "Don't start new line with whitespace" (`utils.js:626`).
             continue;
         }
-        for (t, st) in token {
-            cur.push(Span::styled(t.clone(), *st));
+        for (t, st, _) in token {
+            push_unit(&mut cur, t, *st);
         }
         cur_w += tok_w;
     }
 
     if !cur.is_empty() {
-        while cur
-            .last()
-            .is_some_and(|s| s.content.chars().all(char::is_whitespace))
-        {
-            cur.pop();
-        }
+        trim_tail(&mut cur);
         out.push(ratatui::text::Line::from(cur));
     }
 

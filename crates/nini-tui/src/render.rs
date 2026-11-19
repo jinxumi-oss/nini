@@ -874,6 +874,30 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // only known after the per-line row counts below.
     let scroll_offset = state.transcript_state.scroll_offset;
 
+    // v0.10.2: which transcript line, if any, is the active search hit.
+    //
+    // `SearchState::matches` holds **TranscriptLine** indices, which is
+    // exactly the `i` in the loops below, so no translation is needed.
+    //
+    // The highlight only changes a row's *style* — never how many rows a
+    // line occupies — so the first pass can render with the real
+    // highlight and the second pass can reuse those rows (see the
+    // frame-local `frame_rows` below) instead of rendering the same
+    // line a second time.
+    let search = state.ui_state.search.as_ref();
+    let highlight_for = |idx: usize| -> SearchHighlight {
+        let Some(s) = search else {
+            return SearchHighlight::None;
+        };
+        if s.current < s.matches.len() && s.matches[s.current] == idx {
+            SearchHighlight::Current
+        } else if s.matches.contains(&idx) {
+            SearchHighlight::Hit
+        } else {
+            SearchHighlight::None
+        }
+    };
+
     // First pass: per-line item counts. Used for user-scroll item-space
     // offset translation, and for the overflow indicator count.
     //
@@ -890,22 +914,34 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // one line, not the whole transcript.
     let width = area.width;
     let mut items_per_line: Vec<usize> = Vec::with_capacity(total_lines);
+    // The rows the first pass renders, indexed by transcript line.
+    //
+    // The second pass draws the visible lines and used to render them a
+    // second time: during streaming the one line that grew is the
+    // expensive one (a whole assistant message), so every streaming
+    // frame parsed it twice — measured at 0.906 ms per 4.8 KB message.
+    // These rows belong to the frame: they are released with it, they
+    // are not a cache across frames.
+    let mut frame_rows: Vec<Option<Vec<RenderedRow>>> = Vec::with_capacity(total_lines);
     for (idx, line) in lines.iter().enumerate() {
         let fingerprint = line.content_fingerprint();
+        // The rows of this line, if this frame had to render it.
+        let mut rendered: Option<Vec<RenderedRow>> = None;
         let count = match state.item_cache.lock() {
             Ok(mut cache) => {
                 cache.ensure_len(total_lines);
                 match cache.get(idx, width) {
                     Some((cached_fp, count)) if cached_fp == fingerprint => count,
                     _ => {
-                        let count = items_for_line(
+                        let rows = items_for_line(
                             line,
                             theme,
                             width as usize,
-                            SearchHighlight::None,
+                            highlight_for(idx),
                             &executing,
-                        )
-                        .len();
+                        );
+                        let count = rows.len();
+                        rendered = Some(rows);
                         cache.put(idx, width, fingerprint, count);
                         count
                     }
@@ -913,16 +949,16 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
             }
             // A poisoned lock must not take the TUI down; worst case is
             // the pre-cache behaviour (recompute every frame).
-            Err(_) => items_for_line(
-                line,
-                theme,
-                width as usize,
-                SearchHighlight::None,
-                &executing,
-            )
-            .len(),
+            Err(_) => {
+                let rows =
+                    items_for_line(line, theme, width as usize, highlight_for(idx), &executing);
+                let count = rows.len();
+                rendered = Some(rows);
+                count
+            }
         };
         items_per_line.push(count);
+        frame_rows.push(rendered);
     }
     let total_items: usize = items_per_line.iter().sum();
     // The scroll position is bounded by the transcript's height in
@@ -1006,24 +1042,24 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
         };
     }
 
-    // v0.10.2: which transcript line, if any, is the active search hit.
+    // The rows of one transcript line, reusing the rows the first pass
+    // already rendered for this frame.
     //
-    // `SearchState::matches` holds **TranscriptLine** indices, which is
-    // exactly the `i` in the loops below, so no translation is needed.
-    // `SearchHighlight::None` is passed for the item-count cache: the
-    // paint does not change how many rows a line occupies, and caching
-    // counts is what keeps a long transcript off the per-frame budget.
-    let search = state.ui_state.search.as_ref();
-    let highlight_for = |idx: usize| -> SearchHighlight {
-        let Some(s) = search else {
-            return SearchHighlight::None;
-        };
-        if s.current < s.matches.len() && s.matches[s.current] == idx {
-            SearchHighlight::Current
-        } else if s.matches.contains(&idx) {
-            SearchHighlight::Hit
-        } else {
-            SearchHighlight::None
+    // A line whose row count came from the cache was not rendered this
+    // frame, so it is rendered now — exactly as before. A line the first
+    // pass had to render (the one that grew while streaming) is reused
+    // as-is: it was rendered with the same highlight the second pass
+    // would have used.
+    let mut rows_for = |idx: usize| -> Vec<RenderedRow> {
+        match frame_rows[idx].take() {
+            Some(rows) => rows,
+            None => items_for_line(
+                &lines[idx],
+                theme,
+                area.width as usize,
+                highlight_for(idx),
+                &executing,
+            ),
         }
     };
 
@@ -1033,14 +1069,8 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
 
     if total_items <= visible_height {
         // Everything fits — render everything.
-        for (i, line) in lines.iter().enumerate() {
-            visible_items.extend(items_for_line(
-                line,
-                theme,
-                area.width as usize,
-                highlight_for(i),
-                &executing,
-            ));
+        for i in 0..total_lines {
+            visible_items.extend(rows_for(i));
         }
     } else if autoscroll {
         // Tail-aligned: keep the latest `visible_height` rows.
@@ -1055,13 +1085,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
             if take == 0 {
                 continue;
             }
-            let line_items = items_for_line(
-                &lines[i],
-                theme,
-                area.width as usize,
-                highlight_for(i),
-                &executing,
-            );
+            let line_items = rows_for(i);
             let start = count - take;
             visible_items = line_items
                 .into_iter()
@@ -1102,13 +1126,7 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
                 continue;
             }
             let take = take_from_line.min(budget);
-            let line_items = items_for_line(
-                &lines[i],
-                theme,
-                area.width as usize,
-                highlight_for(i),
-                &executing,
-            );
+            let line_items = rows_for(i);
             // The skipped rows are the *last* `skip_here` rows of this
             // line (the walk goes up from the tail), so the visible part
             // of the line ends right above them.
@@ -1218,14 +1236,21 @@ fn render_transcript(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     // against a future refactor of the item math above.
     if visible_items.is_empty() && total_lines > 0 {
         let mut tail: Vec<RenderedRow> = Vec::with_capacity(visible_height);
-        for line in lines.iter().rev() {
-            let mut items = items_for_line(
-                line,
-                theme,
-                area.width as usize,
-                highlight_for(0),
-                &executing,
-            );
+        for (idx, line) in lines.iter().enumerate().rev() {
+            // The backstop paints every line with the *first* line's
+            // highlight (legacy behaviour), so a row the first pass
+            // rendered with a different highlight cannot be reused.
+            let backstop_highlight = highlight_for(0);
+            let mut items = match frame_rows[idx].take() {
+                Some(rows) if highlight_for(idx) == backstop_highlight => rows,
+                _ => items_for_line(
+                    line,
+                    theme,
+                    area.width as usize,
+                    backstop_highlight,
+                    &executing,
+                ),
+            };
             items.reverse();
             if items.len() >= visible_height {
                 items.drain(..items.len() - visible_height);
@@ -1733,6 +1758,16 @@ struct RenderedRow {
     text: String,
 }
 
+// Counts what the renderer parsed, per thread. Test-only: the renderer's
+// tests assert that a frame parses a line **once** — parsing the same
+// line twice in one frame was the streaming bottleneck (every frame that
+// carried a growing message paid for it twice).
+#[cfg(test)]
+thread_local! {
+    static ITEMS_FOR_LINE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ITEMS_FOR_LINE_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn items_for_line(
     line: &TranscriptLine,
     theme: &Theme,
@@ -1740,13 +1775,22 @@ fn items_for_line(
     highlight: SearchHighlight,
     executing: &std::collections::HashSet<String>,
 ) -> Vec<RenderedRow> {
-    render_line_rl(line, theme, area_width, highlight, executing)
+    #[cfg(test)]
+    {
+        ITEMS_FOR_LINE_CALLS.with(|c| c.set(c.get() + 1));
+    }
+    let rows: Vec<RenderedRow> = render_line_rl(line, theme, area_width, highlight, executing)
         .into_iter()
         .map(|l| {
             let text = row_plain_text_of_line(&l);
             RenderedRow { line: l, text }
         })
-        .collect()
+        .collect();
+    #[cfg(test)]
+    {
+        ITEMS_FOR_LINE_ROWS.with(|c| c.set(c.get() + rows.len()));
+    }
+    rows
 }
 
 /// v0.8.4 (ux-001): cold-start welcome card. Renders into the empty
@@ -3002,6 +3046,147 @@ mod screen_row_publish_tests {
         terminal
             .draw(|f: &mut ratatui::Frame| render_transcript(f, state, &Theme::default(), f.area()))
             .unwrap();
+    }
+
+    /// Render only the transcript into a 80x24 TestBackend and hand back
+    /// the drawn buffer (so a test can look at the *styles*, not just the
+    /// text).
+    fn render_transcript_buffer(state: &crate::state::AppState) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f: &mut ratatui::Frame| render_transcript(f, state, &Theme::default(), f.area()))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// Does any cell of the buffer carry this modifier?
+    fn buffer_has_modifier(buffer: &ratatui::buffer::Buffer, modifier: Modifier) -> bool {
+        buffer
+            .content
+            .iter()
+            .any(|cell| cell.modifier.contains(modifier))
+    }
+
+    /// A long assistant message: one transcript line that expands into
+    /// more rows than the viewport has, so the visible window is that one
+    /// line — the shape a streaming message has.
+    fn long_assistant_message() -> String {
+        "word ".repeat(400)
+    }
+
+    /// Render one frame and report how many lines it parsed
+    /// (`items_for_line` calls) and how many rows those parses produced.
+    fn parses_in_one_frame(state: &crate::state::AppState) -> (usize, usize) {
+        ITEMS_FOR_LINE_CALLS.with(|c| c.set(0));
+        ITEMS_FOR_LINE_ROWS.with(|c| c.set(0));
+        render_transcript_frame(state);
+        (
+            ITEMS_FOR_LINE_CALLS.with(|c| c.get()),
+            ITEMS_FOR_LINE_ROWS.with(|c| c.get()),
+        )
+    }
+
+    #[test]
+    fn a_line_that_changed_is_parsed_once_per_frame() {
+        // A transcript of history lines plus one assistant message that
+        // grows — the shape of a streaming frame. The growing line is the
+        // expensive one (a whole message in a single transcript line), so
+        // the frame must parse it once: the first pass renders it, the
+        // second pass reuses those rows.
+        let mut state = AppState::default();
+        state.run_state.mode = RunMode::Editing;
+        let mut lines: Vec<TranscriptLine> = (0..20)
+            .map(|i| TranscriptLine::AssistantText(format!("history {i}")))
+            .collect();
+        lines.push(TranscriptLine::AssistantText(long_assistant_message()));
+        Arc::make_mut(&mut state.transcript_state).lines = lines;
+
+        // The first frame has to count every line (the row-count cache is
+        // cold); the frames after it only parse what changed.
+        render_transcript_frame(&state);
+        let (unchanged_calls, unchanged_rows) = parses_in_one_frame(&state);
+
+        // The assistant message grows: its fingerprint changes, so the row
+        // count is recomputed and the line is rendered again — but only
+        // once.
+        let last = state.transcript_state.lines.len() - 1;
+        Arc::make_mut(&mut state.transcript_state).lines[last] =
+            TranscriptLine::AssistantText(long_assistant_message() + " more");
+        let (changed_calls, changed_rows) = parses_in_one_frame(&state);
+
+        assert_eq!(
+            changed_calls, unchanged_calls,
+            "a line that changed must be parsed once per frame, not twice"
+        );
+        assert!(
+            changed_rows < unchanged_rows * 2,
+            "the rows of a line that changed must be produced once per frame, not twice: \
+             {changed_rows} rows parsed, {unchanged_rows} for a single parse"
+        );
+        assert_eq!(
+            changed_calls, 1,
+            "only the visible line is parsed: {changed_calls} calls"
+        );
+    }
+
+    #[test]
+    fn the_parse_count_does_not_grow_with_the_transcript() {
+        // The number of lines a frame parses must not grow with the
+        // length of the history: the history is counted from the cache.
+        let parses = |history: usize| -> usize {
+            let mut state = AppState::default();
+            state.run_state.mode = RunMode::Editing;
+            let mut lines: Vec<TranscriptLine> = (0..history)
+                .map(|i| TranscriptLine::AssistantText(format!("history {i}")))
+                .collect();
+            lines.push(TranscriptLine::AssistantText(long_assistant_message()));
+            Arc::make_mut(&mut state.transcript_state).lines = lines;
+            // Warm the row-count cache.
+            render_transcript_frame(&state);
+            parses_in_one_frame(&state).0
+        };
+        let few = parses(2);
+        let many = parses(60);
+        assert_eq!(
+            few, many,
+            "the parse count must not grow with the transcript length"
+        );
+        assert_eq!(many, 1, "only the visible line is parsed");
+    }
+
+    #[test]
+    fn the_search_highlight_changes_only_the_style() {
+        let mut state = AppState::default();
+        state.run_state.mode = RunMode::Editing;
+        Arc::make_mut(&mut state.transcript_state)
+            .lines
+            .extend((0..2).map(|i| TranscriptLine::AssistantText(format!("hello {i}"))));
+
+        let plain_buffer = render_transcript_buffer(&state);
+        let plain_rows = state.screen_text_rows.lock().unwrap().clone();
+
+        // The first line is the current search hit.
+        state.ui_state.search = Some(crate::state::SearchState {
+            query: "hello".to_string(),
+            matches: vec![0],
+            current: 0,
+        });
+        let highlighted_buffer = render_transcript_buffer(&state);
+        let highlighted_rows = state.screen_text_rows.lock().unwrap().clone();
+
+        assert_eq!(
+            plain_rows, highlighted_rows,
+            "the search highlight must not change the text on screen"
+        );
+        assert!(
+            !buffer_has_modifier(&plain_buffer, Modifier::UNDERLINED),
+            "without a search nothing is underlined"
+        );
+        assert!(
+            buffer_has_modifier(&highlighted_buffer, Modifier::UNDERLINED),
+            "the search hit is underlined"
+        );
     }
 
     #[test]
