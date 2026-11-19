@@ -5563,6 +5563,12 @@ pub fn reload_user_overrides() -> usize {
 
 #[cfg(test)]
 mod mouse_selection_tests {
+    // 不变量声明（链③）：复制/粘贴反馈的断言必须与真实剪贴板是否可达无关 ——
+    // 两个通道都强制失败时，反馈必须如实报失败（不得声称复制成功）。
+    // 由 `20ef77d`（原生剪贴板失败缝 + osc52 失败，两个通道都强制失败，
+    // 保证反馈路径确定可控）确定化；变异验证留痕见 docs/invariant-verification.md。
+    // invariant: 20ef77d5156b4b1212d1d973b85039ec18409ea8 —— 复制/粘贴反馈的断言必须与真实剪贴板是否可达无关（两个通道都强制失败时如实报失败）；
+    // 由 `20ef77d` 的原生剪贴板失败缝 + osc52 失败确定化，变异验证留痕见 docs/invariant-verification.md。
     use super::*;
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 

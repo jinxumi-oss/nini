@@ -33,6 +33,7 @@
 | `be783e9a` | `footer_home_portability` | tilde 替换写死 `/home/jin` | 2 条红 |
 | `632a3617` | `env_lock_scope` | `settings.rs` 第 4 处去掉加锁 | `every_env_mutating_test_in_the_file_takes_the_lock` |
 | `71c0cc19` | `installer_source` | `install.sh` 的 `REPO` 退回旧 slug `jinxumi/nini` | `the_installer_points_at_the_repository_the_releases_live_in` + `the_documented_one_liner_fetches_the_same_repository` 变红（第 3 条仍绿：资产命名未变） |
+- `20ef77d5156b4b1212d1d973b85039ec18409ea8` | `runtime.rs`（`mouse_selection_tests`） | 复制失败分支不再回写 `status = "copy failed"` | `runtime::mouse_selection_tests::a_copy_that_cannot_be_verified_says_so` 与 `a_failed_copy_leaves_a_line_in_the_transcript` 变红（其余 426 条仍绿） |
 
 ## 终审复验（2026-10-21 · 在干净克隆里重新注入，逐条还原）
 

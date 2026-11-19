@@ -1969,6 +1969,8 @@ impl Agent {
             };
             let mut has_more_tool_calls = true;
             let mut follow_up_rounds = 0usize;
+            // v0.17（72h 不间断）：截断后丢掉本轮、重新请求同一轮。
+            let mut continue_after_truncation = false;
             loop {
                 // ── Pi's L1, collapsed: the only reason the outer loop
                 //    exists is to pick up a follow-up queued after the model
@@ -1976,7 +1978,8 @@ impl Agent {
                 //    follow-ups to history, which turned a queued *task*
                 //    into *dead context* — the model saw it as background on
                 //    the user's next message instead of acting on it now.
-                if !has_more_tool_calls && pending.is_empty() {
+                let poll_after_truncation = continue_after_truncation;
+                if (!has_more_tool_calls && pending.is_empty()) || poll_after_truncation {
                     let hooks_ref: Arc<dyn crate::agent_hooks::AgentLoopHooks> =
                         self.hooks.clone();
                     let messages_snapshot = self.messages.clone();
@@ -1996,9 +1999,24 @@ impl Agent {
                         || (config.max_follow_up_rounds > 0
                             && follow_up_rounds >= config.max_follow_up_rounds)
                     {
-                        self.set_phase(AgentPhase::Idle);
-                        yield AgentEvent::PhaseChanged(AgentPhase::Idle);
-                        return;
+                        pending.drain(..);
+                        if continue_after_truncation {
+                            // 截断续跑：不能提前结束运行——「还有待投递的 follow-up」
+                            // 是本次截断续跑留下的任务，提前 return 会把任务误判成已死。
+                            // 置 Working，走本轮既有流程（本轮无工具调用时正常结束）。
+                            // 同时把标记置回 false：否则 2819 行的
+                            // `retry_after_compaction || continue_after_truncation`
+                            // 判断仍会把下一轮直接 continue 回顶部、跳过后本轮结束
+                            // （含 turn 循环末尾的置回），后续轮又重复放行轮询，
+                            // 形成「截断 → 请求 → 截断」的无限循环。
+                            self.set_phase(AgentPhase::Working);
+                            yield AgentEvent::PhaseChanged(AgentPhase::Working);
+                            continue_after_truncation = false;
+                        } else {
+                            self.set_phase(AgentPhase::Idle);
+                            yield AgentEvent::PhaseChanged(AgentPhase::Idle);
+                            return;
+                        }
                     }
                     follow_up_rounds += 1;
                     pending = followup;
@@ -2171,8 +2189,6 @@ impl Agent {
                 // `agent.continue()`). Without it the failed assistant turn
                 // is appended *after* the compaction and the two disagree.
                 let mut retry_after_compaction = false;
-                // v0.17（72h 不间断）：截断后丢掉本轮、重新请求同一轮。
-                let mut continue_after_truncation = false;
 
                 {
                     use futures_util::StreamExt;
@@ -2413,10 +2429,12 @@ impl Agent {
                                         timestamp: 0,
                                     });
                                     // 这一轮还没完：循环必须继续。`has_more_tool_calls` 是循环顶部守卫
-                                    // 唯一的「继续」信号（agent.rs:1655），必须显式置 true——上一轮若是
-                                    // 「无工具调用且被 terminate」，它此时是 false，守卫会直接结束运行。
+                                    // 的「继续」条件之一（守卫见顶部 follow-up 轮询处，agent.rs:1980 起），
+                                    // 必须显式置 true——上一轮若是「无工具调用且被 terminate」，
+                                    // 它此时是 false，守卫会直接结束运行。
                                     has_more_tool_calls = true;
                                     // 丢掉本轮（半截输出不进上下文），重新请求。
+
                                     continue_after_truncation = true;
                                     break 'outer;
                                 }
@@ -2892,6 +2910,7 @@ impl Agent {
                 // next LLM call (Pi's `failToolCallsFromTruncatedMessage`,
                 // `:263`). Excluding it here dropped those results and broke
                 // the tool_use/tool_result pairing.
+
                 has_more_tool_calls = !tool_calls.is_empty();
 
                 // v0.10 (R1c): per-call `terminate` flags in batch order.
@@ -3330,6 +3349,11 @@ impl Agent {
                     "get_steering_messages",
                     || hooks_ref.get_steering_messages(&recent),
                 );
+                // v0.17（72h 不间断）：标记只在「本次截断续跑的那一轮」放行过
+                // 顶部 follow-up 轮询，置回后后续每一轮都走常规路径（否则标记一直为
+
+                // true 会让轮询在每一轮重复触发、空轮询空转）。
+                continue_after_truncation = false;
                 // Loop again: the guard at the top decides whether this is
                 // another turn or a follow-up revival.
             }

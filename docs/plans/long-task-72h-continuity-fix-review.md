@@ -1,0 +1,4 @@
+# Review
+- [MINOR] `crates/nini-core/src/agent.rs:2196` | 问题: 本次改动夹带 3 处与计划步骤无关的空行（2196 紧跟 `provider.stream` 声明、2374 紧跟 `length_truncated` 声明、2914/2917 包住 `has_more_tool_calls` 赋值），属于计划外格式噪音，超出 plan「只改截断续跑分支」的边界。 | 修法: 删除这些多余空行（或整段回退到 HEAD 的空白状态），使 diff 只含步骤 2 的 4 处变更。
+- [MINOR] `crates/nini-core/src/agent.rs:2433` | 问题: 截断分支注释称 "`has_more_tool_calls` 是循环顶部守卫唯一的「继续」信号"，但本次改动后顶部守卫已多一个 `|| poll_after_truncation` 条件（agent.rs:1982），注释与守卫实际不一致——该不一致正是 review doc 第 1 条点名的，修法未同步。 | 修法: 把该注释改为与实际守卫一致（如「`has_more_tool_calls` 与 `continue_after_truncation` 共同决定是否放行 follow-up 轮询/继续」），删除「唯一的」表述。
+- [MINOR] `crates/nini-core/src/agent.rs:2007` | 问题: 续跑分支注释里 "否则 2700 行的 `retry_after_compaction || continue_after_truncation` 判断" 的行号已随本次行号增量偏移，该判断实际在 agent.rs:2819，注释行号失真。 | 修法: 把 2700 更新为实际行号（或去掉具体行号，改为「循环体末尾的该判断」）。
