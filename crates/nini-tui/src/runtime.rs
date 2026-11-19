@@ -3471,6 +3471,12 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
             *slot = Some(text.to_string());
             Ok(())
         } else {
+            // Native-clipboard failure seam: the copy feedback paths
+            // must not depend on a real clipboard being reachable.
+            #[cfg(test)]
+            if NATIVE_CLIPBOARD_FAILS.with(|f| f.get()) {
+                return Err("native clipboard disabled by the test seam".to_string());
+            }
             crate::clipboard::copy(text)
         }
     })
@@ -3482,6 +3488,20 @@ pub(crate) fn set_clipboard_override(value: Option<String>) {
     CLIPBOARD_OVERRIDE.with(|c| {
         *c.borrow_mut() = value;
     });
+}
+
+// Native-clipboard failure seam, mirroring osc52's: with the override
+// unset it forces the native write to fail on any host.
+#[cfg(test)]
+thread_local! {
+    static NATIVE_CLIPBOARD_FAILS: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn set_native_clipboard_fail_for_tests(value: bool) {
+    NATIVE_CLIPBOARD_FAILS.with(|f| f.set(value));
 }
 
 /// The transcript's on-screen rectangle, as last drawn.
@@ -5753,7 +5773,10 @@ mod mouse_selection_tests {
     fn a_failed_copy_leaves_a_line_in_the_transcript() {
         // The exception: a failure is rare, and a failure nobody sees is a
         // failure nobody acts on.
+        // Both channels forced to fail so the path is deterministic on a
+        // host that has a real clipboard.
         set_clipboard_override(None);
+        set_native_clipboard_fail_for_tests(true);
         crate::osc52::set_fail_for_tests(true);
         let shared = shared_state(state_with_rows(&["hello world"]));
         let before = {
@@ -5774,12 +5797,14 @@ mod mouse_selection_tests {
             state.run_state.status
         );
         crate::osc52::set_fail_for_tests(false);
+        set_native_clipboard_fail_for_tests(false);
     }
 
     #[test]
     fn a_copy_that_cannot_be_verified_says_so() {
         // Neither channel works: the feedback must not claim a copy.
         set_clipboard_override(None);
+        set_native_clipboard_fail_for_tests(true);
         crate::osc52::set_fail_for_tests(true);
         let shared = shared_state(state_with_rows(&["hello world"]));
         handle_mouse(press(2, 0), &shared);
@@ -5792,6 +5817,7 @@ mod mouse_selection_tests {
             state.run_state.status
         );
         crate::osc52::set_fail_for_tests(false);
+        set_native_clipboard_fail_for_tests(false);
     }
 
     #[test]
@@ -5905,8 +5931,10 @@ mod mouse_selection_tests {
     #[test]
     fn a_copy_that_falls_back_to_osc52_says_the_terminal_may_not_keep_it() {
         // No native clipboard (headless CI) and OSC 52 available: the copy
-        // is *unverified*, and the feedback has to say so.
+        // is *unverified*, and the feedback has to say so. The native seam
+        // forces the fallback on a host that has a real clipboard.
         set_clipboard_override(None);
+        set_native_clipboard_fail_for_tests(true);
         crate::osc52::set_fail_for_tests(false);
         let shared = shared_state(state_with_rows(&["hello world"]));
         handle_mouse(press(2, 0), &shared);
@@ -5919,6 +5947,7 @@ mod mouse_selection_tests {
             state.run_state.status
         );
         set_clipboard_override(None);
+        set_native_clipboard_fail_for_tests(false);
     }
 
     #[test]
