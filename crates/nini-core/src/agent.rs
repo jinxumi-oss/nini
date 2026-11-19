@@ -1026,6 +1026,23 @@ pub struct Agent {
     /// Used by `estimated_tokens_via_usage()` for accurate context %;
     /// falls back to character estimation when None.
     last_usage: Option<crate::provider::Usage>,
+    /// v0.18 (context-management): the number of messages the
+    /// `last_usage` snapshot already covers.
+    ///
+    /// The snapshot is recorded when the assistant message that produced
+    /// it is pushed onto `messages`, so `messages[..usage_at_len]` is
+    /// exactly the prefix the API has already counted (the last request's
+    /// input+output+cache covers the whole prompt it sent).
+    /// `estimated_tokens()` must therefore only add an estimate for
+    /// `messages[usage_at_len..]` — the tail added after the snapshot.
+    ///
+    /// Before this field existed, `messages_after_last_usage` returned the
+    /// **whole** history even when a snapshot existed, so the covered
+    /// prefix was counted twice: the usage already includes it, and the
+    /// tail estimate added it again. Real context T was reported as
+    /// `T + T_est` (≈1.5–2×), and the compaction trigger fired at roughly
+    /// half the real window.
+    usage_at_len: usize,
     /// Retry attempt counter for transient LLM errors. Reset to 0 after
     /// each successful message stop.
     retry_attempt: u32,
@@ -1100,6 +1117,7 @@ impl Agent {
             branch_summary_abort: AbortHandle::new(),
             config,
             last_usage: None,
+            usage_at_len: 0,
             is_auto_compacting: false,
             // v0.11 (A2b)：这次压缩是**被取消**的，而不是「没什么可压缩的」。
             //
@@ -1286,11 +1304,22 @@ impl Agent {
     /// Return only the messages AFTER the last assistant usage. This is
     /// empty when the last message IS the usage report. Used to estimate
     /// the "tail" tokens added since the last usage snapshot.
+    ///
+    /// v0.18 (fix): this used to return the **whole** history whenever a
+    /// snapshot existed, so `estimated_tokens()` counted the covered
+    /// prefix twice (once inside the usage snapshot, once as the tail).
+    /// Mirrors Pi's `calculateContextUsage`: `trailingTokens` accumulates
+    /// only the messages after `lastUsageIndex` (`compaction.ts:232-234`).
     fn messages_after_last_usage(&self) -> Vec<Message> {
         if self.last_usage.is_none() {
             return self.messages.clone();
         }
-        self.messages.clone()
+        // `usage_at_len` is recorded together with `last_usage`. Overflow
+        // recovery pops the failed assistant message before compacting,
+        // which can leave the recorded length ahead of the current
+        // history; clamp defensively so the slice never panics.
+        let from = self.usage_at_len.min(self.messages.len());
+        self.messages[from..].to_vec()
     }
 
     /// Pi-compatible context-usage report: `{ tokens, contextWindow, percent }`.
@@ -1782,6 +1811,7 @@ impl Agent {
             self.messages = result.messages.clone();
         }
         self.last_usage = None;
+        self.usage_at_len = 0;
         self.last_compaction_tokens = Some(tokens_before);
         Some(result)
     }
@@ -2815,8 +2845,13 @@ impl Agent {
                 // Cache the last API-reported usage for accurate context
                 // window estimation on the next iteration. Reset to None on
                 // abort/error so we fall back to character estimation.
+                //
+                // v0.18: the snapshot is recorded with the assistant message
+                // it just produced (`messages[..len]`), so `estimated_tokens()`
+                // can add only the tail appended afterwards.
                 if stop_reason != "aborted" && stop_reason != "error" {
                     self.last_usage = Some(last_usage.clone());
+                    self.usage_at_len = self.messages.len();
                 }
 
                 yield AgentEvent::TurnEnd { stop_reason: stop_reason.clone(), usage: last_usage };
@@ -5548,6 +5583,53 @@ mod compaction_recovery_tests {
             agent.maybe_compact_at_threshold().is_none(),
             "the second turn compacted again from an unchanged context — this \
              is an infinite compaction loop wearing a threshold check's clothes"
+        );
+    }
+
+    /// v0.18 regression: the usage snapshot already counts the whole
+    /// prompt it covered (its input+output+cache covers `messages[..n]`).
+    /// `estimated_tokens()` must add only the tail appended after that
+    /// snapshot. Before the fix, `messages_after_last_usage` returned the
+    /// entire history, so the covered prefix was counted twice and the
+    /// compaction trigger fired at roughly half the real context.
+    #[test]
+    fn estimated_tokens_counts_the_covered_prefix_only_once() {
+        let mut agent = Agent::new(Arc::new(Unused), crate::tool::ToolRegistry::new(), cfg());
+        agent.seed(seeded(5));
+        agent.last_usage = Some(crate::provider::Usage {
+            input_tokens: 1000,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        });
+        agent.usage_at_len = 5;
+
+        // No tail yet: the estimate is exactly the usage snapshot.
+        assert_eq!(agent.estimated_tokens(), 1000);
+
+        // Append a tail message: only its own estimate is added.
+        agent.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "x".repeat(400),
+            }],
+            timestamp: 0,
+        });
+        let tail_est = crate::compaction::estimate_provider_messages_tokens(&agent.messages[5..]);
+        assert_eq!(agent.estimated_tokens(), 1000 + tail_est);
+
+        // The regression in one line: the covered prefix must never be
+        // counted again on top of the snapshot that already includes it.
+        let full_history_est =
+            crate::compaction::estimate_provider_messages_tokens(&agent.messages);
+        assert!(
+            full_history_est > tail_est,
+            "test precondition: the covered prefix has a non-zero estimate"
+        );
+        assert!(
+            agent.estimated_tokens() < 1000 + full_history_est,
+            "the covered prefix was counted twice — the usage snapshot 
+             already includes it"
         );
     }
 
