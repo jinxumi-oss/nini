@@ -1565,6 +1565,24 @@ pub struct RunState {
     pub cost_usd: f64,
     /// Cumulative token usage for the session.
     pub tokens: TokenStats,
+    /// 运行时相位（core 的 `AgentPhase::tag()`）："idle" / "working" /
+    /// "compacting" / "retrying" / "branch_summary"。
+    ///
+    /// 与 `status` **分槽**：`status` 是瞬时消息（会被 "queued (steer)"、
+    /// "model: xxx" 轮流顶掉），`phase` 是事实，永不被瞬时消息覆盖。
+    ///
+    /// 不变式：`phase != "idle"` ⇔ 有一轮 agent 正在进行
+    /// （或刚被中断、尚未收到收尾事件）。
+    pub phase: String,
+    /// 当前正在执行的工具：(工具名, 开始时刻)。`None` = 没有工具在跑。
+    ///
+    /// 不变式：`current_tool.is_some()` ⇔ 此刻有工具在执行；
+    /// 工具结束/整轮结束必须置 `None`。
+    pub current_tool: Option<(String, std::time::Instant)>,
+    /// 本轮（agent run）开始的时刻。
+    pub run_started_at: std::time::Instant,
+    /// 最后一次收到 agent 事件的时刻（"无进展"判定的基准）。
+    pub last_event_at: std::time::Instant,
 }
 
 // =================================================================
@@ -1936,6 +1954,10 @@ impl Clone for RunState {
             context_used: self.context_used,
             cost_usd: self.cost_usd,
             tokens: self.tokens.clone(),
+            phase: self.phase.clone(),
+            current_tool: self.current_tool.clone(),
+            run_started_at: self.run_started_at,
+            last_event_at: self.last_event_at,
         }
     }
 }
@@ -1964,6 +1986,10 @@ impl Default for RunState {
             context_used: 0,
             cost_usd: 0.0,
             tokens: TokenStats::default(),
+            phase: "idle".to_string(),
+            current_tool: None,
+            run_started_at: std::time::Instant::now(),
+            last_event_at: std::time::Instant::now(),
         }
     }
 }
@@ -4115,6 +4141,27 @@ mod sub_struct_tests {
         assert!(rs.pending_quit.is_some());
         rs.pending_quit = None;
         assert!(rs.pending_quit.is_none());
+    }
+
+    #[test]
+    fn run_state_default_phase_is_idle() {
+        let rs = RunState::default();
+        assert_eq!(rs.phase, "idle");
+        assert!(rs.current_tool.is_none());
+    }
+
+    #[test]
+    fn run_state_clone_keeps_liveness_fields() {
+        let mut rs = RunState::default();
+        rs.phase = "working".to_string();
+        rs.current_tool = Some(("bash".to_string(), std::time::Instant::now()));
+        rs.run_started_at = std::time::Instant::now();
+        rs.last_event_at = std::time::Instant::now();
+        let cloned = rs.clone();
+        assert_eq!(cloned.phase, rs.phase);
+        assert_eq!(cloned.current_tool, rs.current_tool);
+        assert_eq!(cloned.run_started_at, rs.run_started_at);
+        assert_eq!(cloned.last_event_at, rs.last_event_at);
     }
 
     #[test]

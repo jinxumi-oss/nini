@@ -35,6 +35,13 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::sync::atomic::Ordering;
 
+/// 等模型时，多久没有任何事件就算"无进展"（秒）。
+pub const NO_PROGRESS_MODEL_SECS: u64 = 60;
+/// 等工具时，多久没有任何事件就算"无进展"（秒）。
+///
+/// 必须大于 bash 工具的默认超时（120s），否则正常的长任务会被误报。
+pub const NO_PROGRESS_TOOL_SECS: u64 = 180;
+
 /// Render the full TUI frame.
 pub fn render_frame(f: &mut Frame, state: &AppState) {
     render_frame_with_theme(f, state, &Theme::default());
@@ -379,11 +386,18 @@ fn render_stats_line(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect)
     )];
 
     // Phase indicator: 5-state map with spinner when running.
-    let phase = match state.run_state.mode {
-        RunMode::Running => AgentPhase::Working,
+    //
+    // 相位来自 core 的 `AgentPhase::tag()`（运行时写进 `run_state.phase`），
+    // 不再由 `RunMode` 猜：Esc 之后 agent 可能还活着（`RunMode` 已经回到
+    // Editing），此时顶部仍应显示 working，而不是谎报 idle。
+    let phase = match state.run_state.phase.as_str() {
+        "working" => AgentPhase::Working,
+        "compacting" => AgentPhase::Compacting,
+        "retrying" => AgentPhase::Retrying,
+        "branch_summary" => AgentPhase::BranchSummary,
         _ => AgentPhase::Idle,
     };
-    let phase_label = if matches!(state.run_state.mode, RunMode::Running) {
+    let phase_label = if phase != AgentPhase::Idle {
         format!("{} {}", spinner_frame(), phase.label())
     } else {
         phase.label().to_string()
@@ -2115,6 +2129,74 @@ fn render_prompt(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     }
 }
 
+/// 相位 → 底部活动串里的「正在等什么」文案。
+///
+/// 只有**没有工具在跑**时才有意义：有工具时工具名比相位更有信息量。
+/// 未知相位一律退回 `waiting for model`（不 panic、不新增错误）。
+fn phase_activity_label(phase: &str) -> &'static str {
+    match phase {
+        "retrying" => "retrying",
+        "compacting" => "compacting",
+        "branch_summary" => "summarizing branch",
+        _ => "waiting for model",
+    }
+}
+
+/// 底部活动指示器的文案（纯函数，便于单测）。
+///
+/// 返回 `(文案, 颜色名)`；`None` = 这一轮没有活动可显示。
+/// 相位为 `idle` 时一律返回 `None`（哪怕 `current_tool` 还有残留）：
+/// 「是否显示活动串」只有相位这一个判据，顶部与底部才不会互相矛盾。
+/// - 有工具在跑：`⠋ {工具名} · {n}s`（n = 工具已跑秒数）
+/// - 等模型：`⠋ waiting for model · {n}s`（n = 本轮已跑秒数）
+/// - 等其它相位：`⠋ retrying|compacting|summarizing branch · {n}s`
+///   （文案随 `phase` 变，避免压缩/重试期间还在说「waiting for model」
+///   而与顶部显示的相位互相矛盾）
+/// - 长时间收不到事件：`⚠ no progress {n}s · {上下文}`（n = 静默秒数，
+///   上下文 = 工具名，或与上面同一个相位文案）
+///
+/// 阈值：等模型 60s，等工具 180s（必须大于 bash 的 120s 默认超时）。
+pub fn activity_indicator(
+    phase: &str,
+    tool: Option<&(String, std::time::Instant)>,
+    run_started_at: std::time::Instant,
+    last_event_at: std::time::Instant,
+    now: std::time::Instant,
+) -> Option<(String, &'static str)> {
+    // 唯一判据是相位：idle = 这一轮没在跑。
+    // 放在最前面是为了连「工具残留」的情况也一并挡住——工具复位有延迟，
+    // 而相位复位是及时的。
+    if phase == "idle" {
+        return None;
+    }
+    match tool {
+        Some((name, started_at)) => {
+            let secs = now.saturating_duration_since(*started_at).as_secs();
+            let quiet = now.saturating_duration_since(last_event_at).as_secs();
+            if quiet >= NO_PROGRESS_TOOL_SECS {
+                return Some((
+                    format!("\u{26a0} no progress {quiet}s \u{b7} {name}"),
+                    "error",
+                ));
+            }
+            Some((format!("\u{280b} {name} \u{b7} {secs}s"), "warning"))
+        }
+        // 没有工具 = 在等模型（或等压缩/重试/分支摘要），文案随相位走。
+        None => {
+            let label = phase_activity_label(phase);
+            let secs = now.saturating_duration_since(run_started_at).as_secs();
+            let quiet = now.saturating_duration_since(last_event_at).as_secs();
+            if quiet >= NO_PROGRESS_MODEL_SECS {
+                return Some((
+                    format!("\u{26a0} no progress {quiet}s \u{b7} {label}"),
+                    "error",
+                ));
+            }
+            Some((format!("\u{280b} {label} \u{b7} {secs}s"), "warning"))
+        }
+    }
+}
+
 fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     // v0.8.3: Pi parity — hints now use keyHint(theme) formatting
     // (dim key + muted description) instead of bg("dim")+white text.
@@ -2190,11 +2272,33 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
         RunMode::Quitting => vec![(" Esc ", "cancel"), (" Ctrl+D ", "quit")],
     };
 
+    // 活动指示器：渲染在提示行**最左侧**（视线焦点处），不新增布局行。
+    // 判据只有相位（判断在纯函数 `activity_indicator` 内部）：`RunMode` 回答
+    // 「编辑器能不能打字」，`phase` 回答「agent 是否在跑」。Esc 之后 mode 回到
+    // Editing 而 agent 还在收尾，这段时间顶部与底部必须一致。
+    let activity = activity_indicator(
+        &state.run_state.phase,
+        state.run_state.current_tool.as_ref(),
+        state.run_state.run_started_at,
+        state.run_state.last_event_at,
+        std::time::Instant::now(),
+    );
+
     // Use trim_to_width so when hints overflow we append a dim "…"
     // instead of silently dropping the tail (P1-5 from the typography plan).
-    let trimmed = crate::keyhint::trim_to_width(&hints, area.width as usize, theme);
+    // 活动串占用的宽度从 hints 的预算里扣掉（活动串在最左，不会被截掉）。
+    let activity_width = activity
+        .as_ref()
+        .map(|(text, _)| display_width(text.as_str()) + 2)
+        .unwrap_or(0);
+    let hint_budget = (area.width as usize).saturating_sub(activity_width);
+    let trimmed = crate::keyhint::trim_to_width(&hints, hint_budget, theme);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
+    if let Some((text, color)) = &activity {
+        spans.push(Span::styled(text.clone(), theme.fg_style(color)));
+        spans.push(Span::raw("  ".to_string()));
+    }
     for (i, (key, desc)) in trimmed.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(" ".to_string()));
@@ -2424,6 +2528,221 @@ mod footer_tests {
              buffer in this mode: {text}"
         );
     }
+
+    /// 活动指示器渲染在底部提示行的最左侧（Running 模式下）。
+    #[test]
+    fn footer_running_mode_shows_activity_indicator_on_the_left() {
+        let mut state = AppState::new("m");
+        state.run_state.mode = RunMode::Running;
+        state.run_state.phase = "working".to_string();
+        state.run_state.run_started_at =
+            std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let text = footer_text(&state);
+        assert!(
+            text.contains("waiting for model"),
+            "running mode should show the activity indicator: {text}"
+        );
+        let act = text.find("waiting for model").expect("activity missing");
+        let hint = text.find("Esc").expect("hint missing");
+        assert!(
+            act < hint,
+            "activity indicator must be left of the hints: {text}"
+        );
+    }
+
+    /// 相位 idle 时不显示活动指示器（判据是相位，不是 `RunMode`）。
+    #[test]
+    fn footer_hides_activity_indicator_when_phase_is_idle() {
+        let mut state = AppState::new("m");
+        state.run_state.phase = "idle".to_string();
+        let text = footer_text(&state);
+        assert!(
+            !text.contains("waiting for model"),
+            "idle phase must not show the activity indicator: {text}"
+        );
+    }
+
+    /// Esc 之后（mode 回到 Editing）但 agent 还在跑：底部活动串必须仍然显示。
+    ///
+    /// 锁的是顶部与底部的一致性：`RunMode` 回答「能不能打字」，`phase` 回答
+    /// 「agent 是否在跑」，这两件事在这一刻是不同的。
+    #[test]
+    fn footer_editing_mode_shows_activity_indicator_when_phase_is_working() {
+        let mut state = AppState::new("m");
+        state.run_state.mode = RunMode::Editing;
+        state.run_state.phase = "working".to_string();
+        state.run_state.run_started_at =
+            std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let text = footer_text(&state);
+        assert!(
+            text.contains("waiting for model"),
+            "editing mode with a working phase must still show the activity indicator: {text}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod activity_indicator_tests {
+    use super::*;
+
+    fn ago(base: std::time::Instant, secs: u64) -> std::time::Instant {
+        base - std::time::Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn activity_indicator_shows_tool_name_and_seconds() {
+        let now = std::time::Instant::now();
+        let tool = ("bash".to_string(), ago(now, 12));
+        let (text, color) = activity_indicator("working", Some(&tool), ago(now, 30), now, now)
+            .expect("tool run should show an indicator");
+        assert!(text.contains("bash"), "expected tool name, got: {text}");
+        assert!(
+            text.contains("12s"),
+            "expected elapsed seconds, got: {text}"
+        );
+        assert_eq!(color, "warning");
+    }
+
+    #[test]
+    fn activity_indicator_shows_waiting_for_model() {
+        let now = std::time::Instant::now();
+        let (text, color) = activity_indicator("working", None, ago(now, 7), now, now)
+            .expect("waiting for the model should show an indicator");
+        assert!(
+            text.contains("waiting for model"),
+            "expected waiting label, got: {text}"
+        );
+        assert!(text.contains("7s"), "expected elapsed seconds, got: {text}");
+        assert_eq!(color, "warning");
+    }
+
+    #[test]
+    fn activity_indicator_warns_when_tool_stalled() {
+        let now = std::time::Instant::now();
+        let tool = ("bash".to_string(), ago(now, 200));
+        let (text, color) =
+            activity_indicator("working", Some(&tool), ago(now, 300), ago(now, 200), now)
+                .expect("stalled tool should still show an indicator");
+        assert!(
+            text.contains("no progress"),
+            "expected no-progress warning, got: {text}"
+        );
+        assert!(text.contains("bash"), "expected tool context, got: {text}");
+        assert_eq!(color, "error");
+    }
+
+    #[test]
+    fn activity_indicator_warns_when_model_stalled() {
+        let now = std::time::Instant::now();
+        let (text, color) = activity_indicator("working", None, ago(now, 120), ago(now, 90), now)
+            .expect("stalled model should still show an indicator");
+        assert!(
+            text.contains("no progress"),
+            "expected no-progress warning, got: {text}"
+        );
+        assert!(
+            text.contains("waiting for model"),
+            "expected model context, got: {text}"
+        );
+        assert_eq!(color, "error");
+    }
+
+    #[test]
+    fn activity_indicator_is_none_when_idle() {
+        let now = std::time::Instant::now();
+        assert!(
+            activity_indicator("idle", None, ago(now, 300), ago(now, 300), now).is_none(),
+            "idle phase means no run in progress: nothing to report"
+        );
+    }
+
+    /// 相位 = compacting：文案必须说 compacting，而不是笼统的 waiting for model。
+    ///
+    /// 否则底部与顶部（已经在显示 compacting）互相矛盾，用户还是分不清状态。
+    #[test]
+    fn activity_indicator_shows_compacting_when_compacting() {
+        let now = std::time::Instant::now();
+        let (text, color) = activity_indicator("compacting", None, ago(now, 7), now, now)
+            .expect("compacting phase should show an indicator");
+        assert!(
+            text.contains("compacting"),
+            "expected compacting label, got: {text}"
+        );
+        assert!(text.contains("7s"), "expected elapsed seconds, got: {text}");
+        assert_eq!(color, "warning");
+    }
+
+    /// 相位 = retrying：文案必须说 retrying。
+    #[test]
+    fn activity_indicator_shows_retrying_when_retrying() {
+        let now = std::time::Instant::now();
+        let (text, color) = activity_indicator("retrying", None, ago(now, 7), now, now)
+            .expect("retrying phase should show an indicator");
+        assert!(
+            text.contains("retrying"),
+            "expected retrying label, got: {text}"
+        );
+        assert!(text.contains("7s"), "expected elapsed seconds, got: {text}");
+        assert_eq!(color, "warning");
+    }
+
+    /// 相位 = branch_summary：文案必须说 summarizing branch。
+    #[test]
+    fn activity_indicator_shows_summarizing_branch_when_branch_summary() {
+        let now = std::time::Instant::now();
+        let (text, color) = activity_indicator("branch_summary", None, ago(now, 7), now, now)
+            .expect("branch_summary phase should show an indicator");
+        assert!(
+            text.contains("summarizing branch"),
+            "expected summarizing branch label, got: {text}"
+        );
+        assert!(text.contains("7s"), "expected elapsed seconds, got: {text}");
+        assert_eq!(color, "warning");
+    }
+
+    /// 无进展告警的「上下文」同样随相位变。
+    #[test]
+    fn activity_indicator_warns_with_phase_context_when_model_stalled() {
+        let now = std::time::Instant::now();
+        let (text, color) =
+            activity_indicator("compacting", None, ago(now, 120), ago(now, 90), now)
+                .expect("stalled model should still show an indicator");
+        assert!(
+            text.contains("no progress"),
+            "expected no-progress warning, got: {text}"
+        );
+        assert!(
+            text.contains("compacting"),
+            "expected phase context in the warning, got: {text}"
+        );
+        assert_eq!(color, "error");
+    }
+
+    /// 未知相位：不 panic，退回 waiting for model。
+    #[test]
+    fn activity_indicator_falls_back_for_unknown_phase() {
+        let now = std::time::Instant::now();
+        let (text, _color) = activity_indicator("some-new-phase", None, ago(now, 7), now, now)
+            .expect("unknown phase should still show an indicator");
+        assert!(
+            text.contains("waiting for model"),
+            "expected fallback label, got: {text}"
+        );
+    }
+
+    /// 有工具在跑时，工具名比相位更有信息量 → 文案不变（相位不影响工具分支）。
+    #[test]
+    fn activity_indicator_prefers_tool_name_over_phase() {
+        let now = std::time::Instant::now();
+        let tool = ("bash".to_string(), ago(now, 12));
+        let (text, _color) = activity_indicator("compacting", Some(&tool), ago(now, 30), now, now)
+            .expect("tool run should show an indicator");
+        assert!(text.contains("bash"), "expected tool name, got: {text}");
+        assert!(
+            !text.contains("compacting"),
+            "tool branch must not be renamed by phase, got: {text}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2624,13 +2943,13 @@ mod status_tests {
     #[test]
     fn footer_stats_line_shows_phase_when_running() {
         use crate::state::AppState;
-        use crate::state::RunMode;
         let mut state = AppState::new("m");
-        state.run_state.mode = RunMode::Running;
+        // 相位改由 `run_state.phase` 决定（不再由 `RunMode` 猜）。
+        state.run_state.phase = "working".to_string();
         let text = footer_text(&state);
         assert!(
             text.contains("working"),
-            "running mode should show 'working' phase, got: {text}"
+            "phase=working should show 'working', got: {text}"
         );
     }
 

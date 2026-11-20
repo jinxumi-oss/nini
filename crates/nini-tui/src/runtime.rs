@@ -231,6 +231,14 @@ pub enum AgentEventLite {
     /// Agent phase transition. Mirrors `AgentEvent::PhaseChanged` from
     /// nini-core but as a lightweight payload (just the phase name).
     PhaseChanged(String),
+    /// 整轮被中止（Esc / Ctrl-C）。
+    ///
+    /// core 产出的 `AgentEvent::Aborted` 以前被 CLI 的事件桥接吞进
+    /// `Ok(_) => continue`，于是转录里**没有任何痕迹**——用户分不清
+    /// 「被中断」和「静默挂死」。
+    ///
+    /// sink 收到它就写一行可见痕迹，并把运行时相位复位回 idle。
+    Aborted,
     /// Marks end of agent run; flips state back to Editing.
     Done,
 }
@@ -336,6 +344,9 @@ impl AgentSink {
             None
         };
         if let Ok(mut s) = self.state.lock() {
+            // 存活指示器：**每个**事件到达都刷新「上次活动」时刻，
+            // 渲染层据此判断「多久没有进展」。
+            s.run_state.last_event_at = std::time::Instant::now();
             if let Some(phase) = phase_status {
                 // v0.10.8 (A2)：压缩的相位要变成**状态**。
                 //
@@ -354,7 +365,10 @@ impl AgentSink {
                     "working" => crate::state::EscapeTarget::Agent,
                     _ => crate::state::EscapeTarget::Idle,
                 };
-                s.run_state.status = phase;
+                // 存活指示器：相位**不再**占用 `status` 槽——`status` 从此
+                // 只装瞬时消息（"queued (steer): N pending"、"model: xxx" …），
+                // 相位有自己的槽，不会被瞬时消息顶掉。
+                s.run_state.phase = phase.clone();
             }
             match ev {
                 AgentEventLite::TextDelta(text) => {
@@ -371,8 +385,11 @@ impl AgentSink {
                 // B20 — the tool is running NOW. Remember it so the
                 // renderer paints this row differently from the calls
                 // that are still queued.
-                AgentEventLite::ToolExecutionStart { id, name: _ } => {
+                AgentEventLite::ToolExecutionStart { id, name } => {
                     s.ui_state.executing_tools.insert(id.clone());
+                    // 存活指示器：记下**正在跑的工具名**和它的开始时刻，
+                    // 底部活动指示器据此显示「工具名 · 已跑 N 秒」。
+                    s.run_state.current_tool = Some((name.clone(), std::time::Instant::now()));
                 }
                 AgentEventLite::ToolCallStop { id, args } => {
                     // v0.8.8 (tool-identity): update the SPECIFIC tool
@@ -426,6 +443,8 @@ impl AgentSink {
                 } => {
                     // B20 — the call is over; it is no longer running.
                     s.ui_state.executing_tools.remove(&id);
+                    // 存活指示器：工具结束 → 此刻没有工具在跑。
+                    s.run_state.current_tool = None;
                     // Capture edit-tool diff stats for the status bar pill.
                     if let Some(d) = &details {
                         if let (Some(adds), Some(dels)) = (
@@ -510,7 +529,14 @@ impl AgentSink {
                     s.set_status_bar_usage(cost, window, used);
                 }
                 AgentEventLite::PhaseChanged(_) => {
-                    // Already handled at top of this match (set status).
+                    // Already handled at top of this match (set phase).
+                }
+                AgentEventLite::Aborted => {
+                    // 整轮被中止：转录里留一行可见痕迹（此前这里什么都没有，
+                    // 用户无法区分「被中断」和「挂死」），并把相位/工具复位。
+                    s.push_notice("[aborted] run aborted");
+                    s.run_state.phase = "idle".to_string();
+                    s.run_state.current_tool = None;
                 }
                 AgentEventLite::Done => {
                     // v0.10.8 (P2/A1): the terminal event of an agent run
@@ -535,6 +561,9 @@ impl AgentSink {
                         // 于是之后每次 Enter 都被收进队列、再也不执行——
                         // 症状是「按了 Enter，什么也没发生」。
                         s.run_state.is_compacting = false;
+                        // 存活指示器：整轮结束 → 相位回 idle、没有工具在跑。
+                        s.run_state.phase = "idle".to_string();
+                        s.run_state.current_tool = None;
                         s.run_state.mode = RunMode::Editing;
                         s.run_state.status = "ready".to_string();
                         s.run_state.abort_signal = None; // clear stale abort signal
@@ -4326,7 +4355,15 @@ pub fn submit_user_input_inner(
         // it.
         g.run_state.agent_alive = true;
         g.run_state.run_seq = g.run_state.run_seq.wrapping_add(1);
-        g.run_state.status = "running...".to_string();
+        // 存活指示器：这一轮从**此刻**开始计时。
+        //
+        // 原来的 `status = "running..."` 被这几行取代：相位不再占用 `status`
+        // 槽（`status` 从此只装瞬时消息），而「本轮开始时刻」和「上次活动
+        // 时刻」必须有确切起点，否则活动指示器算不出已跑秒数。
+        g.run_state.phase = "working".to_string();
+        g.run_state.run_started_at = std::time::Instant::now();
+        g.run_state.last_event_at = std::time::Instant::now();
+        g.run_state.current_tool = None;
         // The turn's own number is read **inside the same critical
         // section** that raised the guard. Reading it later (after the
         // driver was spawned) would let a *newer* turn's number be
@@ -4435,6 +4472,10 @@ pub fn submit_user_input_inner(
                     return;
                 }
                 g.run_state.agent_alive = false;
+                // 存活指示器：异常收尾（没走 Done / panic）同样要把相位与工具复位，
+                // 否则相位永远停在 "working" → 顶部一直转圈，底部活动串也永远显示。
+                g.run_state.phase = "idle".to_string();
+                g.run_state.current_tool = None;
                 // v0.10.8 (A2, review finding)：同样要复位压缩标志。
                 g.run_state.is_compacting = false;
                 // v0.10.8 (A6): 同 `Done` —— 收尾时队列里还有消息就该投递。
@@ -4500,6 +4541,9 @@ pub fn submit_user_input_inner(
             let mut g = lock_state(&shared);
             if g.run_state.run_seq == seq {
                 g.run_state.agent_alive = false;
+                // 存活指示器：这里也是异常收尾，相位与工具同样要复位（同上）。
+                g.run_state.phase = "idle".to_string();
+                g.run_state.current_tool = None;
                 if g.run_state.mode == RunMode::Running {
                     g.run_state.mode = RunMode::Editing;
                 }

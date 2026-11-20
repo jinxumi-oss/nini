@@ -33,6 +33,9 @@ pub mod error_body;
 /// See the module docs for which vendor-SDK rule each one reproduces.
 pub mod api_url;
 
+/// provider 字节流的空闲超时保护（chunk 之间太久没数据就判定上游挂死）。
+pub mod stream_idle;
+
 /// LLM-backed conversation summarization (used for auto-compaction).
 pub mod summarizer;
 

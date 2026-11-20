@@ -894,6 +894,11 @@ pub(crate) async fn run_tui(cfg: AppConfig) -> Result<()> {
                             // 格式一变就会静默失效（review finding）。
                             nini_tui::runtime::AgentEventLite::PhaseChanged(phase.tag().to_string())
                         }
+                        // 存活指示器：被 Esc 中止的一轮此前落到 `Ok(_) => continue`
+                        // 被静默吞掉，转录里没有任何痕迹。显式桥接成
+                        // `AgentEventLite::Aborted`，让 TUI 能复位相位并在
+                        // 转录里留下一行可见记录。
+                        Ok(AgentEvent::Aborted) => nini_tui::runtime::AgentEventLite::Aborted,
                         Ok(_) => continue,
                         Err(e) => {
                             // v0.8.4 (bugfix): a provider error was

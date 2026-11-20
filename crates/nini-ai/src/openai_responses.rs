@@ -7,7 +7,6 @@
 
 use super::sse::{SseEvent, SseParser};
 use async_stream::try_stream;
-use futures_util::StreamExt;
 use nini_core::provider::*;
 use reqwest::Client;
 use std::pin::Pin;
@@ -117,10 +116,11 @@ impl Provider for OpenAiResponsesProvider {
                 ("content-type".to_string(), "application/json".to_string()),
             ];
             let headers = overrides.resolve(&req.model, &defaults);
-            let mut response = crate::provider_overrides::apply_headers(client.post(&url), &headers)
-                .body(body)
-                .send()
-                .await?;
+            let mut response = crate::stream_idle::send_with_idle_timeout(
+                crate::provider_overrides::apply_headers(client.post(&url), &headers).body(body),
+                crate::stream_idle::DEFAULT_IDLE_TIMEOUT,
+            )
+            .await?;
 
             let status = response.status();
             if !status.is_success() {
@@ -138,8 +138,12 @@ impl Provider for OpenAiResponsesProvider {
             let mut byte_stream = response.bytes_stream();
             let mut parser = SseParser::new();
 
-            while let Some(chunk_result) = byte_stream.next().await {
-                let chunk = chunk_result?;
+            while let Some(chunk) = crate::stream_idle::next_chunk(
+                &mut byte_stream,
+                crate::stream_idle::DEFAULT_IDLE_TIMEOUT,
+            )
+            .await?
+            {
                 for sse_event in parser.feed(&chunk).map_err(|e| ProviderError::Sse(e.to_string()))? {
                     if let Some(ev) = translate_sse(&sse_event) {
                         yield ev;

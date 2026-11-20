@@ -366,11 +366,18 @@ async fn running_mode_visible_while_agent_runs() {
     let shared = shared_state(AppState::new("test-model"));
     let sink = AgentSink::new(shared.clone(), tokio::sync::watch::channel(false).0);
 
-    // Set mode to Running (simulating what submit does)
-    shared.lock().unwrap().run_state.mode = nini_tui::state::RunMode::Running;
+    // Set mode to Running + phase to working (simulating what submit does).
+    //
+    // 存活指示器之后，相位不再由 `RunMode` 猜，而是由 `run_state.phase`
+    // 决定——`submit_user_input_inner` 现在写的就是这两个字段。
+    {
+        let mut g = shared.lock().unwrap();
+        g.run_state.mode = nini_tui::state::RunMode::Running;
+        g.run_state.phase = "working".to_string();
+    }
 
-    // Render before any events arrive. The new 5-state status bar
-    // shows the spinner + 'working…' label when RunMode is Running.
+    // Render before any events arrive. The 5-state status bar
+    // shows the spinner + 'working…' label for the working phase.
     let frame_before = render(&shared.lock().unwrap().clone(), 80, 24);
     assert!(
         frame_before.contains("working") || frame_before.contains("running"),

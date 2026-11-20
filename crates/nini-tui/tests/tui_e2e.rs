@@ -562,6 +562,9 @@ fn narrow_terminal_handles_long_text() {
 fn running_mode_status_bar() {
     let mut state = AppState::new("test-model");
     state.run_state.mode = RunMode::Running;
+    // 存活指示器之后，相位来自 `run_state.phase`（`submit_user_input_inner`
+    // 写的就是它），不再由 `RunMode` 猜。
+    state.run_state.phase = "working".to_string();
     let frame = render_to_text(&state, 80, 24);
     // New 5-state status bar shows 'working…' label + spinner.
     assert!(
