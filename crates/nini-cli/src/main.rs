@@ -406,10 +406,16 @@ async fn main() -> Result<()> {
         let settings = nini_core::settings::load_settings(&cwd);
         nini_core::liveness::set_liveness_settings(settings.liveness_settings());
     }
-    // 阈值配错了当场说清楚：CLI 模式走 stderr，TUI 模式由 nini-tui
-    // 把同一份警告推进转录（见 nini-tui 的 AppState::with_settings）。
-    for warning in nini_core::liveness::liveness_warnings() {
-        eprintln!("nini: {warning}");
+    // 阈值配错了当场说清楚：**只有非 TUI 模式**走 stderr —— TUI 模式由
+    // nini-tui 把同一份警告推进转录（见 nini-tui 的 AppState::with_settings），
+    // 两边都打就是同一句话说两遍。
+    //
+    // 判据是「这一轮会不会开 TUI」：`--print` 与子命令都是一次性输出，
+    // 没有转录可写；其余走 TUI。
+    if args.print.is_some() || args.cmd.is_some() {
+        for warning in nini_core::liveness::liveness_warnings() {
+            eprintln!("nini: {warning}");
+        }
     }
     // Built before the destructure below: the config is a view of the
     // parsed flags, so it has to be taken while `args` is still whole.

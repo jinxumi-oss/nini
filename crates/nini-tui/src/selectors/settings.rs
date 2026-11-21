@@ -1,19 +1,55 @@
-//! SettingsSelector — pick a setting category to inspect (model / theme /
-//! thinking level).
+//! SettingsSelector — pick a setting category (model / theme / thinking /
+//! 存活阈值).
 //!
-//! The module doc used to say that selecting a category makes "the runtime
-//! open the corresponding sub-selector (ModelSelector / ThinkingSelector)
-//! afterwards". It does not: `apply_selector_result` has no route from a
-//! picked category to a sub-selector, and no `ThemeSelector` exists at
-//! all. What picking a category does today is nothing. That is recorded
-//! here rather than papered over, because the alternative - a comment
-//! promising a flow the code does not have - is how `/settings` came to
-//! look finished while being inert.
+//! 选一个分类**会**打开对应的子选择器（model → `ModelSelector`、theme →
+//! `ThemeSelector`、thinking → `ThinkingSelector`）：接线在 `runtime.rs`
+//! 的 `chained_selector` 里。
+//!
+//! 这个模块以前自承"选一个分类什么都不会发生"—— 那时候确实什么都不会
+//! 发生：既没有 `ThemeSelector`，也没有从分类到子选择器的接线。今天接线
+//! 补上了，只读行（存活阈值）没有子选择器可开，改为推一条 notice 告诉
+//! 用户去哪儿改 —— 一行死胡同比不说更糟。
 
 use std::any::Any;
 
 use crate::selector::{SelectorItem, SelectorOutcome, SelectorState};
 use crate::settings::SettingsManager;
+
+/// 存活阈值这一行的分类名。
+///
+/// 它是**只读**的：交互式数值编辑不在这一轮里，所以选中它只会得到一条
+/// "去 settings.json 改"的提示。
+pub const LIVENESS_CATEGORY: &str = "liveness";
+
+/// 存活阈值这一行的说明：当前生效的四个阈值 + 去哪儿改。
+///
+/// 阈值读的是**进程级生效值**（`nini_core::liveness::liveness_settings()`），
+/// 不是 settings.json 里的原始值 —— 0 会被清洗成默认值，进程里生效的
+/// 就是清洗后的那份。
+fn liveness_description() -> String {
+    let lv = nini_core::liveness::liveness_settings();
+    format!(
+        "provider 响应头 {}s • 流空闲 {}s • 等模型 {}s • 等工具 {}s（改 settings.json 的 liveness 段）",
+        lv.provider_response_secs,
+        lv.provider_stream_idle_secs,
+        lv.no_progress_model_secs,
+        lv.no_progress_tool_secs,
+    )
+}
+
+/// 选中一个**只读**分类时，告诉用户去哪儿改。
+///
+/// 只读的行（本轮只有"存活阈值"）没有子选择器可开 —— 交互式数值编辑不在
+/// 这一轮里。用户必须知道去哪儿改，否则这一行就是个死胡同。
+pub fn read_only_notice(category: &str) -> Option<String> {
+    match category {
+        LIVENESS_CATEGORY => Some(
+            "存活阈值改 settings.json 的 liveness 段（provider 响应头 / 流空闲 / 等模型 / 等工具，单位秒）"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SettingsSelector {
@@ -83,6 +119,15 @@ impl SettingsSelector {
                 description: Some(show(&snapshot.thinking).to_string()),
                 is_current: false,
             },
+            // 只读行：这一轮没有交互式数值编辑，选中它只会得到一条
+            // "去 settings.json 改"的提示。放在最后 —— 前面三行的位置
+            // 是 `picked_category(0..2)` 认的。
+            SelectorItem {
+                value: LIVENESS_CATEGORY.to_string(),
+                label: "存活阈值".to_string(),
+                description: Some(liveness_description()),
+                is_current: false,
+            },
         ];
         Self {
             result: None,
@@ -92,8 +137,8 @@ impl SettingsSelector {
         }
     }
 
-    /// Which category the user picked: `"model"`, `"theme"` or
-    /// `"thinking"`.
+    /// Which category the user picked: `"model"`, `"theme"`, `"thinking"`
+    /// or `"liveness"`（只读行）。
     ///
     /// This used to be
     ///
@@ -151,5 +196,50 @@ impl SelectorState for SettingsSelector {
             }
             None => SelectorOutcome::Cancelled,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `/settings` 里有一行"存活阈值"，描述里是**当前生效的**四个阈值。
+    #[test]
+    fn the_liveness_row_shows_the_four_thresholds() {
+        let sel = SettingsSelector::with_snapshot(SettingsSnapshot::default());
+        let items = sel.state_items();
+        let row = items
+            .iter()
+            .find(|i| i.value == LIVENESS_CATEGORY)
+            .expect("列表里没有存活阈值这一行");
+        assert_eq!(row.label, "存活阈值");
+
+        let desc = row.description.clone().unwrap_or_default();
+        let lv = nini_core::liveness::liveness_settings();
+        for (label, secs) in [
+            ("provider 响应头", lv.provider_response_secs),
+            ("流空闲", lv.provider_stream_idle_secs),
+            ("等模型", lv.no_progress_model_secs),
+            ("等工具", lv.no_progress_tool_secs),
+        ] {
+            assert!(
+                desc.contains(&format!("{label} {secs}s")),
+                "描述里没有 {label} {secs}s：{desc}"
+            );
+        }
+        assert!(
+            desc.contains("settings.json"),
+            "描述没告诉用户去哪儿改：{desc}"
+        );
+    }
+
+    /// 只读行没有子选择器可开 —— 至少要有一条 notice 告诉用户去哪儿改。
+    #[test]
+    fn the_read_only_row_says_where_to_change_it() {
+        let notice = read_only_notice(LIVENESS_CATEGORY).expect("存活阈值没有提示");
+        assert!(
+            notice.contains("liveness"),
+            "提示里没说 liveness 段：{notice}"
+        );
     }
 }

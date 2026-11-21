@@ -1010,6 +1010,18 @@ async fn run_tui_bootstrap(
             // `thinking_level`, which nothing wrote, so the status bar
             // started every session at "off" no matter what was saved.
             let saved = nini_core::settings::load_settings(&cwd);
+            // 设置**路径**与**快照**：/reload、/settings 的显示、主题持久化
+            // 三件事都依赖它们。
+            //
+            // 此前生产路径上 `settings_path` 恒为 None、快照永远是默认值：
+            // 于是 /reload 永远回答 "no settings file to reload"，/settings
+            // 显示的是编造值（model "(unset)"、theme "dark"），写进磁盘的
+            // 主题下次启动也不会保留。
+            if let Some(path) = nini_core::settings::user_settings_path() {
+                state.model_state.settings_path = Some(path.clone());
+                state.model_state.settings_snapshot =
+                    nini_tui::settings::SettingsManager::load_from_disk(path).get();
+            }
             if let Some(t) = saved.default_thinking_level.or(saved.thinking_level) {
                 state.model_state.thinking_level = Some(t);
             }

@@ -1574,21 +1574,25 @@ fn cmd_reload(state: &mut AppState, _settings: &mut SettingsManager, _args: &str
         nini_core::settings::load_settings(cwd.as_deref().unwrap_or(std::path::Path::new(".")))
             .liveness_settings();
     nini_core::liveness::set_liveness_settings(lv);
-    state.run_state.no_progress_model_secs = lv.no_progress_model_secs;
-    state.run_state.no_progress_tool_secs = lv.no_progress_tool_secs;
+    // 写进 RunState 的是**清洗后**的生效值（0 是非法值：0 会让无进展告警
+    // 立刻触发）。`set_liveness_settings` 内部已清洗，所以从全局读回来 ——
+    // 这也是 `/status` 显示的那个值，否则界面说 60s、界面却按 0s 跑。
+    let effective = nini_core::liveness::liveness_settings();
+    state.run_state.no_progress_model_secs = effective.no_progress_model_secs;
+    state.run_state.no_progress_tool_secs = effective.no_progress_tool_secs;
 
     // 只有真的变了才说变了：一个阈值没动，就不报它。
     let mut liveness_changed: Vec<String> = Vec::new();
-    if before_model_secs != lv.no_progress_model_secs {
+    if before_model_secs != effective.no_progress_model_secs {
         liveness_changed.push(format!(
             "模型 {before_model_secs}s → {}s",
-            lv.no_progress_model_secs
+            effective.no_progress_model_secs
         ));
     }
-    if before_tool_secs != lv.no_progress_tool_secs {
+    if before_tool_secs != effective.no_progress_tool_secs {
         liveness_changed.push(format!(
             "工具 {before_tool_secs}s → {}s",
-            lv.no_progress_tool_secs
+            effective.no_progress_tool_secs
         ));
     }
     if !liveness_changed.is_empty() {

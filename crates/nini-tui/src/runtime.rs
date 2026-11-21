@@ -1007,6 +1007,13 @@ async fn run_loop(
     // when a theme file changes, the watcher emits a `ThemeEvent` and we
     // reload from settings.
     let (_theme_name, mut theme) = startup_theme(&shared);
+    // 当前生效的主题是"配置里的哪个名字" —— 变了才重新解析（每帧重新解析
+    // 会把用户的 themes/<name>.json 读一遍）。
+    let mut applied_theme = lock_state(&shared)
+        .model_state
+        .settings_snapshot
+        .theme
+        .clone();
 
     // Spawn theme watcher (best-effort; falls back silently if dirs missing).
     let (theme_tx, mut theme_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1293,14 +1300,34 @@ async fn run_loop(
                             // Check if selector closed itself.
                             if selector_visible.is_empty() && selector_query.is_empty() {
                                 // Selector was confirmed or cancelled — apply result.
-                                let model_update = if let Some(s) = active_selector.take() {
-                                    apply_selector_result(s, &shared)
+                                //
+                                // `/settings` 选了一个分类 → 打开对应的子选择器
+                                // （以前这里什么都不发生）。接上了子选择器就**不**
+                                // 再走 apply_selector_result：那一段处理的是
+                                // "选完了"，不是"要去改哪一项"。
+                                let mut chained: Option<Box<dyn crate::selector::SelectorState + Send>> =
+                                    None;
+                                let model_update = if let Some(mut s) = active_selector.take() {
+                                    chained = chained_selector(&mut s, &shared);
+                                    if chained.is_some() {
+                                        None
+                                    } else {
+                                        apply_selector_result(s, &shared)
+                                    }
                                 } else {
                                     None
                                 };
+                                if let Some(sel) = chained {
+                                    // 装回去：用户接着选模型 / 主题 / 思考档位。
+                                    active_selector = Some(sel);
+                                    selector_query.clear();
+                                    selector_visible.clear();
+                                }
                                 if let Some(new_model) = model_update {
                                     lock_state(&shared).set_model(new_model);
                                 }
+                                // 主题改了之后，渲染要立刻用上新的那份。
+                                refresh_theme(&shared, &mut theme, &mut applied_theme);
                                 // Selector closed: reset any residual
                                 // open_selector:* flag so the status bar
                                 // doesn't display stale 'switch model…'
@@ -1724,6 +1751,84 @@ fn persist_thinking_level(path: Option<&std::path::Path>, level: &str) -> Option
     None
 }
 
+/// `/settings` 里选中的分类 → 该打开的子选择器。
+///
+/// `/settings` 以前是惰性的：选一个分类什么都不会发生（模块 doc 自己
+/// 写着 "picking a category does nothing"）。这个函数把"分类"接到真正
+/// 的选择器上：
+///
+/// * `model` → [`crate::selectors::ModelSelector`]（目录 = 内置模型 +
+///   用户自己 `models.json` 里声明的模型）
+/// * `thinking` → [`crate::selectors::ThinkingSelector`]
+/// * `theme` → [`crate::selectors::ThemeSelector`]
+///
+/// 返回 `None` 表示"这个分类没有子选择器"（只读行，比如存活阈值）——
+/// 那时由 `apply_selector_result` 推一条 notice，告诉用户去哪儿改。
+///
+/// 只有用户**真的选了**一行时才接上：取消（Esc）时 `result` 是 None，
+/// 不能因为光标停在某一行就替用户打开一个选择器。
+pub fn chained_selector(
+    selector: &mut Box<dyn crate::selector::SelectorState + Send>,
+    shared: &SharedState,
+) -> Option<Box<dyn crate::selector::SelectorState + Send>> {
+    use crate::selectors::model::ModelSelector;
+    use crate::selectors::settings::SettingsSelector;
+    use crate::selectors::theme::ThemeSelector;
+    use crate::selectors::thinking::ThinkingSelector;
+
+    let settings_sel = selector
+        .state_as_any_mut()
+        .downcast_mut::<SettingsSelector>()?;
+    // `result` 是"用户选了哪一行"（取消时是 None）。
+    let picked = settings_sel.result.clone()?;
+    match picked.as_str() {
+        "model" => {
+            // 和 `/model` 用同一份目录：内置模型 + 用户自己 models.json 里
+            // 声明的模型 —— 用户网关上的那个模型通常不在内置目录里。
+            let current_model = lock_state(shared).model_state.model.clone();
+            let mut specs = nini_core::model_runtime::ModelRuntime::with_defaults().list();
+            specs.extend(lock_state(shared).model_state.user_models.clone());
+            Some(Box::new(ModelSelector::from_specs(
+                specs,
+                Some(&current_model),
+            )))
+        }
+        "thinking" => {
+            let current = lock_state(shared).model_state.thinking_level.clone();
+            Some(Box::new(ThinkingSelector::new(current.as_deref())))
+        }
+        "theme" => {
+            // 当前生效的主题 = runtime 读的那份快照（不是文件里的值 ——
+            // 文件里的值在启动时并没有被读进快照）。
+            let current = lock_state(shared)
+                .model_state
+                .settings_snapshot
+                .theme
+                .clone();
+            Some(Box::new(ThemeSelector::new(Some(&current))))
+        }
+        _ => None,
+    }
+}
+
+/// 主题改了之后，让渲染立刻用上新的那份。
+///
+/// 渲染用的是启动时解析出来的 `theme`（每帧重新解析会把用户的
+/// `themes/<name>.json` 读一遍），所以改了主题必须显式把它换掉 ——
+/// 否则屏幕上的颜色不变，而状态栏已经报了一个新名字。
+fn refresh_theme(shared: &SharedState, theme: &mut crate::theme::Theme, applied: &mut String) {
+    let configured = lock_state(shared)
+        .model_state
+        .settings_snapshot
+        .theme
+        .clone();
+    if configured == *applied {
+        return;
+    }
+    *applied = configured.clone();
+    *theme = crate::theme::Theme::resolve(&configured);
+}
+
 fn apply_selector_result(
     mut selector: Box<dyn crate::selector::SelectorState + Send>,
     shared: &SharedState,
@@ -1733,6 +1838,7 @@ fn apply_selector_result(
     use crate::selectors::model::ModelSelector;
     use crate::selectors::session::SessionSelector;
     use crate::selectors::settings::SettingsSelector;
+    use crate::selectors::theme::ThemeSelector;
     use crate::selectors::thinking::ThinkingSelector;
     use crate::selectors::tree::TreeSelector;
     use crate::selectors::trust::TrustSelector;
@@ -1741,8 +1847,32 @@ fn apply_selector_result(
     if let Some(model_sel) = selector.state_as_any_mut().downcast_mut::<ModelSelector>() {
         let model = model_sel.result.clone();
         if let Some(m) = &model {
-            let mut settings = SettingsManager::default();
-            settings.set_default_model(m.clone());
+            // 写盘：此前这里建了一个 `SettingsManager::default()`、把模型写进
+            // 它、然后丢掉 —— 什么都没写。用户选完模型重启就没了。
+            //
+            // 现在用**真实的 settings 文件**（`settings_path` 由 nini-cli 在
+            // 启动时给出）：读进来 → 改 → flush（merge 式，用户自己写的其它
+            // 键保留）。
+            let path = lock_state(shared).model_state.settings_path.clone();
+            match path {
+                Some(p) => {
+                    let mut settings = SettingsManager::load_from_disk(p);
+                    settings.set_default_model(m.clone());
+                    if let Err(e) = settings.flush() {
+                        push_notice(
+                            shared,
+                            format!("could not write the model to settings.json: {e}"),
+                        );
+                    }
+                }
+                None => {
+                    push_notice(
+                        shared,
+                        "no settings file to write the model into — it applies to this \
+                         session only",
+                    );
+                }
+            }
         }
         return model;
     }
@@ -1760,6 +1890,21 @@ fn apply_selector_result(
                 push_notice(shared, msg);
             }
             lock_state(shared).model_state.thinking_level = Some(level.clone());
+        }
+        return None;
+    }
+    if let Some(theme_sel) = selector.state_as_any_mut().downcast_mut::<ThemeSelector>() {
+        if let Some(name) = theme_sel.result.clone() {
+            // 写盘（merge 式，只改 theme 这一个键）。失败要说出来：主题
+            // 没存住 = 下次启动又变回去，而用户以为它存住了。
+            if let Some(err) = theme_sel.persist() {
+                push_notice(shared, err);
+            }
+            // 立刻生效：runtime 读的是 settings_snapshot.theme（渲染用的
+            // 那份 theme 由 `refresh_theme` 跟着换）。
+            let mut g = lock_state(shared);
+            g.model_state.settings_snapshot.theme = name.clone();
+            g.ui_state.theme_name = Some(name.clone());
         }
         return None;
     }
@@ -1861,12 +2006,14 @@ fn apply_selector_result(
         // picking "theme" or "thinking" returned the model name and this
         // function reported a model change that had not happened.
         //
-        // What it returns now is the category the user picked. No
-        // sub-selector is opened yet - see the module doc in
-        // `selectors/settings.rs` - so nothing else changes.
-        let _picked = settings_sel
-            .picked_category(settings_sel.selected)
-            .map(str::to_string);
+        // 走到这里 = 这个分类**没有**子选择器（有子选择器的分类在选择器
+        // 关闭时就被 `chained_selector` 接走了，不会走到这一段）。所以这里
+        // 要告诉用户去哪儿改 —— 一行死胡同比不说更糟。
+        if let Some(category) = settings_sel.result.clone() {
+            if let Some(msg) = crate::selectors::settings::read_only_notice(&category) {
+                push_notice(shared, msg);
+            }
+        }
         None
     } else if let Some(palette) = selector
         .state_as_any_mut()
@@ -3964,6 +4111,38 @@ pub fn submit_user_input_inner(
     explicit_text: Option<String>,
     kind: QueueKind,
 ) {
+    // 阈值热生效：每轮开始重读一次 settings.json 的 liveness 段。
+    //
+    // 用户改了文件不必重启 nini —— `/reload` 之外再给一条自动路径。
+    //
+    // 两个约束：
+    // * 只在**确实有 settings 文件**时才重读：`load_settings` 在文件缺失时
+    //   返回全默认，照搬会把用户已配的阈值抹成默认。
+    // * 只在读到的值与当前生效值**不同**时才写回：否则每次提交都在改
+    //   进程全局（同进程里的其它读者会看到一次无意义的写）。
+    //
+    // 读在锁外：settings.json 很小，但持锁做文件 IO 会把整个 TUI 卡住。
+    let liveness = {
+        let cwd = lock_state(&shared)
+            .session_state
+            .cwd
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let user_exists = nini_core::settings::user_settings_path()
+            .as_deref()
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        let project_exists = nini_core::settings::project_settings_path(&cwd)
+            .as_deref()
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        if user_exists || project_exists {
+            Some(nini_core::settings::load_settings(&cwd).liveness_settings())
+        } else {
+            None
+        }
+    };
+
     let (text, seq) = {
         let mut g = lock_state(&shared);
         // v0.10.8 (P2/A1): the guard against a second agent is
@@ -4360,6 +4539,26 @@ pub fn submit_user_input_inner(
         // 原来的 `status = "running..."` 被这几行取代：相位不再占用 `status`
         // 槽（`status` 从此只装瞬时消息），而「本轮开始时刻」和「上次活动
         // 时刻」必须有确切起点，否则活动指示器算不出已跑秒数。
+        // 阈值热生效：写进 RunState 的必须是**清洗后**的生效值。
+        //
+        // 不能直接写 `lv`：`lv` 是文件里的原始值，而 0 是非法值
+        // （0 会让无进展告警立刻触发）。`set_liveness_settings` 内部已经
+        // 清洗过，所以生效值要从全局读回来 —— 这也是 `/status` 显示的那个值
+        // （否则界面说 60s、界面却按 0s 跑，自相矛盾）。
+        if let Some(lv) = liveness {
+            let before = nini_core::liveness::liveness_warnings();
+            nini_core::liveness::set_liveness_settings(lv);
+            let effective = nini_core::liveness::liveness_settings();
+            g.run_state.no_progress_model_secs = effective.no_progress_model_secs;
+            g.run_state.no_progress_tool_secs = effective.no_progress_tool_secs;
+            // 配置改了，校验警告也可能跟着变了 —— 但只说**新增**的那些：
+            // 每轮都把同一句警告再推一遍，转录会被刷屏。
+            for warning in nini_core::liveness::liveness_warnings() {
+                if !before.contains(&warning) {
+                    g.push_notice(warning);
+                }
+            }
+        }
         g.run_state.phase = "working".to_string();
         g.run_state.run_started_at = std::time::Instant::now();
         g.run_state.last_event_at = std::time::Instant::now();
@@ -6144,5 +6343,104 @@ mod fine_scroll_tests {
         let mut state = state_with_lines(20, 1);
         super::apply_action(&mut state, alt(KeyCode::PageUp));
         assert_eq!(offset(&state), 1, "never a dead key");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `/settings` 的链式子选择器。
+//
+// `/settings` 以前是惰性的：选一个分类什么都不会发生。这几条钉住"选一个
+// 分类 → 打开对应的子选择器"这条接线 —— 它是 `/settings` 从"看着做完的"
+// 变成"能用的"的那一步。
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod settings_chain_tests {
+    use super::*;
+    use crate::selector::SelectorState;
+    use crate::selectors::model::ModelSelector;
+    use crate::selectors::settings::SettingsSelector;
+    use crate::selectors::theme::ThemeSelector;
+    use crate::selectors::thinking::ThinkingSelector;
+    use crate::settings::SettingsManager;
+
+    /// 一个 `/settings` 选择器，光标停在第 `row` 行，并且**已经选了**它。
+    fn settings_picked(row: usize) -> Box<dyn SelectorState + Send> {
+        let mut sel: Box<dyn SelectorState + Send> =
+            Box::new(SettingsSelector::new(SettingsManager::default()));
+        sel.state_set_selected(row);
+        sel.state_on_select();
+        sel
+    }
+
+    /// 选 model → 接上的是模型选择器。
+    #[test]
+    fn picking_model_opens_the_model_selector() {
+        let shared = shared_state(AppState::new("test-model"));
+        let mut sel = settings_picked(0);
+        let mut chained = chained_selector(&mut sel, &shared).expect("model 没有接上子选择器");
+        assert!(
+            chained
+                .as_any_mut()
+                .downcast_mut::<ModelSelector>()
+                .is_some(),
+            "接上的不是模型选择器"
+        );
+    }
+
+    /// 选 theme → 接上的是主题选择器。
+    #[test]
+    fn picking_theme_opens_the_theme_selector() {
+        let shared = shared_state(AppState::new("test-model"));
+        let mut sel = settings_picked(1);
+        let mut chained = chained_selector(&mut sel, &shared).expect("theme 没有接上子选择器");
+        assert!(
+            chained
+                .as_any_mut()
+                .downcast_mut::<ThemeSelector>()
+                .is_some(),
+            "接上的不是主题选择器"
+        );
+    }
+
+    /// 选 thinking → 接上的是思考档位选择器。
+    #[test]
+    fn picking_thinking_opens_the_thinking_selector() {
+        let shared = shared_state(AppState::new("test-model"));
+        let mut sel = settings_picked(2);
+        let mut chained = chained_selector(&mut sel, &shared).expect("thinking 没有接上子选择器");
+        assert!(
+            chained
+                .as_any_mut()
+                .downcast_mut::<ThinkingSelector>()
+                .is_some(),
+            "接上的不是思考档位选择器"
+        );
+    }
+
+    /// 只读行（存活阈值）没有子选择器 —— 那条路走的是 notice。
+    #[test]
+    fn the_read_only_row_opens_no_sub_selector() {
+        let shared = shared_state(AppState::new("test-model"));
+        let mut sel = settings_picked(3);
+        assert!(
+            chained_selector(&mut sel, &shared).is_none(),
+            "只读行不该接上子选择器"
+        );
+        assert!(crate::selectors::settings::read_only_notice("liveness").is_some());
+    }
+
+    /// 取消（Esc）时 `result` 是 None —— 不能因为光标停在某一行就替用户
+    /// 打开一个选择器。
+    #[test]
+    fn cancelling_opens_no_sub_selector() {
+        let shared = shared_state(AppState::new("test-model"));
+        let mut sel: Box<dyn SelectorState + Send> =
+            Box::new(SettingsSelector::new(SettingsManager::default()));
+        sel.state_set_selected(0);
+        assert!(
+            chained_selector(&mut sel, &shared).is_none(),
+            "取消却打开了一个选择器"
+        );
     }
 }
