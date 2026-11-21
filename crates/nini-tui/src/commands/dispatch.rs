@@ -1701,7 +1701,25 @@ fn cmd_debug(state: &mut AppState, _settings: &mut SettingsManager, _args: &str)
 fn cmd_status(state: &mut AppState, _settings: &mut SettingsManager, _args: &str) -> CommandResult {
     // Render a one-shot status block into the transcript. Matches
     // Pi's `/status` semantics: a snapshot, not a live view.
-    let lines = build_status_lines(state);
+    let mut lines = build_status_lines(state);
+    // 存活阈值：显示的是**进程当前生效值**，不是 settings.json 里写的值 ——
+    // 非法值（例如 0）已经被 nini-core 换成默认值，用户看到的必须是真的在跑的值。
+    let lv = nini_core::liveness::liveness_settings();
+    lines.push("存活阈值:".to_string());
+    lines.push(format!(
+        "  provider 响应头超时: {}s",
+        lv.provider_response_secs
+    ));
+    lines.push(format!(
+        "  provider 流空闲超时: {}s",
+        lv.provider_stream_idle_secs
+    ));
+    lines.push(format!("  等模型无进展: {}s", lv.no_progress_model_secs));
+    lines.push(format!("  等工具无进展: {}s", lv.no_progress_tool_secs));
+    // 阈值配错了要**当场**说清楚，而不是等它咬人。
+    for warning in nini_core::liveness::liveness_warnings() {
+        lines.push(format!("⚠ {warning}"));
+    }
     CommandResult::output(lines)
 }
 
@@ -2162,6 +2180,9 @@ mod honesty_tests {
     /// `~/.nini/agent/settings.json`）。
     #[test]
     fn a_reload_applies_the_new_liveness_thresholds() {
+        // 进程级全局：一把锁把改它的测试串起来（cargo 并行跑测试，
+        // 两个测试各改各的全局会互相踩）。
+        let _guard = LIVENESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let nini_dir = tmp.path().join(".nini");
         std::fs::create_dir_all(&nini_dir).unwrap();
@@ -2202,6 +2223,75 @@ mod honesty_tests {
                     blob.contains("存活阈值"),
                     "/reload 必须说出阈值变了多少: {blob}"
                 );
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // /status：存活阈值必须看得见
+    // ----------------------------------------------------------------
+
+    /// 进程级全局（存活阈值）的锁：见上面 `/reload` 那个测试的说明。
+    static LIVENESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// `/status` 必须列出**当前生效**的四个阈值。
+    ///
+    /// 缺口：阈值能配了，但配成多少**无处可查** —— 用户改完 settings.json
+    /// 只能靠猜。这里显示的是进程当前生效值（非法值已被 nini-core 换掉），
+    /// 所以看到的数字就是真的在跑的数字。
+    ///
+    /// 用一组**非默认**的阈值：默认值也能靠硬编码蒙混过关，只有非默认值
+    /// 才能证明这一段读的是进程全局。
+    #[test]
+    fn the_status_shows_the_liveness_thresholds_in_effect() {
+        let _guard = LIVENESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // 进程全局的存活阈值：先摆成上面那组，测完摆回去（全局是进程级的）。
+        let saved = nini_core::liveness::liveness_settings();
+        nini_core::liveness::set_liveness_settings(nini_core::liveness::LivenessSettings {
+            provider_response_secs: 61,
+            provider_stream_idle_secs: 121,
+            no_progress_model_secs: 62,
+            // 小于 bash 的 120s 超时 → nini-core 的校验会给出警告（若有）。
+            no_progress_tool_secs: 30,
+        });
+
+        let mut state = AppState::new("test-model");
+        let mut settings = SettingsManager::default();
+        let r = dispatch(&mut state, &mut settings, CommandId::Status, "");
+
+        let warnings = nini_core::liveness::liveness_warnings();
+        nini_core::liveness::set_liveness_settings(saved);
+
+        match r.outcome {
+            crate::commands::CommandOutcome::Output(lines) => {
+                let blob = lines.join("\n");
+                assert!(
+                    blob.contains("存活阈值"),
+                    "/status 必须列出存活阈值: {blob}"
+                );
+                for (key, secs) in [
+                    ("provider 响应头超时", 61),
+                    ("provider 流空闲超时", 121),
+                    ("等模型无进展", 62),
+                    ("等工具无进展", 30),
+                ] {
+                    let want = format!("{key}: {secs}s");
+                    assert!(
+                        blob.contains(&want),
+                        "/status 必须显示生效的阈值 {want:?}: {blob}"
+                    );
+                }
+                // 校验警告（若有）必须逐条以 "⚠ " 出现在阈值段后面。
+                // 警告文本由 nini-core 决定，这里只保证"一条都不漏"。
+                for warning in &warnings {
+                    let want = format!("⚠ {warning}");
+                    assert!(
+                        blob.contains(&want),
+                        "/status 必须显示校验警告 {want:?}: {blob}"
+                    );
+                }
             }
             other => panic!("expected Output, got {other:?}"),
         }

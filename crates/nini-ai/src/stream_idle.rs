@@ -33,6 +33,15 @@ pub fn idle_timeout() -> Duration {
     Duration::from_secs(nini_core::liveness::liveness_settings().provider_stream_idle_secs)
 }
 
+/// 当前进程生效的**等响应头**超时（`send()` 那一步）。
+///
+/// 与 [`idle_timeout`] 分开：响应头应该在很快内到达，而流里的 chunk
+/// 间隔可以长得多（模型在思考）。两者共用一个值，会让"首响应慢"的
+/// 场景要么等太久、要么误杀健康的长流。
+pub fn response_timeout() -> Duration {
+    Duration::from_secs(nini_core::liveness::liveness_settings().provider_response_secs)
+}
+
 /// 从 provider 的字节流里读下一个 chunk。
 ///
 /// * 有数据 → `Ok(Some(chunk))`
@@ -56,6 +65,9 @@ where
 }
 
 /// 发请求并等待响应头；超过 `idle` 仍没有响应头就判定上游挂死。
+///
+/// 调用方传的是 [`response_timeout`]（等响应头），不是 [`idle_timeout`]
+/// （chunk 之间）。
 ///
 /// 为什么需要它：reqwest 的 `send()` 等的是**响应头**。上游连上但不回
 /// 响应头时（连接已建立、请求已发出、服务端不吭声），`send()` 会永远
@@ -87,6 +99,10 @@ mod tests {
 
     /// chunk 类型：单测里用 `Vec<u8>` 代替 reqwest 的 `Bytes`（泛型签名不挑字节类型）。
     type TestChunk = Vec<u8>;
+
+    /// 进程级阈值是**全局**的：并行测试同时改它会互相干扰。
+    /// 这把锁把"改全局 → 读 → 还原"这段串行化。
+    static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// 造一个只吐 chunk、从不报错的流。
     fn chunk_stream(
@@ -296,6 +312,7 @@ mod tests {
     /// 测完把全局改回原值（并行测试共享同一份进程级状态）。
     #[test]
     fn the_idle_timeout_follows_the_process_wide_settings() {
+        let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let original = nini_core::liveness::liveness_settings();
         nini_core::liveness::set_liveness_settings(nini_core::liveness::LivenessSettings {
             provider_stream_idle_secs: 7,
@@ -308,6 +325,36 @@ mod tests {
         nini_core::liveness::set_liveness_settings(original);
 
         assert_eq!(timeout, Duration::from_secs(7));
+    }
+
+    /// 两个阈值**各读各的**：等响应头与流空闲不能串。
+    ///
+    /// 测完把全局改回默认（并行测试共享同一份进程级状态）。
+    #[test]
+    fn the_response_timeout_is_separate_from_the_idle_timeout() {
+        let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        nini_core::liveness::set_liveness_settings(nini_core::liveness::LivenessSettings {
+            provider_stream_idle_secs: 7,
+            provider_response_secs: 29,
+            ..nini_core::liveness::LivenessSettings::default()
+        });
+
+        let idle = idle_timeout();
+        let response = response_timeout();
+
+        // 先恢复全局再断言：断言失败也不会污染同 crate 的其它测试。
+        nini_core::liveness::set_liveness_settings(nini_core::liveness::LivenessSettings::default());
+
+        assert_eq!(
+            idle,
+            Duration::from_secs(7),
+            "the stream idle timeout must come from provider_stream_idle_secs"
+        );
+        assert_eq!(
+            response,
+            Duration::from_secs(29),
+            "the response timeout must come from provider_response_secs, not from the idle one"
+        );
     }
 
     /// 正常回响应头 → `Ok(response)`，不误报。

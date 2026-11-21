@@ -2275,6 +2275,11 @@ impl AppState {
         let lv = nini_core::liveness::liveness_settings();
         s.run_state.no_progress_model_secs = lv.no_progress_model_secs;
         s.run_state.no_progress_tool_secs = lv.no_progress_tool_secs;
+        // 阈值配错了要**当场**说清楚，而不是等它咬人。
+        // 警告来自 nini-core 的校验（进程级），这里逐条推进转录。
+        for warning in nini_core::liveness::liveness_warnings() {
+            s.push_notice(warning);
+        }
         s
     }
 

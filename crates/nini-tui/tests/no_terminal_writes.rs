@@ -147,12 +147,17 @@ const STDERR_WHITELIST: &[(&str, usize, &str)] = &[
     ),
     (
         "crates/nini-cli/src/main.rs",
-        3,
+        4,
         "the refused-flag messages: printed before the TUI starts, and \
          they are the reason the user is told. The third one is Pi's \
          `Warning: errors loading models.json:` — it says which of the \
          user's own provider entries cannot be used, and `--list-models` \
-         is a one-shot command that never opens a TUI",
+         is a one-shot command that never opens a TUI. The fourth one \
+         is the liveness-threshold validation warning (`nini: …`): a \
+         threshold the user wrote that would bite them (zero seconds, or \
+         a tool threshold shorter than bash's 120 s default) has to be \
+         said out loud before it starts misreporting a healthy build as \
+         'stuck'",
     ),
     (
         "crates/nini-cli/src/demo.rs",

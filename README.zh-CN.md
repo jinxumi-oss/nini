@@ -270,9 +270,14 @@ nini 读写与 Pi v0.85.1 完全相同的文件格式：
 nini 的 snake_case 都认。
 
 `settings.json` 的 `liveness` 段控制存活指示器的时间阈值：
+`provider_response_secs`（默认 60，等响应头的上限——请求已发出、服务器迟迟不回
+响应头时的上限；与「流空闲」分开）、
 `provider_stream_idle_secs`（默认 120，provider 流多久没数据算挂死）、
 `no_progress_model_secs`（默认 60，等模型时多久没动静算"无进展"）、
-`no_progress_tool_secs`（默认 180，等工具时的同一阈值；必须大于第一个）。
+`no_progress_tool_secs`（默认 180，等工具时的同一阈值；必须大于
+`provider_stream_idle_secs`）。
+校验规则：`no_progress_tool_secs` 必须不小于 120（bash 的默认超时），否则正常的
+`cargo test` 会被误报成"卡住了"；任何一个阈值写 0 会被换回默认值。
 
 你可以在一个终端跑 `nini -p`、另一个终端跑 `pi`——两边写的是同一种
 session JSONL。

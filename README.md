@@ -322,12 +322,18 @@ with every attempt); Pi's camelCase spelling and nini's snake_case are both
 read.
 
 The `liveness` section of `settings.json` controls the time thresholds of the
-liveness indicator: `provider_stream_idle_secs` (default 120, how long the
+liveness indicator: `provider_response_secs` (default 60, the upper bound on
+waiting for the response headers — the request has been sent but the server
+has not replied with headers yet; separate from the stream idle timeout),
+`provider_stream_idle_secs` (default 120, how long the
 provider stream may go without data before it counts as hung),
 `no_progress_model_secs` (default 60, how long waiting for the model may go
 without any activity before it counts as "no progress"), and
 `no_progress_tool_secs` (default 180, the same threshold while waiting for a
-tool; it must be greater than the first one).
+tool; it must be greater than `provider_stream_idle_secs`).
+Validation: `no_progress_tool_secs` must be at least 120 (bash's default
+timeout), otherwise a normal `cargo test` gets misreported as "stuck"; any
+threshold set to 0 is replaced by its default.
 
 You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.

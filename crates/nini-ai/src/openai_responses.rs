@@ -118,7 +118,7 @@ impl Provider for OpenAiResponsesProvider {
             let headers = overrides.resolve(&req.model, &defaults);
             let mut response = crate::stream_idle::send_with_idle_timeout(
                 crate::provider_overrides::apply_headers(client.post(&url), &headers).body(body),
-                crate::stream_idle::idle_timeout(),
+                crate::stream_idle::response_timeout(),
             )
             .await?;
 

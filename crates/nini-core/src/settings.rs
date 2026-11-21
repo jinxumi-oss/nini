@@ -1462,12 +1462,31 @@ mod tests {
     #[test]
     fn the_camel_case_aliases_of_the_liveness_keys_are_read() {
         let parsed: Settings = serde_json::from_str(
-            r#"{"liveness": {"providerStreamIdleSecs": 30, "noProgressModelSecs": 40, "noProgressToolSecs": 50}}"#,
+            r#"{"liveness": {"providerStreamIdleSecs": 30, "noProgressModelSecs": 40, "noProgressToolSecs": 50, "providerResponseSecs": 70}}"#,
         )
         .expect("parses");
         let lv = parsed.liveness_settings();
         assert_eq!(lv.provider_stream_idle_secs, 30);
         assert_eq!(lv.no_progress_model_secs, 40);
         assert_eq!(lv.no_progress_tool_secs, 50);
+        assert_eq!(lv.provider_response_secs, 70);
+    }
+
+    /// **旧**配置文件（只有三个键）→ 新的 `provider_response_secs` 取
+    /// 默认 60。
+    ///
+    /// 第四个阈值是后加的：用户升级之前的 settings.json 里没有这个键，
+    /// 它必须落回默认值，而不是 0（0 = 立刻判挂死）。
+    #[test]
+    fn an_old_liveness_section_without_the_response_key_keeps_the_default() {
+        let parsed: Settings = serde_json::from_str(
+            r#"{"liveness": {"provider_stream_idle_secs": 30, "no_progress_model_secs": 40, "no_progress_tool_secs": 50}}"#,
+        )
+        .expect("parses");
+        let lv = parsed.liveness_settings();
+        assert_eq!(
+            lv.provider_response_secs, 60,
+            "a settings file without the new key must fall back to the default"
+        );
     }
 }

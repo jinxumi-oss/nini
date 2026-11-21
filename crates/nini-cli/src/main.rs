@@ -406,6 +406,11 @@ async fn main() -> Result<()> {
         let settings = nini_core::settings::load_settings(&cwd);
         nini_core::liveness::set_liveness_settings(settings.liveness_settings());
     }
+    // 阈值配错了当场说清楚：CLI 模式走 stderr，TUI 模式由 nini-tui
+    // 把同一份警告推进转录（见 nini-tui 的 AppState::with_settings）。
+    for warning in nini_core::liveness::liveness_warnings() {
+        eprintln!("nini: {warning}");
+    }
     // Built before the destructure below: the config is a view of the
     // parsed flags, so it has to be taken while `args` is still whole.
     let cli_cfg = app_config_from_args(&args);
