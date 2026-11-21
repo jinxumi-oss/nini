@@ -1736,6 +1736,13 @@ pub struct PendingToolCall {
 pub struct PendingAssistant {
     pub text: String,
     pub tool_calls: Vec<PendingToolCall>,
+    /// 这一轮里出现过**文本式**工具调用（模型把调用写进了正文）。
+    ///
+    /// 这种情况下正文里会留着一串 `<function=…><parameter=…>` 标记。那是
+    /// 工具调用、不是正文：落进会话后，`/resume` 会把它带回模型上下文，模型
+    /// 于是照着它再写一遍（活着的会话里模型上下文已经没有它了，落盘的那份
+    /// 却有——同一段对话，两份历史）。
+    pub text_tool_call: bool,
 }
 
 // =================================================================
@@ -2384,6 +2391,9 @@ impl AppState {
             .session_state
             .pending_assistant
             .get_or_insert_with(PendingAssistant::default);
+        if id.starts_with(nini_core::text_tool_call::TEXT_TOOL_CALL_ID_PREFIX) {
+            p.text_tool_call = true;
+        }
         if !p.tool_calls.iter().any(|c| c.id == id) {
             p.tool_calls.push(PendingToolCall {
                 id: id.to_string(),
@@ -2431,7 +2441,19 @@ impl AppState {
 
         let mut content: Vec<nini_core::entries::ContentBlock> = Vec::new();
         if !pending.text.is_empty() {
-            content.push(nini_core::entries::ContentBlock::Text { text: pending.text });
+            // 文本式工具调用的标记不落库：它是工具调用，工具调用本身已经
+            // 在下面按结构化形式记下来了（tool_use + tool_result 配对）。
+            let text = if pending.text_tool_call {
+                let parsed = nini_core::text_tool_call::parse_text_tool_calls(&pending.text);
+                let spans: Vec<std::ops::Range<usize>> =
+                    parsed.iter().map(|c| c.span.clone()).collect();
+                nini_core::text_tool_call::strip_text_tool_calls(&pending.text, &spans)
+            } else {
+                pending.text.clone()
+            };
+            if !text.trim().is_empty() {
+                content.push(nini_core::entries::ContentBlock::Text { text });
+            }
         }
         for call in &pending.tool_calls {
             let args = call.args.clone().unwrap_or_default();

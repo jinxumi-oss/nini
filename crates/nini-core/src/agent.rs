@@ -2841,6 +2841,81 @@ impl Agent {
                     tool_calls.push(c);
                 }
 
+                // ── 文本式工具调用的兜底 ───────────────────────────────────
+                //
+                // provider 侧的模型（Qwen / MiniMax / 讯飞星辰这一族）会**随机**
+                // 把工具调用写进正文，而不是放进结构化的 `tool_calls` 字段：
+                //
+                //     <function=bash>
+                //     <parameter=command>cargo test</parameter>
+                //     </function>
+                //
+                // 同一个请求反复发，模型会在两种形态之间摇摆（实测约一半概率走
+                // 正文）。nini 此前把这段正文当散文：工具不执行、模型等一个永远
+                // 不会来的 `tool_result`、于是反复重发同一条命令 —— 用户看到的是
+                // 「完全没动静」（静默中断）。
+                //
+                // 证据：会话 `~/.nini/agent/sessions/nini/20261119-181606_13b7f0639.jsonl`
+                // 第 231-241 条（助手消息里只有这段文本，没有结构化 toolCall 块）。
+                //
+                // 这里把它还原成真正的工具调用：**只认已注册的工具**（正文里提到
+                // 一个不存在的工具名不执行），执行的事件序列与结构化调用完全一致
+                // （TUI 转录、session 的 tool_use/tool_result 配对都靠它）。
+                if tool_calls.is_empty() {
+                    let parsed = crate::text_tool_call::parse_text_tool_calls(&assistant_text);
+                    let mut spans = Vec::new();
+                    let mut synthesized = Vec::new();
+                    for (i, tc) in parsed.iter().enumerate() {
+                        if tool_registry.get(&tc.name).is_none() {
+                            // 不是注册过的工具 → 不执行（正文里提到一个工具名，
+                            // 不等于用户授权调用它）。
+                            continue;
+                        }
+                        spans.push(tc.span.clone());
+                        synthesized.push(PendingToolCall {
+                            id: format!(
+                                "{}{}",
+                                crate::text_tool_call::TEXT_TOOL_CALL_ID_PREFIX,
+                                i
+                            ),
+                            name: tc.name.clone(),
+                            input_json: serde_json::to_string(&tc.args)
+                                .unwrap_or_else(|_| "{}".to_string()),
+                        });
+                    }
+                    if !synthesized.is_empty() {
+                        for tc in &synthesized {
+                            yield AgentEvent::ToolCallStart {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                            };
+                            yield AgentEvent::ToolCallStop {
+                                id: tc.id.clone(),
+                                input_json: serde_json::from_str(&tc.input_json)
+                                    .unwrap_or(serde_json::Value::Null),
+                            };
+                        }
+                        tool_calls.extend(synthesized);
+                        // 标记是工具调用、不是正文：留在正文里，模型下一轮会
+                        // 照着它再写一遍。
+                        assistant_text =
+                            crate::text_tool_call::strip_text_tool_calls(&assistant_text, &spans);
+                    } else if crate::text_tool_call::has_tool_call_marker(&assistant_text) {
+                        // 有标记但认不出来 → **说出来**。此前这里是彻底静默的：
+                        // 模型等一个永远不会来的结果，用户只看到「没动静」。
+                        yield AgentEvent::Error {
+                            message: format!(
+                                "the model wrote a tool call as plain text \
+                                 (not executed): {}",
+                                crate::text_tool_call::strip_text_tool_calls(
+                                    &assistant_text,
+                                    &parsed.iter().map(|c| c.span.clone()).collect::<Vec<_>>(),
+                                )
+                            ),
+                        };
+                    }
+                }
+
                 // Append assistant message to history.
                 let mut assistant_content = Vec::new();
                 if !assistant_text.is_empty() {

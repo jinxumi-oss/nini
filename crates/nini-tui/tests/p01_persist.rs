@@ -345,3 +345,71 @@ async fn the_persisted_turn_survives_a_restart() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 文本式工具调用（模型把调用写进正文）在会话里的形状。
+///
+/// 模型有时会把工具调用写成正文里的标记，而不是结构化字段。这一轮里，标记
+/// **不落库**：它是工具调用（下面按结构化形式记着），不是正文。留着它，
+/// `/resume` 会把它带回模型上下文，模型于是照着它再写一遍。
+#[tokio::test]
+async fn a_text_mode_tool_call_is_persisted_as_a_call_not_as_prose() {
+    let (state, sink, dir) = new_state("textmode");
+    state.lock().unwrap().push_user("run the command");
+
+    drain(
+        &sink,
+        &state,
+        vec![
+            AgentEventLite::TextDelta("修复已应用。\n".into()),
+            AgentEventLite::TextDelta(
+                "<function=bash>\n<parameter=command>cargo test</parameter>\n</function>".into(),
+            ),
+            AgentEventLite::ToolCallStart {
+                id: "call_text_0".into(),
+                name: "bash".into(),
+            },
+            AgentEventLite::ToolCallStop {
+                id: "call_text_0".into(),
+                args: "{\"command\":\"cargo test\"}".into(),
+            },
+            AgentEventLite::ToolResult {
+                id: "call_text_0".into(),
+                name: "bash".into(),
+                ok: true,
+                content: "test result: ok".into(),
+                details: None,
+                duration_ms: 4,
+            },
+            AgentEventLite::TurnEnd,
+        ],
+    );
+
+    let e = entries(&state);
+    let asst = &e[1]["message"];
+    let blocks = asst["content"].as_array().unwrap();
+    let text = blocks
+        .iter()
+        .filter(|b| b["type"] == "text")
+        .map(|b| b["text"].as_str().unwrap_or_default())
+        .collect::<String>();
+
+    assert!(
+        !text.contains("<function="),
+        "标记不该落进会话正文: {text:?}"
+    );
+    assert!(
+        text.contains("修复已应用。"),
+        "模型真正说的话要留着: {text:?}"
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|b| b["type"] == "toolCall" && b["name"] == "bash"),
+        "工具调用本身要按结构化形式记下来: {blocks:?}"
+    );
+    let res = &e[2]["message"];
+    assert_eq!(res["role"], "toolResult", "{res}");
+    assert_eq!(res["toolCallId"], "call_text_0", "{res}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

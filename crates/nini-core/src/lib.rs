@@ -25,6 +25,7 @@ pub mod prompt_template;
 pub mod provider;
 pub mod settings;
 pub mod skills;
+pub mod text_tool_call;
 pub mod tool;
 pub mod trust_gate;
 
