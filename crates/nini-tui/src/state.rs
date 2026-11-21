@@ -1583,6 +1583,10 @@ pub struct RunState {
     pub run_started_at: std::time::Instant,
     /// 最后一次收到 agent 事件的时刻（"无进展"判定的基准）。
     pub last_event_at: std::time::Instant,
+    /// 等模型时，多久没有任何事件就算"无进展"（秒）。来自进程的存活阈值。
+    pub no_progress_model_secs: u64,
+    /// 等工具时，多久没有任何事件就算"无进展"（秒）。来自进程的存活阈值。
+    pub no_progress_tool_secs: u64,
 }
 
 // =================================================================
@@ -1958,12 +1962,17 @@ impl Clone for RunState {
             current_tool: self.current_tool.clone(),
             run_started_at: self.run_started_at,
             last_event_at: self.last_event_at,
+            no_progress_model_secs: self.no_progress_model_secs,
+            no_progress_tool_secs: self.no_progress_tool_secs,
         }
     }
 }
 
 impl Default for RunState {
     fn default() -> Self {
+        // 存活阈值的默认值只有一个出处：nini-core 的 `LivenessSettings`。
+        // 这里不另写数字——用户改的是配置，不是这里的常量。
+        let lv = nini_core::liveness::LivenessSettings::default();
         Self {
             mode: RunMode::Editing,
             agent_alive: false,
@@ -1990,6 +1999,8 @@ impl Default for RunState {
             current_tool: None,
             run_started_at: std::time::Instant::now(),
             last_event_at: std::time::Instant::now(),
+            no_progress_model_secs: lv.no_progress_model_secs,
+            no_progress_tool_secs: lv.no_progress_tool_secs,
         }
     }
 }
@@ -2210,9 +2221,10 @@ impl AppState {
     }
 
     pub fn new(model: impl Into<String>) -> Self {
-        let mut s = Self::default();
-        s.model_state.model = model.into();
-        s
+        // 走 `with_settings`：启动路径（`runtime::initial_state`）用的就是它，
+        // 存活阈值必须在这里从进程全局拷进 `RunState`（否则用户在
+        // settings.json 里配的阈值永远不生效）。
+        Self::with_settings(model.into(), 0, crate::settings::Settings::default())
     }
 
     /// v0.11 (B4): **bash mode** — the editor holds a shell command.
@@ -2257,6 +2269,12 @@ impl AppState {
         s.model_state.model = model;
         s.model_state.settings_snapshot = settings;
         s.run_state.context_window = context_window;
+        // 存活阈值：这里的 `settings` 是 nini-tui 自己那套，**没有** liveness 段，
+        // 所以值从进程全局取（nini-cli 启动时解析 settings.json 后写入）。
+        // 渲染层读的是这份不可变快照，不读全局。
+        let lv = nini_core::liveness::liveness_settings();
+        s.run_state.no_progress_model_secs = lv.no_progress_model_secs;
+        s.run_state.no_progress_tool_secs = lv.no_progress_tool_secs;
         s
     }
 

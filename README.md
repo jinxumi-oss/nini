@@ -321,6 +321,14 @@ backoff waits before the first retry (`baseDelayMs`, default 2000 ms, doubling
 with every attempt); Pi's camelCase spelling and nini's snake_case are both
 read.
 
+The `liveness` section of `settings.json` controls the time thresholds of the
+liveness indicator: `provider_stream_idle_secs` (default 120, how long the
+provider stream may go without data before it counts as hung),
+`no_progress_model_secs` (default 60, how long waiting for the model may go
+without any activity before it counts as "no progress"), and
+`no_progress_tool_secs` (default 180, the same threshold while waiting for a
+tool; it must be greater than the first one).
+
 You can `nini -p` in one terminal and `pi` in another — both write the
 same session JSONL.
 

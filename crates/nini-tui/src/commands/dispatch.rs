@@ -1532,6 +1532,9 @@ fn cmd_reload(state: &mut AppState, _settings: &mut SettingsManager, _args: &str
     let before_theme = state.model_state.settings_snapshot.theme.clone();
     let before_window = state.run_state.context_window;
     let before_model = state.model_state.model.clone();
+    // 存活阈值的「改前值」= 当前生效的那份（RunState 里拷着的那份）。
+    let before_model_secs = state.run_state.no_progress_model_secs;
+    let before_tool_secs = state.run_state.no_progress_tool_secs;
 
     if let Some(path) = state.model_state.settings_path.clone() {
         if !path.exists() {
@@ -1561,6 +1564,35 @@ fn cmd_reload(state: &mut AppState, _settings: &mut SettingsManager, _args: &str
             "context window: {before_window} → {}",
             state.run_state.context_window
         ));
+    }
+
+    // 存活阈值：nini-tui 自己的 SettingsManager 不认识 `liveness` 段，
+    // 所以这里用 nini-core 的解析器重读一次（用户级 + 项目级 settings.json），
+    // 写回进程全局，再拷进 RunState —— 否则改完 settings.json 再 /reload
+    // 界面阈值不变。
+    let lv =
+        nini_core::settings::load_settings(cwd.as_deref().unwrap_or(std::path::Path::new(".")))
+            .liveness_settings();
+    nini_core::liveness::set_liveness_settings(lv);
+    state.run_state.no_progress_model_secs = lv.no_progress_model_secs;
+    state.run_state.no_progress_tool_secs = lv.no_progress_tool_secs;
+
+    // 只有真的变了才说变了：一个阈值没动，就不报它。
+    let mut liveness_changed: Vec<String> = Vec::new();
+    if before_model_secs != lv.no_progress_model_secs {
+        liveness_changed.push(format!(
+            "模型 {before_model_secs}s → {}s",
+            lv.no_progress_model_secs
+        ));
+    }
+    if before_tool_secs != lv.no_progress_tool_secs {
+        liveness_changed.push(format!(
+            "工具 {before_tool_secs}s → {}s",
+            lv.no_progress_tool_secs
+        ));
+    }
+    if !liveness_changed.is_empty() {
+        out.push(format!("存活阈值: {}", liveness_changed.join(", ")));
     }
 
     // v0.11 (B3)：**键位**与**模型目录**也重新读一遍。
@@ -2108,6 +2140,67 @@ mod honesty_tests {
                 assert!(
                     !blob.contains("not yet implemented"),
                     "the output must not say 'not yet implemented': {blob}"
+                );
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // /reload：存活阈值必须真的重读 settings.json
+    // ----------------------------------------------------------------
+
+    /// 用户改完 settings.json 里的 `liveness` 段再 `/reload`，阈值必须
+    /// **立刻生效**。
+    ///
+    /// 缺口：nini-tui 自己那套 `SettingsManager` 不认识 `liveness` 段，
+    /// 所以 `/reload` 重读的是一份**没有**存活阈值的 settings —— 界面上的
+    /// 阈值纹丝不动，用户以为自己改了没用。
+    ///
+    /// 隔离：项目级 `.nini/settings.json` 写在临时目录里，进程 cwd 临时指
+    /// 过去（项目级覆盖用户级，所以碰不到开发者自己的
+    /// `~/.nini/agent/settings.json`）。
+    #[test]
+    fn a_reload_applies_the_new_liveness_thresholds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nini_dir = tmp.path().join(".nini");
+        std::fs::create_dir_all(&nini_dir).unwrap();
+        std::fs::write(
+            nini_dir.join("settings.json"),
+            r#"{"liveness":{"no_progress_model_secs":7,"no_progress_tool_secs":9}}"#,
+        )
+        .unwrap();
+
+        // 进程全局的存活阈值：先摆成默认值，测完摆回去（全局是进程级的）。
+        let saved = nini_core::liveness::liveness_settings();
+        nini_core::liveness::set_liveness_settings(nini_core::liveness::LivenessSettings::default());
+
+        let orig_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let mut state = AppState::new("test-model");
+        let mut settings = SettingsManager::default();
+        let r = dispatch(&mut state, &mut settings, CommandId::Reload, "");
+
+        if let Some(orig) = orig_cwd {
+            let _ = std::env::set_current_dir(&orig);
+        }
+        nini_core::liveness::set_liveness_settings(saved);
+
+        assert_eq!(
+            state.run_state.no_progress_model_secs, 7,
+            "/reload 之后，等模型的存活阈值必须是新 settings.json 里的值"
+        );
+        assert_eq!(
+            state.run_state.no_progress_tool_secs, 9,
+            "/reload 之后，等工具的存活阈值必须是新 settings.json 里的值"
+        );
+        match r.outcome {
+            crate::commands::CommandOutcome::Output(lines) => {
+                let blob = lines.join("\n");
+                assert!(
+                    blob.contains("存活阈值"),
+                    "/reload 必须说出阈值变了多少: {blob}"
                 );
             }
             other => panic!("expected Output, got {other:?}"),

@@ -35,13 +35,6 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::sync::atomic::Ordering;
 
-/// 等模型时，多久没有任何事件就算"无进展"（秒）。
-pub const NO_PROGRESS_MODEL_SECS: u64 = 60;
-/// 等工具时，多久没有任何事件就算"无进展"（秒）。
-///
-/// 必须大于 bash 工具的默认超时（120s），否则正常的长任务会被误报。
-pub const NO_PROGRESS_TOOL_SECS: u64 = 180;
-
 /// Render the full TUI frame.
 pub fn render_frame(f: &mut Frame, state: &AppState) {
     render_frame_with_theme(f, state, &Theme::default());
@@ -2155,13 +2148,16 @@ fn phase_activity_label(phase: &str) -> &'static str {
 /// - 长时间收不到事件：`⚠ no progress {n}s · {上下文}`（n = 静默秒数，
 ///   上下文 = 工具名，或与上面同一个相位文案）
 ///
-/// 阈值：等模型 60s，等工具 180s（必须大于 bash 的 120s 默认超时）。
+/// 阈值：由调用方传入（等模型 60s、等工具 180s 起步），来自
+/// `RunState` 里的存活阈值快照（用户在 settings.json 里配的值）。
 pub fn activity_indicator(
     phase: &str,
     tool: Option<&(String, std::time::Instant)>,
     run_started_at: std::time::Instant,
     last_event_at: std::time::Instant,
     now: std::time::Instant,
+    no_progress_model_secs: u64,
+    no_progress_tool_secs: u64,
 ) -> Option<(String, &'static str)> {
     // 唯一判据是相位：idle = 这一轮没在跑。
     // 放在最前面是为了连「工具残留」的情况也一并挡住——工具复位有延迟，
@@ -2173,7 +2169,7 @@ pub fn activity_indicator(
         Some((name, started_at)) => {
             let secs = now.saturating_duration_since(*started_at).as_secs();
             let quiet = now.saturating_duration_since(last_event_at).as_secs();
-            if quiet >= NO_PROGRESS_TOOL_SECS {
+            if quiet >= no_progress_tool_secs {
                 return Some((
                     format!("\u{26a0} no progress {quiet}s \u{b7} {name}"),
                     "error",
@@ -2186,7 +2182,7 @@ pub fn activity_indicator(
             let label = phase_activity_label(phase);
             let secs = now.saturating_duration_since(run_started_at).as_secs();
             let quiet = now.saturating_duration_since(last_event_at).as_secs();
-            if quiet >= NO_PROGRESS_MODEL_SECS {
+            if quiet >= no_progress_model_secs {
                 return Some((
                     format!("\u{26a0} no progress {quiet}s \u{b7} {label}"),
                     "error",
@@ -2282,6 +2278,8 @@ fn render_key_hints(f: &mut Frame, state: &AppState, theme: &Theme, area: Rect) 
         state.run_state.run_started_at,
         state.run_state.last_event_at,
         std::time::Instant::now(),
+        state.run_state.no_progress_model_secs,
+        state.run_state.no_progress_tool_secs,
     );
 
     // Use trim_to_width so when hints overflow we append a dim "…"
@@ -2593,8 +2591,9 @@ mod activity_indicator_tests {
     fn activity_indicator_shows_tool_name_and_seconds() {
         let now = std::time::Instant::now();
         let tool = ("bash".to_string(), ago(now, 12));
-        let (text, color) = activity_indicator("working", Some(&tool), ago(now, 30), now, now)
-            .expect("tool run should show an indicator");
+        let (text, color) =
+            activity_indicator("working", Some(&tool), ago(now, 30), now, now, 60, 180)
+                .expect("tool run should show an indicator");
         assert!(text.contains("bash"), "expected tool name, got: {text}");
         assert!(
             text.contains("12s"),
@@ -2606,7 +2605,7 @@ mod activity_indicator_tests {
     #[test]
     fn activity_indicator_shows_waiting_for_model() {
         let now = std::time::Instant::now();
-        let (text, color) = activity_indicator("working", None, ago(now, 7), now, now)
+        let (text, color) = activity_indicator("working", None, ago(now, 7), now, now, 60, 180)
             .expect("waiting for the model should show an indicator");
         assert!(
             text.contains("waiting for model"),
@@ -2620,9 +2619,16 @@ mod activity_indicator_tests {
     fn activity_indicator_warns_when_tool_stalled() {
         let now = std::time::Instant::now();
         let tool = ("bash".to_string(), ago(now, 200));
-        let (text, color) =
-            activity_indicator("working", Some(&tool), ago(now, 300), ago(now, 200), now)
-                .expect("stalled tool should still show an indicator");
+        let (text, color) = activity_indicator(
+            "working",
+            Some(&tool),
+            ago(now, 300),
+            ago(now, 200),
+            now,
+            60,
+            180,
+        )
+        .expect("stalled tool should still show an indicator");
         assert!(
             text.contains("no progress"),
             "expected no-progress warning, got: {text}"
@@ -2634,8 +2640,9 @@ mod activity_indicator_tests {
     #[test]
     fn activity_indicator_warns_when_model_stalled() {
         let now = std::time::Instant::now();
-        let (text, color) = activity_indicator("working", None, ago(now, 120), ago(now, 90), now)
-            .expect("stalled model should still show an indicator");
+        let (text, color) =
+            activity_indicator("working", None, ago(now, 120), ago(now, 90), now, 60, 180)
+                .expect("stalled model should still show an indicator");
         assert!(
             text.contains("no progress"),
             "expected no-progress warning, got: {text}"
@@ -2651,7 +2658,7 @@ mod activity_indicator_tests {
     fn activity_indicator_is_none_when_idle() {
         let now = std::time::Instant::now();
         assert!(
-            activity_indicator("idle", None, ago(now, 300), ago(now, 300), now).is_none(),
+            activity_indicator("idle", None, ago(now, 300), ago(now, 300), now, 60, 180).is_none(),
             "idle phase means no run in progress: nothing to report"
         );
     }
@@ -2662,7 +2669,7 @@ mod activity_indicator_tests {
     #[test]
     fn activity_indicator_shows_compacting_when_compacting() {
         let now = std::time::Instant::now();
-        let (text, color) = activity_indicator("compacting", None, ago(now, 7), now, now)
+        let (text, color) = activity_indicator("compacting", None, ago(now, 7), now, now, 60, 180)
             .expect("compacting phase should show an indicator");
         assert!(
             text.contains("compacting"),
@@ -2676,7 +2683,7 @@ mod activity_indicator_tests {
     #[test]
     fn activity_indicator_shows_retrying_when_retrying() {
         let now = std::time::Instant::now();
-        let (text, color) = activity_indicator("retrying", None, ago(now, 7), now, now)
+        let (text, color) = activity_indicator("retrying", None, ago(now, 7), now, now, 60, 180)
             .expect("retrying phase should show an indicator");
         assert!(
             text.contains("retrying"),
@@ -2690,8 +2697,9 @@ mod activity_indicator_tests {
     #[test]
     fn activity_indicator_shows_summarizing_branch_when_branch_summary() {
         let now = std::time::Instant::now();
-        let (text, color) = activity_indicator("branch_summary", None, ago(now, 7), now, now)
-            .expect("branch_summary phase should show an indicator");
+        let (text, color) =
+            activity_indicator("branch_summary", None, ago(now, 7), now, now, 60, 180)
+                .expect("branch_summary phase should show an indicator");
         assert!(
             text.contains("summarizing branch"),
             "expected summarizing branch label, got: {text}"
@@ -2704,9 +2712,16 @@ mod activity_indicator_tests {
     #[test]
     fn activity_indicator_warns_with_phase_context_when_model_stalled() {
         let now = std::time::Instant::now();
-        let (text, color) =
-            activity_indicator("compacting", None, ago(now, 120), ago(now, 90), now)
-                .expect("stalled model should still show an indicator");
+        let (text, color) = activity_indicator(
+            "compacting",
+            None,
+            ago(now, 120),
+            ago(now, 90),
+            now,
+            60,
+            180,
+        )
+        .expect("stalled model should still show an indicator");
         assert!(
             text.contains("no progress"),
             "expected no-progress warning, got: {text}"
@@ -2722,8 +2737,9 @@ mod activity_indicator_tests {
     #[test]
     fn activity_indicator_falls_back_for_unknown_phase() {
         let now = std::time::Instant::now();
-        let (text, _color) = activity_indicator("some-new-phase", None, ago(now, 7), now, now)
-            .expect("unknown phase should still show an indicator");
+        let (text, _color) =
+            activity_indicator("some-new-phase", None, ago(now, 7), now, now, 60, 180)
+                .expect("unknown phase should still show an indicator");
         assert!(
             text.contains("waiting for model"),
             "expected fallback label, got: {text}"
@@ -2735,13 +2751,62 @@ mod activity_indicator_tests {
     fn activity_indicator_prefers_tool_name_over_phase() {
         let now = std::time::Instant::now();
         let tool = ("bash".to_string(), ago(now, 12));
-        let (text, _color) = activity_indicator("compacting", Some(&tool), ago(now, 30), now, now)
-            .expect("tool run should show an indicator");
+        let (text, _color) =
+            activity_indicator("compacting", Some(&tool), ago(now, 30), now, now, 60, 180)
+                .expect("tool run should show an indicator");
         assert!(text.contains("bash"), "expected tool name, got: {text}");
         assert!(
             !text.contains("compacting"),
             "tool branch must not be renamed by phase, got: {text}"
         );
+    }
+
+    /// 阈值是**参数**，不是写死的 60/180：传 5 秒 → 5 秒无事件就报「无进展」。
+    ///
+    /// 反向断言（同样 5 秒静默，阈值 60 秒时**不**报）证明判据是传进来的那个
+    /// 数，而不是常量。
+    #[test]
+    fn activity_indicator_honors_the_passed_in_thresholds() {
+        let now = std::time::Instant::now();
+        let (text, color) =
+            activity_indicator("working", None, ago(now, 300), ago(now, 5), now, 5, 180)
+                .expect("5 秒无事件（阈值 5 秒）应升级成告警");
+        assert!(
+            text.contains("no progress"),
+            "expected no-progress warning, got: {text}"
+        );
+        assert_eq!(color, "error");
+
+        let (text, color) =
+            activity_indicator("working", None, ago(now, 300), ago(now, 5), now, 60, 180)
+                .expect("阈值 60 秒时仍显示普通活动串");
+        assert!(
+            !text.contains("no progress"),
+            "阈值 60 秒时 5 秒静默不该报警，got: {text}"
+        );
+        assert_eq!(color, "warning");
+    }
+
+    /// 工具分支同理：判据是传进来的工具阈值。
+    #[test]
+    fn activity_indicator_honors_the_passed_in_tool_threshold() {
+        let now = std::time::Instant::now();
+        let tool = ("bash".to_string(), ago(now, 5));
+        let (text, color) = activity_indicator(
+            "working",
+            Some(&tool),
+            ago(now, 30),
+            ago(now, 5),
+            now,
+            60,
+            5,
+        )
+        .expect("5 秒无事件（工具阈值 5 秒）应升级成告警");
+        assert!(
+            text.contains("no progress"),
+            "expected no-progress warning, got: {text}"
+        );
+        assert_eq!(color, "error");
     }
 }
 

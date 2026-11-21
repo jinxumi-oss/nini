@@ -269,6 +269,11 @@ nini 读写与 Pi v0.85.1 完全相同的文件格式：
 默认 3）与退避多久（`baseDelayMs`，默认 2000ms，每次翻倍）；Pi 的 camelCase 拼写与
 nini 的 snake_case 都认。
 
+`settings.json` 的 `liveness` 段控制存活指示器的时间阈值：
+`provider_stream_idle_secs`（默认 120，provider 流多久没数据算挂死）、
+`no_progress_model_secs`（默认 60，等模型时多久没动静算"无进展"）、
+`no_progress_tool_secs`（默认 180，等工具时的同一阈值；必须大于第一个）。
+
 你可以在一个终端跑 `nini -p`、另一个终端跑 `pi`——两边写的是同一种
 session JSONL。
 

@@ -14,6 +14,7 @@ pub mod config_value;
 pub mod constraint;
 pub mod entries;
 pub mod git;
+pub mod liveness;
 pub mod logging;
 pub mod model_lookup;
 pub mod model_runtime;

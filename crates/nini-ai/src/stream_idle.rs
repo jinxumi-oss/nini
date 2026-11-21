@@ -16,10 +16,22 @@ use nini_core::provider::ProviderError;
 
 /// 默认空闲超时：两个 chunk 之间超过这么久没有数据，就判定上游挂死。
 ///
+/// 这个 120s 就是 `LivenessSettings::default()` 里
+/// `provider_stream_idle_secs` 的默认值 —— 两处必须一致。
+///
 /// 取 120s 的理由：与 `nini_tools::bash` 的默认命令超时（120s）同量级；
 /// 远大于任何健康流的最大 chunk 间隔（模型思考时也可能几十秒不吐字），
 /// 又远小于"永远挂着"（用户视角：75s 实测无任何变化）。
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// 当前进程生效的 provider 流空闲超时。
+///
+/// 读的是进程级存活阈值（启动时由 nini-cli 从 settings.json 解析后写入）。
+/// 注意：**已在飞行中的请求不受影响** —— 超时在调用 `next_chunk` 时就已经定下，
+/// 改配置对下一次请求生效。
+pub fn idle_timeout() -> Duration {
+    Duration::from_secs(nini_core::liveness::liveness_settings().provider_stream_idle_secs)
+}
 
 /// 从 provider 的字节流里读下一个 chunk。
 ///
@@ -277,6 +289,25 @@ mod tests {
             }
             other => panic!("expected ProviderError::Http, got {other:?}"),
         }
+    }
+
+    /// 进程级的存活阈值 → `idle_timeout()` 跟着变。
+    ///
+    /// 测完把全局改回原值（并行测试共享同一份进程级状态）。
+    #[test]
+    fn the_idle_timeout_follows_the_process_wide_settings() {
+        let original = nini_core::liveness::liveness_settings();
+        nini_core::liveness::set_liveness_settings(nini_core::liveness::LivenessSettings {
+            provider_stream_idle_secs: 7,
+            ..original
+        });
+
+        let timeout = idle_timeout();
+
+        // 先恢复全局再断言：断言失败也不会污染同 crate 的其它测试。
+        nini_core::liveness::set_liveness_settings(original);
+
+        assert_eq!(timeout, Duration::from_secs(7));
     }
 
     /// 正常回响应头 → `Ok(response)`，不误报。

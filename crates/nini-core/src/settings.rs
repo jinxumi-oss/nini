@@ -125,6 +125,16 @@ pub struct Settings {
     /// back unchanged.
     #[serde(default, alias = "toolExecution")]
     pub tool_execution: Option<crate::tool::ToolExecutionMode>,
+    /// 存活指示器的时间阈值（秒）。缺失 → 用 `LivenessSettings::default()`。
+    #[serde(default)]
+    pub liveness: Option<crate::liveness::LivenessSettings>,
+}
+
+impl Settings {
+    /// 存活阈值：文件里没有这一段就用默认值。
+    pub fn liveness_settings(&self) -> crate::liveness::LivenessSettings {
+        self.liveness.unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -223,6 +233,9 @@ pub fn load_settings(cwd: &Path) -> Settings {
     }
     if project_s.tool_execution.is_some() {
         user_s.tool_execution = project_s.tool_execution;
+    }
+    if project_s.liveness.is_some() {
+        user_s.liveness = project_s.liveness;
     }
     user_s
 }
@@ -1404,5 +1417,57 @@ mod tests {
         let empty = ThinkingLevelMap::default();
         assert_eq!(empty.off, None);
         assert_eq!(empty.max, None);
+    }
+
+    /// 存活阈值：只覆盖一个键，其余取默认。
+    ///
+    /// `LivenessSettings` 的容器级 `#[serde(default)]` 让缺失的键落到
+    /// `Default` 上 —— 用户只想把 provider 的空闲超时调短，不该被迫把
+    /// 另外两个阈值也写一遍。
+    #[test]
+    fn a_partial_liveness_section_keeps_the_other_defaults() {
+        let parsed: Settings =
+            serde_json::from_str(r#"{"liveness": {"provider_stream_idle_secs": 30}}"#)
+                .expect("parses");
+        let lv = parsed.liveness_settings();
+        assert_eq!(
+            lv.provider_stream_idle_secs, 30,
+            "the declared key was not read"
+        );
+        assert_eq!(
+            lv.no_progress_model_secs, 60,
+            "a missing key must fall back"
+        );
+        assert_eq!(
+            lv.no_progress_tool_secs, 180,
+            "a missing key must fall back"
+        );
+    }
+
+    /// 缺整段 → 全默认（120 / 60 / 180）。
+    #[test]
+    fn a_missing_liveness_section_yields_the_defaults() {
+        let parsed: Settings = serde_json::from_str(r#"{"provider": "openai"}"#).expect("parses");
+        assert_eq!(parsed.liveness, None);
+        let lv = parsed.liveness_settings();
+        assert_eq!(lv.provider_stream_idle_secs, 120);
+        assert_eq!(lv.no_progress_model_secs, 60);
+        assert_eq!(lv.no_progress_tool_secs, 180);
+    }
+
+    /// camelCase 别名（`providerStreamIdleSecs` 等）也认。
+    ///
+    /// 与 `maxIterations` / `maxParallelTools` 同一套规则：snake_case 是
+    /// 正名，camelCase 是别名，两种拼写都读。
+    #[test]
+    fn the_camel_case_aliases_of_the_liveness_keys_are_read() {
+        let parsed: Settings = serde_json::from_str(
+            r#"{"liveness": {"providerStreamIdleSecs": 30, "noProgressModelSecs": 40, "noProgressToolSecs": 50}}"#,
+        )
+        .expect("parses");
+        let lv = parsed.liveness_settings();
+        assert_eq!(lv.provider_stream_idle_secs, 30);
+        assert_eq!(lv.no_progress_model_secs, 40);
+        assert_eq!(lv.no_progress_tool_secs, 50);
     }
 }

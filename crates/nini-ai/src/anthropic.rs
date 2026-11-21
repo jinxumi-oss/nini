@@ -122,7 +122,7 @@ impl Provider for AnthropicProvider {
             let headers = overrides.resolve(&req.model, &defaults);
             let mut response = crate::stream_idle::send_with_idle_timeout(
                 crate::provider_overrides::apply_headers(client.post(&url), &headers).body(body),
-                crate::stream_idle::DEFAULT_IDLE_TIMEOUT,
+                crate::stream_idle::idle_timeout(),
             )
             .await?;
 
@@ -146,7 +146,7 @@ impl Provider for AnthropicProvider {
 
             while let Some(chunk) = crate::stream_idle::next_chunk(
                 &mut byte_stream,
-                crate::stream_idle::DEFAULT_IDLE_TIMEOUT,
+                crate::stream_idle::idle_timeout(),
             )
             .await?
             {

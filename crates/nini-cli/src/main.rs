@@ -396,6 +396,16 @@ fn app_config_from_args(args: &Args) -> app::AppConfig {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    // 存活指示器的阈值：进程启动时解析一次，之后 provider 层与 TUI 层
+    // 都从 nini_core::liveness 这同一处读。
+    //
+    // cwd 用的是进程当前目录（与下面 `--list-models` 分支里读 models.json
+    // 时用的是同一个来源），不引入第二套 cwd。
+    {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let settings = nini_core::settings::load_settings(&cwd);
+        nini_core::liveness::set_liveness_settings(settings.liveness_settings());
+    }
     // Built before the destructure below: the config is a view of the
     // parsed flags, so it has to be taken while `args` is still whole.
     let cli_cfg = app_config_from_args(&args);
