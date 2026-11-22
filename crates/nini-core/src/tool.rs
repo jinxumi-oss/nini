@@ -417,6 +417,18 @@ impl Tool for WrappedTool {
     fn execution_mode(&self) -> ToolExecutionMode {
         self.inner.execution_mode()
     }
+    /// X1: the wrapper must forward the inner tool's prompt contribution.
+    ///
+    /// `apply_project_trust` wraps **every** tool the project registers in a
+    /// `WrappedTool`. A missing forward here means the wrapper inherits the
+    /// `Tool` trait's default `None`, so **every tool's snippet and guidelines
+    /// vanish from the system prompt** once the trust gate is active — the model
+    /// no longer sees `bash`'s usage, and a custom tool is invisible outright.
+    /// This is "declared but silently dropped", pinned by
+    /// `crates/nini-conformance/tests/custom_tool_end_to_end.rs`.
+    fn system_prompt_contribution(&self) -> Option<ToolSystemPrompt> {
+        self.inner.system_prompt_contribution()
+    }
     async fn execute(&self, args: Value, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
         self.inner.execute(args, ctx).await
     }
