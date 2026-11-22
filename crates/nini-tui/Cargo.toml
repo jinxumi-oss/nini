@@ -15,7 +15,6 @@ uuid = { workspace = true }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 pulldown-cmark = { version = "0.13", default-features = false }
-nucleo-matcher = "0.3"
 arboard = { version = "3", features = ["image-data"] }
 png = "0.17"
 tokio = { workspace = true }
