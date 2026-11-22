@@ -1988,4 +1988,35 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn headers_values_are_sent_verbatim_not_resolved() {
+        // **A1 (revised).** The `headers` values in `models.json` are
+        // carried **verbatim**: nini does not resolve `$VAR` / `!cmd`
+        // in them, where Pi runs `resolveHeadersOrThrow`
+        // (`provider-composer.js:311`). This is an **intentional
+        // divergence**, not an oversight — `!command` is refused
+        // everywhere else in nini (base URL), so a header value must
+        // not be a way to smuggle a command into a request.
+        //
+        // The value is locked by this test: a mutation that wires the
+        // value through `resolve_config_value_detailed` executes the
+        // command and changes the value, which turns this red.
+        let mut config = ProviderConfig::default();
+        let mut headers = std::collections::BTreeMap::new();
+        // A value that a resolver would turn into something **different**
+        // from itself: `!echo hello` runs and yields `hello`, so a mutation
+        // that wires the value through the resolver changes the header and
+        // this assertion can go red.
+        headers.insert("X-NINI-Header".to_string(), "!echo hello".to_string());
+        config.headers = Some(headers);
+
+        let resolved = provider_headers_of(&config);
+        assert_eq!(
+            resolved,
+            vec![("X-NINI-Header".to_string(), "!echo hello".to_string())],
+            "headers values must be sent verbatim — resolving them would run 
+             `!command` and diverge from nini's own refusal policy"
+        );
+    }
 }
